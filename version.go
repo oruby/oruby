@@ -1,0 +1,3 @@
+package oruby
+
+import "C"

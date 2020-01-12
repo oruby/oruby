@@ -1,0 +1,3 @@
+require "b"
+
+B.test

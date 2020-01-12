@@ -1,0 +1,16 @@
+*.sublime-*
+*.exe
+*.dll
+*.a
+*.def
+*.o
+*.db
+.idea
+*.code-*
+*.lock
+.vscode
+*.test
+cmd/orbi/orbi
+cmd/orubyc/orubyc
+cmd/oruby/oruby
+

@@ -1,0 +1,67 @@
+# ORuby
+
+ORuby is a package to embed mruby scripts into Go and help expose Go types in mruby scripts.
+
+## Install
+
+```
+git submodule init
+git submodule update
+make
+```
+
+Windows is still unsupported, but iti is on the way. You should use ```mingw32-make```.
+
+## Docs
+
+Docs are still pending. 
+
+## Usage
+
+```go
+package main
+
+import "github.com/oruby/oruby"
+
+func main() {
+	mrb := oruby.New()
+	defer mrb.Close()
+
+	println(mrb.Eval(`"hello " + ARGV[0]`, "oruby").(string))
+	result, _ := mrb.Eval(`ARGV.map {|x| x + 1}`, 1, 2, 3)
+
+	for _, i := range result.Intf().([]interface{}) {
+		println(i.(int)) // 2 3 4
+	}
+}
+```
+
+## License
+
+MIT
+
+## Linked projects
+
+This project is based on idea from Yasuhiro Matsumoto [go-mruby](https://github.com/mattn/go-mruby) package.
+Visiting commits on https://github.com/mattn will make you better.
+
+The chief designer of MRuby and Ruby is Yukihiro Matsumoto, aka Matz. 
+If you don't know who he is, then you are not nice enough.
+
+## Similar projects
+
+You should checkout https://github.com/mitchellh/go-mruby by Mitchell Hashimoto
+of Hashicorp, TerrForm, Valut, Vagrant fame.
+
+Go-mruby is similar, battle tested, production used and focused project. ORuby is still in motion, so it is not yet suitable for production.
+
+Oruby tends to support whole of mruby API, with the idea of supporting 
+more on the Go side of thigs, like exporting Go interfaces and types, 
+gems via go packages, standard lib but  made in Go, etc. 
+
+## Authors
+
+* Dušan D. Majkić (oruby)
+* Yasuhiro Matsumoto (go-mruby)
+* Yukihiro Matsumoto (mruby and ruby master)
+
