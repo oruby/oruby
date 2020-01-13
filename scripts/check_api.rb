@@ -6,7 +6,7 @@ if files.empty?
   exit 1
 end
 
-gos = IO.read('oruby.go')
+gos = IO.read('mruby.go')
 
 line_no = 0
 header_printed = false

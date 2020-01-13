@@ -7,7 +7,7 @@ if files.empty?
   exit 1
 end
 
-gos = IO.read('./oruby.go')
+gos = IO.read('./mruby.go')
 
 File.open('mruby.def', 'w') do |f|
   f.puts 'LIBRARY mruby.dll'
