@@ -92,9 +92,16 @@ func (mrb *MrbState) LoadIrepBufCxt(buffer []byte, context *MrbcContext) (Value,
 	return mrb.LoadIrepCxt(buffer, context)
 }
 
-func (mrb *MrbState) IrepFree(irep MrbIrep)   { C.mrb_irep_free(mrb.p, irep.p) }
+// IrepFree free irep
+func (mrb *MrbState) IrepFree(irep MrbIrep) { C.mrb_irep_free(mrb.p, irep.p) }
+
+// IrepIncref increase reference to irep
 func (mrb *MrbState) IrepIncref(irep MrbIrep) { C.mrb_irep_incref(mrb.p, irep.p) }
+
+// IrepDecref decrease reference to irep
 func (mrb *MrbState) IrepDecref(irep MrbIrep) { C.mrb_irep_decref(mrb.p, irep.p) }
+
+// IrepCutref cut reference form irep
 func (mrb *MrbState) IrepCutref(irep MrbIrep) { C.mrb_irep_cutref(mrb.p, irep.p) }
 
 // IrepRemoveLV removes local variables from irep

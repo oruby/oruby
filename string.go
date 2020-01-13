@@ -13,6 +13,7 @@ type RStringPtr struct{ p *C.struct_RString }
 // RStringEmbed embeded string struct
 type RStringEmbed struct{ p *C.struct_RStringEmbed }
 
+// Ptr embeds raw mruby C API RString pointer
 func (a RString) Ptr() RStringPtr { return RStringPtr{(*C.struct_RString)(C._mrb_ptr(a.v))} }
 
 // string
@@ -222,11 +223,11 @@ func (mrb *MrbState) StrToCstr(str MrbValue) string {
 	return C.GoStringN(C.mrb_str_to_cstr(mrb.p, str.Value().v), C.int(RStringLen(str)))
 }
 
-// StrToCstr Returns a newly allocated string from a Ruby string.
+// Bytes returns a bytes from ruby MRbValue interface
+// MrbValue must be of string type, or function panics
 func (mrb *MrbState) Bytes(str MrbValue) []byte {
 	if !MrbStringP(str) {
-		mrb.Raise(mrb.ETypeError(), "expected String value")
-		return nil
+		panic("expected String value")
 	}
 	cstr := C.mrb_str_to_cstr(mrb.p, str.Value().v)
 	return C.GoBytes(unsafe.Pointer(cstr), C.int(RStringLen(str)))

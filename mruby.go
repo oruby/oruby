@@ -2,7 +2,7 @@ package oruby
 
 // #cgo CFLAGS: -I${SRCDIR}/vendor/mruby/include
 // #cgo LDFLAGS: -L${SRCDIR}/vendor/mruby/build/host/lib
-// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_DISABLE_DIRECT_THREADING
+// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -29,6 +29,7 @@ type (
 	MrbAspec uint32
 )
 
+// FIberState enum
 const (
 	FiberCreated = iota
 	FiberRunning
@@ -46,7 +47,7 @@ type MrbAtexitFunc func(mrb *MrbState)
 
 // GoCallRef key for keeping call references
 type GoCallRef struct {
-	class RClassC
+	class RClassPtr
 	id    C.mrb_sym
 }
 
@@ -145,7 +146,7 @@ func (v Value) IsSymbol() bool { return C._mrb_type(v.v) == MrbTTSymbol }
 // IsString checks if oruby value is Symbol value
 func (v Value) IsString() bool { return C._mrb_type(v.v) == MrbTTString }
 
-// IsArray Checks if oruby value is hash value
+// IsData checks if oruby value is RData value
 func (v Value) IsData() bool { return C._mrb_type(v.v) == MrbTTData }
 
 // ToValue implements Valuer interfacs for Value
@@ -486,15 +487,16 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 				hash[mrb.String(key)] = mrb.Intf(val)
 			}
 			return hash
-		} else {
-			hash := make(map[interface{}]interface{}, kcnt)
-			for i := 0; i < kcnt; i++ {
-				key := mrb.AryRef(keys, i)
-				val := mrb.HashGet(o, key)
-				hash[mrb.Intf(key)] = mrb.Intf(val)
-			}
-			return hash
 		}
+
+		hash := make(map[interface{}]interface{}, kcnt)
+		for i := 0; i < kcnt; i++ {
+			key := mrb.AryRef(keys, i)
+			val := mrb.HashGet(o, key)
+			hash[mrb.Intf(key)] = mrb.Intf(val)
+		}
+		return hash
+
 	case C.MRB_TT_STRING:
 		s := o.Value().v
 		return C.GoStringN(C._RSTRING_PTR(s), C.int(C._RSTRING_LEN(s)))
@@ -895,7 +897,7 @@ func go_mrb_func_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 	mrb := states[int(C._mrb_get_idx(cmrb))]
 
 	mrb.Lock()
-	f := mrb.mrbFuncs[GoCallRef{RClassC{cmrb.c.ci.target_class}, cmrb.c.ci.mid}]
+	f := mrb.mrbFuncs[GoCallRef{RClassPtr{cmrb.c.ci.target_class}, cmrb.c.ci.mid}]
 	mrb.Unlock()
 
 	if f == nil {
@@ -956,7 +958,7 @@ func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, co
 	C.mrb_define_class_method(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
 
 	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{RClassC{klass.p.c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
+	mrb.mrbFuncs[GoCallRef{RClassPtr{klass.p.c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
 	mrb.Unlock()
 }
 
@@ -968,7 +970,7 @@ func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT,
 	C.mrb_define_singleton_method(mrb.p, obj.p(), cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
 
 	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{RClassC{obj.p().c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
+	mrb.mrbFuncs[GoCallRef{RClassPtr{obj.p().c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
 	mrb.Unlock()
 }
 
@@ -981,8 +983,8 @@ func (mrb *MrbState) DefineModuleFunction(klass RClass, name string, f MrbFuncT,
 	C.mrb_define_module_function(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
 
 	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{RClassC{klass.p}, mid}] = f
-	mrb.mrbFuncs[GoCallRef{RClassC{klass.p.c}, mid}] = f
+	mrb.mrbFuncs[GoCallRef{RClassPtr{klass.p}, mid}] = f
+	mrb.mrbFuncs[GoCallRef{RClassPtr{klass.p.c}, mid}] = f
 	mrb.Unlock()
 }
 
@@ -999,7 +1001,7 @@ func (mrb *MrbState) UndefMethod(klass RClass, name string) {
 	defer C.free(unsafe.Pointer(cname))
 
 	mrb.Lock()
-	delete(mrb.mrbFuncs, GoCallRef{RClassC{klass.p}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
+	delete(mrb.mrbFuncs, GoCallRef{RClassPtr{klass.p}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
 	mrb.Unlock()
 
 	C.mrb_undef_method(mrb.p, klass.p, cname)
@@ -1011,7 +1013,7 @@ func (mrb *MrbState) UndefClassMethod(klass RClass, name string) {
 	defer C.free(unsafe.Pointer(cname))
 
 	mrb.Lock()
-	delete(mrb.mrbFuncs, GoCallRef{RClassC{klass.p}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
+	delete(mrb.mrbFuncs, GoCallRef{RClassPtr{klass.p}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
 	mrb.Unlock()
 
 	C.mrb_undef_class_method(mrb.p, klass.p, cname)
@@ -1290,6 +1292,7 @@ func (mrb *MrbState) GetAllArgs() RArray {
 	return ary(C._mrb_get_args_all(mrb.p), mrb)
 }
 
+// GetAllArgsWithBlock returns array with all args and block
 func (mrb *MrbState) GetAllArgsWithBlock() (RArray, Value) {
 	args := Value{C._mrb_get_args_all_with_block(mrb.p)}
 	block := mrb.AryPop(args)
@@ -1450,7 +1453,7 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 
 	if argc > 0 {
 		block = mrb.Value(args[len(args)-1])
-		argc -= 1
+		argc--
 	} else {
 		block = mrb.NilValue()
 	}
@@ -1533,10 +1536,12 @@ func (mrb *MrbState) InternStatic(str string) MrbSym {
 	// C.mrb_intern_static() is not supported, as CGo guides advise string copy
 }
 
+// Buff represents memory alocated by mruby C API
 type Buff struct {
 	p unsafe.Pointer
 }
 
+// Uintptr value of underlaying Buff pointer
 func (b Buff) Uintptr() uintptr { return uintptr(b.p) }
 
 // Malloc allocates C side memory using oruby allocator
@@ -2030,7 +2035,7 @@ func (mrb *MrbState) ELocalJumpError() RClass { return mrb.ExcGet("LocalJumpErro
 // ERegexpError oruby error
 func (mrb *MrbState) ERegexpError() RClass { return mrb.ExcGet("RegexpError") }
 
-// ERegexpError oruby error
+// EFrozenError oruby error
 func (mrb *MrbState) EFrozenError() RClass { return mrb.ExcGet("FrozenError") }
 
 // ESysStackError oruby error

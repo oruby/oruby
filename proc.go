@@ -13,15 +13,19 @@ type REnv struct{ p *C.struct_REnv }
 
 // Value implements MrbValue interface
 func (e REnv) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(e.p))} }
-func (e REnv) Type() int    { return e.Value().Type() }
-func (e REnv) IsNil() bool  { return e.p == nil }
+
+// Type for MrbValue interface
+func (e REnv) Type() int { return e.Value().Type() }
+
+// IsNil check for MrbValue interface
+func (e REnv) IsNil() bool { return e.p == nil }
 
 // EnvUnshare unshares Env
 func (mrb *MrbState) EnvUnshare(env REnv) {
 	C.mrb_env_unshare(mrb.p, env.p)
 }
 
-// TopAdjustStackLength of toplevel environment. Used in imrb
+// AdjustStackLength of toplevel environment. Used in imrb
 func (e REnv) AdjustStackLength(nlocals int) {
 	if e.p != nil {
 		if int(C._MRB_ENV_STACK_LEN(e.p)) < nlocals {
@@ -35,8 +39,12 @@ type RProc struct{ p *C.struct_RProc }
 
 // Value implements MrbValue interface
 func (p RProc) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(p.p))} }
-func (p RProc) Type() int    { return p.Value().Type() }
-func (p RProc) IsNil() bool  { return p.p == nil }
+
+// Type for MrbValue interface
+func (p RProc) Type() int { return p.Value().Type() }
+
+// IsNil check for MrbValue interface
+func (p RProc) IsNil() bool { return p.p == nil }
 
 // IsCFunc is cfunc
 func (p RProc) IsCFunc() bool { return int(C._MRB_PROC_CFUNC_P(p.p)) != 0 }
@@ -61,7 +69,7 @@ func (p RProc) IRep() MrbIrep {
 	return MrbIrep{C._rproc_body_irep(p.p)}
 }
 
-// ProcSetTargetClass
+// SetTargetClass sets target class for proc
 func (p RProc) SetTargetClass(c RClass) {
 	C._MRB_PROC_SET_TARGET_CLASS(c.mrb.p, p.p, c.p)
 }

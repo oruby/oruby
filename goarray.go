@@ -31,7 +31,7 @@ func (a RArray) PushString(s string) { C.mrb_ary_push(a.mrb.p, a.v, a.mrb.StrNew
 // PushInt pushes int to oruby array
 func (a RArray) PushInt(val int) { C.mrb_ary_push(a.mrb.p, a.v, MrbFixnumValue(val).v) }
 
-// PushFloat pushes int to oruby array
+// PushFloat64 pushes int to oruby array
 func (a RArray) PushFloat64(f float64) { C.mrb_ary_push(a.mrb.p, a.v, a.mrb.FloatValue(f).v) }
 
 // Pop pops the last element from the array
@@ -76,7 +76,7 @@ func (a RArray) Shift() Value {
 	return Value{C.mrb_ary_shift(a.mrb.p, a.v)}
 }
 
-// AryClear removes all elements from the array
+// Clear removes all elements from the array
 func (a RArray) Clear() RArray {
 	a.v = C.mrb_ary_clear(a.mrb.p, a.v)
 	return a

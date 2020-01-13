@@ -57,7 +57,7 @@ func (s RString) Resize(len int) RString {
 }
 
 // Substr returns a sub string.
-func (s RString) StrSubstr(beg, len int) RString {
+func (s RString) Substr(beg, len int) RString {
 	return s.cloneV(C.mrb_str_substr(s.mrb.p, s.v, C.mrb_int(beg), C.mrb_int(len)))
 }
 
@@ -74,7 +74,7 @@ func (s RString) CheckStringType(str MrbValue) (RString, error) {
 	return s.cloneV(v.v), err
 }
 
-// StrDup Duplicates a string object.
+// Dup Duplicates a string object.
 func (s RString) Dup() RString {
 	return RString{RObject{
 		C.mrb_str_dup(s.mrb.p, s.v),
@@ -110,16 +110,16 @@ func (s RString) Cat(str string) RString {
 }
 
 // CatStr concat
-func (s RString) StrCatStr(str2 MrbValue) RString {
+func (s RString) CatStr(str2 MrbValue) RString {
 	return s.cloneV(C.mrb_str_cat_str(s.mrb.p, s.v, str2.Value().v))
 }
 
 // Append Adds str2 to the end of str1
-func (s RString) StrAppend(str2 MrbValue) RString {
+func (s RString) Append(str2 MrbValue) RString {
 	return s.cloneV(C.mrb_str_append(s.mrb.p, s.v, str2.Value().v))
 }
 
-// StrCmp  Returns 0 if both Ruby strings are equal. Returns a value < 0 if Ruby
+// Cmp returns 0 if both Ruby strings are equal. Returns a value < 0 if Ruby
 // str1 is less than Ruby str2. Returns a value > 0 if Ruby str2 is greater than Ruby str1.
 func (s RString) Cmp(str2 MrbValue) int {
 	return int(C.mrb_str_cmp(s.mrb.p, s.v, str2.Value().v))
@@ -130,18 +130,13 @@ func (s RString) String() string {
 	return C.GoStringN(C.mrb_str_to_cstr(s.mrb.p, s.v), C.int(s.Len()))
 }
 
-// String Returns a newly allocated string from a Ruby string.
-func (s RString) Object() RObject {
-	return RObject{s.v, s.mrb}
-}
-
 // Pool pool string
 func (s RString) Pool() { C.mrb_str_pool(s.mrb.p, s.v) }
 
-// Hash hash of string
+// Hash of string object
 func (s RString) Hash() int { return int(C.mrb_str_hash(s.mrb.p, s.v)) }
 
-// Dump dump string
+// Dump string
 func (s RString) Dump() Value { return Value{C.mrb_str_dump(s.mrb.p, s.v)} }
 
 // Inspect returns a printable version of str, surrounded by quote marks, with special characters escaped

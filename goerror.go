@@ -8,61 +8,98 @@ import (
 	"strings"
 )
 
-var eRuntimeError = errors.New("RuntimeError")
-var eTypeError = errors.New("TypeError")
-var eArgumentError = errors.New("ArgumentError")
-var eIndexError = errors.New("IndexError")
-var eRangeError = errors.New("RangeError")
-var eNameError = errors.New("NameError")
-var eNoMethodError = errors.New("NoMethodError")
-var eScriptError = errors.New("ScriptError")
-var eSyntaxError = errors.New("SyntaxError")
-var eLocalJumpError = errors.New("LocalJumpError")
-var eRegexpError = errors.New("RegexpError")
-var eFrozenError = errors.New("FrozenError")
-var eNotImplementedError = errors.New("NotImplementedError")
-var eFloatDomainError = errors.New("FloatDomainError")
-var eKeyError = errors.New("KeyError")
+var errRuntimeError = errors.New("RuntimeError")
+var errTypeError = errors.New("TypeError")
+var errArgumentError = errors.New("ArgumentError")
+var errIndexError = errors.New("IndexError")
+var errRangeError = errors.New("RangeError")
+var errNameError = errors.New("NameError")
+var errNoMethodError = errors.New("NoMethodError")
+var errScriptError = errors.New("ScriptError")
+var errSyntaxError = errors.New("SyntaxError")
+var errLocalJumpError = errors.New("LocalJumpError")
+var errRegexpError = errors.New("RegexpError")
+var errFrozenError = errors.New("FrozenError")
+var errNotImplementedError = errors.New("NotImplementedError")
+var errFloatDomainError = errors.New("FloatDomainError")
+var errKeyError = errors.New("KeyError")
 
+// ERuntimeError error helper for Go clases exported to oruby
 func ERuntimeError(format string, args ...interface{}) error {
-	return Raisef(eRuntimeError, format, args...)
+	return Raisef(errRuntimeError, format, args...)
 }
-func ETypeError(format string, args ...interface{}) error { return Raisef(eTypeError, format, args...) }
+
+// ETypeError error helper for Go clases exported to oruby
+func ETypeError(format string, args ...interface{}) error {
+	return Raisef(errTypeError, format, args...)
+}
+
+// EArgumentError error helper for Go clases exported to oruby
 func EArgumentError(format string, args ...interface{}) error {
-	return Raisef(eArgumentError, format, args...)
+	return Raisef(errArgumentError, format, args...)
 }
+
+// EIndexError error helper for Go clases exported to oruby
 func EIndexError(format string, args ...interface{}) error {
-	return Raisef(eIndexError, format, args...)
+	return Raisef(errIndexError, format, args...)
 }
+
+// ERangeError error helper for Go clases exported to oruby
 func ERangeError(format string, args ...interface{}) error {
-	return Raisef(eRangeError, format, args...)
+	return Raisef(errRangeError, format, args...)
 }
-func ENameError(format string, args ...interface{}) error { return Raisef(eNameError, format, args...) }
+
+// ENameError error helper for Go clases exported to oruby
+func ENameError(format string, args ...interface{}) error {
+	return Raisef(errNameError, format, args...)
+}
+
+// ENoMethodError error helper for Go clases exported to oruby
 func ENoMethodError(format string, args ...interface{}) error {
-	return Raisef(eNoMethodError, format, args...)
+	return Raisef(errNoMethodError, format, args...)
 }
+
+// EScriptError error helper for Go clases exported to oruby
 func EScriptError(format string, args ...interface{}) error {
-	return Raisef(eScriptError, format, args...)
+	return Raisef(errScriptError, format, args...)
 }
+
+// ESyntaxError error helper for Go clases exported to oruby
 func ESyntaxError(format string, args ...interface{}) error {
-	return Raisef(eSyntaxError, format, args...)
+	return Raisef(errSyntaxError, format, args...)
 }
+
+// ELocalJumpError error helper for Go clases exported to oruby
 func ELocalJumpError(format string, args ...interface{}) error {
-	return Raisef(eLocalJumpError, format, args...)
+	return Raisef(errLocalJumpError, format, args...)
 }
+
+// ERegexpError error helper for Go clases exported to oruby
 func ERegexpError(format string, args ...interface{}) error {
-	return Raisef(eRegexpError, format, args...)
+	return Raisef(errRegexpError, format, args...)
 }
-func EErozenError(format string, args ...interface{}) error {
-	return Raisef(eFrozenError, format, args...)
+
+// EFrozenError error helper for Go clases exported to oruby
+func EFrozenError(format string, args ...interface{}) error {
+	return Raisef(errFrozenError, format, args...)
 }
-func EEotImplementedError(format string, args ...interface{}) error {
-	return Raisef(eNotImplementedError, format, args...)
+
+// ENotImplementedError error helper for Go clases exported to oruby
+func ENotImplementedError(format string, args ...interface{}) error {
+	return Raisef(errNotImplementedError, format, args...)
 }
-func EEloatDomainError(format string, args ...interface{}) error {
-	return Raisef(eFloatDomainError, format, args...)
+
+// EFloatDomainError error helper for Go clases exported to oruby
+func EFloatDomainError(format string, args ...interface{}) error {
+	return Raisef(errFloatDomainError, format, args...)
 }
-func EEeyError(format string, args ...interface{}) error { return Raisef(eKeyError, format, args...) }
+
+// EKeyError error helper for Go clases exported to oruby
+func EKeyError(format string, args ...interface{}) error {
+	return Raisef(errKeyError, format, args...)
+}
+
+// EError error helper for Go clases exported to oruby
 func EError(name, format string, args ...interface{}) error {
 	return Raisef(errors.New(name), format, args...)
 }
@@ -73,10 +110,12 @@ type RaiseError struct {
 	msg string
 }
 
+// Raise raises error with type and error message
 func Raise(err error, msg string) error {
 	return &RaiseError{err, msg}
 }
 
+// Raisef raises error with type and formated error message
 func Raisef(err error, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
 	return Raise(err, msg)
@@ -97,44 +136,37 @@ func (e *RaiseError) Unwrap() error {
 	return e.err
 }
 
-// Raise exception
-//func (mrb *MrbState) Raise(c RClass, msg string) Value {
-//cmsg := C.CString(msg)
-//defer C.free(unsafe.Pointer(cmsg))
-//return mrb.ExcNew(c, msg)
-//}
-
 func (mrb *MrbState) getErrorKlass(err error) RClass {
 	switch err {
-	case eRuntimeError:
+	case errRuntimeError:
 		return mrb.ERuntimeError()
-	case eTypeError:
+	case errTypeError:
 		return mrb.ETypeError()
-	case eArgumentError:
+	case errArgumentError:
 		return mrb.EArgumentError()
-	case eIndexError:
+	case errIndexError:
 		return mrb.EIndexError()
-	case eRangeError:
+	case errRangeError:
 		return mrb.ERangeError()
-	case eNameError:
+	case errNameError:
 		return mrb.ENameError()
-	case eNoMethodError:
+	case errNoMethodError:
 		return mrb.ENoMethodError()
-	case eScriptError:
+	case errScriptError:
 		return mrb.EScriptError()
-	case eSyntaxError:
+	case errSyntaxError:
 		return mrb.ESyntaxError()
-	case eLocalJumpError:
+	case errLocalJumpError:
 		return mrb.ELocalJumpError()
-	case eRegexpError:
+	case errRegexpError:
 		return mrb.ERegexpError()
-	case eFrozenError:
+	case errFrozenError:
 		return mrb.EFrozenError()
-	case eNotImplementedError:
+	case errNotImplementedError:
 		return mrb.ENotImplementedError()
-	case eFloatDomainError:
+	case errFloatDomainError:
 		return mrb.EFloatDomainError()
-	case eKeyError:
+	case errKeyError:
 		return mrb.EKeyError()
 	}
 
@@ -168,6 +200,9 @@ func (c RClass) Raise(msg string) Value {
 	return c.mrb.Raise(c, msg)
 }
 
+// Raisef raises formated Exception from class
+// If class is Exception descendand - itself is raised
+// If class is not Exception descendant - Exception class is raised
 func (c RClass) Raisef(format string, args ...interface{}) Value {
 	msg := fmt.Sprintf(format, args...)
 	return c.Raise(msg)

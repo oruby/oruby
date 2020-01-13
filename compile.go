@@ -46,10 +46,10 @@ func (mrb *MrbState) MrbcContextNew() *MrbcContext {
 	return &MrbcContext{C.mrbc_context_new(mrb.p), mrb}
 }
 
-// Lineno
+// LineNo from context
 func (c *MrbcContext) LineNo() int { return int(c.p.lineno) }
 
-// SetLineno
+// SetLineNo sets lineno in context
 func (c *MrbcContext) SetLineNo(lineno int) { c.p.lineno = C.uint16_t(lineno) }
 
 // Free MrbcContext
@@ -67,12 +67,12 @@ func (c *MrbcContext) PartialHook(partialHook PartialHookF) {
 	c.mrb.setHook(unsafe.Pointer(c.p), partialHook)
 }
 
-// LoadFileCxt loads file into oruby context
+// LoadFile loads file into oruby context
 func (c *MrbcContext) LoadFile(filename string) (Value, error) {
 	return c.mrb.LoadFileCxt(filename, c)
 }
 
-// LoadStringCxt loads string into oruby context
+// LoadString loads string into oruby context
 func (c *MrbcContext) LoadString(s string) (Value, error) {
 	return c.mrb.LoadStringCxt(s, c)
 }
@@ -113,7 +113,7 @@ func (mrb *MrbState) MrbcContextPartialHook(cxt *MrbcContext, partialHook Partia
 	mrb.setHook(unsafe.Pointer(cxt.p), partialHook)
 }
 
-/* MrbAstNode AST node structure */
+// MrbAstNode AST node structure
 type MrbAstNode struct{ p *C.struct_mrb_ast_node }
 
 func astNode(node *C.struct_mrb_ast_node) *MrbAstNode {
@@ -123,9 +123,16 @@ func astNode(node *C.struct_mrb_ast_node) *MrbAstNode {
 	return &MrbAstNode{node}
 }
 
-func (n *MrbAstNode) Car() *MrbAstNode   { return astNode(n.p.car) }
-func (n *MrbAstNode) Cdr() *MrbAstNode   { return astNode(n.p.cdr) }
-func (n *MrbAstNode) LineNo() int        { return int(n.p.lineno) }
+// Car from AST node
+func (n *MrbAstNode) Car() *MrbAstNode { return astNode(n.p.car) }
+
+// Cdr form AST node
+func (n *MrbAstNode) Cdr() *MrbAstNode { return astNode(n.p.cdr) }
+
+// LineNo from AST node
+func (n *MrbAstNode) LineNo() int { return int(n.p.lineno) }
+
+// FilenameIndex from AST node
 func (n *MrbAstNode) FilenameIndex() int { return int(n.p.filename_index) }
 
 // mrb_lex_state_enum
@@ -185,7 +192,7 @@ func (p MrbParserState) Filename() MrbSym {
 // LineNo returns line number
 func (p MrbParserState) LineNo() int { return int(p.p.lineno) }
 
-// LineNo returns line number
+// SetLineNo sets line number in parser state
 func (p MrbParserState) SetLineNo(lineno int) { p.p.lineno = C.uint16_t(lineno) }
 
 // Column returns column
@@ -202,7 +209,7 @@ func (p MrbParserState) Context() *MrbcContext {
 	return &MrbcContext{p.p.cxt, p.State()}
 }
 
-// MrbState returns parsers mrb state
+// State returns parsers mrb state
 func (p MrbParserState) State() *MrbState {
 	return getMrbState(p.p.mrb)
 }
@@ -230,36 +237,36 @@ func (p MrbParserState) WarnBuffer(i int) MrbParserMessage {
 		C.GoString(p.p.warn_buffer[i].message)}
 }
 
-// LexStrterm
+// LexStrterm node
 func (p MrbParserState) LexStrterm() *MrbAstNode { return astNode(p.p.lex_strterm) }
 
 // AllHeredocs list of mrb_parser_heredoc_info
 func (p MrbParserState) AllHeredocs() *MrbAstNode { return astNode(p.p.all_heredocs) }
 
-// HeredocsFromNextline
+// HeredocsFromNextline node
 func (p MrbParserState) HeredocsFromNextline() *MrbAstNode { return astNode(p.p.heredocs_from_nextline) }
 
-// ParsingHeredoc
+// ParsingHeredoc node
 func (p MrbParserState) ParsingHeredoc() *MrbAstNode { return astNode(p.p.parsing_heredoc) }
 
-// LexStrtermBeforeHeredoc
+// LexStrtermBeforeHeredoc node
 func (p MrbParserState) LexStrtermBeforeHeredoc() *MrbAstNode {
 	return astNode(p.p.lex_strterm_before_heredoc)
 }
 
-// Locals
+// Locals node from paser state
 func (p MrbParserState) Locals() *MrbAstNode { return astNode(p.p.locals) }
 
-// Tree
+// Tree node from parser state
 func (p MrbParserState) Tree() *MrbAstNode { return astNode(p.p.tree) }
 
-// LState
+// LState lexer state constant from lexer state enum (ExprBeg..ExprMaxState)
 func (p MrbParserState) LState() int { return int(p.p.lstate) }
 
-// IsNil
+// IsNil checks if parser state exists
 func (p MrbParserState) IsNil() bool { return p.p == nil }
 
-// SetS sets parser->s, and parser->send, as used in mirb
+// SetS sets parser->s, and parser->send, as used in orbi
 func (p MrbParserState) SetS(s string) func() {
 	if s == "" {
 		C._set_parser_s(p.p, nil)
@@ -274,7 +281,7 @@ func (p MrbParserState) SetS(s string) func() {
 	}
 }
 
-// SetS sets parser->s, and parser->send, as used in mirb
+// SetB sets parser->s, and parser->send as bytes, used in orbi
 // Caller must free string after use, returns closure which frees buffer
 func (p MrbParserState) SetB(buf []byte) func() {
 	if len(buf) == 0 {
@@ -396,7 +403,7 @@ func (mrb *MrbState) LoadStringCxt(s string, context *MrbcContext) (Value, error
 	return mrb.LoadBytesCxt([]byte(s), context)
 }
 
-// LoadStringCxt loads string into oruby context
+// LoadBytesCxt loads bytes into oruby context
 func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbcContext) (Value, error) {
 	if len(buf) == 0 {
 		return mrb.nilValue, errors.New("empty buffer")
@@ -418,12 +425,12 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbcContext) (Value, erro
 	return v, mrb.Err()
 }
 
-// CodedumpAll helper for imrb cmd
+// CodedumpAll helper for oruby cmd
 func (mrb *MrbState) CodedumpAll(proc RProc) {
 	C.mrb_codedump_all(mrb.p, proc.p)
 }
 
-// SetLastStackValue helper for imrb cmd
+// SetLastStackValue helper for orbi cmd
 func (mrb *MrbState) SetLastStackValue(v Value) {
 	C._set_last_stack_value(mrb.p, v.v)
 }

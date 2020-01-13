@@ -26,7 +26,7 @@ MRuby::Build.new do |conf|
   #   cc.flags = [%w(-g -ggdb -O0 -Wall -Werror-implicit-function-declaration -gstabs+)] #=[ENV['CFLAGS'] || %w()]
   #   cc.include_paths = ["#{root}/include"]
   #   cc.defines = %w(DISABLE_GEMS)
-     cc.defines << %w(MRB_ENABLE_DEBUG_HOOK MRB_HIGH_PROFILE MRB_DISABLE_DIRECT_THREADING)
+     cc.defines << %w(MRB_ENABLE_DEBUG_HOOK MRB_HIGH_PROFILE)
   #   cc.option_include_path = '-I%s'
   #   cc.option_define = '-D%s'
   #   cc.compile_options = "%{flags} -MMD -o %{outfile} -c %{infile}"

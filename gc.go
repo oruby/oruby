@@ -51,7 +51,7 @@ func go_each_object_callback(cmrb *C.mrb_state, obj *C.struct_RBasic, data unsaf
 	return C.int(f(mrb, RBasic{obj}))
 }
 
-// HashForEach wakls the hash item pairs
+// ObjspaceEachObjects wakls the object space items
 func (mrb *MrbState) ObjspaceEachObjects(f MrbEachObjectCallbackT) {
 	s := struct{}{}
 	p := unsafe.Pointer(&s)
@@ -64,16 +64,34 @@ func (mrb *MrbState) ObjspaceEachObjects(f MrbEachObjectCallbackT) {
 	mrb.setHook(p, nil)
 }
 
-// Helper GC functions
-func (mrb *MrbState) GCIterating() bool       { return C._gc_iterating(mrb.p) != 0 }
-func (mrb *MrbState) GCFull() bool            { return C._gc_full(mrb.p) != 0 }
-func (mrb *MrbState) GCGenerational() bool    { return C._gc_generational(mrb.p) != 0 }
-func (mrb *MrbState) GCOutOfMemory() bool     { return C._gc_out_of_memory(mrb.p) != 0 }
-func (mrb *MrbState) GCState() int            { return int(mrb.p.gc.state) }
+// GCIterating flag signals if GC is iterating
+func (mrb *MrbState) GCIterating() bool { return C._gc_iterating(mrb.p) != 0 }
+
+// GCFull flag is set when performing full GC
+func (mrb *MrbState) GCFull() bool { return C._gc_full(mrb.p) != 0 }
+
+// GCGenerational flag is set when GC is generational mode
+func (mrb *MrbState) GCGenerational() bool { return C._gc_generational(mrb.p) != 0 }
+
+// GCOutOfMemory is set when GC encounters OutOfMemory error
+func (mrb *MrbState) GCOutOfMemory() bool { return C._gc_out_of_memory(mrb.p) != 0 }
+
+// GCState returns current GC state
+func (mrb *MrbState) GCState() int { return int(mrb.p.gc.state) }
+
+// GCLiveObjectCount returns count of "live" objects
 func (mrb *MrbState) GCLiveObjectCount() uint { return uint(mrb.p.gc.live) }
-func (mrb *MrbState) GCDisabled() bool        { return C._gc_disabled(mrb.p) != 0 }
-func (mrb *MrbState) GCEnable()               { C._gc_set_disabled(mrb.p, iifmb(false)) }
-func (mrb *MrbState) GCDisable()              { C._gc_set_disabled(mrb.p, iifmb(true)) }
+
+// GCDisabled is set when GC is disabled
+func (mrb *MrbState) GCDisabled() bool { return C._gc_disabled(mrb.p) != 0 }
+
+// GCEnable enables GC
+func (mrb *MrbState) GCEnable() { C._gc_set_disabled(mrb.p, iifmb(false)) }
+
+// GCDisable disables GC
+func (mrb *MrbState) GCDisable() { C._gc_set_disabled(mrb.p, iifmb(true)) }
+
+// GCArenaPeek peeks object in GCArena, at given index
 func (mrb *MrbState) GCArenaPeek(index int) RBasic {
 	return RBasic{C._gc_arena_peek(mrb.p, C.mrb_int(index))}
 }

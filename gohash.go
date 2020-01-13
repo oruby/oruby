@@ -4,7 +4,7 @@ package oruby
 import "C"
 import "unsafe"
 
-// RHash from oruby hash value
+// Ptr returns RHashPtr from oruby hash value
 func (h RHash) Ptr() RHashPtr { return MrbHashPtr(Value{h.v}) }
 
 // Set sets a keys and values to hashes
@@ -58,7 +58,7 @@ func (h RHash) Dup() RHash {
 }
 
 // Merge merges two hashes. The first hash will be modified by the second hash
-func (h RHash) HashMerge(hash2 MrbValue) {
+func (h RHash) Merge(hash2 MrbValue) {
 	C.mrb_hash_merge(h.mrb.p, h.v, hash2.Value().v)
 	return
 }
@@ -73,7 +73,7 @@ func (h RHash) ProcDefault() MrbValue {
 	return h.mrb.RHashIfNone(h)
 }
 
-// HashForEach wakls the hash item pairs
+// ForEach wakls the hash item pairs
 func (h RHash) ForEach(f MrbHashForeachFuncT) {
 	p := unsafe.Pointer(h.Ptr().p)
 	h.mrb.setHook(p, f)

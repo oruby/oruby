@@ -14,8 +14,12 @@ type RData struct{ p *C.struct_RData }
 
 // Value implements MrbValue interface
 func (d RData) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(d.p))} }
-func (d RData) Type() int    { return d.Value().Type() }
-func (d RData) IsNil() bool  { return d.p == nil }
+
+// Type for MrbValue interface
+func (d RData) Type() int { return d.Value().Type() }
+
+// IsNil check for MrbValue interface
+func (d RData) IsNil() bool { return d.p == nil }
 
 // MrbDataType struct
 type MrbDataType struct{ p *C.mrb_data_type }
@@ -65,6 +69,7 @@ func (d RData) IsInterface() bool {
 	return unsafe.Pointer(d.p._type) == unsafe.Pointer(C.mrb_interface_data_type())
 }
 
+// Interface returns RData interface from state
 func (d RData) Interface(mrb *MrbState) interface{} {
 	return mrb.getHook(unsafe.Pointer(d.p))
 }
@@ -136,7 +141,7 @@ func (mrb *MrbState) DataCheckGetInterface(obj MrbValue) interface{} {
 func (mrb *MrbState) DataSetInterface(obj Value, datap interface{}) {
 	// Check type
 	if !MrbDataP(obj) {
-		panic( "object is not RData type")
+		panic("object is not RData type")
 	}
 
 	p := unsafe.Pointer(RDATA(obj).p)

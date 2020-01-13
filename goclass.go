@@ -19,7 +19,7 @@ func (c RClass) Error() error {
 	return nil
 }
 
-// Object returns MrbObject for Value
+// RObject returns RObject for MrbValue interface
 func (mrb *MrbState) RObject(v MrbValue) RObject {
 	return RObject{v.Value().v, mrb}
 }

@@ -4,7 +4,6 @@ package oruby
 import "C"
 import "fmt"
 
-
 func (obj RObject) p() *C.struct_RObject { return (*C.struct_RObject)(C._mrb_ptr(obj.v)) }
 
 // Dup duplicates object
@@ -30,7 +29,7 @@ func (obj RObject) Class() RClass {
 	return RClass{C.mrb_obj_class(obj.mrb.p, obj.v), obj.mrb}
 }
 
-// Check if object kind
+// IsKindOf checks if object is descendant of c class
 func (obj RObject) IsKindOf(c RClass) bool {
 	result, err := obj.mrb.try(func() C.mrb_value {
 		return C.mrb_bool_value(C.mrb_obj_is_kind_of(obj.mrb.p, obj.v, c.p))
@@ -57,7 +56,7 @@ func (obj RObject) RespondTo(mid MrbSym) bool {
 }
 
 // IsInstanceOf checks if oruby object is direct instance of class
-func (obj RObject) ObjIsInstanceOf(klass RClass) bool {
+func (obj RObject) IsInstanceOf(klass RClass) bool {
 	return C.mrb_obj_is_instance_of(obj.mrb.p, obj.v, klass.p) != 0
 }
 
@@ -98,7 +97,7 @@ func (obj RObject) SetIV(name string, v interface{}) {
 	_ = obj.IVSet(obj.mrb.Intern(name), obj.mrb.Value(v))
 }
 
-// IVGet get instance variable
+// GetIV gets instance variable by string name
 func (obj RObject) GetIV(name string) RObject {
 	return RObject{obj.IVGet(obj.mrb.Intern(name)).v, obj.mrb}
 }
@@ -113,7 +112,7 @@ func (obj RObject) IVRemove(sym MrbSym) Value {
 	return Value{C.mrb_iv_remove(obj.mrb.p, obj.v, C.mrb_sym(sym))}
 }
 
-// String return object value as string
+// Data returns object interface as Go interface
 func (obj RObject) Data() interface{} {
 	return obj.mrb.Data(obj)
 }
@@ -123,7 +122,7 @@ func (obj RObject) String() string {
 	return obj.mrb.String(obj.Value())
 }
 
-// Int return value as string
+// Int return value as int
 func (obj RObject) Int() int {
 	result, err := obj.mrb.Integer(obj.Value())
 	if err != nil {
@@ -132,7 +131,7 @@ func (obj RObject) Int() int {
 	return MrbFixnum(result)
 }
 
-// Int return value as string
+// Float64 return value as float64
 func (obj RObject) Float64() float64 {
 	result, err := obj.mrb.Float(obj.Value())
 	if err != nil {
@@ -141,7 +140,7 @@ func (obj RObject) Float64() float64 {
 	return MrbFloat(result)
 }
 
-// Int return value as string
+// TypeName return value ruby type as string
 func (mrb *MrbState) TypeName(v MrbValue) string {
 	switch v.Type() {
 	case MrbTTFalse:

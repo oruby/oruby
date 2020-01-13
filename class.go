@@ -7,8 +7,8 @@ import (
 	"unsafe"
 )
 
-// RClassC is alias for C RClass type
-type RClassC struct{ p *C.struct_RClass }
+// RClassPtr holds single C API RClass pointer. It is used in call refs
+type RClassPtr struct{ p *C.struct_RClass }
 
 // MrbMethodT oruby method pointer
 type MrbMethodT = uint
@@ -20,17 +20,24 @@ type RClass struct {
 }
 
 // Value to satisfy MrbValue interface
-func (c RClass) Value() Value     { return Value{C.mrb_obj_value(unsafe.Pointer(c.p))} }
-func (c RClass) Type() int        { return c.Value().Type() }
-func (c RClass) IsNil() bool      { return c.p == nil }
-func (c RClass) String() string   { return c.Name() }
-func (c RClass) RClassC() RClassC { return RClassC{c.p} }
+func (c RClass) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(c.p))} }
 
-// MrbClassPtr returns RClassC struct (without mrb reference) from MrbValue
-func MrbClassPtr(v MrbValue) RClassC { return RClassC{(*C.struct_RClass)(C._mrb_ptr(v.Value().v))} }
+// Type for MrbValue interface
+func (c RClass) Type() int { return c.Value().Type() }
+
+// IsNil for MrbValue interface
+func (c RClass) IsNil() bool { return c.p == nil }
+
+func (c RClass) String() string { return c.Name() }
+
+// Ptr for MrbValue interface
+func (c RClass) Ptr() RClassPtr { return RClassPtr{c.p} }
+
+// MrbClassPtr returns RClassPtr struct (without mrb reference) from MrbValue
+func MrbClassPtr(v MrbValue) RClassPtr { return RClassPtr{(*C.struct_RClass)(C._mrb_ptr(v.Value().v))} }
 
 // RCLASS returns RClass struct (without mrb reference) from MrbValue
-func RCLASS(v MrbValue) RClassC { return RClassC{(*C.struct_RClass)(C._mrb_ptr(v.Value().v))} }
+func RCLASS(v MrbValue) RClassPtr { return RClassPtr{(*C.struct_RClass)(C._mrb_ptr(v.Value().v))} }
 
 // MrbClassValue converts RClass to Value interface
 func MrbClassValue(c RClass) Value { return c.Value() }

@@ -22,12 +22,15 @@ const (
 	DumpEndianMask = uint8(6)
 )
 
+// DumpIrep Go implementation
 func (mrb *MrbState) DumpIrep(irep MrbIrep, flags uint8, writer io.Writer) (int, error) {
 	ret := C._dump_irep(mrb.p, irep.p, C.uint8_t(flags))
 	defer mrb.Free(Buff{unsafe.Pointer(ret.bin)})
+
 	if int(ret.result) != MrbDumpOK {
 		return int(ret.result), fmt.Errorf("dumping MrbIrep error. Code %v", ret.result)
 	}
+
 	buff := C.GoBytes(unsafe.Pointer(ret.bin), C.int(ret.bin_size))
 	written, err := writer.Write(buff)
 	if err != nil {
@@ -36,6 +39,7 @@ func (mrb *MrbState) DumpIrep(irep MrbIrep, flags uint8, writer io.Writer) (int,
 	if written != int(ret.bin_size) {
 		return MrbDumpWriteFault, fmt.Errorf("dumping MrbIrep error - write fault")
 	}
+
 	return MrbDumpOK, nil
 	// C.mrb_dump_irep(mrb_state *mrb, mrb_irep *irep, uint8_t flags, uint8_t **bin, size_t *bin_size);
 	// never called
@@ -86,7 +90,7 @@ const (
 	MrbDumpInvalidArgument   = -7
 )
 
-// null symbol length
+// MrbDumpNullSymLen is null symbol length
 const MrbDumpNullSymLen = 0xFFFF
 
 // Rite Binary File header
@@ -105,10 +109,13 @@ const (
 	RiteSectionLvIdent    = "LVAR"
 )
 
+// MrbDumpDefaultStrLen default str length
 const MrbDumpDefaultStrLen = 128
+
+// MrbDumpAlignment byte aligment for IREP dump
 const MrbDumpAlignment = 4 //sizeof(uint32_t)
 
-/* binary header */
+// RiteBinaryHeader RITE format binary header
 type RiteBinaryHeader struct {
 	BinaryIdent     [4]byte /* Binary Identifier */
 	BinaryVersion   [4]byte /* Binary Format Version */
@@ -124,21 +131,26 @@ type RiteSectionHeader struct {
 	SectionSize  [4]byte
 }
 
+// RiteSectionIrepHeader stucture of IREP section header
 type RiteSectionIrepHeader struct {
 	RiteSectionHeader
 	RiteVersion [4]byte /* Rite Instruction Specification Version */
 }
 
+// RiteSectionDebugHeader structure of debug header
 type RiteSectionDebugHeader struct {
 	RiteSectionHeader
 }
 
+// RiteSectionLvHeader structure of locals header
 type RiteSectionLvHeader struct {
 	RiteSectionHeader
 }
 
+// RiteLVNullMark NULL mark in RITE
 const RiteLVNullMark = math.MaxUint16 // UINT16_MAX
 
+// RiteBinaryFooter structure of rite binary footer
 type RiteBinaryFooter struct {
 	RiteSectionHeader
 }
@@ -171,6 +183,7 @@ func dumpBigendianP(flags uint8) bool {
 	}
 }
 
+// Byte order enum
 const (
 	FlagByteOrderNative   = 2
 	FlagByteOrderNoNative = 0
@@ -189,11 +202,13 @@ func dumpFlags(flags, native uint8) uint8 {
 	return flags
 }
 
+// DumpIrepBinary dumps IREP to IO writer
 func (mrb *MrbState) DumpIrepBinary(irep MrbIrep, flags uint8, f io.Writer) (int, error) {
 	return mrb.DumpIrep(irep, dumpFlags(flags, FlagByteOrderNoNative), f)
 	// C.mrb_dump_irep_binary() is neve called
 }
 
+// DumpIrepCFunc dumps IREP as C function
 func (mrb *MrbState) DumpIrepCFunc(irep MrbIrep, flags uint8, f *os.File, initname string) (int, error) {
 	cmode := C.CString("wb")
 	defer C.free(unsafe.Pointer(cmode))
@@ -210,6 +225,7 @@ func (mrb *MrbState) DumpIrepCFunc(irep MrbIrep, flags uint8, f *os.File, initna
 	return ret, nil
 }
 
+// DumpIrepCFunc2 dumps IREP as C function
 func (mrb *MrbState) DumpIrepCFunc2(irep MrbIrep, flags uint8, f io.Writer, initname string) (int, error) {
 	if initname == "" {
 		return MrbDumpInvalidArgument, fmt.Errorf("invalid argument, missing init name")

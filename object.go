@@ -18,21 +18,32 @@ type (
 	RFiber struct{ p *C.struct_RFiber }
 )
 
-// MrbValue interface implementation for RObject
-// Value{C.mrb_obj_value(unsafe.Pointer(o.p))}
+// Value implements MrbValue interface for RObject
 func (obj RObject) Value() Value { return Value{obj.v} }
-func (obj RObject) Type() int    { return int(C._mrb_type(obj.v)) }
-func (obj RObject) IsNil() bool  { return C._mrb_is_nil(obj.v) != 0 }
 
-// MrbValue interface implementation for RBasic
+// Type implements MrbValue interface
+func (obj RObject) Type() int { return int(C._mrb_type(obj.v)) }
+
+// IsNil check for MrbValue interface
+func (obj RObject) IsNil() bool { return C._mrb_is_nil(obj.v) != 0 }
+
+// Value  MrbValue interface implementation for RBasic
 func (b RBasic) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(b.p))} }
-func (b RBasic) Type() int    { return b.Value().Type() }
-func (b RBasic) IsNil() bool  { return b.p == nil }
+
+// Type implements MrbValue interface
+func (b RBasic) Type() int { return b.Value().Type() }
+
+// IsNil check for MrbValue interface
+func (b RBasic) IsNil() bool { return b.p == nil }
 
 // Value implements MrbValue interface
 func (f RFiber) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(f.p))} }
-func (f RFiber) Type() int    { return f.Value().Type() }
-func (f RFiber) IsNil() bool  { return f.p == nil }
+
+// Type implements MrbValue interface
+func (f RFiber) Type() int { return f.Value().Type() }
+
+// IsNil check for MrbValue interface
+func (f RFiber) IsNil() bool { return f.p == nil }
 
 // ToValue implements Valuer interface for RString
 func (obj RObject) ToValue(*MrbState) MrbValue { return obj }

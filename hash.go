@@ -6,9 +6,10 @@ import (
 	"unsafe"
 )
 
-// RHash struct
+// RHashPtr struct encapsulates C API RHash
 type RHashPtr struct{ p *C.struct_RHash }
 
+// RHash is oruby object representing ruby hash
 type RHash struct{ RObject }
 
 // MrbHashPtr returns RHash from oruby value
