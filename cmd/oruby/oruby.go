@@ -155,7 +155,7 @@ func main() {
 	} else if args.rfp != "" {
 		v, err = c.LoadFile(args.rfp)
 	} else {
-		v = c.LoadString(args.cmdline)
+		v, err = c.LoadString(args.cmdline)
 	}
 
 	if err != nil {

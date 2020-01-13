@@ -39,7 +39,8 @@ func p(mrb *oruby.MrbState, obj oruby.MrbValue, prompt int) {
 		}
 	}
 	if !oruby.MrbStringP(val) {
-		val = mrb.ObjAsString(obj)
+		println(mrb.ObjAsString(obj).String())
+		return
 	}
 	println(mrb.String(val))
 }
