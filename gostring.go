@@ -131,7 +131,12 @@ func (s RString) String() string {
 }
 
 // Pool pool string
-func (s RString) Pool() { C.mrb_str_pool(s.mrb.p, s.v) }
+func (s RString) Pool(str string) Value {
+	cs := C.CString(str)
+	defer C.free(unsafe.Pointer(cs))
+
+	return Value{C.mrb_str_pool(s.mrb.p, cs, C.mrb_int(len(str)), C.mrb_bool(0))}
+}
 
 // Hash of string object
 func (s RString) Hash() int { return int(C.mrb_str_hash(s.mrb.p, s.v)) }

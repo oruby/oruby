@@ -234,7 +234,12 @@ func (mrb *MrbState) Bytes(str MrbValue) []byte {
 }
 
 // StrPool pool string
-func (mrb *MrbState) StrPool(str MrbValue) { C.mrb_str_pool(mrb.p, str.Value().v) }
+func (mrb *MrbState) StrPool(str string) Value {
+	cs := C.CString(str)
+	defer C.free(unsafe.Pointer(cs))
+
+	return Value{C.mrb_str_pool(mrb.p, cs, C.mrb_int(len(str)), C.mrb_bool(0))}
+}
 
 // StrHash hash of string
 func (mrb *MrbState) StrHash(str MrbValue) int { return int(C.mrb_str_hash(mrb.p, str.Value().v)) }
