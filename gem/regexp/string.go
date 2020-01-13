@@ -88,7 +88,7 @@ func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 
 		if m.ToS() == "" {
-			start += 1
+			start++
 		} else if lastMatch != nil && lastMatch.ToS() == "" {
 			start = m.allEnd() + 1
 		} else {

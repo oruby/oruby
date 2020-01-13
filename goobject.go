@@ -117,6 +117,24 @@ func (obj RObject) Data() interface{} {
 	return obj.mrb.Data(obj)
 }
 
+// RArray returns Array object
+// it panics if object is not RArray type
+func (obj RObject) RArray() RArray {
+	if obj.Type() != MrbTTArray {
+		panic(fmt.Sprintf("array expected, but object of type %v", obj.mrb.TypeName(obj)))
+	}
+	return RArray{obj}
+}
+
+// RHash returns Hash object
+// it panics if object is not RArray type
+func (obj RObject) RHash() RHash {
+	if obj.Type() != MrbTTHash {
+		panic(fmt.Sprintf("hash expected, but object of type %v", obj.mrb.TypeName(obj)))
+	}
+	return RHash{obj}
+}
+
 // String return object value as string
 func (obj RObject) String() string {
 	return obj.mrb.String(obj.Value())

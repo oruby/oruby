@@ -1,6 +1,5 @@
 package load
 
-import "C"
 import (
 	"errors"
 	"fmt"
@@ -9,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-func Init() {
+func init() {
 	oruby.Gem("load", func(mrb *oruby.MrbState) {
 		loadPath := mrb.AryNew()
 		mrb.SetGV("$LOAD_PATH", loadPath)
@@ -177,22 +176,23 @@ func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
 	if feature[0] == '.' || feature[0] == '/' || feature[0] == filepath.Separator ||
 		(len(feature) > 1 && feature[1] == ':') {
 		return fullName(feature)
-	} else {
-		paths := mrb.GVGet(mrb.Intern("$LOAD_PATH")).RArray()
-		for i := 0; i < paths.Len(); i++ {
-			path := paths.Item(i).String()
-			for _, filename := range filenames {
-				if filename == "" {
-					continue
-				}
-				fName := filepath.Join(path, filename)
-				name, err := fullName(fName)
-				if err == nil {
-					return name, nil
-				}
+	}
+
+	paths := mrb.GVGetObj(mrb.Intern("$LOAD_PATH")).RArray()
+	for i := 0; i < paths.Len(); i++ {
+		path := paths.Item(i).String()
+		for _, filename := range filenames {
+			if filename == "" {
+				continue
+			}
+			fName := filepath.Join(path, filename)
+			name, err := fullName(fName)
+			if err == nil {
+				return name, nil
 			}
 		}
 	}
+
 	return "", fmt.Errorf("cannot load such file -- %v", feature)
 }
 

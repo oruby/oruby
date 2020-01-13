@@ -5,6 +5,18 @@ import (
 	"syscall"
 )
 
+// RLimit pseudo constants
+const (
+	RLIMIT_CPU    = syscall.RLIMIT_CPU
+	RLIMIT_FSIZE  = syscall.RLIMIT_FSIZE
+	RLIMIT_DATA   = syscall.RLIMIT_DATA
+	RLIMIT_STACK  = syscall.RLIMIT_STACK
+	RLIMIT_CORE   = syscall.RLIMIT_CORE
+	RLIMIT_AS     = syscall.RLIMIT_AS
+	RLIMIT_NOFILE = syscall.RLIMIT_NOFILE
+	RLIM_INFINITY = syscall.RLIM_INFINITY
+)
+
 type limitsMap = map[int]syscall.Rlimit
 
 func (runner *cmdRunner) checkLimitOption(limit int, option oruby.Value) {

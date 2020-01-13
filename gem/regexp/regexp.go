@@ -136,7 +136,7 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetAllArgs()
 	source := args.Item(0)
 	options := args.Item(1)
-	obj := mrb.Object(self)
+	obj := mrb.RObject(self)
 
 	if reg, ok := mrb.Data(source).(*regexp.Regexp); ok {
 		// Source is Go regex, with prepared source
@@ -160,7 +160,7 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	obj := mrb.Object(self)
+	obj := mrb.RObject(self)
 	source := obj.GetIV("@source")
 	options := obj.GetIV("@options")
 
@@ -185,9 +185,8 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 		i := oruby.MrbFixnum(idx)
 		if s, isNil := m.toString(i); !isNil {
 			return mrb.StrNewStatic(s)
-		} else {
-			return mrb.NilValue()
 		}
+		return mrb.NilValue()
 	default:
 		if mrb.RespondTo(idx, mrb.Intern("to_i")) {
 			toI := mrb.Call(idx, "to_i")
@@ -203,9 +202,8 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 		if i < m.Size() && name == s {
 			if str, isNil := m.toString(i + 1); !isNil {
 				return mrb.StrNewStatic(str)
-			} else {
-				return mrb.NilValue()
 			}
+			return mrb.NilValue()
 		}
 	}
 
@@ -230,7 +228,7 @@ func matchDataValuesAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	obj := mrb.Object(self)
+	obj := mrb.RObject(self)
 	source := obj.GetIV("@source").String()
 	options := obj.GetIV("@options").Int()
 
@@ -266,7 +264,7 @@ func regexToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	obj := mrb.Object(self)
+	obj := mrb.RObject(self)
 	source := obj.GetIV("@source").String()
 	options := obj.GetIV("@options").Int()
 

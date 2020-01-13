@@ -8,8 +8,8 @@ import (
 func init() {
 	oruby.Gem("erb", func(mrb *oruby.MrbState) {
 		erb := mrb.DefineClass("ERB", mrb.ObjectClass())
-		erb.DefineClassMethod("version", ERBversion, mrb.ArgsNone())
-		erb.DefineClassMethod("initialize", ERBinit, mrb.ArgsArg(1, 3))
+		erb.DefineClassMethod("version", erbVersion, mrb.ArgsNone())
+		erb.DefineClassMethod("initialize", erbInit, mrb.ArgsArg(1, 3))
 		erb.DefineMethod("def_class", erbDefClass, mrb.ArgsOpt(2))
 		erb.DefineMethod("def_method", erbDefMethod, mrb.ArgsArg(2, 1))
 		erb.DefineMethod("def_module", erbDefModule, mrb.ArgsOpt(1))
@@ -22,11 +22,11 @@ func init() {
 	})
 }
 
-func ERBversion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func erbVersion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StringValue("erubi.rb [2.2.0 2018-11-12]")
 }
 
-func ERBinit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func erbInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	erb := mrb.RObject(self)
 	erb.SetIV("@safe_level", mrb.FixnumValue(0)) //safeLevel
 	erb.SetIV("@filename", mrb.NilValue())

@@ -2,18 +2,18 @@ package process
 
 import (
 	"fmt"
-	"github.com/oruby/oruby"
 	"math"
 	"os"
-	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/oruby/oruby"
 )
 
 func init() {
 	oruby.Gem("process", func(mrb *oruby.MrbState) {
 		// Require thread, ignore if it is not included in gems
-		_,_ = mrb.Require("thread")
+		_, _ = mrb.Require("thread")
 
 		mrb.SetGV("$$", os.Getpid())
 		mrb.SetGV("$?", nil) // last_status
@@ -31,7 +31,7 @@ func init() {
 		mProc.Const("WNOHANG", syscall.WNOHANG)
 		mProc.Const("WUNTRACED", syscall.WUNTRACED)
 
-		mrb.DefineMethod(mProc, "exec", f_exec, -1)
+		mrb.DefineMethod(mProc, "exec", procExec, -1)
 		mrb.DefineMethod(mProc, "fork", procFork, mrb.ArgsAny())
 		mrb.DefineMethod(mProc, "spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
 		mrb.DefineMethod(mProc, "exit!", procExit, mrb.ArgsOpt(1))
@@ -58,7 +58,7 @@ func init() {
 		mrb.DefineModuleFunc(mProc, "pid", os.Getpid)
 		mrb.DefineModuleFunc(mProc, "ppid", os.Getppid)
 		mrb.DefineModuleFunc(mProc, "getpgrp", syscall.Getpgrp)
-		mrb.DefineModuleFunc(mProc, "setpgrp", syscall.set proc_setpgrp, 0)
+		mrb.DefineModuleFunc(mProc, "setpgrp", syscall.Setgroups)
 		mrb.DefineModuleFunc(mProc, "getpgid", syscall.Getpgid)
 		mrb.DefineModuleFunc(mProc, "setpgid", syscall.Setpgid)
 		mrb.DefineModuleFunc(mProc, "getsid", syscall.Getsid)
@@ -72,6 +72,8 @@ func init() {
 
 		mrb.DefineModuleFunction(mProc, "getrlimit", proc_getrlimit, 1)
 		mrb.DefineModuleFunction(mProc, "setrlimit", proc_setrlimit, -1)
+
+		setConsts(mProc)
 
 		mProc.Const("RLIM_SAVED_MAX", syscall.RLIM_INFINITY)
 		mProc.Const("RLIM_INFINITY", syscall.RLIM_INFINITY)
@@ -101,40 +103,13 @@ func init() {
 		mrb.DefineModuleFunc(mProc, "euid=", syscall.Seteuid)
 		mrb.DefineModuleFunc(mProc, "egid", syscall.Getegid)
 		mrb.DefineModuleFunc(mProc, "egid=", syscall.Setegid)
-		mrb.DefineModuleFunction(mProc, "initgroups", proc_initgroups, 2)
-		mrb.DefineModuleFunction(mProc, "groups", proc_getgroups, 0)
-		mrb.DefineModuleFunction(mProc, "groups=", proc_setgroups, 1)
-		mrb.DefineModuleFunction(mProc, "maxgroups",  proc_getmaxgroups, 0)
-		mrb.DefineModuleFunction(mProc, "maxgroups=", proc_setmaxgroups, 1)
-		mrb.DefineModuleFunction(mProc, "daemon", proc_daemon, -1)
-		mrb.DefineModuleFunction(mProc, "times", rb_proc_times, 0)
-
-		mrb.DefineConst(mProc, "CLOCK_REALTIME", CLOCKID2NUM(CLOCK_REALTIME))
-		mrb.DefineConst(mProc, "CLOCK_REALTIME", RUBY_GETTIMEOFDAY_BASED_CLOCK_REALTIME)
-		mrb.DefineConst(mProc, "CLOCK_MONOTONIC", CLOCKID2NUM(CLOCK_MONOTONIC))
-		mrb.DefineConst(mProc, "CLOCK_MONOTONIC", RUBY_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC)
-		mrb.DefineConst(mProc, "CLOCK_PROCESS_CPUTIME_ID", CLOCKID2NUM(CLOCK_PROCESS_CPUTIME_ID))
-		mrb.DefineConst(mProc, "CLOCK_PROCESS_CPUTIME_ID", RUBY_GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID)
-		mrb.DefineConst(mProc, "CLOCK_THREAD_CPUTIME_ID", CLOCKID2NUM(CLOCK_THREAD_CPUTIME_ID))
-		mrb.DefineConst(mProc, "CLOCK_PROF", CLOCKID2NUM(CLOCK_PROF))
-		mrb.DefineConst(mProc, "CLOCK_REALTIME_FAST", CLOCKID2NUM(CLOCK_REALTIME_FAST))
-		mrb.DefineConst(mProc, "CLOCK_REALTIME_PRECISE", CLOCKID2NUM(CLOCK_REALTIME_PRECISE))
-		mrb.DefineConst(mProc, "CLOCK_REALTIME_COARSE", CLOCKID2NUM(CLOCK_REALTIME_COARSE))
-		mrb.DefineConst(mProc, "CLOCK_REALTIME_ALARM", CLOCKID2NUM(CLOCK_REALTIME_ALARM))
-		mrb.DefineConst(mProc, "CLOCK_MONOTONIC_FAST", CLOCKID2NUM(CLOCK_MONOTONIC_FAST))
-		mrb.DefineConst(mProc, "CLOCK_MONOTONIC_PRECISE", CLOCKID2NUM(CLOCK_MONOTONIC_PRECISE))
-		mrb.DefineConst(mProc, "CLOCK_MONOTONIC_RAW", CLOCKID2NUM(CLOCK_MONOTONIC_RAW))
-		mrb.DefineConst(mProc, "CLOCK_MONOTONIC_RAW_APPROX", CLOCKID2NUM(CLOCK_MONOTONIC_RAW_APPROX))
-		mrb.DefineConst(mProc, "CLOCK_MONOTONIC_COARSE", CLOCKID2NUM(CLOCK_MONOTONIC_COARSE))
-		mrb.DefineConst(mProc, "CLOCK_BOOTTIME", CLOCKID2NUM(CLOCK_BOOTTIME))
-		mrb.DefineConst(mProc, "CLOCK_BOOTTIME_ALARM", CLOCKID2NUM(CLOCK_BOOTTIME_ALARM))
-		mrb.DefineConst(mProc, "CLOCK_UPTIME", CLOCKID2NUM(CLOCK_UPTIME))
-		mrb.DefineConst(mProc, "CLOCK_UPTIME_FAST", CLOCKID2NUM(CLOCK_UPTIME_FAST))
-		mrb.DefineConst(mProc, "CLOCK_UPTIME_PRECISE", CLOCKID2NUM(CLOCK_UPTIME_PRECISE))
-		mrb.DefineConst(mProc, "CLOCK_UPTIME_RAW", CLOCKID2NUM(CLOCK_UPTIME_RAW))
-		mrb.DefineConst(mProc, "CLOCK_UPTIME_RAW_APPROX", CLOCKID2NUM(CLOCK_UPTIME_RAW_APPROX))
-		mrb.DefineConst(mProc, "CLOCK_SECOND", CLOCKID2NUM(CLOCK_SECOND))
-		mrb.DefineConst(mProc, "CLOCK_TAI", CLOCKID2NUM(CLOCK_TAI))
+		mrb.DefineModuleFunc(mProc, "initgroups", proc_initgroups, 2)
+		mrb.DefineModuleFunc(mProc, "groups", proc_getgroups, 0)
+		mrb.DefineModuleFunc(mProc, "groups=", proc_setgroups, 1)
+		mrb.DefineModuleFunc(mProc, "maxgroups", proc_getmaxgroups, 0)
+		mrb.DefineModuleFunc(mProc, "maxgroups=", proc_setmaxgroups, 1)
+		mrb.DefineModuleFunc(mProc, "daemon", proc_daemon, -1)
+		mrb.DefineModuleFunc(mProc, "times", rb_proc_times, 0)
 
 		mrb.DefineModuleFunction(mProc, "clock_gettime", rb_clock_gettime, -1)
 		mrb.DefineModuleFunction(mProc, "clock_getres", rb_clock_getres, -1)
@@ -147,7 +122,7 @@ func init() {
 		mProcGID := mrb.DefineModuleUnder(mProc, "GID")
 		mrb.DefineModuleFunc(mProcUID, "rid", os.Getuid)
 		mrb.DefineModuleFunc(mProcGID, "gid", os.Getgid)
-		mrb.DefineModuleFunc(mProcUID, "eid",  os.Geteuid)
+		mrb.DefineModuleFunc(mProcUID, "eid", os.Geteuid)
 		mrb.DefineModuleFunc(mProcGID, "gid", os.Getegid)
 		mrb.DefineModuleFunction(mProcUID, "change_privilege", p_uid_change_privilege, 1)
 		mrb.DefineModuleFunction(mProcGID, "change_privilege", p_gid_change_privilege, 1)
@@ -159,7 +134,7 @@ func init() {
 		mrb.DefineModuleFunction(mProcGID, "re_exchange", p_gid_exchange, 0)
 		mrb.DefineModuleFunction(mProcUID, "re_exchangeable?", p_uid_exchangeable, 0)
 		mrb.DefineModuleFunction(mProcGID, "re_exchangeable?", p_gid_exchangeable, 0)
-		mrb.DefineModuleFunction(mProcUID, "sid_available?",  p_uid_have_saved_id, 0)
+		mrb.DefineModuleFunction(mProcUID, "sid_available?", p_uid_have_saved_id, 0)
 		mrb.DefineModuleFunction(mProcGID, "sid_available?", p_gid_have_saved_id, 0)
 		mrb.DefineModuleFunction(mProcUID, "switch", p_uid_switch, 0)
 		mrb.DefineModuleFunction(mProcGID, "switch", p_gid_switch, 0)
@@ -167,7 +142,7 @@ func init() {
 		mrb.DefineModuleFunction(mProcGID, "from_name", p_gid_from_name, 1)
 
 		mSys := mrb.DefineModuleUnder(mProc, "Sys")
-		mrb.DefineModuleFunc(mSys, "getuid",  os.Getuid)
+		mrb.DefineModuleFunc(mSys, "getuid", os.Getuid)
 		mrb.DefineModuleFunc(mSys, "geteuid", os.Geteuid)
 		mrb.DefineModuleFunc(mSys, "getgid", os.Getgid)
 		mrb.DefineModuleFunc(mSys, "getegid", os.Getegid)
@@ -220,9 +195,10 @@ func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 
-	if p.Release() != nil{
+	if p.Release() != nil {
 		return mrb.NilValue()
 	}
+	return mrb.FixnumValue(pid)
 }
 
 func procAbort(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

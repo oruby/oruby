@@ -5,13 +5,15 @@ import (
 	"regexp"
 )
 
+// MatchData helper struct
 type MatchData struct {
-	r *regexp.Regexp
-	s string
+	r      *regexp.Regexp
+	s      string
 	names  []string
 	result []int
 }
 
+// NewMatchData creates MatchData for matched regex
 func NewMatchData(regx *regexp.Regexp, s string, result []int, pos int) *MatchData {
 	gonames := regx.SubexpNames()
 	names := make([]string, 0, len(gonames))
@@ -42,13 +44,14 @@ func NewMatchData(regx *regexp.Regexp, s string, result []int, pos int) *MatchDa
 		}
 	}
 
-	return &MatchData{regx, s, names, ret }
+	return &MatchData{regx, s, names, ret}
 }
 
 func (m *MatchData) String() string {
 	return m.s
 }
 
+// IsEqual compares two MatchData objects
 func (m *MatchData) IsEqual(m2 *MatchData) bool {
 	if len(m.result) != len(m2.result) {
 		return false
@@ -64,13 +67,21 @@ func (m *MatchData) IsEqual(m2 *MatchData) bool {
 }
 
 func (m *MatchData) toString(idx int) (string, bool) {
-	if idx < 0 { idx = m.Size() - idx }
-	if (idx < 0) || (idx >= m.Size()) { return "", true }
-	if m.result[idx*2] < 0  { return "", true }
+	if idx < 0 {
+		idx = m.Size() - idx
+	}
+	if (idx < 0) || (idx >= m.Size()) {
+		return "", true
+	}
+	if m.result[idx*2] < 0 {
+		return "", true
+	}
 
 	return m.s[m.result[2*idx]:m.result[2*idx+1]], false
 }
 
+// StringOrNil returns string pointer, which s nil if match
+// at given index does not exist
 func (m *MatchData) StringOrNil(idx int) *string {
 	result, isNil := m.toString(idx)
 	if isNil {
@@ -79,6 +90,7 @@ func (m *MatchData) StringOrNil(idx int) *string {
 	return &result
 }
 
+// Begin position of match at index
 func (m *MatchData) Begin(idx int) (int, error) {
 	if (idx < 0) || (idx >= m.Size()) {
 		return -1, fmt.Errorf("index %v out of matches", idx)
@@ -86,6 +98,8 @@ func (m *MatchData) Begin(idx int) (int, error) {
 
 	return m.result[idx*2], nil
 }
+
+// End position of match at index
 func (m *MatchData) End(idx int) (int, error) {
 	if (idx < 0) || (idx >= m.Size()) {
 		return -1, fmt.Errorf("index %v out of matches", idx)
@@ -94,8 +108,9 @@ func (m *MatchData) End(idx int) (int, error) {
 	return m.result[idx*2+1], nil
 }
 
+// Size returns number of matches
 func (m *MatchData) Size() int {
-	return len(m.result)/2
+	return len(m.result) / 2
 }
 
 func (m *MatchData) allEnd() int {
@@ -105,11 +120,13 @@ func (m *MatchData) allEnd() int {
 	return m.result[1]
 }
 
+// ToS string representation of match data
 func (m *MatchData) ToS() string {
 	ret, _ := m.toString(0)
 	return ret
 }
 
+// ToA retuns slice of matches as string or nil values
 func (m *MatchData) ToA() []interface{} {
 	ret := make([]interface{}, m.Size())
 	for i := 0; i < m.Size(); i++ {
@@ -123,14 +140,17 @@ func (m *MatchData) ToA() []interface{} {
 	return ret
 }
 
+// Captures returns slice of captured matches
 func (m *MatchData) Captures() []interface{} {
 	return m.ToA()[1:]
 }
 
+// Names of captures
 func (m *MatchData) Names() []string {
 	return m.names[1:]
 }
 
+// Inspect represents MatchData object as string
 func (m *MatchData) Inspect() string {
 	ret := "#<MatchData "
 	a := m.ToA()
@@ -145,7 +165,7 @@ func (m *MatchData) Inspect() string {
 			ret += q
 			continue
 		}
-		if  m.names[i] == "" {
+		if m.names[i] == "" {
 			ret += fmt.Sprintf(" %v:%v", i, q)
 		} else {
 			ret += fmt.Sprintf(" %v:%v", m.names[i], q)
@@ -155,10 +175,14 @@ func (m *MatchData) Inspect() string {
 	return ret + ">"
 }
 
+// NamedCaptures returns hash of captures, where
+// keys are capture nameswith captures as values
 func (m *MatchData) NamedCaptures() map[string]interface{} {
 	ret := make(map[string]interface{}, len(m.names))
 	for i, name := range m.names {
-		if i == 0 {	continue }
+		if i == 0 {
+			continue
+		}
 		s, isNil := m.toString(i)
 		if !isNil {
 			ret[name] = s
@@ -170,21 +194,23 @@ func (m *MatchData) NamedCaptures() map[string]interface{} {
 	return ret
 }
 
+// Offset returns capture offsets
 func (m *MatchData) Offset(idx int) ([]interface{}, error) {
 	if (idx < 0) || (idx >= m.Size()) {
 		return nil, fmt.Errorf("index %v out of matches", idx)
 	}
 
 	if m.result[idx*2] < 0 {
-		return []interface{}{nil,nil}, nil
+		return []interface{}{nil, nil}, nil
 	}
 
-	return []interface{}{m.result[idx*2],m.result[idx*2+1]}, nil
+	return []interface{}{m.result[idx*2], m.result[idx*2+1]}, nil
 }
 
+// PostMatch returns string after match
 func (m *MatchData) PostMatch() string {
-	last := len(m.s)-1
-	for i := len(m.result)-1; i >= 0; i-- {
+	last := len(m.s) - 1
+	for i := len(m.result) - 1; i >= 0; i-- {
 		if m.result[i] >= 0 {
 			last = m.result[i]
 			break
@@ -198,6 +224,7 @@ func (m *MatchData) PostMatch() string {
 	return m.s[last+1:]
 }
 
+// PreMatch returns string before match
 func (m *MatchData) PreMatch() string {
 	first := 0
 	for i := 0; i < len(m.result); i++ {
@@ -214,6 +241,7 @@ func (m *MatchData) PreMatch() string {
 	return m.s[:first-1]
 }
 
+// Regexp returns underlyng Regexp object
 func (m *MatchData) Regexp() *regexp.Regexp {
 	return m.r
 }

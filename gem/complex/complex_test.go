@@ -2,7 +2,7 @@ package complex
 
 import (
 	"github.com/oruby/oruby"
-	"github.com/oruby/gem/assert"
+	"github.com/oruby/oruby/gem/assert"
 	"reflect"
 	"testing"
 )

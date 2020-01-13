@@ -204,9 +204,9 @@ func (runner *cmdRunner) parseFd(key, val oruby.Value) {
 		}
 	}
 
-	if mrb.ObjIsKindOf(o, mrb.ClassGet("IO")) {
-
-	}
+	//if mrb.ObjIsKindOf(o, mrb.ClassGet("IO")) {
+	//
+	//}
 
 	if key.IsArray() && key.Len() > 0 {
 		writer := runner.getWriter(val)

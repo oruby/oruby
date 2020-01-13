@@ -95,6 +95,11 @@ func (mrb *MrbState) GVGet(sym MrbSym) Value {
 	return Value{C.mrb_gv_get(mrb.p, C.mrb_sym(sym))}
 }
 
+// GVGetObj get global variable as RArray
+func (mrb *MrbState) GVGetObj(sym MrbSym) RObject {
+	return RObject{C.mrb_gv_get(mrb.p, C.mrb_sym(sym)), mrb}
+}
+
 // GVSet set global variable
 func (mrb *MrbState) GVSet(sym MrbSym, val MrbValue) {
 	C.mrb_gv_set(mrb.p, C.mrb_sym(sym), val.Value().v)
@@ -111,6 +116,11 @@ func (mrb *MrbState) SetGV(name string, val interface{}) {
 // GetGV get global variable with name
 func (mrb *MrbState) GetGV(name string) Value {
 	return mrb.GVGet(mrb.Intern(name))
+}
+
+// GetObjGV get global variable with name, as RObject
+func (mrb *MrbState) GetObjGV(name string) RObject {
+	return RObject{mrb.GVGet(mrb.Intern(name)).v, mrb}
 }
 
 // ObjInstanceVariables list

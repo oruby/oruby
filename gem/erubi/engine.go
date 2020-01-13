@@ -9,18 +9,18 @@ import (
 
 // Engine as close as possible to Erubi::Engine implementation
 type Engine struct {
-	escape bool
-	trim bool
-	ensure bool
-	freeze bool
-	filename string
-	bufvar string
-	bufval string
-	src string
+	escape     bool
+	trim       bool
+	ensure     bool
+	freeze     bool
+	filename   string
+	bufvar     string
+	bufval     string
+	src        string
 	escapefunc string
-	regex *regexp.Regexp
-	preamble string
-	postamble string
+	regex      *regexp.Regexp
+	preamble   string
+	postamble  string
 }
 
 func getB(h map[string]interface{}, key string, def bool) bool {
@@ -33,7 +33,7 @@ func getB(h map[string]interface{}, key string, def bool) bool {
 		case string:
 			return v != ""
 		case int:
-			return v !=0
+			return v != 0
 		default:
 			return true
 		}
@@ -57,30 +57,32 @@ func getS(h map[string]interface{}, key string, def string) string {
 	return def
 }
 
+// New Engine constructor with options
 func New(options map[string]interface{}) *Engine {
-	reg := getS(options, "regex","(?ms)<%(={1,2}|-|\\#|%)?(.*?)([-=])?%>([ \t]*\r?\n)?")
+	reg := getS(options, "regex", "(?ms)<%(={1,2}|-|\\#|%)?(.*?)([-=])?%>([ \t]*\r?\n)?")
 
-	escapeHtml := getB(options, "escape_html", false)
-	outvar     := getS(options, "outvar", "_buf")
+	escapeHTML := getB(options, "escape_html", false)
+	outvar := getS(options, "outvar", "_buf")
 
 	e := &Engine{
-		escape:     getB(options, "escape", escapeHtml),
+		escape:     getB(options, "escape", escapeHTML),
 		trim:       getB(options, "trim", true),
-		ensure:     getB(options, "ensure",false),
-		freeze:     getB(options, "freeze",false),
-		filename:    getS(options, "filename",""),
+		ensure:     getB(options, "ensure", false),
+		freeze:     getB(options, "freeze", false),
+		filename:   getS(options, "filename", ""),
 		bufvar:     getS(options, "bufvar", outvar),
-		bufval:     getS(options, "bufval","::String.new"),
-		src:        getS(options, "src",""),
-		escapefunc: getS(options, "escapefunc","::Erubi.h"),
+		bufval:     getS(options, "bufval", "::String.new"),
+		src:        getS(options, "src", ""),
+		escapefunc: getS(options, "escapefunc", "::Erubi.h"),
 		regex:      regexp.MustCompile(reg),
-		preamble:   getS(options, "preamble",""),
-		postamble:  getS(options, "postamble",""),
+		preamble:   getS(options, "preamble", ""),
+		postamble:  getS(options, "postamble", ""),
 	}
 
 	return e
 }
 
+// NewInit constructor from inpit string and options hash
 func NewInit(input string, options map[string]interface{}) (*Engine, error) {
 	engine := New(options)
 	err := engine.Init(input)
@@ -88,15 +90,16 @@ func NewInit(input string, options map[string]interface{}) (*Engine, error) {
 }
 
 // Src code generated from the template, which can be evaled
-func  (e *Engine) Src() string { return e.src }
+func (e *Engine) Src() string { return e.src }
 
 // Filename of the template, if one was given
-func  (e *Engine) Filename() string { return e.filename }
+func (e *Engine) Filename() string { return e.filename }
 
 // Bufvar is variable name used for the buffer variable
-func  (e *Engine) Bufvar() string { return e.filename }
+func (e *Engine) Bufvar() string { return e.filename }
 
-func  (e *Engine) Init(input string) error {
+// Init engine with string
+func (e *Engine) Init(input string) error {
 	if e.freeze {
 		e.src += "# frozen_string_literal: true\n"
 	}
@@ -121,7 +124,7 @@ func  (e *Engine) Init(input string) error {
 	e.src += e.preamble
 
 	pos := 0
-	is_bol := true
+	isBol := true
 
 	// "(?ms)<%(={1,2}|-|\\#|%)?(.*?)([-=])?%>([ \t]*\r?\n)?"
 	for _, loc := range e.regex.FindAllStringSubmatchIndex(input, -1) {
@@ -129,9 +132,9 @@ func  (e *Engine) Init(input string) error {
 		pos = loc[1]
 		var ch uint8 = 0
 		indicator := ""
-		code      := ""
-		tailch    := ""
-		rspace    := ""
+		code := ""
+		tailch := ""
+		rspace := ""
 
 		if loc[2] >= 0 {
 			indicator = input[loc[2]:loc[3]]
@@ -151,18 +154,20 @@ func  (e *Engine) Init(input string) error {
 
 		if ch != '=' {
 			if text == "" {
-				if is_bol { lspace = "" }
+				if isBol {
+					lspace = ""
+				}
 			} else if text[len(text)-1] == '\n' {
 				lspace = ""
 			} else {
 				rindex := strings.LastIndexByte(text, '\n')
 				if rindex >= 0 {
 					s := text[rindex+1:]
-					if regexp.MustCompile("\\A[ \t]*\\z" ).MatchString(s) {
+					if regexp.MustCompile("\\A[ \t]*\\z").MatchString(s) {
 						lspace = s
 						text = text[:rindex+1]
 					} else {
-						if is_bol && regexp.MustCompile("\\A[ \t]*\\z").MatchString(text) {
+						if isBol && regexp.MustCompile("\\A[ \t]*\\z").MatchString(text) {
 							lspace = text
 							text = ""
 						}
@@ -171,26 +176,38 @@ func  (e *Engine) Init(input string) error {
 			}
 		}
 
-		is_bol = rspace != ""
+		isBol = rspace != ""
 		if text != "" {
 			e.addText(text)
 		}
 
 		switch ch {
 		case '=':
-			if tailch != "" { rspace = "" }
-			if lspace != "" { e.addText(lspace) }
+			if tailch != "" {
+				rspace = ""
+			}
+			if lspace != "" {
+				e.addText(lspace)
+			}
 			e.addExpression(indicator, code)
-			if rspace != "" { e.addText(rspace) }
+			if rspace != "" {
+				e.addText(rspace)
+			}
 		case '#':
 			n := strings.Count(code, "\n")
-			if rspace != "" { n++ }
-			if e.trim && lspace != "" && rspace != ""  {
+			if rspace != "" {
+				n++
+			}
+			if e.trim && lspace != "" && rspace != "" {
 				e.addCode(strings.Repeat("\n", n))
 			} else {
-				if lspace != "" { e.addText(lspace) }
+				if lspace != "" {
+					e.addText(lspace)
+				}
 				e.addCode(strings.Repeat("\n", n))
-				if rspace != "" { e.addText(rspace) }
+				if rspace != "" {
+					e.addText(rspace)
+				}
 			}
 		case '%':
 			e.addText("#{lspace}#{prefix||='<%'}#{code}#{tailch}#{postfix||='%>'}#{rspace}")
@@ -198,9 +215,13 @@ func  (e *Engine) Init(input string) error {
 			if e.trim && lspace != "" && rspace != "" {
 				e.addCode(lspace + code + rspace)
 			} else {
-				if lspace != "" { e.addText(lspace) }
+				if lspace != "" {
+					e.addText(lspace)
+				}
 				e.addCode(code)
-				if rspace != "" { e.addText(rspace) }
+				if rspace != "" {
+					e.addText(rspace)
+				}
 			}
 		default:
 			return e.handle(indicator, code, tailch, rspace, lspace)

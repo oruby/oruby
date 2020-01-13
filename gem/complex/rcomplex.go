@@ -1,6 +1,5 @@
 package complex
 
-import "C"
 import (
 	"errors"
 	"fmt"
@@ -9,22 +8,27 @@ import (
 	"math/cmplx"
 )
 
+// RComplex embeds Go complex128 value
 type RComplex struct {
 	v complex128
 }
 
 func newComplex(r, i float64) *RComplex {
-	return &RComplex{complex(r,i)}
+	return &RComplex{complex(r, i)}
 }
 
+// Real returns real part of complex number
 func (c *RComplex) Real() float64 {
 	return real(c.v)
 }
 
+// Imaginary returns imaginary part of complex number
 func (c *RComplex) Imaginary() float64 {
 	return imag(c.v)
 }
 
+// ToF converts complex number to float
+// it returns ERageError if imaginary part is not zero
 func (c *RComplex) ToF() (float64, error) {
 	if imag(c.v) != 0 {
 		return 0, oruby.ERangeError("can't convert %v into Float", c.v)
@@ -32,25 +36,31 @@ func (c *RComplex) ToF() (float64, error) {
 	return real(c.v), nil
 }
 
+// ToI converts complex number to int
+// it returns ERageError if imaginary part is not zero
 func (c *RComplex) ToI() (int, error) {
 	if imag(c.v) != 0 {
-		return 0, oruby.ERangeError("can't convert %v into Float", c.v)
+		return 0, oruby.ERangeError("can't convert %v into int", c.v)
 	}
 	return int(real(c.v)), nil
 }
 
+// ToC creates new instance of complex number
 func (c *RComplex) ToC() *RComplex {
 	return &RComplex{c.v}
 }
 
+// DivideWith implements complex division
 func (c *RComplex) DivideWith(c2 *RComplex) *RComplex {
-	return &RComplex{c.v/c2.v}
+	return &RComplex{c.v / c2.v}
 }
 
+// Polar instance of complex number
 func Polar(abs, arg float64) *RComplex {
-	return &RComplex{complex(abs * math.Cos(arg), math.Sin(arg)) }
+	return &RComplex{complex(abs*math.Cos(arg), math.Sin(arg))}
 }
 
+// Inspect returns string representation of complex number
 func (c *RComplex) Inspect() string {
 	return fmt.Sprintf("%v", c.v)
 }
@@ -63,7 +73,7 @@ func (c *RComplex) String() string {
 // ToS printscomplex number without parenthesis
 func (c *RComplex) ToS() string {
 	s := fmt.Sprintf("%v", c.v)
-	return s[1:len(s)-1]
+	return s[1 : len(s)-1]
 }
 
 func toInt64(in interface{}) (int64, error) {
@@ -141,56 +151,56 @@ func toComplex(in interface{}) (complex128, error) {
 	if err != nil {
 		return 0, err
 	}
-   	return complex(v, 0), nil
+	return complex(v, 0), nil
 }
 
-// PrefixPlusOperator
+// UnaryPlusOperator implements unary plus operator for complex number
 func (c *RComplex) UnaryPlusOperator() *RComplex {
-	return &RComplex{ c.v }
+	return &RComplex{c.v}
 }
 
-// PrefixMinusOperator
+// UnaryMinusOperator implements unary minus operator for complex number
 func (c *RComplex) UnaryMinusOperator() *RComplex {
 	return &RComplex{-c.v}
 }
 
-// PlusOperator
+// PlusOperator implements complex number addition
 func (c *RComplex) PlusOperator(v2 interface{}) (*RComplex, error) {
 	v, err := toComplex(v2)
 	if err != nil {
 		return nil, err
 	}
-	return &RComplex{ c.v + v }, nil
+	return &RComplex{c.v + v}, nil
 }
 
-// MinusOperator
+// MinusOperator implements complex number substractions
 func (c *RComplex) MinusOperator(v2 interface{}) (*RComplex, error) {
 	v, err := toComplex(v2)
 	if err != nil {
 		return nil, err
 	}
-	return &RComplex{ c.v - v }, nil
+	return &RComplex{c.v - v}, nil
 }
 
-// MultiplyOperator
+// MultiplyOperator implements complex number multiplication
 func (c *RComplex) MultiplyOperator(v2 interface{}) (*RComplex, error) {
 	v, err := toComplex(v2)
 	if err != nil {
 		return nil, err
 	}
-	return &RComplex{ c.v * v }, nil
+	return &RComplex{c.v * v}, nil
 }
 
-// DivideOperator
+// DivideOperator implements complex number division
 func (c *RComplex) DivideOperator(v2 interface{}) (*RComplex, error) {
 	v, err := toComplex(v2)
 	if err != nil {
 		return nil, err
 	}
-	return &RComplex{ c.v / v }, nil
+	return &RComplex{c.v / v}, nil
 }
 
-// EqualOperator
+// EqualOperator cheks equalitu to other numbers
 func (c *RComplex) EqualOperator(v2 interface{}) bool {
 	v, err := toComplex(v2)
 	if err != nil {
@@ -199,40 +209,40 @@ func (c *RComplex) EqualOperator(v2 interface{}) bool {
 	return c.v == v
 }
 
-// Abs, Magnitude
+// Abs or Magnitude of complex number
 func (c *RComplex) Abs() float64 {
 	return cmplx.Abs(c.v)
 }
 
-// Abs2
+// Abs2 of complex number
 func (c *RComplex) Abs2() float64 {
-	return real(c.v) * real(c.v) + imag(c.v) * imag(c.v)
+	return real(c.v)*real(c.v) + imag(c.v)*imag(c.v)
 }
 
-// Arg, Phase, Angle
+// Arg or Phase or Angle of complex number
 func (c *RComplex) Arg() float64 {
 	return cmplx.Phase(c.v)
 }
 
-// Conjugate, Conj
+// Conjugate or Conj of complex number
 func (c *RComplex) Conjugate() *RComplex {
-	return &RComplex{ cmplx.Conj(c.v) }
+	return &RComplex{cmplx.Conj(c.v)}
 }
 
-// Fdiv
+// Fdiv implements division with floating point number
 func (c *RComplex) Fdiv(num float64) *RComplex {
-	return &RComplex{ complex(real(c.v)/num, imag(c.v)/num ) }
+	return &RComplex{complex(real(c.v)/num, imag(c.v)/num)}
 }
 
-// Polar
+// Polar of complex number
 func (c *RComplex) Polar() (float64, float64) {
 	return cmplx.Polar(c.v)
 }
 
-// IsReal real?
+// IsReal returns false for complex number objects
 func (c *RComplex) IsReal() bool { return false }
 
-// Rectangular
+// Rectangular values of real and imaginary of complex number
 func (c *RComplex) Rectangular() (float64, float64) {
 	return real(c.v), imag(c.v)
 }
@@ -245,5 +255,3 @@ func (c *RComplex) Rectangular() (float64, float64) {
 // }
 // return &Rational(real, 1)
 //}
-
-

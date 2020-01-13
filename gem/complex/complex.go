@@ -5,23 +5,22 @@ import (
 	"math"
 )
 
-func ComplexValue(klass oruby.RClass, r, i float64) oruby.MrbValue {
+func complexValue(klass oruby.RClass, r, i float64) (oruby.Value, error) {
 	cpx := newComplex(r, i)
 	ret, err := klass.NewGoInstance(cpx)
 	if err != nil {
-		panic(err)
+		return oruby.Nil, err
 	}
-	return ret
+	return ret, nil
 }
 
 func initPolar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	absV, argV := mrb.GetArgs2(0.0, 0.0)
 	abs := absV.Float64()
 	arg := argV.Float64()
+	cpc := mrb.ClassGet("Complex")
 
-	cpx := newComplex(abs * math.Cos(arg), abs * math.Sin(arg))
-
-	ret, err := mrb.ClassGet("Complex").NewGoInstance(cpx)
+	ret, err := complexValue(cpc, abs*math.Cos(arg), abs*math.Sin(arg))
 	if err != nil {
 		return mrb.Raise(mrb.EArgumentError(), err.Error())
 	}
@@ -36,29 +35,27 @@ func init() {
 
 		initComplex := func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			r, i := mrb.GetArgs2(0.0, 0.0)
-			cpx := newComplex(r.Float64(), i.Float64())
-
-			self, err := cpxClass.NewGoInstance(cpx)
+			ret, err := complexValue(cpxClass, r.Float64(), i.Float64())
 			if err != nil {
 				return mrb.Raise(mrb.EArgumentError(), err.Error())
 			}
-			return self.Freeze()
+			return ret.Freeze()
 		}
 
-		mrb.DefineMethod(mrb.KernelModule(), "Complex", initComplex, mrb.ArgsArg(1,1))
-		cpxClass.DefineClassMethod("rectangular", initComplex, mrb.ArgsArg(1,1))
-		cpxClass.DefineClassMethod("rect", initComplex, mrb.ArgsArg(1,1))
-		cpxClass.DefineClassMethod("polar", initPolar, mrb.ArgsArg(1,1))
+		mrb.DefineMethod(mrb.KernelModule(), "Complex", initComplex, mrb.ArgsArg(1, 1))
+		cpxClass.DefineClassMethod("rectangular", initComplex, mrb.ArgsArg(1, 1))
+		cpxClass.DefineClassMethod("rect", initComplex, mrb.ArgsArg(1, 1))
+		cpxClass.DefineClassMethod("polar", initPolar, mrb.ArgsArg(1, 1))
 
-		cpxClass.DefineAlias( "__div__", "divide_with")
-		cpxClass.DefineAlias( "+@", "unary_plus_operator")
-		cpxClass.DefineAlias( "-@", "unary_minus_operator")
-		cpxClass.DefineAlias( "+", "plus_operator")
-		cpxClass.DefineAlias( "-", "minus_operator")
-		cpxClass.DefineAlias( "*", "multiply_operator")
-		cpxClass.DefineAlias( "/", "divide_operator")
-		cpxClass.DefineAlias( "quo", "divide_operator")
-		cpxClass.DefineAlias( "==", "equal_operator")
+		cpxClass.DefineAlias("__div__", "divide_with")
+		cpxClass.DefineAlias("+@", "unary_plus_operator")
+		cpxClass.DefineAlias("-@", "unary_minus_operator")
+		cpxClass.DefineAlias("+", "plus_operator")
+		cpxClass.DefineAlias("-", "minus_operator")
+		cpxClass.DefineAlias("*", "multiply_operator")
+		cpxClass.DefineAlias("/", "divide_operator")
+		cpxClass.DefineAlias("quo", "divide_operator")
+		cpxClass.DefineAlias("==", "equal_operator")
 
 		cpxClass.DefineAlias("magnitude", "abs")
 		cpxClass.DefineAlias("angle", "arg")
@@ -69,7 +66,7 @@ func init() {
 
 		// Replace NUmeric operators with complex suported ones
 		cFixnum := mrb.FixnumClass()
-		cFloat  := mrb.FloatClass()
+		cFloat := mrb.FloatClass()
 		newOperator := func(op, oldOp string) oruby.MrbFuncT {
 			return func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				arg := mrb.GetArgsFirst()
@@ -83,7 +80,7 @@ func init() {
 		}
 
 		for _, op := range []string{"+", "-", "*", "/", "=="} {
-			oldOp := "__orig_"+op
+			oldOp := "__orig_" + op
 			cFixnum.DefineAlias(oldOp, op)
 			cFixnum.DefineMethod(op, newOperator(op, oldOp), mrb.ArgsReq(1))
 			cFloat.DefineAlias(oldOp, op)

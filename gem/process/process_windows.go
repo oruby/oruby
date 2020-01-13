@@ -5,6 +5,18 @@ import (
 	"os"
 )
 
+// RLimit pseudo constants
+const (
+	RLIMIT_CPU    = 0x0
+	RLIMIT_FSIZE  = 0x1
+	RLIMIT_DATA   = 0x2
+	RLIMIT_STACK  = 0x3
+	RLIMIT_CORE   = 0x4
+	RLIMIT_AS     = 0x5
+	RLIMIT_NOFILE = 0x8
+	RLIM_INFINITY = 0x7fffffffffffffff
+)
+
 func initPlatform(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
 
 }
