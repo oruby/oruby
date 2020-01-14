@@ -3,37 +3,49 @@ package signal
 import "syscall"
 
 func platformInitSignals() {
-	signals[syscall.SIGABRT.String()]   = int(syscall.SIGABRT)
-	signals[syscall.SIGALRM.String()]   = int(syscall.SIGALRM)
-	signals[syscall.SIGBUS.String()]    = int(syscall.SIGBUS)
-	signals[syscall.SIGCHLD.String()]   = int(syscall.SIGCHLD)
-	signals[syscall.SIGCONT.String()]   = int(syscall.SIGCONT)
-	signals[syscall.SIGEMT.String()]    = int(syscall.SIGEMT)
-	signals[syscall.SIGFPE.String()]    = int(syscall.SIGFPE)
-	signals[syscall.SIGHUP.String()]    = int(syscall.SIGHUP)
-	signals[syscall.SIGILL.String()]    = int(syscall.SIGILL)
-	signals[syscall.SIGINFO.String()]   = int(syscall.SIGINFO)
-	signals[syscall.SIGINT.String()]    = int(syscall.SIGINT)
-	signals[syscall.SIGIO.String()]     = int(syscall.SIGIO)
-	signals[syscall.SIGIOT.String()]    = int(syscall.SIGIOT)
-	signals[syscall.SIGKILL.String()]   = int(syscall.SIGKILL)
-	signals[syscall.SIGPIPE.String()]   = int(syscall.SIGPIPE)
-	signals[syscall.SIGPROF.String()]   = int(syscall.SIGPROF)
-	signals[syscall.SIGQUIT.String()]   = int(syscall.SIGQUIT)
-	signals[syscall.SIGSEGV.String()]   = int(syscall.SIGSEGV)
-	signals[syscall.SIGSTOP.String()]   = int(syscall.SIGSTOP)
-	signals[syscall.SIGSYS.String()]    = int(syscall.SIGSYS)
-	signals[syscall.SIGTERM.String()]   = int(syscall.SIGTERM)
-	signals[syscall.SIGTRAP.String()]   = int(syscall.SIGTRAP)
-	signals[syscall.SIGTSTP.String()]   = int(syscall.SIGTSTP)
-	signals[syscall.SIGTTIN.String()]   = int(syscall.SIGTTIN)
-	signals[syscall.SIGTTOU.String()]   = int(syscall.SIGTTOU)
-	signals[syscall.SIGURG.String()]    = int(syscall.SIGURG)
-	signals[syscall.SIGUSR1.String()]   = int(syscall.SIGUSR1)
-	signals[syscall.SIGUSR2.String()]   = int(syscall.SIGUSR2)
-	signals[syscall.SIGVTALRM.String()] = int(syscall.SIGVTALRM)
-	signals[syscall.SIGWINCH.String()]  = int(syscall.SIGWINCH)
-	signals[syscall.SIGXCPU.String()]   = int(syscall.SIGXCPU)
-	signals[syscall.SIGXFSZ.String()]   = int(syscall.SIGXFSZ)
+	signals["ABRT"]   = int(syscall.SIGABRT)
+	signals["ALRM"]   = int(syscall.SIGALRM)
+	signals["BUS"]    = int(syscall.SIGBUS)
+	signals["CHLD"]   = int(syscall.SIGCHLD)
+	signals["CONT"]   = int(syscall.SIGCONT)
+	signals["EMT"]    = int(syscall.SIGEMT)
+	signals["FPE"]    = int(syscall.SIGFPE)
+	signals["HUP"]    = int(syscall.SIGHUP)
+	signals["ILL"]    = int(syscall.SIGILL)
+	signals["INFO"]   = int(syscall.SIGINFO)
+	signals["INT"]    = int(syscall.SIGINT)
+	signals["IO"]     = int(syscall.SIGIO)
+	signals["IOT"]    = int(syscall.SIGIOT)
+	signals["KILL"]   = int(syscall.SIGKILL)
+	signals["PIPE"]   = int(syscall.SIGPIPE)
+	signals["PROF"]   = int(syscall.SIGPROF)
+	signals["QUIT"]   = int(syscall.SIGQUIT)
+	signals["SEGV"]   = int(syscall.SIGSEGV)
+	signals["STOP"]   = int(syscall.SIGSTOP)
+	signals["SYS"]    = int(syscall.SIGSYS)
+	signals["TERM"]   = int(syscall.SIGTERM)
+	signals["TRAP"]   = int(syscall.SIGTRAP)
+	signals["TSTP"]   = int(syscall.SIGTSTP)
+	signals["TTIN"]   = int(syscall.SIGTTIN)
+	signals["TTOU"]   = int(syscall.SIGTTOU)
+	signals["URG"]    = int(syscall.SIGURG)
+	signals["USR1"]   = int(syscall.SIGUSR1)
+	signals["USR2"]   = int(syscall.SIGUSR2)
+	signals["VTALRM"] = int(syscall.SIGVTALRM)
+	signals["WINCH"]  = int(syscall.SIGWINCH)
+	signals["XCPU"]   = int(syscall.SIGXCPU)
+	signals["XFSZ"]   = int(syscall.SIGXFSZ)
 }
 
+func platformReservedSignal(sig int) bool {
+	switch sig {
+	case int(syscall.SIGSEGV):
+	case int(syscall.SIGBUS):
+	case int(syscall.SIGILL):
+	case int(syscall.SIGFPE):
+	case int(syscall.SIGVTALRM):
+		return true
+	default:
+		return false
+	}
+}

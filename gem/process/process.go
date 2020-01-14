@@ -38,7 +38,7 @@ func init() {
 		mrb.DefineMethod(mProc, "exit", procExit, mrb.ArgsOpt(1))
 		mrb.DefineMethod(mProc, "abort", procAbort, mrb.ArgsOpt(1))
 		mrb.DefineMethod(mProc, "last_status", proc_s_last_status, 0)
-		mrb.DefineMethod(mProc, "kill", proc_rb_f_kill, -1)
+		mrb.DefineMethod(mProc, "kill", procKill, mrb.ArgsReq(2)+mrb.ArgsRest())
 		mrb.DefineMethod(mProc, "wait", procWait, mrb.ArgsOpt(2))
 		mrb.DefineMethod(mProc, "wait2", proc_wait2, -1)
 		mrb.DefineMethod(mProc, "waitpid", procWait, mrb.ArgsOpt(2))
@@ -199,6 +199,26 @@ func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 	return mrb.FixnumValue(pid)
+}
+
+func procKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetAllArgs()
+	sig := args.Item(1)
+
+	for i := 1; i < args.Len(); i++ {
+		pid := args.ItemDef(i, mrb.NilValue())
+
+		p, err := os.FindProcess(pid.Int())
+		if err != nil {
+			return mrb.NilValue()
+		}
+
+		err := platformKill(pid.Int(), sig.Int())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+	}
+	return mrb.NilValue()
 }
 
 func procAbort(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

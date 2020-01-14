@@ -80,3 +80,7 @@ func platformWait(pid, flags int, last_state *status) (int, error) {
 
 	return setLastState(mrb, waitStatus)
 }
+
+func platformKill(pid, sig int) error {
+	return syscall.Kill(pid, syscall.Signal(sig))
+}

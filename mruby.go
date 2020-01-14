@@ -25,11 +25,11 @@ import (
 type (
 	// MrbCode alias for mrb_code
 	MrbCode uint32
-	// MrbAspec alias for mrb_aspec which specifies the number arguments of a function
+	// MrbAspec alias for mrb_aspec which specifies arguments of a function
 	MrbAspec uint32
 )
 
-// FIberState enum
+// FiberState enum
 const (
 	FiberCreated = iota
 	FiberRunning
@@ -967,10 +967,11 @@ func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT,
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
-	C.mrb_define_singleton_method(mrb.p, obj.p(), cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
+	objPtr := obj.p()
+	C.mrb_define_singleton_method(mrb.p, objPtr, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
 
 	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{RClassPtr{obj.p().c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
+	mrb.mrbFuncs[GoCallRef{RClassPtr{objPtr.c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
 	mrb.Unlock()
 }
 
@@ -1963,6 +1964,16 @@ func (mrb *MrbState) Raisef(c RClass, format string, args ...interface{}) Value 
 	// pure C.mrb_raisef() is never called
 }
 
+// RaiseError returns exception from error. If error is one of predefined oruby
+// errors then coresponding ruby error is raised. For example:
+//
+//    err := oruby.EArgumentError("Unknovn argument %v", someArg)
+//    mrb.RaiseError(err)
+//
+func (mrb *MrbState) RaiseError(err error) Value {
+	return mrb.Raise(mrb.getErrorKlass(err), err.Error())
+}
+
 // NameError error
 func (mrb *MrbState) NameError(id MrbSym, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
@@ -2116,7 +2127,9 @@ func (mrb *MrbState) GCUnregister(obj MrbValue) {
 }
 
 // ToInt converts value to integer oruby value
-func (mrb *MrbState) ToInt(val MrbValue) Value { return Value{C.mrb_to_int(mrb.p, val.Value().v)} }
+func (mrb *MrbState) ToInt(val MrbValue) Value {
+	return Value{C.mrb_to_int(mrb.p, val.Value().v)}
+}
 
 // ToStr converts value to string oruby value
 func (mrb *MrbState) ToStr(val MrbValue) RString {
@@ -2141,7 +2154,7 @@ func (mrb *MrbState) CheckFrozen(o MrbValue) error {
 	return nil
 }
 
-// call_type
+// call_type enum
 const (
 	CallPublic = iota
 	CallFCall

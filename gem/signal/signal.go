@@ -2,8 +2,7 @@ package signal
 
 import (
 	"github.com/oruby/oruby"
-	"os"
-	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -12,8 +11,8 @@ var signals map[string]int
 func init() {
 	signals = make(map[string]int)
 
-	signals[os.Interrupt.String()] = int(syscall.SIGINT)
-	signals[os.Kill.String()] = int(syscall.SIGABRT)
+	signals["INT"] = int(syscall.SIGINT)
+	signals["KILL"] = int(syscall.SIGABRT)
 	platformInitSignals()
 
 	oruby.Gem("signal", func(mrb *oruby.MrbState) {
@@ -26,25 +25,58 @@ func init() {
 
 		eSignal := mrb.DefineClass("SignalException", mrb.EExceptionClass())
 
-		eSignal.DefineMethod("initialize", esignalInit, -1)
+		eSignal.DefineMethod("initialize", esignalInit, mrb.ArgsArg(1,1))
 		eSignal.DefineMethod("signo", esignalSigno, mrb.ArgsNone())
 		eSignal.DefineAlias("signm", "message")
 
 		eInterrupt := mrb.DefineClass("Interrupt", eSignal)
-		eInterrupt.DefineMethod("initialize", interruptInit, -1)
+		eInterrupt.DefineMethod("initialize", interruptInit, mrb.ArgsOpt(1))
 	})
+}
+
+func getSignal(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
+	if sv.IsString() {
+		name := sv.String()
+		if signo, ok := signals[name]; ok {
+			return signo, name, nil
+		}
+		// Sig name can have "SIG" prefix - SIGHUP, SIGKILL
+		if strings.HasPrefix(name,"SIG") {
+			if signo, ok := signals[name[3:]]; ok {
+				return signo, name[3:], nil
+			}
+		}
+
+		return 0, "", oruby.EArgumentError("signal unknown: %v", name)
+	}
+
+	var sig int
+	if sv.IsFixnum() {
+		sig = sv.Int()
+	} else {
+		sigv := mrb.Call(sv, "to_int")
+		if !sigv.IsFixnum() {
+			return 0, "", oruby.EArgumentError("signal unknown: %v", mrb.Inspect(sv))
+		}
+		sig = sigv.Int()
+	}
+
+	for name, v := range signals {
+		if sig == v {
+			return sig, name, nil
+		}
+	}
+	return 0, "", oruby.EArgumentError("signal unknown: %v", sig)
 }
 
 func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	sigValue, command := mrb.GetArgs2(mrb.NilValue(), mrb.GetArgsBlock())
-	sig := getSignal(mrb, sigValue)
+	sig, name, err := getSignal(mrb, sigValue)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
 
-	if reservedSignal(sig) {
-		name := getSignalName(sig)
-		_, ok := signals[name]
-		if !ok {
-			name = strconv.Itoa(sig)
-		}
+	if platformReservedSignal(sig) {
 		return mrb.EArgumentError().Raisef("can't trap reserved signal: %v", name)
 	}
 
@@ -77,13 +109,26 @@ func sigName(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func esignalInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	signo, name, err := getSignal(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
 
+	obj := mrb.RObject(self)
+	obj.SetIV("@signo", signo)
+	obj.SetIV( "mesg", "SIG"+name)
+
+	return self
 }
 
 func esignalSigno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-
+	return mrb.RObject(self).GetIV("@signo")
 }
 
 func interruptInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	obj := mrb.RObject(self)
+	obj.SetIV("@signo", int(syscall.SIGINT))
+	obj.SetIV( "mesg", mrb.GetArgsFirst())
+
 	return mrb.Call(self, "super", int(syscall.SIGINT), mrb.GetArgsFirst())
 }
