@@ -160,7 +160,7 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 		aspec = ArgsReq(1)
 		c.DefineMethod("init_go", initGoValue(v), aspec)
 	default:
-		panic("constructor does not return pointer to go type")
+		panic("constructor does not return pointer to Go type")
 	}
 
 	// Set klass value as RData
