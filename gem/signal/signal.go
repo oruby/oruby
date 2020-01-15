@@ -2,41 +2,50 @@ package signal
 
 import (
 	"github.com/oruby/oruby"
+	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 )
 
 var signals map[string]int
 
+type handlers struct {
+	c chan os.Signal
+	current map[os.Signal]oruby.Value
+}
+
 func init() {
 	signals = make(map[string]int)
-
 	signals["INT"] = int(syscall.SIGINT)
-	signals["KILL"] = int(syscall.SIGABRT)
+	signals["KILL"] = int(syscall.SIGKILL)
 	platformInitSignals()
 
-	oruby.Gem("signal", func(mrb *oruby.MrbState) {
+	oruby.Gem("signal", func(mrb *oruby.MrbState) interface{} {
 		mSignal := mrb.DefineModule("Signal")
-		mrb.DefineGlobalFunction("trap", sigTrap, mrb.ArgsAny())
+		mrb.DefineGlobalFunction("trap", sigTrap, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
 
 		mSignal.DefineModuleFunction("trap", sigTrap, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
 		mSignal.DefineModuleFunction("list", sigList, mrb.ArgsNone())
 		mSignal.DefineModuleFunction("signame", sigName, mrb.ArgsReq(1))
 
 		eSignal := mrb.DefineClass("SignalException", mrb.EExceptionClass())
-
 		eSignal.DefineMethod("initialize", esignalInit, mrb.ArgsArg(1,1))
 		eSignal.DefineMethod("signo", esignalSigno, mrb.ArgsNone())
 		eSignal.DefineAlias("signm", "message")
 
 		eInterrupt := mrb.DefineClass("Interrupt", eSignal)
 		eInterrupt.DefineMethod("initialize", interruptInit, mrb.ArgsOpt(1))
+
+		return &handlers{
+			current: make(map[os.Signal]oruby.Value),
+		}
 	})
 }
 
 func getSignal(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
-	if sv.IsString() {
-		name := sv.String()
+	if sv.IsString() || sv.IsSymbol() {
+		name := mrb.String(sv)
 		if signo, ok := signals[name]; ok {
 			return signo, name, nil
 		}
@@ -71,22 +80,62 @@ func getSignal(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
 
 func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	sigValue, command := mrb.GetArgs2(mrb.NilValue(), mrb.GetArgsBlock())
-	sig, name, err := getSignal(mrb, sigValue)
+	sigID, name, err := getSignal(mrb, sigValue)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	if platformReservedSignal(sig) {
+	if platformReservedSignal(sigID) {
 		return mrb.EArgumentError().Raisef("can't trap reserved signal: %v", name)
 	}
 
-	if !command.IsProc() {
-		f = sighandler
-	} else {
-		f = trapHandler(command, sig)
+	hdlrs := mrb.GemData("signal").(*handlers)
+	sig := syscall.Signal(sigID)
+
+	prev := hdlrs.current[sig]
+	hdlrs.current[sig] = command
+
+	if command.IsProc() {
+
+		if len(hdlrs.c) == 0 {
+			hdlrs.c = make(chan os.Signal, 1)
+			go func(){
+				for {
+					select {
+					case sig := <-hdlrs.c:
+						if cmd, ok := hdlrs.current[sig]; ok && cmd.IsProc() {
+							mrb.Call(cmd, "call")
+						}
+					case <-mrb.CloseChan():
+						// gracefull close goroutine on mrb state close
+						// TODO: call zero signal handler?
+						return
+					}
+				}
+			}()
+		}
+		signal.Notify(hdlrs.c, sig)
+		return prev
+
 	}
 
-	return trap(sig, f, command)
+	if command.IsString() {
+		switch command.String() {
+		case "IGNORE", "SIG_IGN":
+			signal.Ignore(sig)
+		case "DEFAULT", "SIG_DFL":
+			signal.Reset(sig)
+		case "EXIT":
+			mrb.Call(mrb.KernelModule(), "send", mrb.Intern("exit"))
+		case "SYSTEM_DEFAULT":
+			signal.Reset(sig)
+		default:
+			return mrb.RaiseError(oruby.EArgumentError("unknown command '%v'", command))
+		}
+		return prev
+	}
+
+	return mrb.RaiseError(oruby.EArgumentError("unknown command '%v'", command))
 }
 
 func sigList(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -109,14 +158,15 @@ func sigName(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func esignalInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	signo, name, err := getSignal(mrb, mrb.GetArgsFirst())
+	args := mrb.GetAllArgs()
+	signo, name, err := getSignal(mrb, args.Item(0))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
 	obj := mrb.RObject(self)
 	obj.SetIV("@signo", signo)
-	obj.SetIV( "mesg", "SIG"+name)
+	obj.SetIV( "mesg", args.ItemDef(1, mrb.Value("SIG"+name)))
 
 	return self
 }
@@ -128,7 +178,13 @@ func esignalSigno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func interruptInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	obj := mrb.RObject(self)
 	obj.SetIV("@signo", int(syscall.SIGINT))
-	obj.SetIV( "mesg", mrb.GetArgsFirst())
 
-	return mrb.Call(self, "super", int(syscall.SIGINT), mrb.GetArgsFirst())
+	name := mrb.GetArgsFirst()
+	if !name.IsNil() {
+		obj.SetIV("mesg", name)
+	} else {
+		obj.SetIV("mesg", "SIGINT")
+	}
+
+	return self
 }
