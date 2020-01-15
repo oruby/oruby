@@ -8,7 +8,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("assert", func(mrb *oruby.MrbState) {
+	oruby.Gem("assert", func(mrb *oruby.MrbState) interface{} {
 		// mrb.KernelModule().DefineMethod("t_print", t_print, MRB_ARGS_ANY());
 		// mrb.KernelModule().DefineMethod("_str_match?", m_str_match_p, MRB_ARGS_REQ(2));
 
@@ -22,6 +22,7 @@ func init() {
 		if err != nil {
 			panic("assert gem: " + err.Error())
 		}
+		return nil
 	})
 }
 

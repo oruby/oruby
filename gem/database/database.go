@@ -9,22 +9,23 @@ import (
 //import "reflect"
 
 func init() {
-	oruby.Gem("Database", func(mrb *oruby.MrbState) {
+	oruby.Gem("database", func(mrb *oruby.MrbState) interface{} {
 		db := mrb.DefineModule("Database")
 
 		mrb.DefineModuleFunc(db, "open", sql.Open)
 		_ = mrb.DefineGoClassUnder(db, "DB", sql.Open)
 		_ = mrb.DefineGoClassUnder(db, "Result", (*sql.Result)(nil))
 
-		rows := mrb.DefineGoClassUnder(db, "Rows", &sql.Rows{})
+		rows := mrb.DefineGoClassUnder(db, "Rows", (*sql.Rows)(nil))
 		mrb.DefineMethod(rows, "each", rowsEach, mrb.ArgsBlock())
 		mrb.DefineMethod(rows, "row", rowsRow, mrb.ArgsNone())
 
-		_ = mrb.DefineGoClassUnder(db, "Row", &sql.Row{})
+		_ = mrb.DefineGoClassUnder(db, "Row", (*sql.Row)(nil))
 		//mrb.DefineMethod(row, "values", row_values, mrb.ARGS_NONE())
 
-		_ = mrb.DefineGoClassUnder(db, "Stmt", &sql.Stmt{})
-		_ = mrb.DefineGoClassUnder(db, "Tx", &sql.Tx{})
+		_ = mrb.DefineGoClassUnder(db, "Stmt", (*sql.Stmt)(nil))
+		_ = mrb.DefineGoClassUnder(db, "Tx", (*sql.Tx)(nil))
+		return nil
 	})
 }
 

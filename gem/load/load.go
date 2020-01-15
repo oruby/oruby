@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("load", func(mrb *oruby.MrbState) {
+	oruby.Gem("load", func(mrb *oruby.MrbState) interface{} {
 		loadPath := mrb.AryNew()
 		mrb.SetGV("$LOAD_PATH", loadPath)
 		mrb.SetGV("$:", loadPath)
@@ -30,6 +30,7 @@ func init() {
 		mrb.ModuleClass().DefineMethod("autoload?", loadAutoloadP, mrb.ArgsReq(1))
 		mrb.DefineGlobalFunction("autoload", loadAutoload, mrb.ArgsReq(2))
 		mrb.DefineGlobalFunction("autoload?", loadAutoloadP, mrb.ArgsReq(1))
+		return nil
 	})
 }
 
@@ -198,7 +199,7 @@ func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
 
 func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	// If there is implemented Go feature
-	if _, err := mrb.Require(feature); err == nil {
+	if _, err := mrb.Resolve(feature); err == nil {
 		return mrb.FalseValue()
 	}
 
@@ -208,7 +209,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	}
 
 	// Check if fullpath name is already loaded
-	if _, err := mrb.Require(name); err == nil {
+	if _, err := mrb.Resolve(name); err == nil {
 		return mrb.FalseValue()
 	}
 

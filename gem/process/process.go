@@ -8,12 +8,15 @@ import (
 	"time"
 
 	"github.com/oruby/oruby"
+	//_ "github.com/oruby/oruby/gem/thread"
+	_ "github.com/oruby/oruby/gem/signal"
 )
 
 func init() {
-	oruby.Gem("process", func(mrb *oruby.MrbState) {
+	oruby.Gem("process", func(mrb *oruby.MrbState) interface{} {
 		// Require thread, ignore if it is not included in gems
-		_, _ = mrb.Require("thread")
+		// mrb.Require("thread")
+		mrb.Require("signal")
 
 		mrb.SetGV("$$", os.Getpid())
 		mrb.SetGV("$?", nil) // last_status
@@ -46,9 +49,8 @@ func init() {
 		mrb.DefineMethod(mProc, "waitall", proc_waitall, 0)
 		mrb.DefineMethod(mProc, "detach", procDetach, mrb.ArgsReq(1))
 
-		cThread := mrb.ClassGet("Thread")
-		if !cThread.IsNil() {
-			cWaiter := mrb.DefineClassUnder(mProc, "Waiter", cThread)
+		if mrb.ClassDefined("Thread") {
+			cWaiter := mrb.DefineClassUnder(mProc, "Waiter", mrb.ClassGet("Thread"))
 			cWaiter.UndefClassMethod("new")
 			cWaiter.DefineMethod("pid", detach_process_pid, 0)
 		}
@@ -75,25 +77,25 @@ func init() {
 
 		setConsts(mProc)
 
-		mProc.Const("RLIM_SAVED_MAX", syscall.RLIM_INFINITY)
-		mProc.Const("RLIM_INFINITY", syscall.RLIM_INFINITY)
-		mProc.Const("RLIM_SAVED_CUR", syscall.RLIM_INFINITY)
-		mProc.Const("RLIMIT_AS", syscall.RLIMIT_AS)
-		mProc.Const("RLIMIT_CORE", syscall.RLIMIT_CORE)
-		mProc.Const("RLIMIT_CPU", syscall.RLIMIT_CPU)
-		mProc.Const("RLIMIT_DATA", syscall.RLIMIT_DATA)
-		mProc.Const("RLIMIT_FSIZE", syscall.RLIMIT_FSIZE)
-		//mProc.Const("RLIMIT_MEMLOCK", syscall.RLIMIT_MEMLOCK)
-		//mProc.Const("RLIMIT_MSGQUEUE", syscall.RLIMIT_MSGQUEUE)
-		//mProc.Const("RLIMIT_MSGQUEUE", syscall.RLIMIT_MSGQUEUE)
-		//mProc.Const("RLIMIT_NICE", syscall.RLIMIT_NICE)
-		mProc.Const("RLIMIT_NOFILE", syscall.RLIMIT_NOFILE)
-		//mProc.Const("RLIMIT_NPROC", syscall.RLIMIT_NPROC)
-		//mProc.Const("RLIMIT_RSS", syscall.RLIMIT_RSS)
-		//mProc.Const("RLIMIT_RTPRIO", syscall.RLIMIT_RTPRIO)
-		//mProc.Const("RLIMIT_RTTIME", syscall.RLIMIT_RTTIME)
-		//mProc.Const("RLIMIT_SBSIZE", syscall.RLIMIT_SBSIZE)
-		mProc.Const("RLIMIT_STACK", syscall.RLIMIT_STACK)
+		mProc.Const("RLIM_SAVED_MAX", RLIM_INFINITY)
+		mProc.Const("RLIM_INFINITY", RLIM_INFINITY)
+		mProc.Const("RLIM_SAVED_CUR", RLIM_INFINITY)
+		mProc.Const("RLIMIT_AS", RLIMIT_AS)
+		mProc.Const("RLIMIT_CORE", RLIMIT_CORE)
+		mProc.Const("RLIMIT_CPU", RLIMIT_CPU)
+		mProc.Const("RLIMIT_DATA", RLIMIT_DATA)
+		mProc.Const("RLIMIT_FSIZE", RLIMIT_FSIZE)
+		//mProc.Const("RLIMIT_MEMLOCK", RLIMIT_MEMLOCK)
+		//mProc.Const("RLIMIT_MSGQUEUE", RLIMIT_MSGQUEUE)
+		//mProc.Const("RLIMIT_MSGQUEUE", RLIMIT_MSGQUEUE)
+		//mProc.Const("RLIMIT_NICE", RLIMIT_NICE)
+		mProc.Const("RLIMIT_NOFILE", RLIMIT_NOFILE)
+		//mProc.Const("RLIMIT_NPROC", RLIMIT_NPROC)
+		//mProc.Const("RLIMIT_RSS", RLIMIT_RSS)
+		//mProc.Const("RLIMIT_RTPRIO", RLIMIT_RTPRIO)
+		//mProc.Const("RLIMIT_RTTIME", RLIMIT_RTTIME)
+		//mProc.Const("RLIMIT_SBSIZE", RLIMIT_SBSIZE)
+		mProc.Const("RLIMIT_STACK", RLIMIT_STACK)
 
 		mrb.DefineModuleFunc(mProc, "uid", os.Getuid)
 		mrb.DefineModuleFunc(mProc, "uid=", syscall.Setuid)
@@ -104,7 +106,7 @@ func init() {
 		mrb.DefineModuleFunc(mProc, "egid", syscall.Getegid)
 		mrb.DefineModuleFunc(mProc, "egid=", syscall.Setegid)
 		mrb.DefineModuleFunc(mProc, "initgroups", proc_initgroups, 2)
-		mrb.DefineModuleFunc(mProc, "groups", proc_getgroups, 0)
+		mrb.DefineModuleFunc(mProc, "groups", os.Getgroups)
 		mrb.DefineModuleFunc(mProc, "groups=", proc_setgroups, 1)
 		mrb.DefineModuleFunc(mProc, "maxgroups", proc_getmaxgroups, 0)
 		mrb.DefineModuleFunc(mProc, "maxgroups=", proc_setmaxgroups, 1)
@@ -160,6 +162,7 @@ func init() {
 		mrb.DefineModuleFunc(mSys, "issetugid", syscall.Issetugid)
 
 		initPlatform(mrb, mProc, mSys)
+		return nil
 	})
 }
 
@@ -207,12 +210,6 @@ func procKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	for i := 1; i < args.Len(); i++ {
 		pid := args.ItemDef(i, mrb.NilValue())
-
-		p, err := os.FindProcess(pid.Int())
-		if err != nil {
-			return mrb.NilValue()
-		}
-
 		err := platformKill(pid.Int(), sig.Int())
 		if err != nil {
 			return mrb.RaiseError(err)

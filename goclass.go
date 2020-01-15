@@ -108,8 +108,9 @@ func (mrb *MrbState) GoValue(obj interface{}) Value {
 // NewGoInstance creates new object instance for existing Go object
 // it skips "initialize" method, but calls "after_init" so IVs could be set
 func (c RClass) NewGoInstance(obj interface{}) (Value, error) {
+	mrbObjectClass := c.mrb.p.object_class
 	// For non-plain ruby objects, check if class is registered with Go
-	if c.p != c.mrb.ObjectClass().p {
+	if c.p != mrbObjectClass {
 		classType, ok := c.mrb.getHook(unsafe.Pointer(c.p)).(reflect.Type)
 		if ok {
 			argType := reflect.TypeOf(obj)
@@ -123,11 +124,12 @@ func (c RClass) NewGoInstance(obj interface{}) (Value, error) {
 	v := c.mrb.DataWrapInterface(c, obj).Value()
 
 	// call "after_init" if defined
-	if c.p != c.mrb.ObjectClass().p && c.mrb.MethodExists(c, c.mrb.afterInitSym) {
-		_, _ = c.mrb.Funcall(v, c.mrb.afterInitSym)
+	var err error
+	if c.p != mrbObjectClass && c.mrb.MethodExists(c, c.mrb.afterInitSym) {
+		_, err = c.mrb.Funcall(v, c.mrb.afterInitSym)
 	}
 
-	return v, nil
+	return v, err
 }
 
 // Data return underlying Go value of oruby object
@@ -272,6 +274,11 @@ func (c RClass) DefineModuleFunc(name string, f interface{}) {
 // DefineClassUnder defines class under module or class, descending from super
 func (c RClass) DefineClassUnder(name string, super RClass) RClass {
 	return c.mrb.DefineClassUnder(c, name, super)
+}
+
+// Call shortcut for mrb.Call(klass, method, args)
+func (c RClass) Call(name string, args ...interface{}) Value {
+	return c.mrb.Call(c, name, args...)
 }
 
 // AttrReader creates getter method for instance variable with same name.

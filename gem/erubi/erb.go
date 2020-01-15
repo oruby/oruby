@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("erb", func(mrb *oruby.MrbState) {
+	oruby.Gem("erb", func(mrb *oruby.MrbState) interface{} {
 		erb := mrb.DefineClass("ERB", mrb.ObjectClass())
 		erb.DefineClassMethod("version", erbVersion, mrb.ArgsNone())
 		erb.DefineClassMethod("initialize", erbInit, mrb.ArgsArg(1, 3))
@@ -19,6 +19,7 @@ func init() {
 		//erubi.DefineMethod("result_with_hash", erbResultWithHash, mrb.Args);
 		//erubi.DefineMethod("run", erbRun, mrb.Args);
 		//erubi.DefineMethod("set_eoutvar", erbsetEoutvar, mrb.Args);
+		return nil
 	})
 }
 

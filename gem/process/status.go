@@ -11,7 +11,7 @@ type status struct {
 	Pid          int
 	IsStopped    bool
 	Stopsig      int
-	IsSignaled   int
+	IsSignaled   bool
 	Termsig      int
 	IsExited     bool
 	Exitstatus   int

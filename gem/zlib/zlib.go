@@ -12,7 +12,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("zlib", func(mrb *oruby.MrbState) {
+	oruby.Gem("zlib", func(mrb *oruby.MrbState) interface{} {
 		zlibModule := mrb.DefineModule("Zlib")
 
 		zlibModule.Const("ASCII", 1)
@@ -68,6 +68,8 @@ func init() {
 		mrb.DefineClassUnder(zlibModule, "LengthError", gzerr)
 		mrb.DefineClassUnder(zlibModule, "CRCError", gzerr)
 		mrb.DefineClassUnder(zlibModule, "NoFooter", gzerr)
+
+		return nil
 	})
 }
 

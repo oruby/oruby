@@ -61,12 +61,12 @@ func (runner *cmdRunner) parseOptionsOS(options oruby.Value) {
 }
 
 func (runner *cmdRunner) run() (int, error) {
-	// runner.cmd.SysProcAttr.Ptrace = True;
 	err := runner.cmd.Start()
 	if err != nil {
 		return 0, err
 	}
 
+	//TODO: ptrace with runner.cmd.SysProcAttr.Ptrace
 	return runner.cmd.Process.Pid, err
 }
 
@@ -78,7 +78,19 @@ func platformWait(pid, flags int, last_state *status) (int, error) {
 		return ret, err
 	}
 
-	return setLastState(mrb, waitStatus)
+	last_state.Pid = pid
+	last_state.Exitstatus = waitStatus.ExitStatus()
+	last_state.ToI = uint32(waitStatus.ExitStatus())
+	last_state.IsCoredump = waitStatus.CoreDump()
+	last_state.IsExited   = waitStatus.Exited()
+	last_state.IsSignaled = waitStatus.Signaled()
+	last_state.IsStopped  = waitStatus.Stopped()
+	last_state.IsSucess   = waitStatus.ExitStatus() == 0
+	last_state.platformData = &waitStatus
+	last_state.Stopsig  = waitStatus.StopSignal()
+	last_state.Termsig = waitStatus.Signal()
+
+	return int(last_state.ToI), nil
 }
 
 func platformKill(pid, sig int) error {

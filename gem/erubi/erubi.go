@@ -14,7 +14,7 @@ const (
 )
 
 func init() {
-	oruby.Gem("erubi", func(mrb *oruby.MrbState) {
+	oruby.Gem("erubi", func(mrb *oruby.MrbState) interface{} {
 		erubi := mrb.DefineModule("Erubi")
 		erubi.Const("VERSION", Version)
 		erubi.Const("RANGE_ALL", mrb.RangeNew(mrb.FixnumValue(0), mrb.FixnumValue(-1), true))
@@ -29,6 +29,7 @@ func init() {
 		erb := mrb.DefineClass("ERB", mrb.ObjectClass())
 		erb.DefineClassMethod("version", erbVersion, mrb.ArgsNone())
 		erb.DefineMethod("initialize", erbInit, mrb.ArgsArg(1, 3))
+		return nil
 	})
 }
 

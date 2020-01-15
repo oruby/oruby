@@ -16,7 +16,7 @@ const (
 )
 
 func init() {
-	oruby.Gem("regexp", func(mrb *oruby.MrbState) {
+	oruby.Gem("regexp", func(mrb *oruby.MrbState) interface{} {
 		scanner := mrb.DefineGoClass("StringScanner", NewStringScanner)
 		scanner.DefineAlias("exist?", "exist")
 
@@ -61,6 +61,7 @@ func init() {
 		mrb.DefineGlobalConst("Regexp", cls)
 
 		initString(mrb)
+		return nil
 	})
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("json", func(mrb *oruby.MrbState) {
+	oruby.Gem("json", func(mrb *oruby.MrbState) interface{} {
 		jsonModule := mrb.DefineModule("JSON")
 
 		jsonModule.DefineClassMethod("stringify", mrbJSONStringify, mrb.ArgsArg(1, 1))
@@ -36,6 +36,7 @@ func init() {
 		// max_nesting: The maximum depth of nesting allowed in the parsed data structures. Enable depth checking with :max_nesting => anInteger. The parse! methods defaults to not doing max depth checking: This can be dangerous if someone wants to fill up your stack.
 		// allow_nan: If set to true, allow NaN, Infinity, and -Infinity in defiance of RFC 4627 to be parsed by the Parser. This option defaults to true.
 		// create_additions: If set to false, the Parser doesn't create additions even if a matching class and ::create_id was found. This option defaults to true.
+		return nil
 	})
 }
 

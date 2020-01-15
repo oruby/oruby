@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("base64", func(mrb *oruby.MrbState) {
+	oruby.Gem("base64", func(mrb *oruby.MrbState) interface{} {
 		bas64 := mrb.DefineModule("Base64")
 
 		bas64.DefineClassMethod("decode64", base64Decode, mrb.ArgsReq(1))
@@ -15,6 +15,8 @@ func init() {
 		bas64.DefineClassMethod("strict_encode64", base64StrictEncode, mrb.ArgsReq(1))
 		bas64.DefineClassMethod("urlsafe_decode64", base64UrlSafeEncode, mrb.ArgsArg(1, 1))
 		bas64.DefineClassMethod("urlsafe_encode64", base64UrlSafeDecode, mrb.ArgsArg(1, 1))
+
+		return nil
 	})
 }
 
