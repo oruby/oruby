@@ -1,17 +1,16 @@
 package oruby
 
 import (
-	"errors"
 	"fmt"
 )
 
-var gems = make(map[string]func(*MrbState))
+var gems = make(map[string]func(*MrbState)interface{})
 
 //type MrbInitFunc func(*MrbState)
 
 // Gem register makes a gem available by the provided name.
 // If Register is called twice with the same name it panics.
-func Gem(name string, initFn func(*MrbState)) {
+func Gem(name string, initFn func(*MrbState)interface{}) {
 	if name == "" {
 		panic("error - empty name not allowed")
 	}
@@ -28,10 +27,20 @@ func GemExists(name string) bool {
 	return exists
 }
 
-// Require inits gem from available Go gems if not alreadyinitialized
-func (mrb *MrbState) Require(name string) (bool, error) {
+// GemData retreives data initialized with to gem
+func (mrb *MrbState) GemData(name string) interface{} {
+	return mrb.features[name]
+}
+
+// Resolve inits gem from available Go gems if not already initialized
+// returns:
+//    false - if feature is already initialized
+//    true - if feature is found and initialized
+//
+//    error is returned if feature cannot be found
+func (mrb *MrbState) Resolve(name string) (bool, error) {
 	if name == "" {
-		return false, errors.New("error - empty")
+		return false, EArgumentError("error - empty feature name")
 	}
 
 	_, loaded := mrb.features[name]
@@ -41,12 +50,37 @@ func (mrb *MrbState) Require(name string) (bool, error) {
 
 	initFn, exists := gems[name]
 	if !exists {
-		return false, fmt.Errorf("error loading '%v'", name)
+		return false, EKeyError("error loading '%v'", name)
 	}
 
-	initFn(mrb)
-	mrb.features[name] = struct{}{}
+	mrb.features[name] = initFn(mrb)
 	return true, nil
+}
+
+
+// Require inits gem from available Go gems if not already initialized
+// returns:
+//    false - if feature is already initialized
+//    true - if feature is found and initialized
+//
+// Panics is feature cannot be found
+func (mrb *MrbState) Require(name string) bool {
+	if name == "" {
+		panic("error - empty feature name")
+	}
+
+	_, loaded := mrb.features[name]
+	if loaded {
+		return false
+	}
+
+	initFn, exists := gems[name]
+	if !exists {
+		panic(fmt.Sprintf("error loading '%v'", name))
+	}
+
+	mrb.features[name] = initFn(mrb)
+	return true
 }
 
 // FeatureAdd sets feature as loaded

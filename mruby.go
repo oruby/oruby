@@ -12,12 +12,9 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"os"
-	"os/signal"
 	"reflect"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 )
@@ -47,7 +44,7 @@ type MrbAtexitFunc func(mrb *MrbState)
 
 // GoCallRef key for keeping call references
 type GoCallRef struct {
-	class RClassPtr
+	klass *C.struct_RClass
 	id    C.mrb_sym
 }
 
@@ -61,8 +58,8 @@ type MrbState struct {
 	classmap     map[reflect.Type]unsafe.Pointer
 	hooks        map[unsafe.Pointer]interface{}
 	funcs        []interface{}
-	abortChan    chan os.Signal
-	features     map[string]struct{} // require stash
+	closeChan    chan struct{}
+	features     map[string]interface{} // features stash
 	nilValue     Value               // cached nil Value
 	afterInitSym MrbSym              // cached mrb.Intern("after_init")
 }
@@ -83,8 +80,8 @@ func NewCore() (*MrbState, error) {
 		make(map[reflect.Type]unsafe.Pointer),
 		make(map[unsafe.Pointer]interface{}),
 		make([]interface{}, 0, 255),
-		make(chan os.Signal, 1),
-		make(map[string]struct{}),
+		make(chan struct{}),
+		make(map[string]interface{}),
 		Value{C.mrb_nil_value()},
 		0,
 	}
@@ -149,6 +146,9 @@ func (v Value) IsString() bool { return C._mrb_type(v.v) == MrbTTString }
 // IsData checks if oruby value is RData value
 func (v Value) IsData() bool { return C._mrb_type(v.v) == MrbTTData }
 
+// IsProc checks if oruby value is oruby RProc value
+func (v Value) IsProc() bool { return C._mrb_type(v.v) == MrbTTProc }
+
 // ToValue implements Valuer interfacs for Value
 func (v Value) ToValue(*MrbState) MrbValue { return v }
 
@@ -197,9 +197,16 @@ type MrbCallInfo struct{ p *C.struct_mrb_call_info }
 // MrbContext call
 type MrbContext struct{ p *C.struct_mrb_context }
 
+func (mrb *MrbState) CloseChan() chan struct{} {
+	return mrb.closeChan
+}
+
 // Close oruby state
 func (mrb *MrbState) Close() {
 	if mrb.p != nil {
+		// Signal all mrb goroutines that we are closing
+		close(mrb.closeChan)
+
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -219,8 +226,7 @@ func New() (*MrbState, error) {
 
 	// Init all Go gems
 	for k, geminit := range gems {
-		geminit(mrb)
-		mrb.features[k] = struct{}{}
+		mrb.features[k] = geminit(mrb)
 	}
 
 	return mrb, nil
@@ -897,7 +903,7 @@ func go_mrb_func_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 	mrb := states[int(C._mrb_get_idx(cmrb))]
 
 	mrb.Lock()
-	f := mrb.mrbFuncs[GoCallRef{RClassPtr{cmrb.c.ci.target_class}, cmrb.c.ci.mid}]
+	f := mrb.mrbFuncs[GoCallRef{cmrb.c.ci.target_class, cmrb.c.ci.mid}]
 	mrb.Unlock()
 
 	if f == nil {
@@ -958,7 +964,7 @@ func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, co
 	C.mrb_define_class_method(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
 
 	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{RClassPtr{klass.p.c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
+	mrb.mrbFuncs[GoCallRef{klass.p.c, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
 	mrb.Unlock()
 }
 
@@ -971,7 +977,7 @@ func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT,
 	C.mrb_define_singleton_method(mrb.p, objPtr, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
 
 	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{RClassPtr{objPtr.c}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
+	mrb.mrbFuncs[GoCallRef{objPtr.c, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
 	mrb.Unlock()
 }
 
@@ -984,8 +990,8 @@ func (mrb *MrbState) DefineModuleFunction(klass RClass, name string, f MrbFuncT,
 	C.mrb_define_module_function(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
 
 	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{RClassPtr{klass.p}, mid}] = f
-	mrb.mrbFuncs[GoCallRef{RClassPtr{klass.p.c}, mid}] = f
+	mrb.mrbFuncs[GoCallRef{klass.p, mid}] = f
+	mrb.mrbFuncs[GoCallRef{klass.p.c, mid}] = f
 	mrb.Unlock()
 }
 
@@ -1002,7 +1008,7 @@ func (mrb *MrbState) UndefMethod(klass RClass, name string) {
 	defer C.free(unsafe.Pointer(cname))
 
 	mrb.Lock()
-	delete(mrb.mrbFuncs, GoCallRef{RClassPtr{klass.p}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
+	delete(mrb.mrbFuncs, GoCallRef{klass.p, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
 	mrb.Unlock()
 
 	C.mrb_undef_method(mrb.p, klass.p, cname)
@@ -1014,7 +1020,7 @@ func (mrb *MrbState) UndefClassMethod(klass RClass, name string) {
 	defer C.free(unsafe.Pointer(cname))
 
 	mrb.Lock()
-	delete(mrb.mrbFuncs, GoCallRef{RClassPtr{klass.p}, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
+	delete(mrb.mrbFuncs, GoCallRef{klass.p, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
 	mrb.Unlock()
 
 	C.mrb_undef_class_method(mrb.p, klass.p, cname)
@@ -2207,7 +2213,7 @@ func (mrb *MrbState) ObjIsInstanceOf(obj MrbValue, klass RClass) bool {
 // FuncBasicP returns true if function is basic method id
 func (mrb *MrbState) FuncBasicP(obj MrbValue, mid MrbSym, f MrbFuncT) bool {
 	mrb.Lock()
-	f2 := mrb.mrbFuncs[GoCallRef{RCLASS(obj), C.mrb_sym(mid)}]
+	f2 := mrb.mrbFuncs[GoCallRef{RCLASS(obj).p, C.mrb_sym(mid)}]
 	mrb.Unlock()
 
 	fv1 := reflect.ValueOf(f)
@@ -2589,14 +2595,7 @@ func (mrb *MrbState) try(f func() C.mrb_value) (result Value, err error) {
 	mrb.p.jmp = nil
 	defer mrbErrorHandler(mrb, old, &err)
 
-	signal.Notify(mrb.abortChan, syscall.SIGABRT)
 	result = Value{f()}
-	signal.Stop(mrb.abortChan)
-
-	for len(mrb.abortChan) > 0 {
-		err = mrb.Err()
-		<-mrb.abortChan
-	}
 
 	return result, err
 }
@@ -2606,13 +2605,6 @@ func (mrb *MrbState) tryE(f func()) (err error) {
 	mrb.p.jmp = nil
 	defer mrbErrorHandler(mrb, old, &err)
 
-	signal.Notify(mrb.abortChan, syscall.SIGABRT)
 	f()
-	signal.Stop(mrb.abortChan)
-
-	for len(mrb.abortChan) > 0 {
-		err = mrb.Err()
-		<-mrb.abortChan
-	}
 	return err
 }
