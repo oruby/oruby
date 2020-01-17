@@ -169,14 +169,12 @@ func init() {
 func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetAllArgs())
 	defer runner.cleanup()
-
-	syscall.Exec(runner.cmd.Args[0],runner.cmd.Args, runner.cmd.Env)
-
-	err := runner.cmd.Start()
+	//TODO: start shell
+	err := syscall.Exec(runner.cmd.Args[0],runner.cmd.Args, runner.cmd.Env)
 	if err != nil {
-		return 0, err
+		return mrb.RaiseError(oruby.EError("SystemCallError", err.Error()))
 	}
-	return mrb.FixnumValue(pid)
+	return mrb.NilValue()
 }
 
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
