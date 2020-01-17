@@ -4,15 +4,49 @@ import (
 	"github.com/oruby/oruby"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestTrap(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	// mSignal.DefineModuleFunction("trap", sigTrap, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
-	// syscall.Kill(syscall.Getpid(), syscall.SIGINT)
-	t.Fatal("NOT READY YET")
+	_, err := mrb.LoadString(`
+		$testv = 0
+
+		Signal.trap("USR1") {
+			$testv = 1
+		}
+
+		Signal.trap(0) {
+			$testv = 2
+			p "Exited."
+		}
+
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v := mrb.GetGV("$testv")
+
+	if !v.IsFixnum() || v.Int() != 0 {
+		t.Fatalf("expected 0 got %v", mrb.Inspect(v))
+	}
+
+	err = syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Give some time for signal to be processed
+	<-time.After(10 * time.Millisecond)
+
+	v2 := mrb.GetGV("$testv").Int()
+
+	if v2 != 1 {
+		t.Fatalf("expected 1 got %v", v2)
+	}
 }
 
 func TestList(t *testing.T) {

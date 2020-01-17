@@ -166,6 +166,19 @@ func init() {
 	})
 }
 
+func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	runner := parseArgs(mrb, mrb.GetAllArgs())
+	defer runner.cleanup()
+
+	syscall.Exec(runner.cmd.Args[0],runner.cmd.Args, runner.cmd.Env)
+
+	err := runner.cmd.Start()
+	if err != nil {
+		return 0, err
+	}
+	return mrb.FixnumValue(pid)
+}
+
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetAllArgs())
 	defer runner.cleanup()

@@ -62,6 +62,7 @@ type MrbState struct {
 	features     map[string]interface{} // features stash
 	nilValue     Value               // cached nil Value
 	afterInitSym MrbSym              // cached mrb.Intern("after_init")
+	args         []C.mrb_value
 }
 
 // NewCore create state is MrbState without gems,
@@ -84,6 +85,7 @@ func NewCore() (*MrbState, error) {
 		make(map[string]interface{}),
 		Value{C.mrb_nil_value()},
 		0,
+		make([]C.mrb_value, 0, 16),
 	}
 
 	mrb.afterInitSym = mrb.Intern("after_init")
@@ -211,8 +213,8 @@ func (mrb *MrbState) Close() {
 		defer mu.Unlock()
 
 		idx := int(C._mrb_get_idx(mrb.p))
-		C.mrb_close(mrb.p)
 		states[idx] = nil
+		C.mrb_close(mrb.p)
 		mrb.p = nil
 	}
 }
@@ -2358,7 +2360,7 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 	mrb := states[int(C._mrb_get_idx(cmrb))]
 	var result []reflect.Value
 
-	//println("Calling", mrb.ClassOf(Value{*self}).Name(), mrb.SymString(mrb.GetMID()))
+	//println("\nCalling", mrb.ClassOf(Value{*self}).Name(), mrb.SymString(mrb.GetMID()))
 
 	v := C.mrb_proc_cfunc_env_get(cmrb, C.mrb_int(0))
 	ff, _ := mrb.getFunc(uint(C._mrb_fixnum(v)))

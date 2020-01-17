@@ -10,13 +10,15 @@ import (
 
 var signals map[string]int
 
-type handlers struct {
+type sigHandlers struct {
 	c chan os.Signal
 	current map[os.Signal]oruby.Value
+	exitHandler oruby.Value
 }
 
 func init() {
 	signals = make(map[string]int)
+	signals["EXIT"] = 0
 	signals["INT"] = int(syscall.SIGINT)
 	signals["KILL"] = int(syscall.SIGKILL)
 	platformInitSignals()
@@ -37,7 +39,7 @@ func init() {
 		eInterrupt := mrb.DefineClass("Interrupt", eSignal)
 		eInterrupt.DefineMethod("initialize", interruptInit, mrb.ArgsOpt(1))
 
-		return &handlers{
+		return &sigHandlers{
 			current: make(map[os.Signal]oruby.Value),
 		}
 	})
@@ -78,8 +80,47 @@ func getSignal(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
 	return 0, "", oruby.EArgumentError("signal unknown: %v", sig)
 }
 
+func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
+	if handlers.c != nil {
+		return
+	}
+
+	handlers.c = make(chan os.Signal, 1)
+
+	go func(){
+		for {
+			select {
+			case sig := <-handlers.c:
+				if sig == nil {
+					return
+				}
+				cmd, ok := handlers.current[sig]
+				if ok && cmd.IsProc() {
+					_,_=mrb.Yield(cmd, mrb.NilValue())
+				}
+			case <-mrb.CloseChan():
+				// gracefull close goroutine on mrb state close
+				signal.Stop(handlers.c)
+				close(handlers.c)
+
+				// zero signal handler
+				cmd, ok := handlers.current[syscall.Signal(0)]
+				if ok && cmd.IsProc() {
+					_,_=mrb.Yield(cmd, mrb.NilValue())
+				}
+
+				handlers.current = nil
+				return
+			}
+		}
+	}()
+}
+
 func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	sigValue, command := mrb.GetArgs2(mrb.NilValue(), mrb.GetArgsBlock())
+	args , block := mrb.GetAllArgsWithBlock()
+	sigValue := args.ItemDef(0, mrb.NilValue())
+	command  := args.ItemDef(1, block)
+
 	sigID, name, err := getSignal(mrb, sigValue)
 	if err != nil {
 		return mrb.RaiseError(err)
@@ -89,34 +130,27 @@ func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.EArgumentError().Raisef("can't trap reserved signal: %v", name)
 	}
 
-	hdlrs := mrb.GemData("signal").(*handlers)
+	handlers := mrb.GemData("signal").(*sigHandlers)
 	sig := syscall.Signal(sigID)
+	var prev oruby.Value
 
-	prev := hdlrs.current[sig]
-	hdlrs.current[sig] = command
+	// EXIT signal 0 handler
+	if sigID == 0 {
+		prev = handlers.exitHandler
+		handlers.exitHandler = command
+		if command.IsProc() {
+			trap(mrb, handlers)
+			return prev
+		}
+	}
+
+	prev = handlers.current[sig]
+	handlers.current[sig] = command
 
 	if command.IsProc() {
-
-		if len(hdlrs.c) == 0 {
-			hdlrs.c = make(chan os.Signal, 1)
-			go func(){
-				for {
-					select {
-					case sig := <-hdlrs.c:
-						if cmd, ok := hdlrs.current[sig]; ok && cmd.IsProc() {
-							mrb.Call(cmd, "call")
-						}
-					case <-mrb.CloseChan():
-						// gracefull close goroutine on mrb state close
-						// TODO: call zero signal handler?
-						return
-					}
-				}
-			}()
-		}
-		signal.Notify(hdlrs.c, sig)
+		trap(mrb, handlers)
+		signal.Notify(handlers.c, sig)
 		return prev
-
 	}
 
 	if command.IsString() {

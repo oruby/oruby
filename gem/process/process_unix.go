@@ -87,8 +87,8 @@ func platformWait(pid, flags int, last_state *status) (int, error) {
 	last_state.IsStopped  = waitStatus.Stopped()
 	last_state.IsSucess   = waitStatus.ExitStatus() == 0
 	last_state.platformData = &waitStatus
-	last_state.Stopsig  = waitStatus.StopSignal()
-	last_state.Termsig = waitStatus.Signal()
+	last_state.Stopsig  = int(waitStatus.StopSignal())
+	last_state.Termsig  = int(waitStatus.Signal())
 
 	return int(last_state.ToI), nil
 }
