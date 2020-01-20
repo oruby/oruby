@@ -368,7 +368,7 @@ func TestMrbFuncT(t *testing.T) {
 	}, ArgsNone())
 
 	mrb.DefineMethod(cls, "x=", func(mrb *MrbState, self Value) MrbValue {
-		v := mrb.Value(mrb.Args()[0])
+		v := mrb.GetArgsFirst()
 
 		_ = mrb.IVSet(self, x, v)
 		return v
@@ -381,7 +381,7 @@ func TestMrbFuncT(t *testing.T) {
 		v := mrb.IVGet(self, x)
 
 		if len(args) > 0 {
-			incr = args[0].(int)
+			incr = args[0].Fixnum()
 		}
 
 		nv := mrb.NumPlus(v, mrb.Value(incr))

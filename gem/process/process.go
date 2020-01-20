@@ -177,6 +177,18 @@ func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.NilValue()
 }
 
+func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	runner := parseArgs(mrb, mrb.GetAllArgs())
+	defer runner.cleanup()
+
+	pid, err := runner.run()
+	if err != nil {
+		return mrb.ERuntimeError().RaiseError(err)
+	}
+
+	return doWait(mrb, pid, 0)
+}
+
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetAllArgs())
 	defer runner.cleanup()
@@ -188,11 +200,10 @@ func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.FixnumValue(pid)
 }
 
-func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	pid, flags := mrb.GetArgs2(-1, 0)
+func doWait(mrb *oruby.MrbState, pid, flags int) oruby.MrbValue {
 	lastState := &status{}
 
-	ret, err := platformWait(pid.Int(), flags.Int(), lastState)
+	ret, err := platformWait(pid, flags, lastState)
 	if err != nil {
 		return mrb.ERuntimeError().RaiseError(err)
 	}
@@ -200,6 +211,11 @@ func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	mrb.SetGV("$?", mrb.Value(lastState))
 
 	return mrb.FixnumValue(ret)
+}
+
+func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	pid, flags := mrb.GetArgs2(-1, 0)
+	return doWait(mrb, pid.Int(), flags.Int())
 }
 
 func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -268,7 +284,7 @@ func procSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	select {
-	case <-mrb.runChan:
+	case <-mrb.ExitChan():
 		break
 	case <-time.After(duration * time.Millisecond):
 		break

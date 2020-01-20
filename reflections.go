@@ -2,8 +2,11 @@ package oruby
 
 import "C"
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"time"
 	"unsafe"
 )
 
@@ -207,3 +210,163 @@ func (mrb *MrbState) DefineGoClassUnder(outer RClass, name string, constructor i
 	klass.SetAsGoClass(constructor)
 	return klass
 }
+
+// Scan oruby value to pointed variable
+func (mrb *MrbState) Scan(o MrbValue, in interface{}) (err error) {
+	defer errorHandler(&err)
+
+	v := reflect.ValueOf(in)
+	if v.Kind() != reflect.Ptr {
+		return errors.New("scaned interface must be pointer to value")
+	}
+
+	return mrb.scanValue(o, v.Elem())
+}
+
+// Scan oruby value to pointed variable
+func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
+	velType := vel.Type()
+
+	// generic interface
+	if velType.Kind() == reflect.Interface && velType.NumMethod() == 0 {
+		vel.Set(reflect.ValueOf(mrb.Intf(o)))
+		return nil
+	}
+
+	if velType.Kind() == reflect.String {
+		s := reflect.ValueOf(mrb.String(o))
+		vel.Set(s)
+		return nil
+	}
+
+	if velType.Kind() == reflect.Bool {
+		truthy := o.Type() > MrbTTFalse
+		s := reflect.ValueOf(truthy)
+		vel.Set(s)
+		return nil
+	}
+
+	switch o.Type() {
+	case MrbTTArray:
+		{
+			if velType.Kind() != reflect.Slice {
+				return errors.New("slice type required")
+			}
+
+			var f func(MrbValue) reflect.Value
+
+			switch velType.Elem().Kind() {
+			case reflect.String:
+				f = func(v MrbValue) reflect.Value { return reflect.ValueOf(mrb.String(o)) }
+			case reflect.Int, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int8,
+				reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint8:
+				f = func(v MrbValue) reflect.Value {
+					in, _ := mrb.Integer(o)
+					return reflect.ValueOf(MrbFixnum(in)).Convert(velType.Elem())
+				}
+			default:
+				f = func(v MrbValue) reflect.Value { return reflect.ValueOf(mrb.Intf(o)).Convert(velType.Elem()) }
+			}
+
+			for i := 0; i < RArrayLen(o); i++ {
+				av := mrb.AryRef(o, i)
+				reflect.Append(vel, f(av))
+			}
+
+			return nil
+		}
+
+	case MrbTTHash:
+		{
+			keys := mrb.HashKeys(o)
+			kcnt := RArrayLen(keys)
+
+			// Unmarshall to map
+			switch velType.Kind() {
+			case reflect.Map:
+				switch m := vel.Interface().(type) {
+				case map[string]interface{}:
+					for i := 0; i < kcnt; i++ {
+						key := mrb.AryRef(keys, i)
+						val := mrb.HashGet(o, key)
+						m[mrb.String(key)] = mrb.Intf(val)
+					}
+
+				case map[interface{}]interface{}:
+					for i := 0; i < kcnt; i++ {
+						key := mrb.AryRef(keys, i)
+						val := mrb.HashGet(o, key)
+						m[mrb.Intf(key)] = mrb.Intf(val)
+					}
+
+				default:
+					return errors.New("unmarshaling maps is supported to [string]interface{} or [interface{}]interface{}")
+				}
+
+			case reflect.Struct:
+
+				for i := 0; i < kcnt; i++ {
+					key := mrb.AryRef(keys, i)
+					val := mrb.HashGet(o, key)
+					field := vel.FieldByName(mrb.String(key))
+
+					if field.IsValid() && field.CanSet() && field.Type().PkgPath() == "" {
+						field.Set(reflect.ValueOf(mrb.Intf(val)).Convert(field.Type()))
+					}
+				}
+
+			default:
+				return errors.New("supported types for hash scans are Go maps with string or interface keys and structs, not " + velType.Kind().String())
+			}
+
+			return nil
+		}
+
+	case MrbTTObject:
+		{
+			unmarshalSym := mrb.Intern("unmarshal")
+			if !mrb.MethodExists(mrb.ClassOf(o), unmarshalSym) {
+				return errors.New("oruby Object does not support unmarshaling")
+			}
+
+			_, err = mrb.Funcall(o, unmarshalSym, vel.Interface())
+			return err
+		}
+	case MrbTTData:
+		{
+			data := reflect.ValueOf(mrb.Data(o))
+			if velType == data.Type() {
+				vel.Set(data)
+				return nil
+			}
+
+			if mrb.ObjIsKindOf(o, mrb.ClassGet("Time")) && (velType == reflect.TypeOf(time.Time{})) {
+				vtoi := mrb.Call(o, "to_i")
+				vusec := mrb.Call(o, "usec")
+				t := time.Unix(int64(MrbFixnum(vtoi)), int64(MrbFixnum(vusec))*1000000)
+				vel.Set(reflect.ValueOf(t))
+				return nil
+			}
+
+			unmarshalSym := mrb.Intern("unmarshal")
+			if mrb.MethodExists(mrb.ClassOf(o), unmarshalSym) {
+				_, err = mrb.Funcall(o, unmarshalSym, vel.Interface())
+				return err
+			}
+
+			return fmt.Errorf("unsupported interface '%v' for class '%v'", data.Type(), mrb.ClassOf(o).Name())
+		}
+
+	//case C.MRB_TT_UNDEF,
+	//case C.MRB_TT_FLOAT, C.MRB_TT_FIXNUM, C.MRB_TT_CPTR:
+	//case C.MRB_TT_CLASS, C.MRB_TT_MODULE, C.MRB_TT_SCLASS:
+	//case C.MRB_TT_PROC:
+	//case C.MRB_TT_SYMBOL:
+
+	default:
+		govalue := mrb.Intf(o)
+		vel.Set(reflect.ValueOf(govalue).Convert(velType))
+	}
+	return nil
+}
+

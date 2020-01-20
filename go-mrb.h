@@ -179,9 +179,8 @@ static void    _mrb_bug(mrb_state *mrb, const char *msg)  { mrb_bug(mrb, msg);  
 // Argument helpers
 static mrb_value
 _mrb_get_args_first(mrb_state *mrb) {
-  mrb_value arg;
-  if (mrb_get_args(mrb, "|o", &arg) > 0) {
-    return arg;
+  if (mrb_get_argc(mrb) > 0) {
+    return *mrb_get_argv(mrb);
   } else {
     return mrb_nil_value();
   }
@@ -189,12 +188,15 @@ _mrb_get_args_first(mrb_state *mrb) {
 
 static mrb_value
 _mrb_get_args_all(mrb_state *mrb) {
-  mrb_value *argv;
-  mrb_value a;
-  int argc;
+	mrb_int argc = mrb_get_argc(mrb);
+  mrb_value *argv = mrb_get_argv(mrb);
 
-  mrb_get_args(mrb, "*!", &argv, &argc);
-  return  mrb_ary_new_from_values(mrb, argc, argv);
+  return mrb_ary_new_from_values(mrb, argc, argv);
+}
+
+static mrb_value
+_mrb_get_arg(mrb_value *args, int index) {
+	return args[index];
 }
 
 static mrb_value
@@ -214,12 +216,12 @@ _mrb_get_args_3(mrb_state *mrb, mrb_value *arg1, mrb_value *arg2, mrb_value *arg
 	return mrb_get_args(mrb, "|ooo", arg1, arg2, arg3);
 }
 
-
 static mrb_value
 _mrb_get_args_block(mrb_state *mrb) {
   mrb_value arg;
 
   mrb_get_args(mrb, "&", &arg);
+
   return arg;
 }
 

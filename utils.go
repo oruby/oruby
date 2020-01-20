@@ -91,3 +91,35 @@ func (mrb *MrbState) callFunc(fn reflect.Value, args RArray) ([]reflect.Value, e
 
 	return result, nil
 }
+
+func toMapSI(mrb *MrbState, v Value) map[string]interface{} {
+	if !v.IsHash() {
+		panic("hash expected, got " + mrb.TypeName(v))
+	}
+	keys := mrb.HashKeys(v)
+	keyCount := keys.Len()
+	ret  := make(map[string]interface{}, keyCount)
+
+	for i := 0; i < keyCount; i++ {
+		key := keys.Item(i)
+		val := mrb.HashGet(v, key)
+		ret[mrb.String(key)] = mrb.Intf(val)
+	}
+	return ret
+}
+
+func toMapII(mrb *MrbState, v Value) map[interface{}]interface{} {
+	if !v.IsHash() {
+		panic("hash expected, got " + mrb.TypeName(v))
+	}
+	keys := mrb.HashKeys(v)
+	keyCount := keys.Len()
+	ret  := make(map[interface{}]interface{}, keyCount)
+
+	for i := 0; i < keyCount; i++ {
+		key := keys.Item(i)
+		val := mrb.HashGet(v, key)
+		ret[mrb.Intf(key)] = mrb.Intf(val)
+	}
+	return ret
+}

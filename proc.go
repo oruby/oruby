@@ -129,7 +129,10 @@ func MrbProcValue(p RProc) Value { return p.Value() }
 func (mrb *MrbState) ProcNew(irep MrbIrep) RProc { return RProc{C.mrb_proc_new(mrb.p, irep.p)} }
 
 // ProcPtr eturns RProc from oruby value
-func (mrb *MrbState) ProcPtr(v MrbValue) RProc {
+func (mrb *MrbState) RProc(v MrbValue) RProc {
+	if !v.Value().IsProc() {
+		panic("value is not RProc")
+	}
 	return RProc{(*C.struct_RProc)(C._mrb_ptr(v.Value().v))}
 }
 

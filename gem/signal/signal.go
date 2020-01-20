@@ -98,7 +98,7 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 				if ok && cmd.IsProc() {
 					_,_=mrb.Yield(cmd, mrb.NilValue())
 				}
-			case <-mrb.CloseChan():
+			case <-mrb.ExitChan():
 				// gracefull close goroutine on mrb state close
 				signal.Stop(handlers.c)
 				close(handlers.c)
@@ -117,7 +117,7 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 }
 
 func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args , block := mrb.GetAllArgsWithBlock()
+	args, block := mrb.GetAllArgsWithBlock()
 	sigValue := args.ItemDef(0, mrb.NilValue())
 	command  := args.ItemDef(1, block)
 

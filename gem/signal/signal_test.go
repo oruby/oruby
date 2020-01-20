@@ -11,18 +11,9 @@ func TestTrap(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	_, err := mrb.LoadString(`
-		$testv = 0
-
-		Signal.trap("USR1") {
-			$testv = 1
-		}
-
-		Signal.trap(0) {
-			$testv = 2
-			p "Exited."
-		}
-
+	_, err := mrb.Eval(`
+		Signal.trap("USR1") { $testv = 1 }
+		Signal.trap(0) { p "Exited." }
 	`)
 	if err != nil {
 		t.Fatal(err)
