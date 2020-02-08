@@ -2,7 +2,7 @@ package oruby
 
 // #cgo CFLAGS: -I${SRCDIR}/vendor/mruby/include
 // #cgo LDFLAGS: -L${SRCDIR}/vendor/mruby/build/host/lib
-// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE
+// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_METHOD_T_STRUCT
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -21,7 +21,7 @@ import (
 
 type (
 	// MrbCode alias for mrb_code
-	MrbCode uint32
+	MrbCode = byte
 	// MrbAspec alias for mrb_aspec which specifies arguments of a function
 	MrbAspec uint32
 )
@@ -53,8 +53,9 @@ type MrbState struct {
 	p *C.mrb_state
 
 	sync.Mutex
+	WaitGroup    sync.WaitGroup
 	mrbFuncs     map[GoCallRef]MrbFuncT
-	mrbProcs     map[RProc]MrbFuncT
+	mrbProcs     map[unsafe.Pointer]MrbFuncT
 	classmap     map[reflect.Type]unsafe.Pointer
 	hooks        map[unsafe.Pointer]interface{}
 	funcs        []interface{}
@@ -62,7 +63,6 @@ type MrbState struct {
 	features     map[string]interface{} // features stash
 	nilValue     Value               // cached nil Value
 	afterInitSym MrbSym              // cached mrb.Intern("after_init")
-	args         []C.mrb_value
 }
 
 // NewCore create state is MrbState without gems,
@@ -76,8 +76,9 @@ func NewCore() (*MrbState, error) {
 	mrb := &MrbState{
 		cmrb,
 		sync.Mutex{},
+		sync.WaitGroup{},
 		make(map[GoCallRef]MrbFuncT),
-		make(map[RProc]MrbFuncT),
+		make(map[unsafe.Pointer]MrbFuncT),
 		make(map[reflect.Type]unsafe.Pointer),
 		make(map[unsafe.Pointer]interface{}),
 		make([]interface{}, 0, 255),
@@ -85,7 +86,6 @@ func NewCore() (*MrbState, error) {
 		make(map[string]interface{}),
 		Value{C.mrb_nil_value()},
 		0,
-		make([]C.mrb_value, 0, 16),
 	}
 
 	mrb.afterInitSym = mrb.Intern("after_init")
@@ -99,7 +99,7 @@ func NewCore() (*MrbState, error) {
 			fmt.Print(args[0])
 			return mrb.Value(args[0])
 		}
-		return mrb.NilValue()
+		return nilValue
 	})
 
 	// Experimental gorutine support
@@ -151,8 +151,25 @@ func (v Value) IsData() bool { return C._mrb_type(v.v) == MrbTTData }
 // IsProc checks if oruby value is oruby RProc value
 func (v Value) IsProc() bool { return C._mrb_type(v.v) == MrbTTProc }
 
-// ToValue implements Valuer interfacs for Value
-func (v Value) ToValue(*MrbState) MrbValue { return v }
+// IsClass Checks if oruby value is class value
+func (v Value) IsClass() bool { return C._mrb_type(v.v) == MrbTTClass }
+
+// IsSingletonClass checks if oruby value is singleton class
+func (v Value) IsSingletonClass() bool { return C._mrb_type(v.v) == MrbTTSClass }
+
+// IsModule Checks if oruby value is module value
+func (v Value) IsModule() bool { return C._mrb_type(v.v) == MrbTTModule }
+
+// Flags returns object flags or 0 for simple values
+func (v Value) Flags() int { return int(C._mrb_value_flags(v.v)) }
+
+// MigrateTo implements ValueMigrator interfacs for Value
+func (v Value) MigrateTo(mrb2 *MrbState) Value {
+	if v.HasBasic() {
+		panic("Value must be migrated directly")
+	}
+	return Value{v.v}
+}
 
 // Interface implements convertingvalue to interfaces
 func (v Value) Interface(mrb *MrbState) interface{} { return mrb.Intf(v) }
@@ -174,9 +191,9 @@ func (v Value) Len() int {
 	}
 }
 
-// Valuer interface to create oruby world value
-type Valuer interface {
-	ToValue(*MrbState) Value
+// ValueMigrator interface to create oruby world value
+type ValueMigrator interface {
+	MigrateTo(*MrbState) Value
 }
 
 // Converter interface to retreive Go interface from ruby world value
@@ -185,13 +202,7 @@ type Converter interface {
 }
 
 // MrbSym direct alias to mrb_sym uint32 value
-type MrbSym uint32
-
-// MrbValueC is alias to direct underlying C mrb_value
-type MrbValueC C.mrb_value
-
-// MrbSymC direct alias to mrb_sym uint32 value
-type MrbSymC C.mrb_sym
+type MrbSym uint
 
 // MrbCallInfo call information
 type MrbCallInfo struct{ p *C.struct_mrb_call_info }
@@ -199,6 +210,8 @@ type MrbCallInfo struct{ p *C.struct_mrb_call_info }
 // MrbContext call
 type MrbContext struct{ p *C.struct_mrb_context }
 
+// ExitChan is signaled on MrbState close
+// goroutines that depend on mrb should return on ExitChan closing
 func (mrb *MrbState) ExitChan() chan struct{} {
 	return mrb.exitChan
 }
@@ -209,9 +222,9 @@ func (mrb *MrbState) ExitChan() chan struct{} {
 func (mrb *MrbState) Close() {
 	if mrb.p != nil {
 		// Signal all mrb goroutines that we are closing
+		// and Wait all well-behaved goroutines to finish
 		close(mrb.exitChan)
-
-		mrb.args = nil
+		mrb.WaitGroup.Wait()
 
 		C.mrb_close(mrb.p)
 
@@ -252,18 +265,23 @@ func goMrbGo(mrb *MrbState, self Value) MrbValue {
 		_ = mrb.Call(block, "call")
 	}()
 
-	return mrb.NilValue()
+	return nilValue
 }
 
 // Value converts Go interface to oruby value
 func (mrb *MrbState) Value(o interface{}) Value {
 	switch v := o.(type) {
 	case nil:
-		return mrb.NilValue()
+		return nilValue
 	case bool:
-		return MrbBoolValue(v)
+		return Bool(v)
 	case int:
 		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+	case *int:
+		if v == nil {
+			return nilValue
+		}
+		return Value{C.mrb_fixnum_value(C.mrb_int(*v))}
 	case int32:
 		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
 	case int8:
@@ -306,27 +324,47 @@ func (mrb *MrbState) Value(o interface{}) Value {
 			hash.Set(mrb.Value(key), mrb.Value(val))
 		}
 		return hash.Value()
+	case []string:
+		ary := mrb.AryNewCapa(len(v))
+		for i := 0; i < len(v); i++ {
+			ary.Push(mrb.StrNewStatic(v[i]))
+		}
+		return ary.Value()
+	case []int:
+		ary := mrb.AryNewCapa(len(v))
+		for i := 0; i < len(v); i++ {
+			ary.Push(mrb.FixnumValue(v[i]))
+		}
+		return ary.Value()
+	case []float64:
+		ary := mrb.AryNewCapa(len(v))
+		for i := 0; i < len(v); i++ {
+			ary.Push(mrb.FloatValue(v[i]))
+		}
+		return ary.Value()
 	case Value:
 		return v
-	case MrbValue:
-		return v.Value()
-	case Valuer:
-		return v.ToValue(mrb)
 	case MrbFuncT:
 		return mrb.ProcNewCFunc(v).Value()
 	case time.Time:
 		return mrb.NewInstance("Time",
 			v.Year(), v.Month(), v.Day(), v.Hour(), v.Minute(), v.Second(), v.Nanosecond()/1000000,
 		).Value()
+	case complex64:
+		return mrb.NewInstance("Complex", real(v), imag(v)).Value()
 	case complex128:
 		return mrb.NewInstance("Complex", real(v), imag(v)).Value()
+	case MrbValue:
+		return v.Value()
+	case ValueMigrator:
+		return v.MigrateTo(mrb)
 	default:
 		rv := reflect.ValueOf(o)
-		return mrb.valueValue(&rv)
+		return mrb.valueValue(rv)
 	}
 }
 
-func (mrb *MrbState) valueValue(v *reflect.Value) Value {
+func (mrb *MrbState) valueValue(v reflect.Value) Value {
 	switch v.Kind() {
 	case reflect.Invalid:
 		return Value{C.mrb_nil_value()}
@@ -350,7 +388,7 @@ func (mrb *MrbState) valueValue(v *reflect.Value) Value {
 	case reflect.String:
 		return mrb.StrNewStatic(v.String())
 	case reflect.Bool:
-		return MrbBoolValue(v.Bool())
+		return Bool(v.Bool())
 	case reflect.Array, reflect.Slice:
 		ary := mrb.AryNewCapa(v.Len())
 		for i := 0; i < v.Len(); i++ {
@@ -368,21 +406,21 @@ func (mrb *MrbState) valueValue(v *reflect.Value) Value {
 		if t, ok := v.Interface().(MrbValue); ok {
 			return t.Value()
 		}
-		if t, ok := v.Interface().(Valuer); ok {
-			return t.ToValue(mrb)
+		if t, ok := v.Interface().(ValueMigrator); ok {
+			return t.MigrateTo(mrb)
 		}
 
 		// TODO: Test interface to value
-		return mrb.Value(v.Elem().Interface())
+		return mrb.DataValue(v.Interface())
+
 	case reflect.Ptr:
-		// return registered GoMrb Object or RData value
-		return mrb.GoValue(v.Interface())
+		return mrb.DataValue(v.Interface())
 
 	case reflect.Struct:
 		o := v.Interface()
 
 		// return registered GoMrb Object or RData value
-		return mrb.GoValue(&o)
+		return mrb.DataValue(&o)
 
 	case reflect.Func:
 		return mrb.ProcNewGofunc(v.Interface()).Value()
@@ -422,11 +460,17 @@ func (mrb *MrbState) String(v MrbValue) string {
 		return mrb.StrToCstr(v)
 	case C.MRB_TT_DATA:
 		return fmt.Sprintf("%v", mrb.Intf(v))
-	case C.MRB_TT_OBJECT, C.MRB_TT_CLASS, C.MRB_TT_MODULE, C.MRB_TT_ICLASS, C.MRB_TT_SCLASS:
+	case C.MRB_TT_OBJECT:
+		return mrb.StrToCstr(mrb.AnyToS(v))
+	case C.MRB_TT_CLASS, C.MRB_TT_MODULE, C.MRB_TT_ICLASS, C.MRB_TT_SCLASS:
 		return mrb.StrToCstr(mrb.AnyToS(v))
 	case C.MRB_TT_PROC, C.MRB_TT_RANGE:
 		return mrb.StrToCstr(mrb.AnyToS(v))
-	case C.MRB_TT_EXCEPTION, C.MRB_TT_FILE, C.MRB_TT_ENV, C.MRB_TT_FIBER:
+	case C.MRB_TT_ENV:
+		return mrb.StrToCstr(mrb.AnyToS(v))
+	case C.MRB_TT_EXCEPTION:
+		return fmt.Sprintf("%v %v", mrb.StrToCstr(mrb.AnyToS(v)), mrb.IVGet(v, mrb.Intern("mesg")))
+	case C.MRB_TT_FILE, C.MRB_TT_FIBER:
 		return mrb.StrToCstr(mrb.AnyToS(v))
 	default:
 		return mrb.StrToCstr(mrb.AnyToS(v))
@@ -463,7 +507,7 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 		for i := 0; i < kcnt; i++ {
 			key := mrb.AryRef(vars, i)
 			val := mrb.IVGet(o, mrb.ObjToSym(key))
-			hash[mrb.String(key)[1:]] = mrb.Intf(val)
+			hash[mrb.String(key)] = mrb.Intf(val)
 		}
 		return hash
 	case C.MRB_TT_CLASS, C.MRB_TT_MODULE, C.MRB_TT_SCLASS:
@@ -523,13 +567,18 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 	case C.MRB_TT_RANGE:
 		return MrbRangePtr(o)
 	case C.MRB_TT_EXCEPTION:
-		return MrbExcPtr(o)
+		return errors.New(mrb.IVGet(o, mrb.Intern("mesg")).String())
 	case C.MRB_TT_ENV:
-		return REnv{(*C.struct_REnv)(C._mrb_ptr(o.Value().v))}
+		return REnv{(*C.struct_REnv)(C._mrb_ptr(o.Value().v)), mrb}
 	case C.MRB_TT_FIBER:
 		return RFiber{(*C.struct_RFiber)(C._mrb_ptr(o.Value().v))}
 	case C.MRB_TT_DATA:
-		// oruby ::Time -> time.Time
+		ret := mrb.DataCheckGetInterface(o)
+		if ret != nil {
+			return ret
+		}
+
+		// mruby ::Time -> time.Time
 		if mrb.ObjIsKindOf(o, mrb.ClassGet("Time")) {
 			vtoi := mrb.Call(o, "to_i")
 			vusec := mrb.Call(o, "usec")
@@ -567,7 +616,7 @@ func errorHandler(err *error) {
 
 // RunCode executes oruby code string
 func (mrb *MrbState) RunCode(code string, args ...interface{}) (err error) {
-	defer errorHandler(&err)
+//	defer errorHandler(&err)
 
 	cxt := mrb.MrbcContextNew()
 	defer cxt.Free()
@@ -603,8 +652,8 @@ func (mrb *MrbState) RunCode(code string, args ...interface{}) (err error) {
 }
 
 // Eval evaluates code string and returns calculated result
-func (mrb *MrbState) Eval(code string) (result MrbValue, err error) {
-	defer errorHandler(&err)
+func (mrb *MrbState) Eval(code string) (result RObject, err error) {
+//	defer errorHandler(&err)
 
 	cxt := mrb.MrbcContextNew()
 	cxt.SetCaptureErrors(true)
@@ -612,7 +661,7 @@ func (mrb *MrbState) Eval(code string) (result MrbValue, err error) {
 
 	p, err := mrb.ParseString(code, cxt)
 	if err != nil {
-		return mrb.NilValue(), err
+		return RObject{nilValue.v, mrb}, err
 	}
 	defer p.Free()
 
@@ -623,15 +672,15 @@ func (mrb *MrbState) Eval(code string) (result MrbValue, err error) {
 			e := p.ErrorBuffer(i)
 			estr += fmt.Sprintf("%s:%d:%d: %s\n", mrb.SymString(p.Filename()), e.LineNo, e.Column, e.Message)
 		}
-		return mrb.NilValue(), errors.New(estr)
+		return RObject{nilValue.v, mrb}, errors.New(estr)
 	}
 
 	proc := C.mrb_generate_code(mrb.p, p.p)
 	if proc == nil {
-		return mrb.NilValue(), mrb.Err()
+		return RObject{nilValue.v, mrb}, mrb.Err()
 	}
 
-	result = Value{C.mrb_run(mrb.p, proc, C.mrb_top_self(mrb.p))}
+	result = RObject{C.mrb_run(mrb.p, proc, C.mrb_top_self(mrb.p)), mrb}
 
 	return result, mrb.Err()
 }
@@ -775,18 +824,16 @@ func go_mrb_func_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 }
 
 //export go_mrb_func_env_callback
-func go_mrb_func_env_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
+func go_mrb_func_env_callback(cmrb *C.mrb_state, self C.mrb_value, idx C.mrb_int) C.mrb_value {
 	mrb := states[int(C._mrb_get_idx(cmrb))]
 
-	fv := C.mrb_proc_cfunc_env_get(mrb.p, C.mrb_int(0))
-	fx := mrb.getMrbFuncT(uint(C._mrb_fixnum(fv)))
+	fx := mrb.getMrbFuncT(uint(idx))
 	if fx == nil {
 		method := mrb.SymString(MrbSym(cmrb.c.ci.mid))
-		*ret = mrb.Raisef(mrb.ERuntimeError(), "go_mrb_func_env_callback: Function '%v' reference not found.", method).v
-		return
+		return mrb.Raisef(mrb.ERuntimeError(), "go_mrb_func_env_callback: Function '%v' reference not found.", method).v
 	}
 
-	*ret = fx(mrb, Value{*self}).Value().v
+	return fx(mrb, Value{self}).Value().v
 }
 
 //export go_mrb_proc_callback
@@ -794,7 +841,7 @@ func go_mrb_proc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 	mrb := states[int(C._mrb_get_idx(cmrb))]
 
 	mrb.Lock()
-	f := mrb.mrbProcs[RProc{(*C.struct_RProc)(C._mrb_ptr(*self))}]
+	f := mrb.mrbProcs[C._mrb_ptr(*self)]
 	mrb.Unlock()
 
 	if f == nil {
@@ -888,7 +935,7 @@ func (mrb *MrbState) UndefClassMethod(klass RClass, name string) {
 func (mrb *MrbState) ObjNew(c RClass, args ...interface{}) (RObject, error) {
 	argv := make([]C.mrb_value, len(args)+1)
 	for i := range args {
-		argv[i] = mrb.Value(args[i]).Value().v
+		argv[i] = mrb.Value(args[i]).v
 	}
 
 	v, err := mrb.try(func() C.mrb_value {
@@ -964,10 +1011,6 @@ func (mrb *MrbState) ExcGet(name string) RClass {
 	exc, _ := mrb.tryC(func() *C.struct_RClass {
 		return C.mrb_exc_get(mrb.p, cname)
 	})
-
-	//if err != nil {
-	//	panic(err)
-	//}
 	return exc
 }
 
@@ -1011,7 +1054,7 @@ func (mrb *MrbState) NotImplemented() error {
 }
 
 // NotImplementM a function to be replacement of unimplemented method - Go version
-func NotImplementM(mrb *MrbState, self MrbValue) MrbValue {
+func NotImplementM(mrb *MrbState, self Value) MrbValue {
 	panic(mrb.NotImplemented())
 }
 
@@ -1055,28 +1098,28 @@ func (mrb *MrbState) DefineModuleUnder(outer RClass, name string) RClass {
 }
 
 // ArgsReq required arguments
-func ArgsReq(n uint32) MrbAspec { return MrbAspec((n & 0x1f) << 18) }
+func ArgsReq(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 18) }
 
 // ArgsOpt optional arguments
-func ArgsOpt(n uint32) MrbAspec { return MrbAspec((n & 0x1f) << 13) }
+func ArgsOpt(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 13) }
 
 // ArgsArg mandatory and optinal arguments
-func ArgsArg(req, opt uint32) MrbAspec {
-	return MrbAspec(uint32(ArgsReq(req)) | uint32(ArgsOpt(opt)))
+func ArgsArg(req, opt int) MrbAspec {
+	return MrbAspec(ArgsReq(req) | ArgsOpt(opt))
 }
 
 // ArgsRest rest argument
 func ArgsRest() MrbAspec { return MrbAspec(1 << 12) }
 
 // ArgsPost required arguments after rest
-func ArgsPost(n uint32) MrbAspec { return MrbAspec((n & 0x1f) << 7) }
+func ArgsPost(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 7) }
 
 // ArgsKey  arguments (n of keys, kdict)
-func ArgsKey(n1, n2 uint32) MrbAspec {
+func ArgsKey(n1, n2 int) MrbAspec {
 	if n2 != 0 {
-		return MrbAspec(((n1 & 0x1f) << 2) | (1 << 1))
+		return MrbAspec(((uint32(n1) & 0x1f) << 2) | (1 << 1))
 	}
-	return MrbAspec(((n1 & 0x1f) << 2) | 0)
+	return MrbAspec(((uint32(n1) & 0x1f) << 2) | 0)
 }
 
 // ArgsBlock block argument
@@ -1089,22 +1132,22 @@ func ArgsAny() MrbAspec { return ArgsRest() }
 func ArgsNone() MrbAspec { return MrbAspec(0) }
 
 // ArgsReq number of required arguments
-func (mrb *MrbState) ArgsReq(n uint32) MrbAspec { return ArgsReq(n) }
+func (mrb *MrbState) ArgsReq(n int) MrbAspec { return ArgsReq(n) }
 
 // ArgsOpt number of optional arguments
-func (mrb *MrbState) ArgsOpt(n uint32) MrbAspec { return ArgsOpt(n) }
+func (mrb *MrbState) ArgsOpt(n int) MrbAspec { return ArgsOpt(n) }
 
 // ArgsArg number of required and optional arguments
-func (mrb *MrbState) ArgsArg(req, opt uint32) MrbAspec { return ArgsArg(req, opt) }
+func (mrb *MrbState) ArgsArg(req, opt int) MrbAspec { return ArgsArg(req, opt) }
 
 // ArgsRest rest arguments
 func (mrb *MrbState) ArgsRest() MrbAspec { return ArgsRest() }
 
 // ArgsPost number of post arguments
-func (mrb *MrbState) ArgsPost(n uint32) MrbAspec { return ArgsPost(n) }
+func (mrb *MrbState) ArgsPost(n int) MrbAspec { return ArgsPost(n) }
 
 // ArgsKey number of key arguments
-func (mrb *MrbState) ArgsKey(n1, n2 uint32) MrbAspec { return ArgsKey(n1, n2) }
+func (mrb *MrbState) ArgsKey(n1, n2 int) MrbAspec { return ArgsKey(n1, n2) }
 
 // ArgsBlock block argument
 func (mrb *MrbState) ArgsBlock() MrbAspec { return ArgsBlock() }
@@ -1114,254 +1157,6 @@ func (mrb *MrbState) ArgsAny() MrbAspec { return ArgsAny() }
 
 // ArgsNone no arguments
 func (mrb *MrbState) ArgsNone() MrbAspec { return ArgsNone() }
-
-// GetArgs returns arguments passed to MrbFuncT function
-// via Go interface scan patern. Values must be a pointer to:
-//
-//   bool
-//   string
-//   int  [8,16,32,64]
-//   uint [8,16,32,64]
-//   float [32,64]
-//   map[string]interface{}
-//   map[interfaec{}]interface{}
-//   []string
-//   []interface
-//   []int
-//   []float64
-//   oruby.Value, MrbSym, RObject, RArray, RHash, RProc
-//
-// Function returns number of arguments passed to function.
-//
-// Example:
-//
-//   v1 := mrb.NilValue()    // oruby.Value
-//   v2 := "default string"  // string
-//   v3 := 3                 // int
-//   argc := mrb.GetArgs(&v1, &v2, &v3)
-func (mrb *MrbState) GetArgs(args ...interface{}) int {
-	if len(args) == 0 {
-		return 0
-	}
-
-	argc := int(C.mrb_get_argc(mrb.p));
-	rets := C.mrb_get_argv(mrb.p);
-
-	for i, arg := range args {
-		if i >= argc {
-			continue
-		}
-		ret := Value{C._mrb_get_arg(rets, C.int(i))}
-
-		switch v := arg.(type) {
-		case *bool:
-			*v = ret.Bool()
-		case **string:
-			if ret.IsNil() {
-				*v = nil
-			}
-			**v = mrb.String(ret)
-		case *string:
-			*v = mrb.String(ret)
-		case *int:
-			*v = ret.Fixnum()
-		case *int64:
-			*v = int64(ret.Fixnum())
-		case *int16:
-			*v = int16(ret.Fixnum())
-		case *int32:
-			*v = int32(ret.Fixnum())
-		case *int8:
-			*v = int8(ret.Fixnum())
-		case *float32:
-			if ret.IsNil() {
-				panic("nil value can not be converted to float64")
-			}
-			f, err := mrb.Float(ret)
-			if err != nil {
-				panic(err)
-			}
-			*v = float32(f.Float64())
-		case *float64:
-			if ret.IsNil() {
-				panic("nil value can not be converted to float64")
-			}
-			f, err := mrb.Float(ret)
-			if err != nil {
-				panic(err)
-			}
-			*v = float64(f.Float64())
-		case *uint:
-			*v = uint(ret.Fixnum())
-		case *uint64:
-			*v = uint64(ret.Fixnum())
-		case *uint16:
-			*v = uint16(ret.Fixnum())
-		case *uint32:
-			*v = uint32(ret.Fixnum())
-		case *uint8:
-			*v = uint8(ret.Fixnum())
-		case *uintptr:
-			*v = ret.Uintptr()
-		case *map[string]interface{}:
-			if ret.IsNil() {
-				continue
-			}
-			*v = toMapSI(mrb, ret)
-		case *map[interface{}]interface{}:
-			if ret.IsNil() {
-				continue
-			}
-			*v = toMapII(mrb, ret)
-		case *[]interface{}:
-			*v = make([]interface{}, ret.Len())
-			for i := 0; i < ret.Len(); i++ {
-				av := mrb.AryRef(ret, i)
-				*v = append(*v, mrb.Intf(av))
-			}
-		case *[]string:
-			*v = make([]string, ret.Len())
-			for i := 0; i < ret.Len(); i++ {
-				av := mrb.AryRef(ret, i)
-				*v = append(*v, mrb.String(av))
-			}
-		case *[]int:
-			*v = make([]int, ret.Len())
-			for i := 0; i < ret.Len(); i++ {
-				av := mrb.AryRef(ret, i)
-				*v = append(*v, av.Fixnum())
-			}
-		case *[]float64:
-			*v = make([]float64, ret.Len())
-			for i := 0; i < ret.Len(); i++ {
-				av := mrb.AryRef(ret, i)
-				if av.IsNil() {
-					panic("nil value can not be converted to float64")
-				}
-				f, err := mrb.Float(av)
-				if err != nil {
-					panic(err)
-				}
-				*v = append(*v, f.Float64())
-			}
-		case *MrbSym:
-			*v = ret.Symbol()
-		case *Value:
-			*v = ret
-		case *RObject:
-			*v = RObject{ret.v, mrb}
-		case *RArray:
-			if !ret.IsArray() {
-				panic("array expected, got " + mrb.TypeName(ret))
-			}
-			*v = ary(ret.v, mrb)
-		case *RHash:
-			if !ret.IsHash() {
-				panic("hash expected, got " + mrb.TypeName(ret))
-			}
-			*v = RHash{RObject{ret.v, mrb}}
-		case *RProc:
-			if ret.IsNil() {
-				*v = RProc{}
-				continue
-			}
-			if !ret.IsProc() {
-				panic("RProc expected, got " + mrb.TypeName(ret))
-			}
-			*v = mrb.RProc(v)
-		default:
-			if err := mrb.Scan(ret, v); err != nil {
-				panic(fmt.Sprintf(
-					"Unsupported '%v'. Must be pointer to one of: bool, string, " +
-						"int[8,16,32,64], uint[8,16,32,64], float[32,64], " +
-						" map[string]interface{}, []string, []interface, " +
-						"oruby MrbSym, Value, RObject, RArray, RHash, RProc.\n%v", v, err),
-				)
-			}
-
-		}
-	}
-	return argc
-}
-
-// GetAllArgs returns all arguments passed to MrbFuncT function
-// as RArray type
-func (mrb *MrbState) GetAllArgs() RArray {
-	return ary(C._mrb_get_args_all(mrb.p), mrb)
-}
-
-// Args returns all arguments passed to MrbFuncT function as Go slice
-func (mrb *MrbState) Args() []Value {
-	argc := int(C.mrb_get_argc(mrb.p))
-	args := C.mrb_get_argv(mrb.p)
-	ret := make([]Value, argc)
-	for i := 0; i < argc; i++ {
-		ret[i] = Value{C._mrb_get_arg(args, C.int(i))}
-	}
-	return ret
-}
-
-// GetAllArgsWithBlock returns array with all arguments passed to MrbFuncT function
-// and block as second value.
-func (mrb *MrbState) GetAllArgsWithBlock() (RArray, Value) {
-	args := Value{C._mrb_get_args_all_with_block(mrb.p)}
-	block := mrb.AryPop(args)
-	return ary(args.v, mrb), block.Value()
-}
-
-// GetArgs3 return three function arguments
-func (mrb *MrbState) GetArgs3(defaults ...interface{}) (Value, Value, Value) {
-	arg1 := C.mrb_nil_value()
-	arg2 := C.mrb_nil_value()
-	arg3 := C.mrb_nil_value()
-
-	cnt := int(C._mrb_get_args_3(mrb.p, &arg1, &arg2, &arg3))
-
-	if cnt < 3 && len(defaults) > 2 {
-		arg1 = mrb.Value(defaults[2]).Value().v
-	}
-	if cnt < 2 && len(defaults) > 1 {
-		arg2 = mrb.Value(defaults[1]).Value().v
-	}
-	if cnt == 0 && len(defaults) > 0 {
-		arg2 = mrb.Value(defaults[0]).Value().v
-	}
-
-	return Value{arg1}, Value{arg2}, Value{arg3}
-}
-
-// GetArgs2 return two function arguments
-func (mrb *MrbState) GetArgs2(defaults ...interface{}) (Value, Value) {
-	arg1 := C.mrb_nil_value()
-	arg2 := C.mrb_nil_value()
-	arg3 := C.mrb_nil_value()
-
-	cnt := int(C._mrb_get_args_3(mrb.p, &arg1, &arg2, &arg3))
-	if (cnt < 2) && len(defaults) > 1 {
-		arg2 = mrb.Value(defaults[1]).Value().v
-	}
-	if cnt == 0 && len(defaults) > 0 {
-		arg2 = mrb.Value(defaults[0]).Value().v
-	}
-
-	return Value{arg1}, Value{arg2}
-}
-
-// GetArgsFirst returns first argument
-func (mrb *MrbState) GetArgsFirst() Value {
-	return Value{C._mrb_get_args_first(mrb.p)}
-}
-
-// GetArgsBlock returns block argument
-func (mrb *MrbState) GetArgsBlock() Value {
-	v, err := mrb.try(func() C.mrb_value {
-		return C._mrb_get_args_block(mrb.p)
-	})
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
 
 // GetMID get method symbol
 func (mrb *MrbState) GetMID() MrbSym {
@@ -1378,11 +1173,12 @@ func (mrb *MrbState) Call(self MrbValue, name string, args ...interface{}) Value
 // Funcall call oruby function
 func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{}) (Value, error) {
 	var err error
-	var v Value
 	var f reflect.Value
 	l := len(args)
 
-	if (MrbType(self) == C.MRB_TT_PROC) && (nameSym == mrb.Intern("call")) {
+	//print("funcall ", mrb.ClassOf(self).Name(), ":", mrb.String(name), "(")
+
+	if (self.Type() == C.MRB_TT_PROC) && mrb.RProc(self).IsCFunc() && (nameSym == mrb.Intern("call")) {
 		if C._mrb_proc_has_env(mrb.p, MrbProcPtr(self).p) != 0 {
 			fv := C._mrb_proc_env_get(mrb.p, MrbProcPtr(self).p, C.mrb_int(0))
 			ff, _ := mrb.getFunc(uint(C._mrb_fixnum(fv)))
@@ -1390,61 +1186,42 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 		}
 
 		if f.IsValid() {
-			if f.Type().NumIn() != l {
-				return mrb.NilValue(), fmt.Errorf("funcall: Expected %d parameters supplied %d", len(args), f.Type().NumIn())
-			}
-
-			in := make([]reflect.Value, l)
-			for i, arg := range args {
-				in[i] = reflect.ValueOf(arg)
-			}
-
-			// Call
-			result := f.Call(in)
-			errIdx := 0
-			// Check error
-			if len(result) > 0 && result[len(result)-1].Type() == reflect.TypeOf((*error)(nil)).Elem() {
-				err = result[len(result)-1].Interface().(error)
-				errIdx = 1
-			}
-
-			// Fix results to MrbValue
-			if len(result)-errIdx == 0 {
-				return mrb.NilValue(), err
-			} else if len(result)-errIdx == 1 {
-				return mrb.valueValue(&result[0]), err
-			}
-
-			a := mrb.AryNewCapa(len(result))
-			for i := range result[:len(result)-errIdx] {
-				mrb.AryPush(a, mrb.valueValue(&result[i]))
-			}
-			return a.Value(), nil
+			result := mrb.callFunc(f, RInterfaceArgs{args})
+			return mrb.handleResults(result)
 		}
 	}
 
-	//print("funcall ", mrb.ClassOf(self).Name(), ":", mrb.String(name), "(")
+	if (self.Type() == C.MRB_TT_DATA) || (self.Type() == C.MRB_TT_OBJECT) {
+		mrb.Lock()
+		ff := mrb.mrbFuncs[GoCallRef{mrb.ClassPtr(self.Value()).p, C.mrb_sym(nameSym)}]
+		mrb.Unlock()
+
+		if ff != nil {
+			result := mrb.callFunc(reflect.ValueOf(ff), RInterfaceArgs{args})
+			return mrb.handleResults(result)
+		}
+	}
 
 	a := make([]C.mrb_value, l+1)
 	for i := range args {
 		a[i] = mrb.Value(args[i]).v
 	}
 
-	v, err = mrb.try(func() C.mrb_value {
-		return C.mrb_funcall_with_block(
+	v := Value{C._mrb_funcall_with_block(
 			mrb.p,
 			self.Value().v,
 			C.mrb_sym(nameSym),
 			C.mrb_int(l),
 			(*C.mrb_value)(&a[0]),
-			C.mrb_nil_value())
-	})
+			C.mrb_nil_value(),
+		)}
 
 	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
 		desc := mrb.Call(v, "to_s")
 		err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
 	}
 
+	runtime.KeepAlive(a)
 	return v, err
 	// Do not delete comment - function names are used for static API check
 	// pure C.mrb_funcall() and C.mrb_funcall_argv() are never called
@@ -1459,7 +1236,7 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 		block = mrb.Value(args[len(args)-1])
 		argc--
 	} else {
-		block = mrb.NilValue()
+		block = nilValue
 	}
 
 	a := make([]C.mrb_value, argc+1)
@@ -1467,22 +1244,31 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 		a[i] = mrb.Value(args[i]).v
 	}
 
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_funcall_with_block(
+	var err error
+	v := Value{C._mrb_funcall_with_block(
 			mrb.p,
 			self.Value().v,
 			C.mrb_sym(nameSym),
 			C.mrb_int(argc),
 			(*C.mrb_value)(&a[0]),
-			block.v)
-	})
+			block.v,
+		)}
+
+	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
+		desc := mrb.Call(v, "to_s")
+		err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
+	}
+
+	runtime.KeepAlive(a)
+	return v, err
 }
 
 // Intern converts string to oruby symbol
 func (mrb *MrbState) Intern(name string) MrbSym {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	return MrbSym(C.mrb_intern(mrb.p, cname, C.size_t(len(name))))
+	sym := C.mrb_intern(mrb.p, cname, C.size_t(len(name)))
+	return MrbSym(sym)
 }
 
 // InternStr converts string oruby value to symbol
@@ -1534,10 +1320,20 @@ func (mrb *MrbState) SymStr(sym MrbSym) Value {
 // InternLit in Go does the same as Intern
 func (mrb *MrbState) InternLit(lit string) MrbSym { return mrb.Intern(lit) }
 
+// Symbol from oruby value
+func (mrb *MrbState) Symbol(v MrbValue) MrbSym {
+	return v.Value().Symbol()
+}
+
 // InternStatic in Go does the same as Intern
 func (mrb *MrbState) InternStatic(str string) MrbSym {
 	return mrb.Intern(str)
 	// C.mrb_intern_static() is not supported, as CGo guides advise string copy
+}
+
+// SymIdx returns current symbol index from MrbState
+func (mrb *MrbState) SymIdx() int {
+	return int(mrb.p.symidx)
 }
 
 // Buff represents memory alocated by mruby C API
@@ -1574,8 +1370,8 @@ func (mrb *MrbState) MallocSimple(size uint) Buff {
 }
 
 // ObjAlloc allocate memory for oruby basic object
-func (mrb *MrbState) ObjAlloc(vtype uint32, klass RClass) RBasic {
-	return RBasic{C.mrb_obj_alloc(mrb.p, vtype, klass.p)}
+func (mrb *MrbState) ObjAlloc(vtype int, klass RClass) RBasic {
+	return RBasic{C.mrb_obj_alloc(mrb.p, uint32(vtype), klass.p)}
 }
 
 // Free calls oruby free to release C side memory
@@ -1638,7 +1434,7 @@ func (mrb *MrbState) TopSelf() Value { return Value{C.mrb_top_self(mrb.p)} }
 
 // TopAdjustStackLength of toplevel environment. Used in imrb
 func (mrb *MrbState) TopAdjustStackLength(nlocals int) {
-	e := REnv{mrb.p.c.cibase.env}
+	e := REnv{mrb.p.c.cibase.env, mrb}
 	e.AdjustStackLength(nlocals)
 }
 
@@ -1657,14 +1453,34 @@ func (mrb *MrbState) VMRun(proc RProc, self MrbValue, stackKeep int) Value {
 	return Value{C.mrb_vm_run(mrb.p, proc.p, self.Value().v, C.uint(stackKeep))}
 }
 
-// VMExec proc
-func (mrb *MrbState) VMExec(proc RProc, iseq *MrbCode) Value {
-	return Value{C.mrb_vm_exec(mrb.p, proc.p, (*C.mrb_code)(unsafe.Pointer(iseq)))}
+// VMExec executes ISeq bytecode in mruby VM
+// NOTE: this does not pass slice pointer to C. As in
+//
+//    C.mrb_vm_exec(mrb.p, proc.p, (*C.mrb_code)(&iseq[0]))
+//
+// It probably can be that way since:
+//
+//    * mrb_vm_exec() does not change bytecode, iseq is readonly
+//    * iseq passed to mrb_vm_exec() is not stored on C side.
+//      ISeq bytcode is processed byte by byte, and executed
+//    * After exit from mrb_vm_exec(), iseq can be handled by Go GC
+//
+// This should pass CGO checks, but mrb_vm_exec() can be a long running;
+// long as in days, months, years. It feels natural to
+// make C copy of bytecode, and let C run in its own way
+func (mrb *MrbState) VMExec(proc RProc, iseq []MrbCode) Value {
+	if len(iseq) == 0 {
+		return nilValue
+	}
+	ciseq := C.CBytes(iseq)
+	defer C.free(ciseq)
+
+	return Value{C.mrb_vm_exec(mrb.p, proc.p, (*C.mrb_code)(ciseq))}
 }
 
-// ContextRun proc
-func (mrb *MrbState) ContextRun(p RProc, v MrbValue, n uint32) Value {
-	return Value{C.mrb_vm_run(mrb.p, p.p, v.Value().v, C.uint(n))}
+// ContextRun proc is an alias for VMRun()
+func (mrb *MrbState) ContextRun(p RProc, v MrbValue, stackKeep int) Value {
+	return mrb.VMRun(p, v, stackKeep)
 }
 
 // P kernel#p print function
@@ -1915,11 +1731,11 @@ func (mrb *MrbState) ExcNew(c RClass, msg string) Value {
 	return Value{C.mrb_exc_new(mrb.p, c.p, cmsg, C.size_t(len(msg)))}
 }
 
-// ExcRaise raises oruby exception. This function is likeley to cause
+// ExcRaise raises Ruby exception. This function is likeley to cause
 // panic and program error exit, since Go neither supports exceptions,
 // nor C style longjmp across Go stack.
 //
-//  Consider using this idiom in case of error:
+//  Instead, consider using this idiom in case of error:
 //
 //     return mrb.Raise(mrb.StandardError(), "Something went wrong")
 //
@@ -2069,7 +1885,7 @@ func (mrb *MrbState) EKeyError() RClass { return mrb.ExcGet("KeyError") }
 
 // Yield block with value
 func (mrb *MrbState) Yield(b, arg MrbValue) (Value, error) {
-	return mrb.try(func() C.mrb_value {
+	return mrb.try(func()C.mrb_value{
 		return C.mrb_yield(mrb.p, b.Value().v, arg.Value().v)
 	})
 }
@@ -2079,42 +1895,63 @@ func (mrb *MrbState) YieldArgv(b MrbValue, argv ...interface{}) (Value, error) {
 	argc := len(argv)
 
 	if argc == 0 {
-		return mrb.try(func() C.mrb_value {
+		return mrb.try(func()C.mrb_value {
 			return C.mrb_yield_argv(mrb.p, b.Value().v, 0, nil)
 		})
 	}
 
 	args := make([]C.mrb_value, argc)
 	for i := range args {
-		args[i] = mrb.Value(argv[i]).Value().v
+		args[i] = mrb.Value(argv[i]).v
 	}
 
-	ret, err := mrb.try(func() C.mrb_value {
+	return mrb.try(func()C.mrb_value {
 		return C.mrb_yield_argv(mrb.p, b.Value().v, C.mrb_int(argc), (*C.mrb_value)(&args[0]))
 	})
-
-	runtime.KeepAlive(args)
-	return ret, err
 }
 
 // YieldWithClass yields with class
 func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ...interface{}) (Value, error) {
 	argc := len(args)
 	if argc == 0 {
-		return mrb.try(func() C.mrb_value {
-			return C.mrb_yield_with_class(mrb.p, b.Value().v, 0, nil, self.Value().Value().v, c.p)
+		return mrb.try(func()C.mrb_value {
+			return C.mrb_yield_with_class(mrb.p, b.Value().v, 0, nil, self.Value().v, c.p)
 		})
 	}
 
 	argv := make([]C.mrb_value, argc)
 	for i := range args {
-		argv[i] = mrb.Value(args[i]).Value().v
+		argv[i] = mrb.Value(args[i]).v
 	}
 
-	return mrb.try(func() C.mrb_value {
+	return mrb.try(func()C.mrb_value {
 		return C.mrb_yield_with_class(mrb.p, b.Value().v, C.mrb_int(argc), &argv[0], self.Value().v, c.p)
 	})
 }
+
+// YieldCont continue execution to the proc
+// this function should always be called as the last function of a method. e.g.:
+//
+//      return mrb,YieldCont(proc, self, args...);
+func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) (Value, error) {
+	//mrb_yield_cont(mrb_state*mrb, mrb_value b, mrb_value self, mrb_int argc, const mrb_value *argv);
+	argc := len(args)
+	if argc == 0 {
+		return mrb.try(func()C.mrb_value {
+			return C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, 0, nil)
+		})
+	}
+
+	argv := make([]C.mrb_value, argc)
+	for i := range args {
+		argv[i] = mrb.Value(args[i]).v
+	}
+
+	return mrb.try(func()C.mrb_value {
+		return C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, C.mrb_int(argc), &argv[0])
+	})
+}
+
 
 // GCProtect protect value from GC
 func (mrb *MrbState) GCProtect(obj MrbValue) { C.mrb_gc_protect(mrb.p, obj.Value().v) }
@@ -2189,7 +2026,7 @@ func (mrb *MrbState) ClassName(klass RClass) string {
 func (mrb *MrbState) DefineGlobalConst(name string, val MrbValue) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	C.mrb_define_global_const(mrb.p, cname, val.Value().Value().v)
+	C.mrb_define_global_const(mrb.p, cname, val.Value().v)
 }
 
 // AttrGet sets attr_get :symbol for attribute getter
@@ -2199,12 +2036,12 @@ func (mrb *MrbState) AttrGet(obj MrbValue, id MrbSym) Value {
 
 // RespondTo checks if object responds to method id
 func (mrb *MrbState) RespondTo(obj MrbValue, mid MrbSym) bool {
-	return C.mrb_respond_to(mrb.p, obj.Value().Value().v, C.mrb_sym(mid)) != 0
+	return C.mrb_respond_to(mrb.p, obj.Value().v, C.mrb_sym(mid)) != 0
 }
 
 // ObjIsInstanceOf checks if oruby object is direct instance of class
 func (mrb *MrbState) ObjIsInstanceOf(obj MrbValue, klass RClass) bool {
-	return C.mrb_obj_is_instance_of(mrb.p, obj.Value().Value().v, klass.p) != 0
+	return C.mrb_obj_is_instance_of(mrb.p, obj.Value().v, klass.p) != 0
 }
 
 // FuncBasicP returns true if function is basic method id
@@ -2226,10 +2063,10 @@ func (mrb *MrbState) FiberResume(fib MrbValue, args ...interface{}) Value {
 	cargs := make([]C.mrb_value, argc)
 
 	for i := 0; i < argc; i++ {
-		cargs[i] = mrb.Value(args[i-1]).Value().v
+		cargs[i] = mrb.Value(args[i-1]).v
 	}
 
-	v := C.mrb_fiber_resume(mrb.p, fib.Value().Value().v, C.mrb_int(argc), &cargs[0])
+	v := C.mrb_fiber_resume(mrb.p, fib.Value().v, C.mrb_int(argc), &cargs[0])
 	runtime.KeepAlive(cargs)
 
 	return Value{v}
@@ -2248,7 +2085,7 @@ func (mrb *MrbState) FiberYield(args ...interface{}) (Value, error) {
 
 	a := make([]C.mrb_value, l)
 	for i := range args {
-		a[i] = mrb.Value(args[i]).Value().v
+		a[i] = mrb.Value(args[i]).v
 	}
 
 	return mrb.try(func() C.mrb_value {
@@ -2258,7 +2095,7 @@ func (mrb *MrbState) FiberYield(args ...interface{}) (Value, error) {
 
 // FiberAliveP check if fiber is alive
 func (mrb *MrbState) FiberAliveP(fib MrbValue) Value {
-	return Value{C.mrb_fiber_alive_p(mrb.p, fib.Value().Value().v)}
+	return Value{C.mrb_fiber_alive_p(mrb.p, fib.Value().v)}
 }
 
 // EFiberError reference. Implemented in oruby-fiber
@@ -2354,8 +2191,9 @@ func mrb_free_goref(cmrb *C.mrb_state, p unsafe.Pointer) {
 func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 	mrb := states[int(C._mrb_get_idx(cmrb))]
 	var result []reflect.Value
+	var err error
 
-	//println("\nCalling", mrb.ClassOf(Value{*self}).Name(), mrb.SymString(mrb.GetMID()))
+	// println("\nCalling", mrb.ClassOf(Value{*self}).Name(), mrb.SymString(mrb.GetMID()))
 
 	v := C.mrb_proc_cfunc_env_get(cmrb, C.mrb_int(0))
 	ff, _ := mrb.getFunc(uint(C._mrb_fixnum(v)))
@@ -2371,11 +2209,6 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 
 	var goself interface{}
 	rcvr := 0
-	variadic := 0
-
-	if f.Type().IsVariadic() {
-		variadic = 1
-	}
 
 	// Check if fn is a method. If it is - receiver is the first argument
 	if C._mrb_type(*self) == C.MRB_TT_DATA {
@@ -2385,6 +2218,11 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 		}
 	}
 
+	variadic := 0
+	if f.Type().IsVariadic() {
+		variadic = 1
+	}
+
 	// Check number of params
 	if (argc + rcvr) < (f.Type().NumIn() - variadic) {
 		//println("Calling", mrb.ClassOf(Value{*self}).Name(), mrb.Sym2string(MrbSym(cmrb.c.ci.mid)))
@@ -2392,7 +2230,7 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 		return
 	}
 
-	in := make([]reflect.Value, argc+rcvr)
+	in := make([]reflect.Value, rcvr+argc)
 
 	// First argument is receiver, if it is expected
 	if rcvr == 1 {
@@ -2400,71 +2238,32 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 	}
 
 	// Others as passed
-	for i := rcvr; i < (argc + rcvr); i++ {
+	for i := rcvr; i < argc+rcvr; i++ {
 		arg := mrb.Intf(Value{C._mrb_get_arg(args, C.int(i-rcvr))})
 
-		if (variadic > 0) && ((argc + rcvr) >= f.Type().NumIn()) {
-			//in[i] = reflect.ValueOf(arg).Convert(f.Type().In(f.Type().NumIn() - 1).Elem())
+		if variadic == 1 && i >= f.Type().NumIn() - 1 {
 			in[i] = reflect.ValueOf(arg)
-		} else {
-			in[i] = reflect.ValueOf(arg).Convert(f.Type().In(i))
+			continue
+		}
+
+		inType := f.Type().In(i)
+		in[i], err = assignValue(arg, inType)
+		if err != nil {
+			*ret = mrb.RaiseError(err).v
+			return
 		}
 	}
 
 	// Call
-	//if (variadic > 0) && ((argc + rcvr) >= f.Type().NumIn()) {
-	//	result = f.CallSlice(in)
-	//} else {
 	result = f.Call(in)
-	//}
 
-	lenres := len(result)
-
-	// Handle results
-	if lenres == 0 {
-		*ret = C.mrb_nil_value()
+	res, err := mrb.handleResults(result)
+	if err != nil {
+		*ret = mrb.Raise(mrb.getErrorKlass(err), err.Error()).v
 		return
 	}
 
-	// By Go convention, error is returned as last result. Like func X() (int, error)
-	// When X() function is converted to oruby, it will return only one int result,
-	// but if there is an error - it will be raised
-	if result[lenres-1].Kind() == reflect.Interface {
-		if result[lenres-1].Type() == reflect.TypeOf((*error)(nil)).Elem() {
-			// Last result value is error interface
-			er := result[lenres-1].Interface()
-			if er != nil {
-				err := er.(error)
-				*ret = mrb.Raise(mrb.getErrorKlass(err), err.Error()).v
-				return
-			}
-
-			// If no error returned, that last return value is ignored
-			lenres--
-		}
-	}
-
-	switch lenres {
-	case 0:
-		// No results - return nil value
-		*ret = C.mrb_nil_value()
-
-	case 1:
-		// One result - return one MrbValuec
-		//println("Calling", mrb.ClassOf(Value{*self}).Name(), mrb.Sym2string(MrbSym(cmrb.c.ci.mid)))
-		//println("return", result[0].Type().Name(), result[0].Kind().String(), result[0].CanInterface())
-		*ret = mrb.valueValue(&result[0]).v
-
-	default:
-		// Multiple results - return Ruby array
-		out := mrb.AryNewCapa(lenres)
-		for i := range result {
-			mrb.AryPush(out, mrb.valueValue(&result[i]))
-		}
-
-		*ret = out.Value().v
-	}
-	return
+	*ret = res.v
 }
 
 // DefineModuleFunc define module function
@@ -2478,7 +2277,7 @@ func (mrb *MrbState) DefineModuleFunc(klass RClass, name string, f interface{}) 
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
-	argc := uint32(v.Type().NumIn())
+	argc := v.Type().NumIn()
 	// function reference is set as oruby function env
 	env := mrb.registerFunc(f)
 
@@ -2498,7 +2297,7 @@ func (mrb *MrbState) DefineClassFunc(klass RClass, name string, f interface{}) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
-	argc := uint32(v.Type().NumIn())
+	argc := v.Type().NumIn()
 	env := mrb.registerFunc(f)
 
 	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(1), &env)
@@ -2517,7 +2316,7 @@ func (mrb *MrbState) DefineSingletonFunc(obj RObject, name string, f interface{}
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
-	argc := uint32(v.Type().NumIn())
+	argc := v.Type().NumIn()
 	env := mrb.registerFunc(f)
 
 	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(1), &env)

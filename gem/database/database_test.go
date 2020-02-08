@@ -19,11 +19,6 @@ func setup() (*oruby.MrbState, func()) {
 
 func assert(t *testing.T, desc, code string) {
 	t.Helper()
-	defer func() {
-		if r := recover(); r != nil {
-			t.Error(r)
-		}
-	}()
 
 	mrb, _ := oruby.New()
 	defer mrb.Close()
@@ -57,8 +52,8 @@ func TestSqlite(t *testing.T) {
   db = Database::DB.new 'sqlite3', 'testdata/foo.db'
 
   db.exec 'create table foo (id integer not null primary key, name text);'
-  db.exec 'insert into foo (id, name) values(1, "v1")'
   db.exec 'insert into foo (id, name) values(?, ?);', 2, "v2"
+  db.exec 'insert into foo (id, name) values(1, "v1")'
 
   rows = db.query("select id, name from foo")
 

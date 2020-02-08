@@ -359,10 +359,10 @@ func (mrb *MrbState) GenerateCode(parser MrbParserState) (RProc, error) {
 	p := C.mrb_generate_code(mrb.p, parser.p)
 
 	if p == nil {
-		return RProc{nil}, errors.New("error generating parser code")
+		return RProc{nil, mrb}, errors.New("error generating parser code")
 	}
 
-	return RProc{p}, nil
+	return RProc{p, mrb}, nil
 }
 
 // LoadFile loads file to oruby value

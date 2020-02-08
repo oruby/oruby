@@ -132,7 +132,7 @@ const (
 func MrbRHashProcDefaultP(h MrbValue) bool { return (C._MRB_RHASH_PROCDEFAULT_P(h.Value().v) != 0) }
 
 // MrbHashForeachFuncT is hash foreach callback func. Return non zero to break the loop
-type MrbHashForeachFuncT = func(mrb *MrbState, key, val Value) int
+type MrbHashForeachFuncT = func(key, val Value) int
 
 //export go_hash_callback
 func go_hash_callback(cmrb *C.mrb_state, key, val C.mrb_value, data unsafe.Pointer) C.int {
@@ -143,7 +143,7 @@ func go_hash_callback(cmrb *C.mrb_state, key, val C.mrb_value, data unsafe.Point
 		return -1
 	}
 
-	return C.int(f(mrb, Value{key}, Value{val}))
+	return C.int(f(Value{key}, Value{val}))
 }
 
 // HashValueForEach wakls the value if it is hash with item pairs

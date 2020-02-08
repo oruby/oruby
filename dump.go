@@ -50,10 +50,10 @@ func (mrb *MrbState) ReadIrep(buffer []byte) (irep MrbIrep, err error) {
 	err = mrb.tryE(func() {
 		bufLen := len(buffer)
 		if bufLen == 0 {
-			irep = MrbIrep{C.mrb_read_irep(mrb.p, nil)}
+			irep = MrbIrep{C.mrb_read_irep(mrb.p, nil), mrb}
 			return
 		}
-		irep = MrbIrep{C.mrb_read_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen))}
+		irep = MrbIrep{C.mrb_read_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen)), mrb}
 	})
 	runtime.KeepAlive(buffer)
 	return irep, err
@@ -68,7 +68,7 @@ func (mrb *MrbState) ReadIrepBuf(buffer []byte) (MrbIrep, error) {
 func (mrb *MrbState) ReadIrepFile(fileName string) (MrbIrep, error) {
 	data, err := ioutil.ReadFile(fileName)
 	if err != nil {
-		return MrbIrep{}, err
+		return MrbIrep{nil,mrb}, err
 	}
 
 	return mrb.ReadIrep(data)

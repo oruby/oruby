@@ -11,7 +11,8 @@ import (
 type RClassPtr struct{ p *C.struct_RClass }
 
 // MrbMethodT oruby method pointer
-type MrbMethodT = uint
+//type MrbMethodT = uintptr
+type MrbMethodT = struct { m C.mrb_method_t }
 
 // RClass struct for oruby class
 type RClass struct {
@@ -20,7 +21,7 @@ type RClass struct {
 }
 
 // Value to satisfy MrbValue interface
-func (c RClass) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(c.p))} }
+func (c RClass) Value() Value { return mrbObjValue(unsafe.Pointer(c.p)) }
 
 // Type for MrbValue interface
 func (c RClass) Type() int { return c.Value().Type() }
@@ -47,11 +48,14 @@ func RClassSuper(c RClass) RClass { return RClass{c.p.super, c.mrb} }
 
 // ClassOf returns class of value as RClass
 func (mrb *MrbState) ClassOf(v MrbValue) RClass {
-	return mrb.ClassPtr(v.Value())
+	return RClass{C.mrb_class(mrb.p, v.Value().v), mrb}
 }
 
 // ClassPtr returns class of value as RClass
 func (mrb *MrbState) ClassPtr(v Value) RClass {
+	if v.Type() == MrbTTClass || v.Type() == MrbTTModule || v.Type() == MrbTTSClass {
+		return RClass{(*C.struct_RClass)(C._mrb_ptr(v.Value().v)), mrb}
+	}
 	return RClass{C.mrb_class(mrb.p, v.v), mrb}
 }
 
@@ -94,7 +98,7 @@ func (mrb *MrbState) VMDefineModule(v MrbValue, id MrbSym) RClass {
 
 // DefineMethodRaw define method via symbol and RProc
 func (mrb *MrbState) DefineMethodRaw(c RClass, id MrbSym, methodID MrbMethodT) {
-	C.mrb_define_method_raw(mrb.p, c.p, C.mrb_sym(id), (C.mrb_method_t)(methodID))
+	C.mrb_define_method_raw(mrb.p, c.p, C.mrb_sym(id), methodID.m)
 }
 
 // DefineMethodID define method via symbol and function type
@@ -106,17 +110,27 @@ func (mrb *MrbState) DefineMethodID(c RClass, mid MrbSym, f MrbFuncT, aspec MrbA
 // DefineMethodFuncID Define method as oruby func
 func (mrb *MrbState) DefineMethodFuncID(c RClass, mid MrbSym, f interface{}) {
 	var env int // C.mrb_value
-	paramCount := 0
+	aspec := ArgsNone()
 	v := reflect.ValueOf(f)
 
 	if v.Kind() == reflect.Func {
 		env = mrb.registerFuncIndex(f)
-		paramCount = v.Type().NumIn()
+		t := v.Type()
+
+		opt := 0
+		for i := t.NumIn() - 1; i >= 0; i--  {
+			if t.In(i).Kind() != reflect.Ptr {
+				break
+			}
+			opt++
+		}
+
+		aspec = mrb.ArgsArg(t.NumIn()-opt, opt)
 	} else {
 		env = mrb.registerFuncIndex(func() interface{} { return f })
 	}
 
-	C._mrb_proc_new_cfunc(mrb.p, c.p, C.mrb_sym(mid), C.int(env), C.int(paramCount))
+	C._mrb_proc_new_cfunc(mrb.p, c.p, C.mrb_sym(mid), C.int(env), C.mrb_aspec(aspec))
 }
 
 // DefineClassFuncID define class func
@@ -131,14 +145,14 @@ func (mrb *MrbState) AliasMethod(c RClass, a, b MrbSym) {
 
 // MethodSearchVM finds VM method, method is invalid if not found
 func (mrb *MrbState) MethodSearchVM(cl RClass, id MrbSym) MrbMethodT {
-	return (MrbMethodT)(C.mrb_method_search_vm(mrb.p, &(cl.p), C.mrb_sym(id)))
+	return MrbMethodT{C.mrb_method_search_vm(mrb.p, &(cl.p), C.mrb_sym(id))}
 }
 
 // MethodSearch find method using symbol, and error if not found
 func (mrb *MrbState) MethodSearch(cl RClass, id MrbSym) (MrbMethodT, error) {
 	var m MrbMethodT
 	err := mrb.tryE(func() {
-		m = (MrbMethodT)(C.mrb_method_search(mrb.p, cl.p, C.mrb_sym(id)))
+		m = MrbMethodT{C.mrb_method_search(mrb.p, cl.p, C.mrb_sym(id))}
 	})
 	return m, err
 }
@@ -146,5 +160,5 @@ func (mrb *MrbState) MethodSearch(cl RClass, id MrbSym) (MrbMethodT, error) {
 // MethodExists find method using symbol, and error if not found
 func (mrb *MrbState) MethodExists(cl RClass, id MrbSym) bool {
 	m := mrb.MethodSearchVM(cl, id)
-	return C._MRB_METHOD_UNDEF_P(C.mrb_method_t(m)) == 0
+	return C._MRB_METHOD_UNDEF_P(C.mrb_method_t(m.m)) == 0
 }

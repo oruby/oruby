@@ -7,14 +7,19 @@ import (
 )
 
 // RException struct
-type RException struct{ p *C.struct_RException }
+type RException struct{
+	p *C.struct_RException
+	mrb *MrbState
+}
+type RExceptionPtr struct{ p *C.struct_RException }
+
 
 // RBreak struct
 type RBreak struct{ p *C.struct_RBreak }
 
 // MrbExcPtr returns RException
-func MrbExcPtr(v MrbValue) RException {
-	return RException{(*C.struct_RException)(C._mrb_ptr(v.Value().v))}
+func MrbExcPtr(v MrbValue) RExceptionPtr {
+	return RExceptionPtr{(*C.struct_RException)(C._mrb_ptr(v.Value().v))}
 }
 
 // SysFail error

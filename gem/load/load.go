@@ -3,9 +3,10 @@ package load
 import (
 	"errors"
 	"fmt"
-	"github.com/oruby/oruby"
 	"os"
 	"path/filepath"
+
+	"github.com/oruby/oruby"
 )
 
 func init() {
@@ -96,7 +97,7 @@ func doLoad(mrb *oruby.MrbState, fullName string, wrap bool) error {
 	ai := mrb.GCArenaSave()
 	defer mrb.GCArenaRestore(ai)
 
-	_, err = mrb.YieldWithClass(proc, mrb.TopSelf(), mrb.ObjectClass())
+	mrb.YieldWithClass(proc, mrb.TopSelf(), mrb.ObjectClass())
 	return err
 }
 

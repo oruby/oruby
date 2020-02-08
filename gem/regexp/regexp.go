@@ -22,7 +22,7 @@ func init() {
 
 		data := mrb.DefineGoClass("MatchData", &MatchData{})
 		data.DefineMethod("[]", matchDataIndex, mrb.ArgsArg(1, 1))
-		data.DefineMethod("values_at", matchDataValuesAt, mrb.ArgsAny())
+		data.DefineMethod("values_at", matchGoValuesAt, mrb.ArgsAny())
 		data.DefineAlias("length", "size")
 
 		cls := mrb.DefineGoClass("Regexp", regexp.Compile)
@@ -102,7 +102,7 @@ func sourceWithOptions(reg string, options int) string {
 }
 
 func regexCompile(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args, block := mrb.GetAllArgsWithBlock()
+	args, block := mrb.GetArgsWithBlock()
 	source := args.Item(0)
 	options := args.Item(1)
 	ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("new"), source, options, block)
@@ -134,7 +134,7 @@ func regexAfterInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	source := args.Item(0)
 	options := args.Item(1)
 	obj := mrb.RObject(self)
@@ -216,9 +216,9 @@ func matchDataIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return matchDataGetIndex(mrb, data, mrb.GetArgsFirst())
 }
 
-func matchDataValuesAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func matchGoValuesAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	data := mrb.Data(self).(*MatchData)
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	values := mrb.AryNewCapa(args.Len())
 	for i := 0; i < args.Len(); i++ {
 		value := matchDataGetIndex(mrb, data, args.Item(i))
@@ -332,7 +332,7 @@ func doMatch(mrb *oruby.MrbState, re *regexp.Regexp, s string, pos int) oruby.Mr
 
 func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	var s string
-	args, block := mrb.GetAllArgsWithBlock()
+	args, block := mrb.GetArgsWithBlock()
 	str := args.Item(0)
 	pos := oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0)))
 	switch str.Type() {
@@ -371,13 +371,13 @@ func regexCasefold(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	options := mrb.IVGet(self, mrb.Intern("@options"))
 	isCaseIgnored := (oruby.MrbFixnum(options) & IgnoreCase) > 0
 
-	return oruby.MrbBoolValue(isCaseIgnored)
+	return oruby.Bool(isCaseIgnored)
 }
 
 // regexEqualMatch used in case statements, return true or false
 func regexEqualMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	var s string
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	dest := args.Item(0)
 	pos := oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0)))
 
@@ -391,7 +391,7 @@ func regexEqualMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	regx := mrb.Data(self).(*regexp.Regexp)
-	return oruby.MrbBoolValue(regx.MatchString(s[pos:]))
+	return oruby.Bool(regx.MatchString(s[pos:]))
 }
 
 func regexNamedCaptures(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -451,7 +451,7 @@ func regexTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexUnion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	ret := make([]string, 0, args.Len())
 	for i := 0; i < args.Len(); i++ {
 		switch args.Item(i).Type() {

@@ -57,9 +57,26 @@ func (mrb *MrbState) IVGet(obj MrbValue, sym MrbSym) Value {
 
 // IVSet set instance variable
 func (mrb *MrbState) IVSet(obj MrbValue, sym MrbSym, v MrbValue) error {
-	return mrb.tryE(func() {
-		C.mrb_iv_set(mrb.p, obj.Value().v, C.mrb_sym(sym), v.Value().v)
-	})
+	switch obj.Type() {
+	case C.MRB_TT_OBJECT:
+	case C.MRB_TT_CLASS:
+	case C.MRB_TT_MODULE:
+	case C.MRB_TT_SCLASS:
+	case C.MRB_TT_HASH:
+	case C.MRB_TT_DATA:
+	case C.MRB_TT_EXCEPTION:
+	default:
+		return EArgumentError("cannot set instance variable")
+	}
+
+	o := obj.Value()
+
+	if o.RBasic().IsFrozen() {
+		return EFrozenError("can't modify frozen %v", mrb.TypeName(o))
+	}
+
+	C.mrb_iv_set(mrb.p, o.v, C.mrb_sym(sym), v.Value().v)
+	return nil
 }
 
 // IVDefined instance variable defined
@@ -86,8 +103,8 @@ func (mrb *MrbState) ModConstants(mod MrbValue) RArray {
 }
 
 // FGlobalVariables list
-func (mrb *MrbState) FGlobalVariables(self MrbValue) Value {
-	return Value{C.mrb_f_global_variables(mrb.p, self.Value().v)}
+func (mrb *MrbState) FGlobalVariables() RArray {
+	return ary(C.mrb_f_global_variables(mrb.p, nilValue.v), mrb)
 }
 
 // GVGet get global variable
@@ -124,13 +141,13 @@ func (mrb *MrbState) GetObjGV(name string) RObject {
 }
 
 // ObjInstanceVariables list
-func (mrb *MrbState) ObjInstanceVariables(v MrbValue) Value {
-	return Value{C.mrb_obj_instance_variables(mrb.p, v.Value().v)}
+func (mrb *MrbState) ObjInstanceVariables(v MrbValue) RArray {
+	return ary(C.mrb_obj_instance_variables(mrb.p, v.Value().v), mrb)
 }
 
 // ModClassVariables list module class variables
-func (mrb *MrbState) ModClassVariables(v MrbValue) Value {
-	return Value{C.mrb_mod_class_variables(mrb.p, v.Value().v)}
+func (mrb *MrbState) ModClassVariables(v MrbValue) RArray {
+	return ary(C.mrb_mod_class_variables(mrb.p, v.Value().v), mrb)
 }
 
 // ModCVGet module get class variable

@@ -10,7 +10,7 @@ func TestMrbStackedException(t *testing.T) {
 	var testClass RClass
 
 	testFunc := func(mrb *MrbState, self Value) MrbValue {
-		args := mrb.GetAllArgs()
+		args := mrb.GetArgs()
 
 		t, err := testClass.New()
 		if err != nil {
@@ -57,7 +57,7 @@ func TestMrbStackedException(t *testing.T) {
 		arg := mrb.GetArgsBlock()
 		result, err := mrb.Yield(arg, mrb.NilValue())
 		if err != nil {
-			return mrb.EExceptionClass().RaiseError(err)
+			return mrb.EExceptionClass().RaiseError(mrb.Err())
 		}
 
 		return result
@@ -111,7 +111,7 @@ func TestMrbStackedInnerException(t *testing.T) {
 		arg := mrb.GetArgsBlock()
 		result, err := mrb.Yield(arg, mrb.nilValue)
 		if err != nil {
-			return mrb.EExceptionClass().RaiseError(err)
+			return mrb.EExceptionClass().RaiseError(mrb.Err())
 		}
 
 		return result

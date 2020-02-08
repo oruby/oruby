@@ -72,7 +72,7 @@ func init() {
 				arg := mrb.GetArgsFirst()
 				if mrb.ObjIsInstanceOf(arg, cpxClass) {
 					cpx := newComplex(self.Float64(), 0)
-					v := mrb.GoValue(cpx).Freeze()
+					v := mrb.DataValue(cpx).Freeze()
 					return mrb.Call(v, op, arg).Value().Freeze()
 				}
 				return mrb.Call(self, oldOp, arg)

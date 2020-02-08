@@ -167,7 +167,7 @@ func init() {
 }
 
 func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	runner := parseArgs(mrb, mrb.GetAllArgs())
+	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
 	//TODO: start shell
 	err := syscall.Exec(runner.cmd.Args[0],runner.cmd.Args, runner.cmd.Env)
@@ -178,7 +178,7 @@ func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	runner := parseArgs(mrb, mrb.GetAllArgs())
+	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
 
 	pid, err := runner.run()
@@ -190,7 +190,7 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	runner := parseArgs(mrb, mrb.GetAllArgs())
+	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
 
 	pid, err := runner.run()
@@ -232,7 +232,7 @@ func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func procKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	sig := args.Item(1)
 
 	for i := 1; i < args.Len(); i++ {

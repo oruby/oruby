@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
-	"time"
 	"unsafe"
 )
 
@@ -37,7 +36,7 @@ func (c RClass) InstanceTT() int { return int(C._MRB_INSTANCE_TT(c.p)) }
 func (c RClass) Real() RClass { return RClass{C.mrb_class_real(c.p), c.mrb} }
 
 // ClassPath returns class path
-func (c RClass) ClassPath() MrbValue { return Value{C.mrb_class_path(c.mrb.p, c.p)} }
+func (c RClass) ClassPath() Value { return Value{C.mrb_class_path(c.mrb.p, c.p)} }
 
 // New creates new object instance
 func (c RClass) New(args ...interface{}) (RObject, error) {
@@ -68,22 +67,11 @@ func (c RClass) NewInstance(args ...MrbValue) (Value, error) {
 	return v, err
 }
 
-// GoValue converts go struct or interface to ruby Value
-// if first checks if obj implements MrbValue or Valuer interface
+// DataValue converts go struct or interface to ruby Value
+// if first checks if obj implements MrbValue or ValueMigrator interface
 // then it checks if obj type is regestered in ruby
 // it then creates oruby object
-func (mrb *MrbState) GoValue(obj interface{}) Value {
-	switch t := obj.(type) {
-	case MrbValue:
-		return t.Value()
-	case Valuer:
-		return t.ToValue(mrb)
-	case *time.Time:
-		return mrb.NewInstance("Time",
-			t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond()/1000000,
-		).Value()
-	}
-
+func (mrb *MrbState) DataValue(obj interface{}) Value {
 	mrb.Lock()
 	clsptr := mrb.classmap[reflect.TypeOf(obj)]
 	mrb.Unlock()

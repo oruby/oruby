@@ -58,18 +58,22 @@ func checkType(valueType, mustBeType int) {
 func (v Value) Int() int {
 	switch v.Type() {
 	case MrbTTFixnum:
-		return MrbFixnum(v)
+		return int(C._mrb_fixnum(v.v))
 	case MrbTTSymbol:
-		return int(MrbSymbol(v))
+		return int(v.Symbol())
 	case MrbTTFalse:
 		return 0
 	case MrbTTTrue:
 		return 1
 	case MrbTTFloat:
-		return int(MrbFloat(v))
+		return int(C._mrb_float(v.v))
 	default:
 		panic("value can't be convertend directly to int, try using oruby state functions like to_i")
 	}
+}
+
+func (v Value) Int64() int64 {
+	return int64(v.Int())
 }
 
 // String returns string from value
@@ -121,9 +125,9 @@ func (v Value) Uintptr() uintptr { return uintptr(C._mrb_cptr(v.Value().v)) }
 func (v Value) Float64() float64 {
 	switch v.Type() {
 	case MrbTTFloat:
-		return MrbFloat(v)
+		return float64(C._mrb_float(v.v))
 	case MrbTTFixnum:
-		return float64(MrbFixnum(v))
+		return float64(C._mrb_fixnum(v.v))
 	case MrbTTFalse:
 		return 0.0
 	case MrbTTTrue:
@@ -136,7 +140,7 @@ func (v Value) Float64() float64 {
 // Symbol returns symbol from value
 func (v Value) Symbol() MrbSym {
 	checkType(v.Type(), MrbTTSymbol)
-	return MrbSymbol(v)
+	return MrbSym(C._mrb_symbol(v.v))
 }
 
 // Freeze sets value as frozen
@@ -149,6 +153,14 @@ func (v Value) Freeze() Value {
 func (v Value) Unfreeze() Value {
 	C._MRB_UNSET_FROZEN_FLAG(v.v)
 	return v
+}
+
+// TestFlag check if flag is set on object
+func (v Value) TestFlag(flag int) bool {
+	if !v.HasBasic() {
+		return false
+	}
+	return (uint(v.RBasic().Flags()) & uint(flag)) != 0
 }
 
 // MrbType returns type of oruby value
@@ -295,28 +307,36 @@ func (mrb *MrbState) FixnumValue(n int) Value { return Value{C.mrb_fixnum_value(
 // MrbFixnumValue finxnum value
 func MrbFixnumValue(i int) Value { return Value{C.mrb_fixnum_value(C.mrb_int(i))} }
 
-// MrbSymbolValue ToValue from symbol
+// MrbSymbolValue MigrateTo from symbol
 func MrbSymbolValue(i MrbSym) Value { return Value{C.mrb_symbol_value(C.mrb_sym(i))} }
 
 // SymbolValue converts MrbSym to Value
 func (mrb *MrbState) SymbolValue(sym MrbSym) Value { return Value{C.mrb_symbol_value(C.mrb_sym(sym))} }
 
+// SymbolValue converts MrbSym to Value
+func mrbObjValue(p unsafe.Pointer) Value {
+	if p == nil {
+		return nilValue
+	}
+	return Value{C.mrb_obj_value(p)}
+}
+
 // MrbObjValue value form oruby object. In Go object must provide MrbValue interface,
 // or NilValue is returned
 func MrbObjValue(p interface{}) (Value, error) {
 	switch v := p.(type) {
-	case MrbValue:
-		return v.Value(), nil
 	case int, int8, int16, int32, uint, uint8, uint16, uint32:
 		return MrbFixnumValue(v.(int)), nil
 	case int64, uint64:
 		return MrbFixnumValue(v.(int)), nil
 	case bool:
-		return MrbBoolValue(v), nil
+		return Bool(v), nil
 	case nil:
-		return Nil, nil
+		return nilValue, nil
+	case MrbValue:
+		return v.Value(), nil
 	default:
-		return Nil, errors.New("direct conversion to oruby.Value not supported")
+		return nilValue, errors.New("direct conversion to oruby.Value not supported")
 	}
 }
 
@@ -328,12 +348,22 @@ func (mrb *MrbState) CPtrValue(p uintptr) Value {
 // VoidpValue value from pointer
 func (mrb *MrbState) VoidpValue(p uintptr) Value { return mrb.CPtrValue(p) }
 
-// MrbBoolValue from boolen
-func MrbBoolValue(b bool) Value {
+// Bool returns Value from boolen
+func Bool(b bool) Value {
 	if b {
 		return Value{C.mrb_true_value()}
 	}
 	return Value{C.mrb_false_value()}
+}
+
+// Integer returns Value from boolen
+func Integer(i int) Value {
+	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
+}
+
+// Int64r returns Value from boolen
+func Int64(i int64) Value {
+	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
 }
 
 // BoolValue from boolen
@@ -348,6 +378,7 @@ func (mrb *MrbState) BoolValue(b bool) Value {
 var (
 	False = Value{C.mrb_false_value()}
 	Nil   = Value{C.mrb_nil_value()}
+	nilValue = Value{C.mrb_nil_value()}
 	True  = Value{C.mrb_true_value()}
 	Undef = Value{C.mrb_undef_value()}
 )

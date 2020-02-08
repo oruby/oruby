@@ -77,9 +77,20 @@ static mrb_bool  _mrb_basic_frozen(struct RBasic *o) { return MRB_FROZEN_P(o) !=
 static void      _mrb_basic_set_color(struct RBasic *o, int c) { o->color = c; }
 static int       _mrb_basic_color(struct RBasic *o)  { return o->color; }
 
+static uint32_t _mrb_value_flags(mrb_value o) {
+  return mrb_immediate_p(o) ? mrb_basic_ptr(o)->flags : 0; 
+}
+
+static void _mrb_value_set_flags(mrb_value o, uint32_t flags) {
+   if (!mrb_immediate_p(o)) {
+     return;
+   }
+   mrb_basic_ptr(o)->flags = flags; 
+}
+
 static mrb_bool _mrb_nil_p(mrb_value o)     { return mrb_nil_p(o); }
-static mrb_int  _mrb_fixnum(mrb_value o)     { return mrb_fixnum(o); }
-static double   _mrb_float(mrb_value o)      { return (double)mrb_float(o); }
+static mrb_int  _mrb_fixnum(mrb_value o)    { return mrb_fixnum(o); }
+static double   _mrb_float(mrb_value o)     { return (double)mrb_float(o); }
 static void*    _mrb_ptr(mrb_value o)       { return mrb_ptr(o); }
 static void*    _mrb_cptr(mrb_value o)      { return mrb_cptr(o); }
 static void*    _mrb_range_ptr(mrb_value o) { return mrb_ptr(o); }
@@ -91,7 +102,7 @@ static mrb_value _mrb_uintptr_value(mrb_state *mrb, uintptr_t p) { return mrb_cp
 static mrb_value _mrb_ptr_to_str(mrb_state *mrb, uintptr_t p) { return mrb_ptr_to_str(mrb, (void *)p); }
 
 // _mrb_is_nil returns true if mrb_value is nil value,
-// RBasic object with NIL pointer
+// or RBasic object with NIL pointer
 static mrb_bool _mrb_is_nil(mrb_value o)    {
 	if (mrb_nil_p(o) || (mrb_immediate_p(o) && (mrb_ptr(o) == NULL))) {
 		return 1;
@@ -106,7 +117,10 @@ static int  _MRB_RHASH_PROCDEFAULT_P(mrb_value h) { return MRB_RHASH_PROCDEFAULT
 static void _set_last_stack_value(mrb_state *mrb, mrb_value v) { *(mrb->c->stack + 1) = v; }
 static void _MRB_ENV_SET_STACK_LEN(struct REnv *e, mrb_int len) { MRB_ENV_SET_STACK_LEN(e, len); }
 static mrb_int _MRB_ENV_STACK_LEN(struct REnv *e) { return MRB_ENV_STACK_LEN(e); }
-static uint32_t _mrb_rproc_flags(struct RProc *p) { return p->flags; }
+static uint32_t _mrb_rproc_flags(struct RProc *p) { return (uint32_t)p->flags; }
+static void _mrb_rproc_set_flags(struct RProc *p, uint32_t flags) { p->flags = flags; }
+static struct REnv* _MRB_PROC_ENV(struct RProc *p) { return MRB_PROC_ENV(p); }
+
 static void _MRB_PROC_SET_TARGET_CLASS(mrb_state *mrb, struct RProc *p, struct RClass *c)  { 
    MRB_PROC_SET_TARGET_CLASS(p,c);
 }
@@ -115,10 +129,11 @@ static mrb_func_t _MRB_PROC_CFUNC(struct RProc *p) { return MRB_PROC_CFUNC(p); }
 static int  _MRB_PROC_STRICT_P(struct RProc *p)   { return (int)(MRB_PROC_STRICT_P(p)); }
 static mrb_func_t _MRB_METHOD_FUNC(mrb_method_t m) { return MRB_METHOD_CFUNC(m); }
 static struct RProc *_MRB_METHOD_PROC(mrb_method_t m) { return MRB_METHOD_PROC(m); }
-static mrb_bool _MRB_METHOD_UNDEF_P(mrb_method_t m) { return (mrb_bool)(m == 0); }
+static mrb_bool _MRB_METHOD_UNDEF_P(mrb_method_t m) { return MRB_METHOD_UNDEF_P(m); }
 
 static uint16_t _mrb_rproc_nlocals(struct RProc *p)  { return p->body.irep->nlocals; }
 static mrb_irep *_rproc_body_irep(struct RProc *p)  { return p->body.irep; }
+
 typedef struct _irep_dump {
   int result;
   uint8_t *bin;
@@ -137,7 +152,7 @@ static _irep_dump _dump_irep(mrb_state *mrb, mrb_irep *irep, uint8_t flags) {
   return ret;
 }
 
-static mrb_method_t _MRB_METHOD_NOARG_SET(mrb_method_t m) { 
+static mrb_method_t _MRB_METHOD_NOARG_SET(mrb_method_t m) {
   mrb_method_t ret = m;
   MRB_METHOD_NOARG_SET(ret);
   return ret; 
@@ -173,8 +188,8 @@ static void _MRB_SET_FROZEN_FLAG(mrb_value o)   { MRB_SET_FROZEN_FLAG(mrb_basic_
 static void _MRB_UNSET_FROZEN_FLAG(mrb_value o) { MRB_UNSET_FROZEN_FLAG(mrb_basic_ptr(o)); }
 
 // vararg proxy calls, formated using Go fmt
-static void    _mrb_warn(mrb_state *mrb, const char *msg) { mrb_warn(mrb, msg); }
-static void    _mrb_bug(mrb_state *mrb, const char *msg)  { mrb_bug(mrb, msg);  }
+static void _mrb_warn(mrb_state *mrb, const char *msg) { mrb_warn(mrb, msg); }
+static void _mrb_bug(mrb_state *mrb, const char *msg)  { mrb_bug(mrb, msg);  }
 
 // Argument helpers
 static mrb_value
@@ -187,42 +202,21 @@ _mrb_get_args_first(mrb_state *mrb) {
 }
 
 static mrb_value
-_mrb_get_args_all(mrb_state *mrb) {
-	mrb_int argc = mrb_get_argc(mrb);
-  mrb_value *argv = mrb_get_argv(mrb);
-
-  return mrb_ary_new_from_values(mrb, argc, argv);
-}
-
-static mrb_value
 _mrb_get_arg(mrb_value *args, int index) {
 	return args[index];
 }
 
 static mrb_value
-_mrb_get_args_all_with_block(mrb_state *mrb) {
-  mrb_value *argv;
-  mrb_value a, b;
-  int argc;
-
-  mrb_get_args(mrb, "*!&", &argv, &argc, &b);
-  a = mrb_ary_new_from_values(mrb, argc, argv);
-  mrb_ary_push(mrb, a, b);
-  return a;
-}
-
-static mrb_int
-_mrb_get_args_3(mrb_state *mrb, mrb_value *arg1, mrb_value *arg2, mrb_value *arg3) {
-	return mrb_get_args(mrb, "|ooo", arg1, arg2, arg3);
-}
-
-static mrb_value
 _mrb_get_args_block(mrb_state *mrb) {
-  mrb_value arg;
+  mrb_value *block;
 
-  mrb_get_args(mrb, "&", &arg);
+  if (mrb->c->ci->argc < 0) {
+    block = mrb->c->stack + 2;
+  } else {
+    block = mrb->c->stack + mrb->c->ci->argc + 1;
+  }
 
-  return arg;
+  return *block;
 }
 
 // Bit packed options from struct
@@ -255,43 +249,79 @@ static struct RBasic *_gc_arena_peek(mrb_state *mrb, mrb_int i) {
 }
 
 static int _MRB_FUNCALL_ARGC_MAX() {
-#ifndef MRB_FUNCALL_ARGC_MAX
-    return 16;
-#else
+#ifdef MRB_FUNCALL_ARGC_MAX
     return MRB_FUNCALL_ARGC_MAX;
+#else
+    return 16;
 #endif
 }
 
 // Error formating using go fmt
 static void _mrb_name_error(mrb_state *mrb, mrb_sym id, const char *msg) { mrb_name_error(mrb, id, msg); }
 
-// Handle Go funcs as C callbacks
+// from mruby-go
+#define GOMRUBY_EXC_PROTECT_START \
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp; \
+  struct mrb_jmpbuf c_jmp; \
+  mrb_value result = mrb_nil_value(); \
+  MRB_TRY(&c_jmp) { \
+    mrb->jmp = &c_jmp;
+
+// from mruby-go
+#define GOMRUBY_EXC_PROTECT_END \
+    mrb->jmp = prev_jmp; \
+  } MRB_CATCH(&c_jmp) { \
+    mrb->jmp = prev_jmp; \
+    result = mrb_nil_value();\
+  } MRB_END_EXC(&c_jmp); \
+  mrb_gc_protect(mrb, result); \
+  return result;
+
+static mrb_value
+_mrb_funcall_with_block(mrb_state *mrb, mrb_value b, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value block) {
+  GOMRUBY_EXC_PROTECT_START
+  result = mrb_funcall_with_block(mrb, b, mid, argc, argv, block);
+  GOMRUBY_EXC_PROTECT_END
+}
+
+
+static struct REnv *
+_mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)
+{
+  struct REnv *e;
+  int i;
+
+  e = (struct REnv*)mrb_obj_alloc(mrb, MRB_TT_ENV, mrb->object_class);
+  e->stack = NULL;
+  if (argc > 0) {
+    e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * argc);
+    MRB_ENV_UNSHARE_STACK(e);
+    for (i = 0; i < argc; i++) {
+      e->stack[i] = argv[i];
+    }
+  }
+  MRB_ENV_SET_STACK_LEN(e, argc);
+
+  p->e.env = e;
+  p->flags |= MRB_PROC_ENVSET;
+
+  return e;
+}
+
 static void
 _mrb_proc_set_env(mrb_state *mrb, struct RProc *p, mrb_value v)
 {
-  struct REnv *e;
-  int ai, i;
-
   if (p == NULL) {
     mrb_raise(mrb, E_TYPE_ERROR, "RProc is empty.");
     return;
   }
 
-  if (MRB_PROC_ENV(p) != NULL) {
+  if (MRB_PROC_ENV_P(p)) {
     mrb_raise(mrb, E_TYPE_ERROR, "Expected emty RProc enviroment.");
     return;
   }
 
-  ai = mrb_gc_arena_save(mrb);
-  e = (struct REnv*)mrb_obj_alloc(mrb, MRB_TT_ENV, NULL);
-  p->e.env = e;
-  p->flags |= MRB_PROC_ENVSET;
-  mrb_gc_arena_restore(mrb, ai);
-
-  MRB_ENV_UNSHARE_STACK(e);
-  MRB_ENV_SET_STACK_LEN(e, 1);
-  e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value));
-  e->stack[0] = v;
+  _mrb_create_env(mrb, p, 1, &v);
 }
 
 static mrb_bool
@@ -339,7 +369,7 @@ extern int  go_hash_callback(mrb_state *mrb, mrb_value key, mrb_value val, void 
 extern int  go_each_object_callback(mrb_state *mrb, struct RBasic *obj, void *data);
 extern void go_gofunc_callback(mrb_state *mrb, mrb_value *self, mrb_value *ret);
 extern void go_mrb_func_callback(mrb_state *mrb, mrb_value *self, mrb_value *ret);
-extern void go_mrb_func_env_callback(mrb_state *mrb, mrb_value *self, mrb_value *ret);
+extern mrb_value go_mrb_func_env_callback(mrb_state *mrb, mrb_value self, mrb_int idx);
 
 mrb_value set_mrb_callback(mrb_state *mrb, mrb_value self);
 mrb_value set_gofunc_callback(mrb_state *mrb, mrb_value self);
@@ -348,7 +378,7 @@ int set_hash_callback(mrb_state *mrb, mrb_value key, mrb_value val, void *data);
 int set_each_object_callback(struct mrb_state *mrb, struct RBasic *obj, void *data);
 
 // static void _mrb_copy_value(mrb_value *v1, mrb_value *v2) { *v1=*v2; }
-void _mrb_proc_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, int param_count);
+void _mrb_proc_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 void _mrb_method_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 
 // cmd helpers

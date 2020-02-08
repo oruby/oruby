@@ -92,7 +92,7 @@ func rowsEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 
 		if !block.IsNil() {
-			_, _ = mrb.YieldArgv(block, row)
+			mrb.YieldArgv(block, row)
 		}
 
 		mrb.GCArenaRestore(ai)
@@ -112,16 +112,16 @@ func rowsEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 //     type NullBool
 //         func (n *NullBool) Scan(value interface{}) error
-//         func (n NullBool) ToValue() (driver.ToValue, error)
+//         func (n NullBool) MigrateTo() (driver.MigrateTo, error)
 //     type NullFloat64
 //         func (n *NullFloat64) Scan(value interface{}) error
-//         func (n NullFloat64) ToValue() (driver.ToValue, error)
+//         func (n NullFloat64) MigrateTo() (driver.MigrateTo, error)
 //     type NullInt64
 //         func (n *NullInt64) Scan(value interface{}) error
-//         func (n NullInt64) ToValue() (driver.ToValue, error)
+//         func (n NullInt64) MigrateTo() (driver.MigrateTo, error)
 //     type NullString
 //         func (ns *NullString) Scan(value interface{}) error
-//         func (ns NullString) ToValue() (driver.ToValue, error)
+//         func (ns NullString) MigrateTo() (driver.MigrateTo, error)
 
 //   //  type Row
 //   row := mrb.Define_class_under(m, "Row", mrb.ObjectClass)

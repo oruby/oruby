@@ -20,6 +20,21 @@ func (s RString) Capa() int { return int(C._RSTRING_CAPA(s.v)) }
 // Modify modify string
 func (s RString) Modify() { C.mrb_str_modify(s.mrb.p, s.Ptr().p) }
 
+// Flags return string object flags
+func (s RString) Flags() int { return int(C._mrb_value_flags(s.v)) }
+
+// IsFrozen returns true if string is frozen
+func (s RString) IsFrozen() bool { return s.Flags() & MrbFlObjIsFrozen != 0 }
+
+// IsSharedn returns true if string is shared
+func (s RString) IsShared() bool { return s.Flags() & MrbStrShared != 0 }
+
+// IsFShared returns true if string is fshared
+func (s RString) IsFShared() bool { return s.Flags() & MrbStrFShared != 0 }
+
+// IsNoFree returns true if string is marked with MrbStrNofree flag
+func (s RString) IsNoFree() bool { return s.Flags() & MrbStrNofree != 0 }
+
 // ModifyKeepASCII modify stringwith keeping ASCII flag if set
 func (s RString) ModifyKeepASCII() { C.mrb_str_modify_keep_ascii(s.mrb.p, s.Ptr().p) }
 
@@ -29,13 +44,6 @@ func (s RString) Clone() RString {
 		C.mrb_str_dup(s.mrb.p, s.v),
 		s.mrb,
 	}}
-}
-
-// StrIndex finds the index of a substring in a string
-func (s RString) StrIndex(str string, offset int) int {
-	cstr := C.CString(str)
-	defer C.free(unsafe.Pointer(cstr))
-	return int(C.mrb_str_index(s.mrb.p, s.v, cstr, C.mrb_int(len(str)), C.mrb_int(offset)))
 }
 
 // Concat appends self to other. self as a concatenated string

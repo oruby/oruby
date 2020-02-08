@@ -69,7 +69,7 @@ func (h RHash) IfNone() Value {
 }
 
 // ProcDefault alias for IfNone
-func (h RHash) ProcDefault() MrbValue {
+func (h RHash) ProcDefault() Value {
 	return h.mrb.RHashIfNone(h)
 }
 

@@ -14,7 +14,7 @@ func (c RClass) attrGetter(idx int) MrbFuncT {
 	return func(mrb *MrbState, self Value) MrbValue {
 		strct := mrb.DataCheckGetInterface(self)
 		v := reflect.ValueOf(strct).Elem().Field(idx)
-		return c.mrb.valueValue(&v)
+		return c.mrb.valueValue(v)
 	}
 }
 
@@ -88,6 +88,7 @@ func afterInit(mrb *MrbState, self Value) Value {
 	}
 	return self
 }
+
 // initGoValue is special constructor from go pointer
 func initGoValue(classType reflect.Type) MrbFuncT {
 	return func(mrb *MrbState, self Value) MrbValue {
@@ -109,7 +110,7 @@ func initGoValue(classType reflect.Type) MrbFuncT {
 func initGo(classType reflect.Type, fn reflect.Value) MrbFuncT {
 	return func(mrb *MrbState, self Value) MrbValue {
 		// fetch args
-		args := mrb.GetAllArgs()
+		args := mrb.GetArgs()
 		argc := args.Len()
 
 		// Special constructor - from go pointer
@@ -125,9 +126,14 @@ func initGo(classType reflect.Type, fn reflect.Value) MrbFuncT {
 			}
 		}
 
-		result, err := mrb.callFunc(fn, args)
-		if err != nil {
-			return mrb.Raisef(mrb.ERuntimeError(), "%v.init_go : %v", mrb.ClassOf(self).Name(), err).Value()
+		result := mrb.callFunc(fn, args)
+
+		// Check error
+		if len(result) > 0 && result[len(result)-1].Type() == reflect.TypeOf((*error)(nil)).Elem() {
+			err := result[len(result)-1].Interface()
+			if err != nil {
+				return mrb.getErrorKlass(err.(error)).Raisef("%v.init_go : %v", mrb.ClassOf(self).Name(), err)
+			}
 		}
 
 		// Handle results
@@ -144,7 +150,6 @@ func initGo(classType reflect.Type, fn reflect.Value) MrbFuncT {
 // RegisterGoClass connects go type with oruby class
 func (c RClass) RegisterGoClass(constructor interface{}) {
 	v := reflect.TypeOf(constructor)
-	aspec := ArgsAny()
 
 	switch v.Kind() {
 	case reflect.Func:
@@ -153,15 +158,23 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 			panic("constructor must return pointer to type as first return value")
 		}
 
-		aspec = ArgsArg(uint32(v.NumIn()), 1)
+		opt := 0
+		for i := v.NumIn() - 1; i >= 0; i--  {
+			if v.In(i).Kind() != reflect.Ptr {
+				break
+			}
+			opt++
+		}
+
+		aspec := ArgsArg(v.NumIn()-opt, opt)
 		v = v.Out(0)
 
 		// define init_go method so that initialize could be redefined
 		c.DefineMethod("init_go", initGo(v, reflect.ValueOf(constructor)), aspec)
 	case reflect.Ptr:
 		// Constructor is pointer to value
-		aspec = ArgsReq(1)
-		c.DefineMethod("init_go", initGoValue(v), aspec)
+		// define init_go method so that initialize could be redefined
+		c.DefineMethod("init_go", initGoValue(v), ArgsReq(1))
 	default:
 		panic("constructor does not return pointer to Go type")
 	}

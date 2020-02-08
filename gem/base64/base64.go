@@ -63,7 +63,7 @@ func base64StrictEncode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 // is optional. This method accepts both correctly-padded and unpadded input.
 // Note that it still rejects incorrectly-padded input.
 func base64UrlSafeDecode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	str := mrb.String(args.Item(0))
 	padding := args.ItemDef(1, mrb.NilValue())
 	b64 := base64.RawURLEncoding
@@ -84,7 +84,7 @@ func base64UrlSafeDecode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 //  Safe Alphabet'' in RFC 4648. The alphabet uses '-' instead of '+' and '_' instead of '/'.
 //  Note that the result can still contain '='. You can remove the padding by setting padding as false.
 func base64UrlSafeEncode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	str := mrb.String(args.Item(0))
 	padding := args.ItemDefBool(1, false)
 	var b64 *base64.Encoding

@@ -25,9 +25,9 @@ func init() {
 
 	oruby.Gem("signal", func(mrb *oruby.MrbState) interface{} {
 		mSignal := mrb.DefineModule("Signal")
-		mrb.DefineGlobalFunction("trap", sigTrap, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
+		mrb.DefineGlobalFunction("trap", sigTrap, mrb.ArgsArg(1, 1)|mrb.ArgsBlock())
 
-		mSignal.DefineModuleFunction("trap", sigTrap, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
+		mSignal.DefineModuleFunction("trap", sigTrap, mrb.ArgsArg(1, 1)|mrb.ArgsBlock())
 		mSignal.DefineModuleFunction("list", sigList, mrb.ArgsNone())
 		mSignal.DefineModuleFunction("signame", sigName, mrb.ArgsReq(1))
 
@@ -86,6 +86,7 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 	}
 
 	handlers.c = make(chan os.Signal, 1)
+	mrb.WaitGroup.Add(1)
 
 	go func(){
 		for {
@@ -96,20 +97,21 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 				}
 				cmd, ok := handlers.current[sig]
 				if ok && cmd.IsProc() {
-					_,_=mrb.Yield(cmd, mrb.NilValue())
+					//TODO: This doesn't work. It needs to inject into main thread
+					mrb.Call(cmd, "call")
 				}
 			case <-mrb.ExitChan():
 				// gracefull close goroutine on mrb state close
 				signal.Stop(handlers.c)
 				close(handlers.c)
 
-				// zero signal handler
-				cmd, ok := handlers.current[syscall.Signal(0)]
-				if ok && cmd.IsProc() {
-					_,_=mrb.Yield(cmd, mrb.NilValue())
+				// zero signal handler, executed at MrbState closing
+				if !handlers.exitHandler.IsNil() {
+					mrb.Call(handlers.exitHandler, "call")
 				}
 
 				handlers.current = nil
+				mrb.WaitGroup.Done()
 				return
 			}
 		}
@@ -117,11 +119,11 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 }
 
 func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args, block := mrb.GetAllArgsWithBlock()
-	sigValue := args.ItemDef(0, mrb.NilValue())
+	args, block := mrb.GetArgsWithBlock()
+	sigValue := args.Item(0)
 	command  := args.ItemDef(1, block)
 
-	sigID, name, err := getSignal(mrb, sigValue)
+	sigID, name, err := getSignal(mrb, mrb.Value(sigValue))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -192,7 +194,7 @@ func sigName(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func esignalInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	signo, name, err := getSignal(mrb, args.Item(0))
 	if err != nil {
 		return mrb.RaiseError(err)

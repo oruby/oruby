@@ -3,6 +3,7 @@ package oruby
 // #include "go-mrb.h"
 import "C"
 import (
+	"fmt"
 	"unsafe"
 )
 
@@ -13,7 +14,7 @@ type RData struct{ p *C.struct_RData }
 //type FreeRDataProc = procedure(mrb mrb_state, data Pointer)
 
 // Value implements MrbValue interface
-func (d RData) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(d.p))} }
+func (d RData) Value() Value { return mrbObjValue(unsafe.Pointer(d.p)) }
 
 // Type for MrbValue interface
 func (d RData) Type() int { return d.Value().Type() }
@@ -80,8 +81,18 @@ func (mrb *MrbState) DataCheckType(obj MrbValue, dtype MrbDataType) {
 }
 
 // DataGetPtr retreives pointer from RData
-func (mrb *MrbState) DataGetPtr(obj MrbValue, dtype MrbDataType) uintptr {
-	return uintptr(C.mrb_data_get_ptr(mrb.p, obj.Value().v, dtype.p))
+func (mrb *MrbState) DataGetPtr(obj MrbValue, dtype MrbDataType) (uintptr, error) {
+	if obj.Type() != MrbTTData {
+		return uintptr(0), fmt.Errorf("")
+	}
+
+	ret := mrb.DataCheckGetPtr(obj, dtype)
+	if ret == uintptr(0) {
+		return uintptr(0), fmt.Errorf("wrong argument type %v", dtype)
+	}
+
+	return ret, nil
+	// C.mrb_data_get_ptr() is never called
 }
 
 //func (mrb *MrbState) DATA_GET_PTR(obj MrbValue, dtype MrbDataType, atype uintptr) uintptr {

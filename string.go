@@ -65,7 +65,7 @@ func (mrb *MrbState) MrbStrIndex(str MrbValue, s string, offset int) int {
 func (mrb *MrbState) StrConcat(s1, s2 MrbValue) { C.mrb_str_concat(mrb.p, s1.Value().v, s2.Value().v) }
 
 // StrPlus Adds two strings together.
-func (mrb *MrbState) StrPlus(s1, s2 MrbValue) MrbValue {
+func (mrb *MrbState) StrPlus(s1, s2 MrbValue) Value {
 	return Value{C.mrb_str_plus(mrb.p, s1.Value().v, s2.Value().v)}
 }
 
@@ -245,12 +245,12 @@ func (mrb *MrbState) StrPool(str string) Value {
 func (mrb *MrbState) StrHash(str MrbValue) int { return int(C.mrb_str_hash(mrb.p, str.Value().v)) }
 
 // StrDump dump string
-func (mrb *MrbState) StrDump(str MrbValue) MrbValue {
+func (mrb *MrbState) StrDump(str MrbValue) Value {
 	return Value{C.mrb_str_dump(mrb.p, str.Value().v)}
 }
 
 // StrInspect returns a printable version of str, surrounded by quote marks, with special characters escaped
-func (mrb *MrbState) StrInspect(str MrbValue) MrbValue {
+func (mrb *MrbState) StrInspect(str MrbValue) Value {
 	return Value{C.mrb_str_inspect(mrb.p, str.Value().v)}
 }
 

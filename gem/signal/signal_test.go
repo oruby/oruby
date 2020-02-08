@@ -12,6 +12,7 @@ func TestTrap(t *testing.T) {
 	defer mrb.Close()
 
 	_, err := mrb.Eval(`
+		$testv = 0
 		Signal.trap("USR1") { $testv = 1 }
 		Signal.trap(0) { p "Exited." }
 	`)
@@ -35,6 +36,35 @@ func TestTrap(t *testing.T) {
 
 	v2 := mrb.GetGV("$testv").Int()
 
+	if v2 != 1 {
+		t.Fatalf("expected 1 got %v", v2)
+	}
+}
+
+func TestInfinite(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	go func() {
+		<-time.After(100 * time.Millisecond)
+		err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	_, err := mrb.Eval(`
+		$testv = 0
+		Signal.trap("USR1") { p "Received USR1"; exit }
+		loop do
+			$testv = 1
+		end		
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v2 := mrb.GetGV("$testv").Int()
 	if v2 != 1 {
 		t.Fatalf("expected 1 got %v", v2)
 	}

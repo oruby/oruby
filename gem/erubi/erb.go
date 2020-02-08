@@ -39,7 +39,7 @@ func erbInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func erbDefClass(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 
 	superklass := args.ItemDef(0, mrb.ObjectClass())
 	methodname := args.ItemDef(1, mrb.StringValue("result"))
@@ -54,7 +54,7 @@ func erbDefClass(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func erbDefMethod(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	mod := args.Item(0)
 	methodname := mrb.String(args.Item(1))
 	fname := args.ItemDef(3, mrb.StringValue("(ERB)"))
@@ -71,7 +71,7 @@ func erbDefMethod(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func erbDefModule(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	methodname := args.ItemDef(1, mrb.StringValue("erubi"))
 	filename := mrb.IVGet(self, mrb.Intern("@filename"))
 	if mrb.NilP(filename) {

@@ -1,5 +1,6 @@
 package oruby
 
+import "C"
 import (
 	"errors"
 	"fmt"
@@ -56,40 +57,119 @@ func CamelCase(s string) string {
 	return string(buffer)
 }
 
-func (mrb *MrbState) callFunc(fn reflect.Value, args RArray) ([]reflect.Value, error) {
+func reflectErr(err error) []reflect.Value {
+	return []reflect.Value{reflect.ValueOf(err)}
+}
+
+func (mrb *MrbState) callFunc(fn reflect.Value, args Arguments) []reflect.Value {
+	var err error
 	// Check function
 	if fn.Kind() != reflect.Func {
-		return nil, errors.New("constructor failed to provide Go value")
+		return reflectErr(errors.New("constructor failed to provide Go value"))
 	}
+	ft := fn.Type()
 
 	argc := args.Len()
-	if argc < fn.Type().NumIn() {
-		return nil, fmt.Errorf("expected %v parameters, supplied %v", fn.Type().NumIn(), argc)
+	if ft.NumIn() > argc {
+		argc = ft.NumIn()
 	}
-
 	params := make([]reflect.Value, argc)
-	for i := 0; i < fn.Type().NumIn(); i++ {
-		arg := mrb.Intf(args.Item(i))
-		params[i] = reflect.ValueOf(arg).Convert(fn.Type().In(i))
+	variadic := 0
+	if ft.IsVariadic() {
+		variadic = 1
 	}
 
-	// Call
-	var result []reflect.Value
-	if fn.Type().IsVariadic() {
-		result = fn.CallSlice(params)
-	} else {
-		result = fn.Call(params)
-	}
+	for i := argc-1; i >= 0; i-- {
+		// Check variadic arguments
+		if i >= ft.NumIn() {
+			// Skip extra value if not variadic
+			if variadic == 0 {
+				continue
+			}
+			arg := args.Get(mrb, i)
+			params[i] = reflect.ValueOf(arg)
+			continue
+		}
 
-	// Check error
-	if len(result) > 0 && result[len(result)-1].Type() == reflect.TypeOf((*error)(nil)).Elem() {
-		err := result[len(result)-1].Interface()
+		inType := ft.In(i)
+
+		// Allow pointed arguments to allow nil as optional value
+		if i >= args.Len() {
+			if inType.Kind() != reflect.Ptr {
+				return reflectErr(fmt.Errorf("expected %v parameters, supplied %v", ft.NumIn(), argc))
+			}
+			params[i] = reflect.Zero(inType)
+			continue
+		}
+
+		arg := args.Get(mrb, i)
+		params[i], err = assignValue(arg, inType)
 		if err != nil {
-			return result, err.(error)
+			return reflectErr(err)
 		}
 	}
 
-	return result, nil
+	// Call
+	return fn.Call(params)
+}
+
+func assignValue(arg interface{}, outType reflect.Type) (reflect.Value, error) {
+	argValue := reflect.ValueOf(arg)
+
+	if arg == nil {
+		return reflect.Zero(outType), nil
+	} else if argValue.Type().ConvertibleTo(outType) {
+		return argValue.Convert(outType), nil
+	} else if argValue.Type().ConvertibleTo(outType.Elem()) {
+		v := reflect.New(outType.Elem())
+		reflect.Indirect(v).Set(argValue.Convert(outType.Elem()))
+		return v, nil
+	}
+
+	return reflect.Zero(outType), EArgumentError("value %v cannot be converted to type %v", arg, outType)
+}
+
+func (mrb *MrbState) handleResults(result []reflect.Value) (Value, error) {
+	lenres := len(result)
+
+	// Handle results
+	if lenres == 0 {
+		return nilValue, nil
+	}
+
+	// By Go convention, error is returned as last result. Like func X() (int, error)
+	// When X() function is converted to oruby, it will return only one int result,
+	// but if there is an error - it will be raised
+	if result[lenres-1].Kind() == reflect.Interface {
+		if result[lenres-1].Type() == reflect.TypeOf((*error)(nil)).Elem() {
+			// Last result value is error interface
+			er := result[lenres-1].Interface()
+			if er != nil {
+				return nilValue, er.(error)
+			}
+
+			// If no error returned, that last return value is ignored
+			lenres--
+		}
+	}
+
+	switch lenres {
+	case 0:
+		// No results - return nil value
+		return nilValue, nil
+
+	case 1:
+		// One result - return one Value
+		return mrb.valueValue(result[0]), nil
+	}
+
+	// Multiple results - return RArray
+	out := mrb.AryNewCapa(lenres)
+	for _, v := range result[:lenres-1] {
+		mrb.AryPush(out, mrb.valueValue(v))
+	}
+
+	return out.Value(), nil
 }
 
 func toMapSI(mrb *MrbState, v Value) map[string]interface{} {

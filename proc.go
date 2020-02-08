@@ -9,10 +9,13 @@ import (
 )
 
 // REnv struct
-type REnv struct{ p *C.struct_REnv }
+type REnv struct{
+	p *C.struct_REnv
+	mrb *MrbState
+}
 
 // Value implements MrbValue interface
-func (e REnv) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(e.p))} }
+func (e REnv) Value() Value { return mrbObjValue(unsafe.Pointer(e.p)) }
 
 // Type for MrbValue interface
 func (e REnv) Type() int { return e.Value().Type() }
@@ -20,9 +23,35 @@ func (e REnv) Type() int { return e.Value().Type() }
 // IsNil check for MrbValue interface
 func (e REnv) IsNil() bool { return e.p == nil }
 
+// IsNil check for MrbValue interface
+func (e REnv) Len() int { return int(C._MRB_ENV_STACK_LEN(e.p)) }
+
+// Unshare stack unshares Env
+func (e REnv) Unshare() { C.mrb_env_unshare(e.mrb.p, e.p) }
+
+// Stack stack unshares Env
+func (e REnv) Stack(index int) Value {
+	l := e.Len()
+	if index < 0 || index >= l {
+		panic("invalid index")
+	}
+	stack := (*[1 << 28]C.mrb_value)(unsafe.Pointer(e.p.stack))[:l:l]
+	return Value{stack[index]}
+}
+
 // EnvUnshare unshares Env
 func (mrb *MrbState) EnvUnshare(env REnv) {
 	C.mrb_env_unshare(mrb.p, env.p)
+}
+
+// SetEnv creates and sets new Env object with stack Values
+func (p RProc) SetEnv(stackItems... Value) {
+	if len(stackItems) == 0 {
+		C._mrb_create_env(p.mrb.p, p.p, 0, nil)
+		return
+	}
+
+	C._mrb_create_env(p.mrb.p, p.p, C.mrb_int(len(stackItems)), &(stackItems[0].v))
 }
 
 // AdjustStackLength of toplevel environment. Used in imrb
@@ -35,10 +64,16 @@ func (e REnv) AdjustStackLength(nlocals int) {
 }
 
 // RProc struct
-type RProc struct{ p *C.struct_RProc }
+type RProc struct{
+	p *C.struct_RProc
+	mrb *MrbState
+}
+
+// RProcPtr wraps pointer to mruby RProc C struct
+type RProcPtr struct{ p *C.struct_RProc }
 
 // Value implements MrbValue interface
-func (p RProc) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(p.p))} }
+func (p RProc) Value() Value { return mrbObjValue(unsafe.Pointer(p.p)) }
 
 // Type for MrbValue interface
 func (p RProc) Type() int { return p.Value().Type() }
@@ -46,27 +81,56 @@ func (p RProc) Type() int { return p.Value().Type() }
 // IsNil check for MrbValue interface
 func (p RProc) IsNil() bool { return p.p == nil }
 
-// IsCFunc is cfunc
+// IsCFunc returns true if proc is native C or Go function
 func (p RProc) IsCFunc() bool { return int(C._MRB_PROC_CFUNC_P(p.p)) != 0 }
 
 // Strict is strict
 func (p RProc) Strict() bool { return int(C._MRB_PROC_STRICT_P(p.p)) != 0 }
 
-// Orphan is orphan
+// Orphan is orphan function
 func (p RProc) Orphan() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_ORPHAN) != 0 }
 
-// HasEnv has env
+// HasEnv has environment
 func (p RProc) HasEnv() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_ENVSET) != 0 }
 
 // IsScope is scope
 func (p RProc) IsScope() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_SCOPE) != 0 }
 
+// Flags returns rproc flags
+func (p RProc) Flags() int { return int(C._mrb_rproc_flags(p.p)) }
+
+// FlagSet set proc flag
+func (p RProc) FlagSet(flag int) {
+	flags := C._mrb_rproc_flags(p.p) & C.uint32_t(flag)
+	C._mrb_rproc_set_flags(p.p, C.uint32_t(flags))
+}
+
+// FlagUnset unset proc flag
+func (p RProc) FlagUnset(flag int) {
+	flags := C._mrb_rproc_flags(p.p) & ^C.uint32_t(flag)
+	C._mrb_rproc_set_flags(p.p, C.uint32_t(flags))
+}
+
+// Upper returns upper proc
+func (p RProc) Upper() RProc { return RProc{p.p.upper ,p.mrb} }
+
+// SetUpper returns upper proc
+func (p RProc) SetUpper(upper RProc) { p.p.upper = upper.p }
+
 // IRep from function
 func (p RProc) IRep() MrbIrep {
 	if p.IsCFunc() {
-		return MrbIrep{nil}
+		return MrbIrep{nil, p.mrb}
 	}
-	return MrbIrep{C._rproc_body_irep(p.p)}
+	return MrbIrep{C._rproc_body_irep(p.p), p.mrb}
+}
+
+// SetUpper returns upper proc
+func (p RProc) Env() REnv {
+	if !p.HasEnv() {
+		return REnv{nil, p.mrb}
+	}
+	return REnv{C._MRB_PROC_ENV(p.p), p.mrb}
 }
 
 // SetTargetClass sets target class for proc
@@ -120,20 +184,24 @@ func MrbProcEnvP(p RProc) bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_EN
 func MrbProcScopeP(p RProc) bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_SCOPE) != 0 }
 
 // MrbProcPtr returns RProc from oruby value
-func MrbProcPtr(v MrbValue) RProc { return RProc{(*C.struct_RProc)(C._mrb_ptr(v.Value().v))} }
+func MrbProcPtr(v MrbValue) RProcPtr { return RProcPtr{(*C.struct_RProc)(C._mrb_ptr(v.Value().v))} }
 
 // MrbProcValue converts RProc to value
 func MrbProcValue(p RProc) Value { return p.Value() }
 
 // ProcNew creates new RProc from irep
-func (mrb *MrbState) ProcNew(irep MrbIrep) RProc { return RProc{C.mrb_proc_new(mrb.p, irep.p)} }
+func (mrb *MrbState) ProcNew(irep MrbIrep) RProc { return RProc{C.mrb_proc_new(mrb.p, irep.p), mrb} }
 
 // ProcPtr eturns RProc from oruby value
 func (mrb *MrbState) RProc(v MrbValue) RProc {
+	if v.Value().IsNil() {
+		return RProc{nil, mrb}
+	}
+
 	if !v.Value().IsProc() {
 		panic("value is not RProc")
 	}
-	return RProc{(*C.struct_RProc)(C._mrb_ptr(v.Value().v))}
+	return RProc{(*C.struct_RProc)(C._mrb_ptr(v.Value().v)), mrb}
 }
 
 // NLocals get locals count for irep proc
@@ -148,9 +216,9 @@ func (p RProc) NLocals() int {
 func (mrb *MrbState) ProcNewCFunc(f MrbFuncT) RProc {
 	p := C.mrb_proc_new_cfunc(mrb.p, (*[0]byte)(C.set_mrb_callback))
 	mrb.Lock()
-	mrb.mrbProcs[RProc{p}] = f
+	mrb.mrbProcs[unsafe.Pointer(p)] = f
 	mrb.Unlock()
-	return RProc{p}
+	return RProc{p, mrb}
 }
 
 // ProcNewGofunc creaetes new RProc from go function
@@ -162,15 +230,15 @@ func (mrb *MrbState) ProcNewGofunc(f interface{}) RProc {
 }
 
 // ClosureNew creates new closure from irep
-func (mrb *MrbState) ClosureNew(irep MrbIrep) RProc { return RProc{C.mrb_closure_new(mrb.p, irep.p)} }
+func (mrb *MrbState) ClosureNew(irep MrbIrep) RProc { return RProc{C.mrb_closure_new(mrb.p, irep.p), mrb} }
 
 // ClosureNewCfunc creates new closure from Go function
 func (mrb *MrbState) ClosureNewCfunc(f MrbFuncT, nlocals int32) RProc {
 	p := C.mrb_closure_new_cfunc(mrb.p, (*[0]byte)(C.set_mrb_callback), C.int(nlocals))
 	mrb.Lock()
-	mrb.mrbProcs[RProc{p}] = f
+	mrb.mrbProcs[unsafe.Pointer(p)] = f
 	mrb.Unlock()
-	return RProc{p}
+	return RProc{p, mrb}
 }
 
 // ProcCopy copies RProc value in oruby state
@@ -179,7 +247,7 @@ func (mrb *MrbState) ProcCopy(a, b RProc) {
 
 	if C._MRB_PROC_CFUNC_P(a.p) != 0 {
 		mrb.Lock()
-		mrb.mrbProcs[RProc{b.p}] = mrb.mrbProcs[RProc{a.p}]
+		mrb.mrbProcs[unsafe.Pointer(b.p)] = mrb.mrbProcs[unsafe.Pointer(a.p)]
 		mrb.Unlock()
 	}
 }
@@ -193,20 +261,20 @@ func (mrb *MrbState) ProcNewCFuncWithEnv(f MrbFuncT, env ...MrbValue) RProc {
 
 	argv := make([]C.mrb_value, argc)
 	for i := range env {
-		argv[i] = mrb.Value(env[i]).Value().v
+		argv[i] = mrb.Value(env[i]).v
 	}
 
 	p := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_mrb_callback), C.mrb_int(argc), &argv[0])
 	runtime.KeepAlive(argv)
 
 	mrb.Lock()
-	mrb.mrbProcs[RProc{p}] = f
+	mrb.mrbProcs[unsafe.Pointer(p)] = f
 	mrb.Unlock()
-	return RProc{p}
+	return RProc{p, mrb}
 }
 
 // ProcCFuncEnvGet retreive function env
-func (mrb *MrbState) ProcCFuncEnvGet(index int) MrbValue {
+func (mrb *MrbState) ProcCFuncEnvGet(index int) Value {
 	return Value{C.mrb_proc_cfunc_env_get(mrb.p, C.mrb_int(index))}
 }
 
@@ -215,8 +283,7 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 	v := reflect.ValueOf(f)
 
 	if v.Kind() != reflect.Func {
-		mrb.Raise(mrb.ETypeError(), "Function type argument is required")
-		return RProc{nil}, ArgsNone()
+		panic("Function type argument is required")
 	}
 
 	argc := len(env) + 1
@@ -226,10 +293,11 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 	args[0] = mrb.registerFunc(f)
 
 	for i := 1; i < argc; i++ {
-		args[i] = mrb.Value(env[i-1]).Value().v
+		args[i] = mrb.Value(env[i-1]).v
 	}
 
 	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(argc), &args[0])
+
 	runtime.KeepAlive(args)
-	return RProc{proc}, ArgsReq(uint32(v.Type().NumIn()))
+	return RProc{proc, mrb}, ArgsReq(v.Type().NumIn())
 }

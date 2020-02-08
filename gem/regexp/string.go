@@ -1,10 +1,11 @@
 package regexp
 
 import (
-	"github.com/oruby/oruby"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/oruby/oruby"
 )
 
 func initString(mrb *oruby.MrbState) {
@@ -31,7 +32,7 @@ func initString(mrb *oruby.MrbState) {
 }
 
 func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	pattern := args.ItemDefFunc(0, func() oruby.MrbValue { return mrb.GetGV("$;") })
 	limit := args.ItemDefInt(1, 0)
 	limited := limit > 0
@@ -116,7 +117,7 @@ func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	pattern := args.Item(0)
 	capture := args.ItemDef(1, mrb.NilValue())
 	r := getRegexp(mrb, pattern)
@@ -140,7 +141,7 @@ func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args, block := mrb.GetAllArgsWithBlock()
+	args, block := mrb.GetArgsWithBlock()
 	pattern := args.Item(0)
 	replace := args.ItemDef(1, mrb.NilValue())
 	replaceStr := ""
@@ -227,7 +228,7 @@ func doReplace(mrb *oruby.MrbState, re *regexp.Regexp, s string, pos int, f func
 }
 
 func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args, block := mrb.GetAllArgsWithBlock()
+	args, block := mrb.GetArgsWithBlock()
 	pattern := args.Item(0)
 	replace := args.ItemDef(1, mrb.NilValue())
 	replaceStr := ""
@@ -266,7 +267,7 @@ func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringIsMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	re := getRegexp(mrb, args.Item(0))
 	if re == nil {
 		return mrb.Raise(mrb.ETypeError(), "wrong argument type (expected Regexp)")
@@ -279,7 +280,7 @@ func stringIsMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	re := getRegexp(mrb, args.Item(0))
 	if re == nil {
 		return mrb.NilValue()
@@ -300,7 +301,7 @@ func stringMatchEqual(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetAllArgs()
+	args := mrb.GetArgs()
 	arg := args.Item(0)
 	pos := oruby.MrbFixnum(args.ItemDef(1, mrb.FixnumValue(0)))
 	re, ok := mrb.Data(arg).(*regexp.Regexp)
@@ -339,7 +340,7 @@ func getRegexp(mrb *oruby.MrbState, value oruby.Value) *regexp.Regexp {
 }
 
 func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args, block := mrb.GetAllArgsWithBlock()
+	args, block := mrb.GetArgsWithBlock()
 	arg := args.Item(0)
 	r := getRegexp(mrb, arg)
 	if r == nil {
@@ -361,7 +362,7 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if !block.IsNil() {
 			matchData := mrb.NewInstance("MatchData", m)
 			_ = mrb.IVSet(mrb.ClassOf(self).Real(), mrb.Intern("@last_match"), matchData)
-			_, _ = mrb.YieldArgv(block, astr...)
+			mrb.YieldArgv(block, astr...)
 		} else {
 			ret = append(ret, astr)
 		}

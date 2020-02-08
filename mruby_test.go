@@ -125,9 +125,9 @@ func TestValue(t *testing.T) {
 
 	// Structs implementing MrbValuer interface
 	//v2 := mrb.StringValue("TestTest")
-	//vv := &v2.(Valuer)
+	//vv := &v2.(ValueMigrator)
 	//Expect(t, MrbStringP(mrb.Value(vv)), "Expecting string mrb value, got MRB_TT %d", MrbType(mrb.Value(vv)))
-	//ExpectEql(t, mrb.StringValueCstr(vv.ToValue(mrb)), mrb.StringValueCstr(v))
+	//ExpectEql(t, mrb.StringValueCstr(vv.MigrateTo(mrb)), mrb.StringValueCstr(v))
 
 	// Structs - other
 	mv := mrb.Value(testStruct)
@@ -258,7 +258,7 @@ func TestConvert(t *testing.T) {
 	ExpectEql(t, tvc.Second(), tt.Second())
 
 	// Struct::TestStruct
-	//mv := mrb.Intf(mrb.ToValue(testStruct)).(*TestStruct)
+	//mv := mrb.Intf(mrb.MigrateTo(testStruct)).(*TestStruct)
 	//ExpectEql(t, mv, testStruct)
 
 	// Struct anonymous
@@ -266,7 +266,7 @@ func TestConvert(t *testing.T) {
 	//	X1 int
 	//	X2 string
 	//}{111, "Menthats"}
-	//strconv := mrb.Intf(mrb.ToValue(str)).(struct {
+	//strconv := mrb.Intf(mrb.MigrateTo(str)).(struct {
 	//	X1 int
 	//	X2 string
 	//})
@@ -278,11 +278,11 @@ func TestConvert(t *testing.T) {
 	_ = mrb.IVSet(obj, mrb.Intern("@x"), mrb.Value(2))
 	_ = mrb.IVSet(obj, mrb.Intern("@y"), mrb.Value("Moon"))
 
-	oo := map[string]interface{}{"x": 2, "y": "Moon"}
+	oo := map[string]interface{}{"@x": 2, "@y": "Moon"}
 	ocnv := mrb.Intf(obj).(map[string]interface{})
 
-	ExpectEql(t, oo["x"], ocnv["x"])
-	ExpectEql(t, oo["y"], ocnv["y"])
+	ExpectEql(t, oo["@x"], ocnv["@x"])
+	ExpectEql(t, oo["@y"], ocnv["@y"])
 }
 
 func TestConvertGoClass(t *testing.T) {

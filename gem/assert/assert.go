@@ -26,17 +26,9 @@ func init() {
 	})
 }
 
-func AssertFile(t *testing.T, mrb *oruby.MrbState, filename string) {
+func reportResults(t *testing.T, mrb *oruby.MrbState) {
 	t.Helper()
 
-	//mrb_init_test_vformat(mrb);
-	mrb.SetGV("$mrbtest_verbose", testing.Verbose())
-
-	_, err := mrb.LoadFile(filename)
-	if err != nil {
-		t.Error(err)
-		return
-	}
 	asserts := mrb.GetGV("$asserts")
 	if !asserts.IsArray() {
 		t.Error("no asserts")
@@ -61,6 +53,35 @@ func AssertFile(t *testing.T, mrb *oruby.MrbState, filename string) {
 	if fails != "" {
 		t.Error(fails)
 	}
+}
+
+func AssertCode(t *testing.T, mrb *oruby.MrbState, code string) {
+	t.Helper()
+	//mrb_init_test_vformat(mrb);
+	mrb.SetGV("$mrbtest_verbose", testing.Verbose())
+
+	_, err := mrb.LoadString(code)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	reportResults(t, mrb)
+}
+
+func AssertFile(t *testing.T, mrb *oruby.MrbState, filename string) {
+	t.Helper()
+
+	//mrb_init_test_vformat(mrb);
+	mrb.SetGV("$mrbtest_verbose", testing.Verbose())
+
+	_, err := mrb.LoadFile(filename)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	reportResults(t, mrb)
 }
 
 const code = `

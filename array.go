@@ -42,7 +42,7 @@ func (a RArray) Item(index int) Value {
 		index += l
 	}
 	if index < 0 || index >= l {
-		return Nil
+		return nilValue
 	}
 
 	return Value{C._ARY_ITEM(a.p(), C.mrb_int(index))}

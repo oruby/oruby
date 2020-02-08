@@ -24,7 +24,7 @@ type cmdRunner struct {
 	err           error
 }
 
-func parseArgs(mrb *oruby.MrbState, args oruby.RArray) *cmdRunner {
+func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 	env, command, params, options := parseArgsStructure(mrb, args)
 
 	// Create command
@@ -37,7 +37,7 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArray) *cmdRunner {
 		fErr:        mrb.NilValue(),
 	}
 
-	mrb.HashValueForEach(options, func(mrb *oruby.MrbState, key, val oruby.Value) int {
+	mrb.HashValueForEach(options, func(key, val oruby.Value) int {
 		if key.IsFixnum() || key.IsArray() || key.HasBasic() {
 			runner.parseFd(key, val)
 			return 0
@@ -90,7 +90,7 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArray) *cmdRunner {
 }
 
 // parseArgsStructure returns env, command, params and options from args
-func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArray) (oruby.Value, string, []string, oruby.Value) {
+func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, string, []string, oruby.Value) {
 	env := mrb.NilValue()
 	options := args.Item(-1)
 	command := args.Item(0)

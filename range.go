@@ -11,7 +11,7 @@ import (
 type RRange struct{ p *C.struct_RRange }
 
 // Value implements MrbValue interface
-func (r RRange) Value() Value { return Value{C.mrb_obj_value(unsafe.Pointer(r.p))} }
+func (r RRange) Value() Value { return mrbObjValue(unsafe.Pointer(r.p)) }
 
 // Type for MrbValue interface
 func (r RRange) Type() int { return MrbTTRange }
@@ -23,7 +23,7 @@ func (r RRange) IsNil() bool { return r.p == nil }
 func MrbRangePtr(r MrbValue) RRange { return RRange{(*C.struct_RRange)(C._mrb_ptr(r.Value().v))} }
 
 // RangeValue returns oruby value from RRange
-func RangeValue(r RRange) MrbValue { return Value{C.mrb_obj_value(unsafe.Pointer(r.p))} }
+func RangeValue(r RRange) MrbValue { return r.Value() }
 
 // Begin value of range
 func (r RRange) Begin() Value { return Value{C._RANGE_BEG(r.p)} }
@@ -35,7 +35,7 @@ func (r RRange) End() Value { return Value{C._RANGE_END(r.p)} }
 func (r RRange) Exclusive() bool { return C._RANGE_EXCL(r.p) != 0 }
 
 // RangeNew creates new range, n include or not end value
-func (mrb *MrbState) RangeNew(v1, v2 MrbValue, n bool) MrbValue {
+func (mrb *MrbState) RangeNew(v1, v2 MrbValue, n bool) Value {
 	return Value{C.mrb_range_new(mrb.p, v1.Value().v, v2.Value().v, iifmb(n))}
 }
 
