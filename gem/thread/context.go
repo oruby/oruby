@@ -99,18 +99,3 @@ func (c *Context) IsAlive() bool {
 	return c.alive
 }
 
-func (c *Context) Sleep(t *int) {
-	var duration time.Duration
-	if t == nil {
-		duration = time.Duration(math.MaxInt64)
-	} else {
-		duration = time.Duration(int(*t * 1000))
-	}
-
-	select {
-	case <-c.mrb.ExitChan():
-		break
-	case <-time.After(duration * time.Millisecond):
-		break
-	}
-}
