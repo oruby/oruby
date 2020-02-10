@@ -2,6 +2,7 @@ package time
 
 import (
 	"github.com/oruby/oruby"
+	"math"
 	"time"
 )
 
@@ -10,6 +11,11 @@ func zero(t *int) int {
 		return 0
 	}
 	return *t
+}
+
+func timeValue(mrb *oruby.MrbState, t time.Time) oruby.Value {
+	ret := &t
+	return mrb.DataValue(ret)
 }
 
 func newTime(year, month, day, hour, min, sec, usec *int) (*time.Time, error) {
@@ -80,20 +86,30 @@ func timePlus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if v.IsNil() {
 		return mrb.Raise(mrb.ETypeError(),"can't convert nil into an exact number")
 	} else if v.IsFixnum() {
-		return mrb.DataValue(t.Add(time.Duration(v.Int())*time.Second))
+		return timeValue(mrb, t.Add(time.Duration(v.Int())*time.Second))
 	}
 
 	switch t2 := mrb.Data(v).(type) {
+	case float64, float32:
+		f :=  t2.(float64)
+		if math.IsNaN(f) || math.IsInf(f,0) {
+			return mrb.Raise(mrb.EFloatDomainError(), "value out of range")
+		}
+		ret := time.Unix(t.Unix()+int64(f), t.UnixNano())
+		return timeValue(mrb, ret)
+	case int, int64, uint, uint64, int32, uint32, uint16, int16, uint8, int8:
+		ret := time.Unix(t.Unix()+t2.(int64), t.UnixNano())
+		return timeValue(mrb, ret)
 	case *time.Time:
 		ret := time.Unix(t.Unix()+t2.Unix(), t.UnixNano()+t2.UnixNano())
-		return mrb.DataValue(ret)
+		return timeValue(mrb, ret)
 	case time.Time:
 		ret := time.Unix(t.Unix()+t2.Unix(), t.UnixNano()+t2.UnixNano())
-		return mrb.DataValue(ret)
+		return timeValue(mrb, ret)
 	case time.Duration:
-		return mrb.DataValue(t.Add(t2))
+		return timeValue(mrb, t.Add(t2))
 	case *time.Duration:
-		return mrb.DataValue(t.Add(*t2))
+		return timeValue(mrb, t.Add(*t2))
 	}
 
 	return mrb.Raisef(mrb.EArgumentError(),"invalid argument %v", mrb.Data(v))
@@ -110,16 +126,26 @@ func timeMinus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	switch t2 := mrb.Data(v).(type) {
+	case float64, float32:
+		f :=  t2.(float64)
+		if math.IsNaN(f) || math.IsInf(f,0) {
+			return mrb.Raise(mrb.EFloatDomainError(), "value out of range")
+		}
+		ret := time.Unix(t.Unix()-int64(f), t.UnixNano())
+		return timeValue(mrb, ret)
+	case int, int64, uint, uint64, int32, uint32, uint16, int16, uint8, int8:
+		ret := time.Unix(t.Unix()-t2.(int64), t.UnixNano())
+		return timeValue(mrb, ret)
 	case *time.Time:
 		ret := time.Unix(t.Unix()-t2.Unix(), t.UnixNano()-t2.UnixNano())
-		return mrb.DataValue(ret)
+		return timeValue(mrb, ret)
 	case time.Time:
 		ret := time.Unix(t.Unix()-t2.Unix(), t.UnixNano()-t2.UnixNano())
-		return mrb.DataValue(ret)
+		return timeValue(mrb, ret)
 	case time.Duration:
-		return mrb.DataValue(t.Add(-t2))
+		return timeValue(mrb, t.Add(-t2))
 	case *time.Duration:
-		return mrb.DataValue(t.Add(-*t2))
+		return timeValue(mrb, t.Add(-*t2))
 	}
 
 	return mrb.Raisef(mrb.EArgumentError(),"invalid argument %v", mrb.Data(v))
@@ -147,11 +173,11 @@ func timeDay(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 func timeGetlocal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)
-	return mrb.DataValue(t.Local())
+	return timeValue(mrb, t.Local())
 }
 func timeGetutc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)
-	return mrb.DataValue(t.UTC())
+	return timeValue(mrb, t.UTC())
 }
 func timeHour(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)
@@ -159,7 +185,7 @@ func timeHour(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 func timeLocaltime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)
-	return mrb.DataValue(t.Local())
+	return timeValue(mrb, t.Local())
 }
 func timeMday(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)
@@ -187,11 +213,11 @@ func timeToF(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 func timeUsec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)
-	return oruby.Int64(t.UnixNano() / 1000)
+	return oruby.Int64(t.Unix() - t.UnixNano() / 1000)
 }
 func timeUtc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)
-	return mrb.DataValue(t.UTC())
+	return timeValue(mrb, t.UTC())
 }
 func timeIsUtc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.Data(self).(*time.Time)

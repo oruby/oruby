@@ -67,38 +67,42 @@ func init() {
 }
 
 func timeNow(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	t := time.Now()
-	return mrb.DataValue(&t)
+	return timeValue(mrb, time.Now())
 }
 
 func timeAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs(0,0)
-	arg1 := args.Item(0)
-	arg2 := args.Item(1)
+	args := mrb.GetArgs()
+	arg1 := args.ItemDef(0, mrb.FixnumValue(0))
+	arg2 := args.ItemDef(1, mrb.FixnumValue(0))
 
-	if arg1.IsFloat() {
+	switch arg1.Type() {
+	case oruby.MrbTTFixnum:
+		if arg2.IsFloat() && (math.IsNaN(arg2.Float64()) || math.IsInf(arg2.Float64(),0)) {
+			return mrb.Raise(mrb.EFloatDomainError(), "value out of range")
+		}
+
+		t := time.Unix(arg1.Int64(), arg2.Int64()*1000)
+		return timeValue(mrb, t)
+	case oruby.MrbTTFloat:
 		f := arg1.Float64()
 		if math.IsNaN(f) || math.IsInf(f,0) {
 			return mrb.Raise(mrb.EFloatDomainError(), "value out of range")
 		}
-	}
-
-	if arg2.IsFloat() {
-		f := arg2.Float64()
-		if math.IsNaN(f) || math.IsInf(f,0) {
-			return mrb.Raise(mrb.EFloatDomainError(), "value out of range")
+		f2 := f-float64(int64(f))
+		t := time.Unix(int64(f),  int64(f2) * 1000)
+		return timeValue(mrb, t)
+	case oruby.MrbTTData:
+		if t, ok := mrb.Data(arg1).(*time.Time) ; ok {
+			return timeValue(mrb, *t)
 		}
 	}
-
-	t := time.Unix(arg1.Int64(), arg2.Int64())
-	return mrb.DataValue(&t)
+	return mrb.ETypeError().Raisef("can't convert %v into an exact number", mrb.TypeName(arg1))
 }
 
 func timeUTC(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	if args.Len() == 0 {
-		t := time.Now().UTC()
-		return mrb.DataValue(&t)
+		return timeValue(mrb, time.Now().UTC())
 	}
 
 	if args.Item(0).IsNil()  {
@@ -120,7 +124,7 @@ func timeUTC(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	t := time.Date(y,time.Month(m), d, hh, mm, ss, ms * 1000, time.UTC)
-	return mrb.DataValue(t)
+	return timeValue(mrb, t)
 }
 
 func timeInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -132,8 +136,7 @@ func timeInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func timeLocal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	if args.Len() == 0 {
-		t := time.Now().UTC()
-		return mrb.DataValue(&t)
+		return timeValue(mrb, time.Now())
 	}
 
 	if args.Item(0).IsNil()  {
@@ -155,5 +158,5 @@ func timeLocal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	t := time.Date(y,time.Month(m), d, hh, mm, ss, ms * 1000, time.Local)
-	return mrb.DataValue(t)
+	return timeValue(mrb, t)
 }

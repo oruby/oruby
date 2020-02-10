@@ -68,39 +68,39 @@ func (a RArgs) SetItem(index int, v MrbValue) {
 
 // ItemDef returns value item at index, or default value if arg is nil
 func (a RArgs) ItemDef(index int, def MrbValue) Value {
-	v := a.Item(index)
-	if v.IsNil() {
+	if index < 0 || index >= len(a.items) {
 		return def.Value()
 	}
-	return v
+
+	return a.Item(index)
 }
 
 // ItemDefFunc returns value item at index, or default value from func f
 // if arg is nil
 func (a RArgs) ItemDefFunc(index int, defF func() MrbValue) Value {
-	v := a.Item(index)
-	if v.IsNil() {
+	if index < 0 || index >= len(a.items) {
 		return defF().Value()
 	}
-	return v
+
+	return a.Item(index)
 }
 
 // ItemDefInt returns value as int at index, or default int value if arg is nil
 func (a RArgs) ItemDefInt(index, def int) int {
-	v := a.Item(index)
-	if v.IsNil() {
+	if index < 0 || index >= len(a.items) {
 		return def
 	}
-	return v.Int()
+
+	return a.Item(index).Int()
 }
 
 // ItemDefBool returns value as bool at index, or default bool value if arg is nil
 func (a RArgs) ItemDefBool(index int, def bool) bool {
-	v := a.Item(index)
-	if v.IsNil() {
+	if index < 0 || index >= len(a.items) {
 		return def
 	}
-	return v.Value().Bool()
+
+	return a.Item(index).Bool()
 }
 
 // Slice returns Go slice made of Value items

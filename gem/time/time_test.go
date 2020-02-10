@@ -36,12 +36,22 @@ func TestGetGM(t *testing.T) {
 
 	assert.AssertCode(t, mrb, `
 	assert('Time#getgm', '15.2.19.7.8') do
-		t = Time.at(1300000000.0); p 1;
-		gm = t.getgm; p 2;
-  		assert_equal("Sun Mar 13 07:06:40 2011", gm.asctime); p 3;
-  		assert_equal("Sun Mar 13 07:06:40 2011", Time.at(1300000000.0).getgm.asctime)
+		t = Time.at(1300000000.0)
+		gm = t.getgm
+  		assert_equal("Sun Mar 13 07:06:40 2011", gm.asctime)
+  		assert_equal("Sun Mar 13 07:06:40 2011", Time.at(1300000000.0).getgm.asctime); 
 	end
 	`)
 }
 
+func TestToS(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	assert.AssertCode(t, mrb, `
+	assert('Time#to_s') do
+		assert_equal("2003-04-05 06:07:08 UTC", Time.gm(2003,4,5,6,7,8,9).to_s)
+	end
+	`)
+}
 

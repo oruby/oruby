@@ -2,9 +2,7 @@ package thread
 
 import (
 	"github.com/oruby/oruby"
-	"math"
 	"runtime"
-	"time"
 )
 
 type Context struct {

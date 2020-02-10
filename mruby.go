@@ -59,6 +59,7 @@ type MrbState struct {
 	classmap     map[reflect.Type]unsafe.Pointer
 	hooks        map[unsafe.Pointer]interface{}
 	funcs        []interface{}
+	matrix       [][]interface{}
 	exitChan     chan struct{}
 	features     map[string]interface{} // features stash
 	nilValue     Value               // cached nil Value
@@ -82,12 +83,14 @@ func NewCore() (*MrbState, error) {
 		make(map[reflect.Type]unsafe.Pointer),
 		make(map[unsafe.Pointer]interface{}),
 		make([]interface{}, 0, 255),
+		make([][]interface{}, 500),
 		make(chan struct{}),
 		make(map[string]interface{}),
 		Value{C.mrb_nil_value()},
 		0,
 	}
 
+	mrb.matrix[0] = make([]interface{}, 500)
 	mrb.afterInitSym = mrb.Intern("after_init")
 
 	// Store *MrbState pointer so it can be retrieved it from C callbacks
