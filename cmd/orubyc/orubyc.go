@@ -3,16 +3,20 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/oruby/oruby"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/oruby/oruby"
 )
 
-const RitebinExt = ".mrb"
-const CExt = ".c"
-const GoExt = ".go"
+// Extensions
+const {
+	RitebinExt = ".mrb"
+	CExt = ".c"
+	GoExt = ".go"
+}
 
 type mrbcArgs struct {
 	idx         int
@@ -71,12 +75,12 @@ func endianString() string {
 
 func parseArgs(mrb *oruby.MrbState, args *mrbcArgs) bool {
 	args.prog = os.Args[0]
-	flag.StringVar(&args.outfile,"o", "", "place the output into <outfile>")
-	flag.StringVar(&args.initname,"B", "", "binary <symbol> output in C language format")
-	flag.BoolVar(&args.checkSyntax,"c", false, "check syntax only")
-	flag.BoolVar(&args.removeLv,"remove-lv", false, "remove local variables")
-	v    := flag.Bool("v", false, "print version number, then run in verbose mode")
-	flag.BoolVar(&args.verbose,"verbose", false, "run in verbose mode")
+	flag.StringVar(&args.outfile, "o", "", "place the output into <outfile>")
+	flag.StringVar(&args.initname, "B", "", "binary <symbol> output in C language format")
+	flag.BoolVar(&args.checkSyntax, "c", false, "check syntax only")
+	flag.BoolVar(&args.removeLv, "remove-lv", false, "remove local variables")
+	v := flag.Bool("v", false, "print version number, then run in verbose mode")
+	flag.BoolVar(&args.verbose, "verbose", false, "run in verbose mode")
 	version := flag.Bool("version", false, "print the version")
 	copyright := flag.Bool("copyright", false, "print the copyright")
 	debugInfo := flag.Bool("g", false, "produce debugging information")
@@ -112,14 +116,14 @@ func parseArgs(mrb *oruby.MrbState, args *mrbcArgs) bool {
 		args.flags = oruby.DumpEndianLil | (args.flags & ^oruby.DumpEndianMask)
 	}
 
-	if args.verbose && args.initname != "" && (args.flags & oruby.DumpEndianMask) == 0 {
+	if args.verbose && args.initname != "" && (args.flags&oruby.DumpEndianMask) == 0 {
 		fmt.Printf("%v: generating %v endian C file. specify -e/-E for cross compiling.\n",
 			args.prog, endianString())
 	}
 	return true
 }
 
-func setPartialHook(args *mrbcArgs) func(p oruby.MrbParserState)int {
+func setPartialHook(args *mrbcArgs) func(p oruby.MrbParserState) int {
 	return func(p oruby.MrbParserState) int {
 		if args.closer != nil {
 			args.closer()
@@ -130,12 +134,12 @@ func setPartialHook(args *mrbcArgs) func(p oruby.MrbParserState)int {
 			return -1
 		}
 
-		args.idx += 1
+		args.idx++
 		fn := args.argv[args.idx]
 
 		result, err := ioutil.ReadFile(fn)
 		if err != nil {
-			fmt.Printf("%s: cannot open program file. (%s)\n",  args.prog, fn)
+			fmt.Printf("%s: cannot open program file. (%s)\n", args.prog, fn)
 			return -1
 		}
 		args.closer = p.SetS(string(result))
@@ -169,7 +173,7 @@ func loadFile(mrb *oruby.MrbState, args *mrbcArgs) oruby.Value {
 
 	c.Filename(input)
 
-	args.idx += 1
+	args.idx++
 	if args.idx < len(args.argv) {
 		c.PartialHook(setPartialHook(args))
 	}
@@ -210,7 +214,7 @@ func dumpFile(mrb *oruby.MrbState, wfp *os.File, outfile string, proc oruby.RPro
 
 func main() {
 	var wfp *os.File
-    var err error
+	var err error
 	var result int
 	args := mrbcArgs{}
 
@@ -270,8 +274,8 @@ func main() {
 		return
 	}
 
-	result = dumpFile(mrb, wfp, args.outfile, mrb.ProcPtr(load), &args)
-	_=wfp.Close()
+	result = dumpFile(mrb, wfp, args.outfile, mrb.RProc(load), &args)
+	_ = wfp.Close()
 
 	if result != oruby.MrbDumpOK {
 		mrb.Close()

@@ -65,6 +65,22 @@ func AssertCode(t *testing.T, mrb *oruby.MrbState, code string) {
 	reportResults(t, mrb)
 }
 
+func AssertFileVerbose(t *testing.T, mrb *oruby.MrbState, filename string) {
+	t.Helper()
+
+	//mrb_init_test_vformat(mrb);
+	mrb.SetGV("$mrbtest_verbose", true)
+
+	_, err := mrb.LoadFile(filename)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	println("")
+	reportResults(t, mrb)
+}
+
 func AssertFile(t *testing.T, mrb *oruby.MrbState, filename string) {
 	t.Helper()
 

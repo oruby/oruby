@@ -56,7 +56,6 @@ func (c RClass) Populate() {
 			if strings.HasSuffix(sName, "_bang") {
 				mrb.AliasMethod(c, mrb.Intern(sName[:len(sName)-5]+"!"), mID)
 			}
-
 		}
 	}
 
@@ -97,7 +96,7 @@ func initGoValue(classType reflect.Type) MrbFuncT {
 		if argValue.Type() == MrbTTData {
 			in := mrb.DataGetInterface(argValue)
 			argType := reflect.TypeOf(in)
-			if (argType != nil) && (argType.Kind() == reflect.Ptr) && (argType == classType) {
+			if (argType != nil) && (argType == classType) {
 				mrb.DataSetInterface(self, in)
 				return afterInit(mrb, self)
 			}
@@ -119,7 +118,7 @@ func initGo(classType reflect.Type, fn reflect.Value) MrbFuncT {
 			if argValue.Type() == MrbTTData {
 				in := mrb.DataGetInterface(argValue)
 				argType := reflect.TypeOf(in)
-				if (argType != nil) && (argType.Kind() == reflect.Ptr) && (argType == classType) {
+				if (argType != nil) && (argType == classType) {
 					mrb.DataSetInterface(self, in)
 					return afterInit(mrb, self)
 				}
@@ -171,7 +170,7 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 
 		// define init_go method so that initialize could be redefined
 		c.DefineMethod("init_go", initGo(v, reflect.ValueOf(constructor)), aspec)
-	case reflect.Ptr:
+	case reflect.Ptr, reflect.Struct, reflect.Interface:
 		// Constructor is pointer to value
 		// define init_go method so that initialize could be redefined
 		c.DefineMethod("init_go", initGoValue(v), ArgsReq(1))
@@ -186,6 +185,25 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 	c.mrb.Lock()
 	c.mrb.classmap[v] = unsafe.Pointer(c.p)
 	c.mrb.hooks[unsafe.Pointer(c.p)] = v
+	c.mrb.Unlock()
+}
+
+func (c RClass) AttachType(zeroType interface{}) {
+	t := reflect.TypeOf(zeroType)
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uintptr, reflect.UnsafePointer,
+		reflect.Float32, reflect.Float64:
+		panic("simple types (Ints, Bool, Floats, Pointers) are not supported")
+	case reflect.String:
+		panic("string type is not supported as attached type")
+	}
+
+	// Connect with Go world
+	c.mrb.Lock()
+	c.mrb.classmap[t] = unsafe.Pointer(c.p)
 	c.mrb.Unlock()
 }
 
@@ -358,7 +376,7 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 			if mrb.ObjIsKindOf(o, mrb.ClassGet("Time")) && (velType == reflect.TypeOf(time.Time{})) {
 				vtoi := mrb.Call(o, "to_i")
 				vusec := mrb.Call(o, "usec")
-				t := time.Unix(int64(MrbFixnum(vtoi)), int64(MrbFixnum(vusec))*1000000)
+				t := time.Unix(int64(MrbFixnum(vtoi)), int64(MrbFixnum(vusec))*1000)
 				vel.Set(reflect.ValueOf(t))
 				return nil
 			}

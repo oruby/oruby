@@ -15,7 +15,6 @@ import (
 	"reflect"
 	"runtime"
 	"sync"
-	"time"
 	"unsafe"
 )
 
@@ -61,6 +60,7 @@ type MrbState struct {
 	funcs        []interface{}
 	matrix       [][]interface{}
 	exitChan     chan struct{}
+	injectChan   chan func(mrb *MrbState)
 	features     map[string]interface{} // features stash
 	nilValue     Value               // cached nil Value
 	afterInitSym MrbSym              // cached mrb.Intern("after_init")
@@ -85,6 +85,7 @@ func NewCore() (*MrbState, error) {
 		make([]interface{}, 0, 255),
 		make([][]interface{}, 500),
 		make(chan struct{}),
+		make(chan func(mrb *MrbState)),
 		make(map[string]interface{}),
 		Value{C.mrb_nil_value()},
 		0,
@@ -349,10 +350,6 @@ func (mrb *MrbState) Value(o interface{}) Value {
 		return v
 	case MrbFuncT:
 		return mrb.ProcNewCFunc(v).Value()
-	case time.Time:
-		return mrb.NewInstance("Time",
-			v.Year(), v.Month(), v.Day(), v.Hour(), v.Minute(), v.Second(), v.Nanosecond()/1000000,
-		).Value()
 	case complex64:
 		return mrb.NewInstance("Complex", real(v), imag(v)).Value()
 	case complex128:
@@ -420,10 +417,7 @@ func (mrb *MrbState) valueValue(v reflect.Value) Value {
 		return mrb.DataValue(v.Interface())
 
 	case reflect.Struct:
-		o := v.Interface()
-
-		// return registered GoMrb Object or RData value
-		return mrb.DataValue(&o)
+		return mrb.DataValue(v.Interface())
 
 	case reflect.Func:
 		return mrb.ProcNewGofunc(v.Interface()).Value()
@@ -576,18 +570,6 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 	case C.MRB_TT_FIBER:
 		return RFiber{(*C.struct_RFiber)(C._mrb_ptr(o.Value().v))}
 	case C.MRB_TT_DATA:
-		ret := mrb.DataCheckGetInterface(o)
-		if ret != nil {
-			return ret
-		}
-
-		// mruby ::Time -> time.Time
-		if mrb.ObjIsKindOf(o, mrb.ClassGet("Time")) {
-			vtoi := mrb.Call(o, "to_i")
-			vusec := mrb.Call(o, "usec")
-			return time.Unix(int64(MrbFixnum(vtoi)), int64(MrbFixnum(vusec))*1000000)
-		}
-
 		return mrb.DataCheckGetInterface(o)
 	case C.MRB_TT_ISTRUCT:
 		// TODO: return IStruct interfaces (ratiolnal)

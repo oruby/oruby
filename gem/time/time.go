@@ -9,13 +9,14 @@ import (
 func init() {
 	oruby.Gem("time", func(mrb *oruby.MrbState)interface{} {
 		t := mrb.DefineClass("Time", mrb.ObjectClass())
-		t.RegisterGoClass(newTime)
+		t.RegisterGoClass(&time.Time{})
+		t.AttachType(time.Time{})
 		t.Include(mrb.ModuleGet("Comparable"))
 
 		t.DefineClassMethod("at", timeAt, mrb.ArgsArg(1,1))
 		t.DefineClassMethod("gm", timeNewUTC, mrb.ArgsArg(1,6))
-		t.DefineClassMethod("local", timeLocal, mrb.ArgsArg(1,6))
-		t.DefineClassMethod("mktime", timeLocal, mrb.ArgsArg(1,6))
+		t.DefineClassMethod("local", timeNewLocal, mrb.ArgsArg(1,6))
+		t.DefineClassMethod("mktime", timeNewLocal, mrb.ArgsArg(1,6))
 		t.DefineClassMethod("now", timeNow, mrb.ArgsNone())
 		t.DefineClassMethod("utc", timeNewUTC, mrb.ArgsArg(1,6))
 
@@ -71,7 +72,7 @@ func init() {
 }
 
 func timeNow(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return timeValue(mrb, time.Now())
+	return timeValue(mrb, self, time.Now())
 }
 
 func timeAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -86,7 +87,8 @@ func timeAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 
 		t := time.Unix(arg1.Int64(), int64(arg2.Float64()*1000))
-		return timeValue(mrb, t)
+		return timeValue(mrb, self, t)
+
 	case oruby.MrbTTFloat:
 		f := arg1.Float64()
 		if math.IsNaN(f) || math.IsInf(f,0) {
@@ -94,27 +96,26 @@ func timeAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 		f2 := f-float64(int64(f))
 		t := time.Unix(int64(f),  int64(f2) * 1000)
-		return timeValue(mrb, t)
+		return timeValue(mrb,  self, t)
+
 	case oruby.MrbTTData:
-		if t, ok := mrb.Data(arg1).(*time.Time) ; ok {
-			return timeValue(mrb, *t)
+		switch t := mrb.Data(arg1).(type) {
+		case *time.Time:
+			return timeValue(mrb,  self, *t)
+		case time.Time:
+			return timeValue(mrb,  self, t)
 		}
 	}
 	return mrb.ETypeError().Raisef("can't convert %v into an exact number", mrb.TypeName(arg1))
 }
 
-//func timeCreate(mrb *oruby.MrbState, args oruby.RArgs) (time.Time, error) {
-//
-//}
-
-func timeNewUTC(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
+func timeCreate(mrb *oruby.MrbState, args oruby.RArgs, loc *time.Location) (time.Time, error) {
 	if args.Len() == 0 {
-		return timeValue(mrb, time.Now().UTC())
+		return time.Now().UTC(), nil
 	}
 
 	if args.Item(0).IsNil()  {
-		return mrb.ETypeError().Raise("no implicit conversion of nil into Integer")
+		return time.Time{}, oruby.ETypeError("no implicit conversion of nil into Integer")
 	}
 
 	var y, m, d, hh, mm, ss int
@@ -147,11 +148,19 @@ func timeNewUTC(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				ns = msV.Int64() * 1000
 			} else {
 				ms := msV.Float64()
+				if math.IsNaN(ms) || math.IsInf(ms,0) {
+					return time.Time{}, oruby.EFloatDomainError("value out of range")
+				}
 				ns = int64(ms*1000) - int64(ms)*1000
 			}
 		} else if ssV.IsFloat() {
-			ss = ssV.Int()
-			ns = int64(ssV.Float64()*1000*1000) - ssV.Int64()*1000*1000
+			f := ssV.Float64()
+			if math.IsNaN(f) || math.IsInf(f,0) {
+				return time.Time{}, oruby.EFloatDomainError("value out of range")
+			}
+
+			ss = int(f)
+ 			ns = int64(f*1000*1000) - int64(f)*1000*1000
 		}
 	}
 
@@ -171,58 +180,58 @@ func timeNewUTC(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		case "nov": m = 11
 		case "dec": m = 12
 		default:
-			return mrb.ETypeError().Raise("mon out of range")
+			return time.Time{}, oruby.ETypeError("mon out of range")
 		}
 	} else {
 		m = mV.Int()
 		if m == 0 {
 			m = 1
 		} else if m < 0 || m > 12 {
-			return mrb.EArgumentError().Raise("month out of range")
+			return  time.Time{}, oruby.EArgumentError("month out of range")
 		}
 	}
 
-	t := time.Date(y, time.Month(m), d, hh, mm, ss, int(ns), time.UTC)
-	return timeValue(mrb, t)
+	return time.Date(y, time.Month(m), d, hh, mm, ss, int(ns), loc), nil
+}
+
+func timeNewUTC(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	t, err := timeCreate(mrb, mrb.GetArgs(), time.UTC)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	return timeValue(mrb, self, t)
+}
+
+func timeNewLocal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	t, err := timeCreate(mrb, mrb.GetArgs(), time.Local)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	return timeValue(mrb, self, t)
 }
 
 func timeInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	result := timeLocal(mrb, self)
-	mrb.DataSetInterface(self, mrb.Data(result))
+	t, err := timeCreate(mrb, mrb.GetArgs(), time.Local)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	setTime(mrb, self, t)
 	return self
 }
 
 func timeInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	arg := mrb.GetArgsFirst()
-	t := *mrb.Data(arg).(*time.Time)
-	mrb.DataSetInterface(self, &t)
+
+	switch t := mrb.Data(arg).(type) {
+	case time.Time:
+		setTime(mrb, self, t)
+	case *time.Time:
+		setTime(mrb, self, *t)
+	default:
+		return mrb.EArgumentError().Raise("invalid argument")
+	}
+
 	return self
-}
-
-func timeLocal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
-	if args.Len() == 0 {
-		return timeValue(mrb, time.Now())
-	}
-
-	if args.Item(0).IsNil()  {
-		return mrb.ETypeError().Raise("no implicit conversion of nil into Integer")
-	}
-
-	y := args.ItemDefInt(0, 0)
-	m := args.ItemDefInt(1, 0)
-	d := args.ItemDefInt(2, 1)
-	hh := args.ItemDefInt(3, 0)
-	mm := args.ItemDefInt(4, 0)
-	ss := args.ItemDefInt(5, 0)
-	ms := args.ItemDefInt(6, 0)
-
-	if m == 0 {
-		m = 1
-	} else if m < 0 || m > 12 {
-		return mrb.EArgumentError().Raise("month out of range")
-	}
-
-	t := time.Date(y,time.Month(m), d, hh, mm, ss, ms * 1000, time.Local)
-	return timeValue(mrb, t)
 }

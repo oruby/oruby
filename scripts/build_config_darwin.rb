@@ -17,7 +17,7 @@ MRuby::Build.new do |conf|
   conf.gem :core => "mruby-bin-debugger"
 
   # include the default GEMs
-  conf.gembox 'default'
+  conf.gembox __dir__ + "/oruby"
 
   # C compiler settings
   conf.cc do |cc|

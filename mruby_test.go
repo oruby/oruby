@@ -172,6 +172,7 @@ func TestTime(t *testing.T) {
 	ExpectEql(t, tvc.Hour(), tt.Hour())
 	ExpectEql(t, tvc.Minute(), tt.Minute())
 	ExpectEql(t, tvc.Second(), tt.Second())
+	ExpectEql(t, tvc.Nanosecond(), tt.Nanosecond())
 }
 
 func TestComplex(t *testing.T) {

@@ -99,12 +99,15 @@ func (c RClass) NewGoInstance(obj interface{}) (Value, error) {
 	mrbObjectClass := c.mrb.p.object_class
 	// For non-plain ruby objects, check if class is registered with Go
 	if c.p != mrbObjectClass {
-		classType, ok := c.mrb.getHook(unsafe.Pointer(c.p)).(reflect.Type)
-		if ok {
-			argType := reflect.TypeOf(obj)
-			if (argType == nil) || (argType.Kind() != reflect.Ptr) || (argType != classType) {
-				return c.mrb.nilValue, fmt.Errorf("creation failed, expected type %v but got %v", classType, argType)
-			}
+		c.mrb.Lock()
+		klass := c.mrb.classmap[reflect.TypeOf(obj)]
+		c.mrb.Unlock()
+
+		if klass != unsafe.Pointer(c.p) {
+			v := mrbObjValue(klass)
+			return c.mrb.nilValue, fmt.Errorf(
+				"creation failed, expected type for %v class but got %v", c.Name(), c.mrb.ClassPtr(v).Name(),
+			)
 		}
 	}
 

@@ -7,6 +7,34 @@ import (
 	"time"
 )
 
+func TestTimeStorage(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	// Structs - time.Time
+	tt := time.Now()
+	tv := mrb.Value(tt)
+	assert.Expect(t, tv.Type() == oruby.MrbTTData, "Expecting Time as DATA mrb value, got MRB_TT %v", mrb.TypeName(tv))
+	assert.Expect(t, mrb.ObjClassname(tv) == "Time", "Expecting Time class name, got %v", mrb.ObjClassname(tv))
+
+	tvc := mrb.Intf(tv).(time.Time)
+
+	assert.Equal(t, tvc.Day(), tt.Day())
+	assert.Equal(t, tvc.Month(), tt.Month())
+	assert.Equal(t, tvc.Year(), tt.Year())
+	assert.Equal(t, tvc.Hour(), tt.Hour())
+	assert.Equal(t, tvc.Minute(), tt.Minute())
+	assert.Equal(t, tvc.Second(), tt.Second())
+	assert.Equal(t, tvc.Nanosecond(), tt.Nanosecond())
+
+	tt = time.Now()
+	tp := &tt
+	tv = mrb.Value(tp)
+	tcp := mrb.Intf(tv).(*time.Time)
+	assert.Equal(t, tp, tcp)
+	assert.Equal(t, tt, *tcp)
+}
+
 func TestTimeRb(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
