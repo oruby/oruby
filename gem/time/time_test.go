@@ -4,6 +4,7 @@ import (
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/assert"
 	"testing"
+	"time"
 )
 
 func TestTimeRb(t *testing.T) {
@@ -55,3 +56,10 @@ func TestToS(t *testing.T) {
 	`)
 }
 
+func TestIsTimeDST(t *testing.T) {
+	dst := time.Date(2012, time.December, 23, 0,0,0,0,time.UTC)
+	assert.Expect(t, !isDST(dst), "%v should not be dst", dst)
+
+	dst = time.Date(2012, time.July, 23, 0,0,0,0,time.Local)
+	assert.Expect(t, isDST(dst), "%v should be dst", dst)
+}

@@ -179,8 +179,10 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 		panic("constructor does not return pointer to Go type")
 	}
 
-	// Set klass value as RData
+	// Set klass type as RData
 	MrbSetInstanceTT(c, MrbTTData)
+
+	// Connect with Go world
 	c.mrb.Lock()
 	c.mrb.classmap[v] = unsafe.Pointer(c.p)
 	c.mrb.hooks[unsafe.Pointer(c.p)] = v

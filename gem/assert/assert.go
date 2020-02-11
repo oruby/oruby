@@ -3,6 +3,7 @@ package assert
 import (
 	"github.com/oruby/oruby"
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -10,7 +11,8 @@ import (
 func init() {
 	oruby.Gem("assert", func(mrb *oruby.MrbState) interface{} {
 		// mrb.KernelModule().DefineMethod("t_print", t_print, MRB_ARGS_ANY());
-		// mrb.KernelModule().DefineMethod("_str_match?", m_str_match_p, MRB_ARGS_REQ(2));
+		// Override oruby print functions so mrb output behave as go output
+		mrb.DefineMethodFunc(mrb.KernelModule(), "_str_match?", regexp.MatchString)
 
 		mrbtest := mrb.DefineModule("Mrbtest")
 		mrbtest.Const("FIXNUM_MAX", math.MaxInt64)
@@ -34,24 +36,18 @@ func reportResults(t *testing.T, mrb *oruby.MrbState) {
 		t.Error("no asserts")
 		return
 	}
-	fails := ""
-	warns := ""
+
 	for i := 0; i < asserts.Len(); i++ {
 		str := mrb.AryRef(asserts, i).String()
 		if strings.HasPrefix(str, "Fail: ") {
-			fails += str
-			fails += "\r\n"
+			t.Error(str)
+		} else if strings.HasPrefix(str, "Skip: ") {
+			t.Skip(str)
 		} else if strings.HasPrefix(str, "Warn: ") {
-			warns += str
-			fails += "\r\n"
+			t.Log(str)
+		} else {
+			t.Error(str)
 		}
-	}
-	if warns != "" {
-		t.Log(warns)
-	}
-
-	if fails != "" {
-		t.Error(fails)
 	}
 }
 
@@ -73,7 +69,8 @@ func AssertFile(t *testing.T, mrb *oruby.MrbState, filename string) {
 	t.Helper()
 
 	//mrb_init_test_vformat(mrb);
-	mrb.SetGV("$mrbtest_verbose", testing.Verbose())
+	//mrb.SetGV("$mrbtest_verbose", testing.Verbose())
+	mrb.SetGV("$mrbtest_verbose", false)
 
 	_, err := mrb.LoadFile(filename)
 	if err != nil {
@@ -81,6 +78,7 @@ func AssertFile(t *testing.T, mrb *oruby.MrbState, filename string) {
 		return
 	}
 
+	println("")
 	reportResults(t, mrb)
 }
 
@@ -101,9 +99,10 @@ def t_print(*args)
   nil
 end
 
-def _str_match?(pattern, str)
-  File.fnmatch?(pattern, str, File::FNM_EXTGLOB|File::FNM_DOTMATCH)
-end
+#def _str_match?(pattern, str)
+#  Regexp.match(pattern, str)
+#  # File.fnmatch?(pattern, str, File::FNM_EXTGLOB|File::FNM_DOTMATCH)
+#end
 
 class Array
   def _assertion_join

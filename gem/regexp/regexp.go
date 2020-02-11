@@ -161,11 +161,9 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	obj := mrb.RObject(self)
-	source := obj.GetIV("@source")
-	options := obj.GetIV("@options")
-
-	return mrb.ClassNewInstance(obj.Class(), source, options)
+	r := *mrb.Data(mrb.GetArgsFirst()).(*regexp.Regexp)
+	mrb.DataSetInterface(self, &r)
+	return self
 }
 
 func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby.Value {

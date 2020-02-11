@@ -115,6 +115,7 @@ end
 
 assert('Time#dst?', '15.2.19.7.7') do
   assert_not_predicate(Time.gm(2012, 12, 23).utc, :dst?)
+  assert_not_predicate(Time.at(2012, 12, 23).localtime, :dst?)
 end
 
 assert('Time#getgm', '15.2.19.7.8') do
@@ -262,7 +263,9 @@ assert('2000 times 500us make a second') do
   assert_equal(0, t.usec)
 end
 
-# This time is valid with go time.Time
+# MRuby expects Time.gm(1969, 12, 31, 23, 59, 59) to be invalid
+#
+# This is valid time with go time.Time, and also MRI Ruby Time
 assert('Time.gm with Dec 31 23:59:59 1969 raise ArgumentError') do
-  assert_raise(ArgumentError) {Time.gm(1969, 12, 31, 23, 59, 59)}
+  assert_equal("Wed Dec 31 23:59:59 1969", Time.gm(1969, 12, 31, 23, 59, 59).asctime)
 end
