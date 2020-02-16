@@ -296,10 +296,10 @@ func (mrb *MrbState) Close() {
 			close(mrb.injectMainChan)
 		}
 
+		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
 
 		mu.Lock()
-		idx := int(C._mrb_get_idx(mrb.p))
 		states[idx] = nil
 		mu.Unlock()
 
