@@ -343,6 +343,6 @@ func timeToA(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		oruby.Integer(int(t.Weekday())),
 		oruby.Integer(t.YearDay()),
 		oruby.Bool(isDST(t)),
-		mrb.StringValue(zone),
+		mrb.StrNewStatic(zone),
 	)
 }
