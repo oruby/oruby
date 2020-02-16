@@ -162,8 +162,6 @@ func TestTime(t *testing.T) {
 	tt := time.Now()
 	tv := mrb.Value(tt)
 	Expect(t, MrbType(tv) == MrbTTData, "Expecting Time as DATA mrb value, got MRB_TT %d", MrbType(tv))
-	Expect(t, mrb.ObjClassname(tv) == "Time", "Expecting Time class name, got %v", mrb.ObjClassname(tv))
-
 	tvc := mrb.Intf(tv).(time.Time)
 
 	ExpectEql(t, tvc.Day(), tt.Day())
