@@ -11,17 +11,8 @@ type Context struct {
 	args oruby.RArgs
 	proc oruby.RProc
 	result oruby.Value
+	resultCaller oruby.Value
 	alive bool
-}
-
-func (c *Context) thread() {
-	c.mrb.WaitGroup.Add(1)
-
-	c.result, _ = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
-	c.mrb.GCProtect(c.result)
-
-	c.mrb.WaitGroup.Done()
-	c.alive = false
 }
 
 func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -41,6 +32,7 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args: args,
 		proc: proc,
 		result: mrb.NilValue(),
+		resultCaller: mrb.NilValue(),
 		alive: false,
 	}
 
@@ -54,28 +46,36 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	c.alive = true
-	go c.thread()
+	c.mrb.WaitGroup.Add(1)
+	go c.worker()
 
 	return mrb.DataValue(c)
 }
 
+func (c *Context) worker() {
+	c.result, _ = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
+	c.mrb.GCProtect(c.result)
+
+	c.mrb.WaitGroup.Done()
+	c.alive = false
+}
+
 func (c *Context) Join() (interface{}, error) {
 	if !c.alive {
-		return c.result, nil
+		return c.resultCaller, nil
 	}
 
 	c.mrb.WaitGroup.Wait()
-
 	v, err := c.migrateValue(c.result)
 	if err != nil {
 		return nil, err
 	}
 
-	c.result = v.Value()
-
+	c.resultCaller = v.Value()
 	c.mrb.Close()
 	c.mrb = nil
-	return c.result, nil
+
+	return c.resultCaller, nil
 }
 
 func (c *Context) Kill() interface{} {

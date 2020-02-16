@@ -8,10 +8,12 @@ import (
 
 func init() {
 	oruby.Gem("thread", func(mrb *oruby.MrbState)interface{} {
-
-		threadClass := mrb.DefineGoClass("Thread", &Context{})
+		threadClass := mrb.DefineClass("Thread", mrb.ObjectClass())
+		threadClass.RegisterGoClass(func() *Context { return &Context{} })
+		threadClass.Populate()
 		threadClass.Const("COPY_VALUES", true)
-		threadClass.DefineMethod("initialize", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
+
+		threadClass.DefineMethod("initialize", newThread, mrb.ArgsAny())
 		threadClass.DefineAlias("terminate", "kill")
 		threadClass.DefineModuleFunction("start", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
 
