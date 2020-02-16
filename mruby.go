@@ -326,6 +326,10 @@ func New() (*MrbState, error) {
 		mrb.features[k] = geminit(mrb)
 	}
 
+	if !GemExists("print") {
+		mrb.features["print"] = initPrint(mrb)
+	}
+
 	return mrb, nil
 }
 
@@ -671,40 +675,10 @@ func errorHandler(err *error) {
 }
 
 // RunCode executes oruby code string
-func (mrb *MrbState) RunCode(code string, args ...interface{}) (err error) {
-//	defer errorHandler(&err)
-
-	cxt := mrb.MrbcContextNew()
-	defer cxt.Free()
-	cxt.SetCaptureErrors(true)
-
-	p, err := mrb.ParseString(code, cxt)
-	if err != nil {
-		return err
-	}
-
-	defer p.Free()
-
-	// Check parse errors
-	if p.NErr() > 0 {
-		estr := ""
-		for i := 0; i < p.NErr(); i++ {
-			e := p.ErrorBuffer(i)
-			estr += fmt.Sprintf("%s:%d:%d: %s\n", mrb.SymString(p.Filename()), e.LineNo, e.Column, e.Message)
-		}
-		return errors.New(estr)
-	}
-
-	// Generate code and run
-	proc, err := mrb.GenerateCode(p)
-	if err != nil {
-		return mrb.Err()
-	}
-
+func (mrb *MrbState) RunCode(code string, args ...interface{}) error {
 	mrb.DefineGlobalConst("ARGV", mrb.Value(args))
-	mrb.Run(proc, mrb.TopSelf())
-
-	return mrb.Err()
+	_, err := mrb.Eval(code)
+	return err
 }
 
 // Eval evaluates code string and returns calculated result
