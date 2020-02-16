@@ -26,7 +26,8 @@ func newQueue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	go q.worker()
 
-	return mrb.DataValue(q)
+	mrb.DataSetInterface(self, q)
+	return self
 }
 
 func (q *queue) worker() {

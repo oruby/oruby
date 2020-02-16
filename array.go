@@ -123,7 +123,13 @@ func (mrb *MrbState) AryNew() RArray {
 }
 
 // AryNewFromValues Initializes a new array with initial values
-func (mrb *MrbState) AryNewFromValues(args ...MrbValue) RArray {
+func (mrb *MrbState) AryNewFromValues(args ...Value) RArray {
+	return ary(mrb.Value(args).v, mrb)
+	// pure C.mrb_ary_new_from_values() is never called
+}
+
+// AryNewFromValues Initializes a new array with initial values
+func (mrb *MrbState) AryNewFromMrbValues(args ...MrbValue) RArray {
 	return ary(mrb.Value(args).v, mrb)
 	// pure C.mrb_ary_new_from_values() is never called
 }

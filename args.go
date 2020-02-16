@@ -178,6 +178,11 @@ func (mrb *MrbState) GetArgsFirst() Value {
 	return Value{C._mrb_get_args_first(mrb.p)}
 }
 
+// GetArgsCount returns numer of arguments passed to function
+func (mrb *MrbState) GetArgsCount() int {
+	return int(C.mrb_get_argc(mrb.p))
+}
+
 // GetArgsBlock returns block argument
 func (mrb *MrbState) GetArgsBlock() RProc {
 	v := Value{C._mrb_get_args_block(mrb.p)}

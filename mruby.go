@@ -106,15 +106,6 @@ func NewCore() (*MrbState, error) {
 	// Store *MrbState pointer so it can be retrieved it from C callbacks
 	registerState(mrb)
 
-	// Override oruby print functions so mrb output behave as go output
-	mrb.DefineMethodFunc(mrb.KernelModule(), "__printstr__", func(args ...interface{}) MrbValue {
-		if len(args) > 0 {
-			fmt.Print(args[0])
-			return mrb.Value(args[0])
-		}
-		return nilValue
-	})
-
 	// Experimental gorutine support
 	mrb.DefineMethod(mrb.KernelModule(), "go", goMrbGo, ArgsBlock())
 
@@ -495,7 +486,12 @@ func (mrb *MrbState) valueValue(v reflect.Value) Value {
 		return mrb.DataValue(v.Interface())
 
 	case reflect.Func:
-		return mrb.ProcNewGofunc(v.Interface()).Value()
+		switch f := v.Interface().(type) {
+		case MrbFuncT:
+			return mrb.ProcNewCFunc(f).Value()
+		default:
+			return mrb.ProcNewGofunc(v.Interface()).Value()
+		}
 
 	case reflect.Chan:
 		panic("chan type not supported as ruby Value")
@@ -1287,7 +1283,8 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 	// pure C.mrb_funcall() and C.mrb_funcall_argv() are never called
 }
 
-// FuncallWithBlock call oruby function
+// FuncallWithBlock call function with arguments. Last argument passed should be block
+// Valid values for block are RProc types, or Go functions which get converted to RProc value
 func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...interface{}) (Value, error) {
 	var block Value
 	argc := len(args)
