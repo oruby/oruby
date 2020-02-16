@@ -2,23 +2,17 @@ package oruby
 
 import "fmt"
 
-func init() {
-	if GemExists("print") {
-		return
-	}
+func initPrint(mrb *MrbState) interface{} {
+	// Override oruby print functions so mrb output behave as go output
+	kernel := mrb.KernelModule()
 
-	Gem("print", func(mrb *MrbState) interface{} {
-		// Override oruby print functions so mrb output behave as go output
-		kernel := mrb.KernelModule()
+	kernel.DefineMethod("__printstr__", printStr, mrb.ArgsAny())
+	kernel.DefineMethod("print", printPrint, mrb.ArgsAny())
+	kernel.DefineMethod("puts", printPuts, mrb.ArgsAny())
+	kernel.DefineMethod("p", printP, mrb.ArgsAny())
+	kernel.DefineMethod("printf", printPrintf, mrb.ArgsAny())
 
-		kernel.DefineMethod("__printstr__", printStr, mrb.ArgsAny())
-		kernel.DefineMethod("print", printPrint, mrb.ArgsAny())
-		kernel.DefineMethod("puts", printPuts, mrb.ArgsAny())
-		kernel.DefineMethod("p", printP, mrb.ArgsAny())
-		kernel.DefineMethod("printf", printPrintf, mrb.ArgsAny())
-
-		return nil
-	})
+	return nil
 }
 
 func printStr(mrb *MrbState, self Value) MrbValue {
