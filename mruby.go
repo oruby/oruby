@@ -1714,10 +1714,12 @@ func (mrb *MrbState) ConvertType(val MrbValue, mrbtype uint32, tname, method str
 //     b.kind_of? C       #=> false
 //     b.kind_of? M       #=> true
 func (mrb *MrbState) ObjIsKindOf(obj MrbValue, c RClass) bool {
-	result, err := mrb.try(func() C.mrb_value {
-		return C.mrb_bool_value(C.mrb_obj_is_kind_of(mrb.p, obj.Value().v, c.p))
-	})
-	return (err == nil) && (result.Type() != C.MRB_TT_FALSE)
+	switch c.Type() {
+	case C.MRB_TT_MODULE, C.MRB_TT_CLASS, C.MRB_TT_ICLASS, C.MRB_TT_SCLASS:
+		return C.mrb_obj_is_kind_of(mrb.p, obj.Value().v, c.p) != 0
+	default:
+		panic(fmt.Sprintf("class or module required but got %v", c.Name()))
+	}
 }
 
 // ObjInspect returns object info

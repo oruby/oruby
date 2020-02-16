@@ -2,11 +2,7 @@ MRuby::Build.new do |conf|
   # load specific toolchain settings
 
   # Gets set by the VS command prompts.
-  #if ENV['VisualStudioVersion']
-  #  toolchain :visualcpp
-  #else
-    toolchain :gcc
-  #end
+  toolchain :gcc
 
   enable_debug
 
@@ -21,25 +17,26 @@ MRuby::Build.new do |conf|
   conf.gem :core => "mruby-bin-debugger"
 
   # include the default GEMs
-  conf.gembox 'default'
+  conf.gembox __dir__ + "/oruby"
 
   # C compiler settings
   conf.cc do |cc|
   #   cc.command = ENV['CC'] || 'gcc'
   #   cc.flags = [ENV['CFLAGS'] || %w()]
   #   cc.flags = [%w(-g -ggdb -O0 -Wall -Werror-implicit-function-declaration -gstabs+)] #=[ENV['CFLAGS'] || %w()]
+     cc.flags = [%w(-g3 -ggdb -O0 -Wall -Werror-implicit-function-declaration -gstabs+)] #=[ENV['CFLAGS'] || %w()]
   #   cc.include_paths = ["#{root}/include"]
   #   cc.defines = %w(DISABLE_GEMS)
-     cc.defines << %w(ENABLE_READLINE MRB_ENABLE_DEBUG_HOOK MRB_HIGH_PROFILE)
+     cc.defines << %w(MRB_ENABLE_DEBUG_HOOK MRB_HIGH_PROFILE MRB_METHOD_T_STRUCT)
   #   cc.option_include_path = '-I%s'
   #   cc.option_define = '-D%s'
   #   cc.compile_options = "%{flags} -MMD -o %{outfile} -c %{infile}"
   end
 
   # mrbc settings
-  # conf.mrbc do |mrbc|
-  #   mrbc.compile_options = "-g -B%{funcname} -o-" # The -g option is required for line numbers
-  # end
+  conf.mrbc do |mrbc|
+     mrbc.compile_options = "-g -B%{funcname} -o-" # The -g option is required for line numbers
+  end
 
   # Linker settings
   conf.linker do |linker|

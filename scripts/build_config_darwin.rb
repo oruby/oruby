@@ -43,7 +43,7 @@ MRuby::Build.new do |conf|
   #   linker.command = ENV['LD'] || 'gcc'
   #   linker.flags = [ENV['LDFLAGS'] || []]
   #   linker.flags_before_libraries = []
-  #   linker.libraries << %w(readline)
+     linker.libraries << %w(readline)
   #   linker.flags_after_libraries = []
   #   linker.library_paths = []
   #   linker.option_library = '-l%s'
