@@ -20,7 +20,7 @@ import (
 ## Docs
 
 Thread gem follows ORuby "core gems code" to be as close as possible to MRI Ruby core,
-so you can see consult docs for Ruby Thread methods.
+so you can consult docs for Ruby Thread methods.
 
 ## Implementation
 

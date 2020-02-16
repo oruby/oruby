@@ -49,7 +49,9 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	c.mrb.WaitGroup.Add(1)
 	go c.worker()
 
-	return mrb.DataValue(c)
+	mrb.DataSetInterface(self, c)
+
+	return self
 }
 
 func (c *Context) worker() {
