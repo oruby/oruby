@@ -13,7 +13,7 @@ func TestTrap(t *testing.T) {
 
 	_, err := mrb.Eval(`
 		$testv = 0
-		Signal.trap("USR1") { $testv = 1 }
+		Signal.trap("USR1") { $testv = 1; p("got USR1",$testv) }
 		Signal.trap(0) { p "Exited." }
 	`)
 	if err != nil {
@@ -26,6 +26,9 @@ func TestTrap(t *testing.T) {
 		t.Fatalf("expected 0 got %v", mrb.Inspect(v))
 	}
 
+	// Give some time for signal to be processed
+	<-time.After(10 * time.Millisecond)
+
 	err = syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 	if err != nil {
 		t.Fatal(err)
@@ -34,10 +37,10 @@ func TestTrap(t *testing.T) {
 	// Give some time for signal to be processed
 	<-time.After(10 * time.Millisecond)
 
-	v2 := mrb.GetGV("$testv").Int()
+	v2 := mrb.GetGV("$testv")
 
-	if v2 != 1 {
-		t.Fatalf("expected 1 got %v", v2)
+	if v2.Int() != 1 {
+		t.Fatalf("expected 1 got %v", mrb.String(v2))
 	}
 }
 
@@ -55,7 +58,7 @@ func TestInfinite(t *testing.T) {
 
 	_, err := mrb.Eval(`
 		$testv = 0
-		Signal.trap("USR1") { p "Received USR1"; exit }
+		Signal.trap("USR1") { p "Received USR1"; raise StopIteration }
 		loop do
 			$testv = 1
 		end		

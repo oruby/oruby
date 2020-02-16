@@ -30,6 +30,19 @@ func getMrbState(cmrb *C.struct_mrb_state) *MrbState {
 }
 
 // GetMrbState returns Go MrbState from C.mrb_state reference
+func getMrbStateIndex(idx int) *MrbState {
+	if idx >= len(states) {
+		panic("State index is out of range")
+	}
+
+	if states[idx] == nil {
+		panic(errors.New("State does not exists"))
+	}
+
+	return states[idx]
+}
+
+// GetMrbState returns Go MrbState from C.mrb_state reference
 func GetMrbState(cmrb uintptr) *MrbState {
 	idx := int(C._cmrb_get_idx(C.uintptr_t(cmrb)))
 	if idx >= len(states) {

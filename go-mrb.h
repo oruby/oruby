@@ -61,6 +61,20 @@ static mrb_int _cmrb_get_idx(uintptr_t cmrb) {
   return mrb->ud ? *(mrb_int*)mrb->ud : 0;
 }
 
+extern void inject_run(mrb_int idx);
+
+static void injector(struct mrb_state* mrb, struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
+	inject_run(_mrb_get_idx(mrb));
+//	mrb_raise(mrb, E_TYPE_ERROR, "braek from vm_exec");
+}
+
+static void set_mrb_injector(mrb_state *mrb) {
+	if (!mrb->code_fetch_hook) {
+		mrb->code_fetch_hook = injector;
+	}
+}
+
+
 // defines as functions making them visible on the Go side
 static mrb_int _RARRAY_LEN(struct RArray *a)    { return ARY_LEN(a); }
 static void*   _RARRAY_PTR(struct RArray *a)    { return ARY_PTR(a); }

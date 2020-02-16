@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -41,6 +42,9 @@ type MrbFuncT func(mrb *MrbState, self Value) MrbValue
 // MrbAtexitFunc is function run at oruby state exit
 type MrbAtexitFunc func(mrb *MrbState)
 
+// MrbInjectT is function run at oruby state Inject chan
+type MrbInjectT func(mrb *MrbState)
+
 // GoCallRef key for keeping call references
 type GoCallRef struct {
 	klass *C.struct_RClass
@@ -52,6 +56,7 @@ type MrbState struct {
 	p *C.mrb_state
 
 	sync.Mutex
+	stack int32
 	WaitGroup    sync.WaitGroup
 	mrbFuncs     map[GoCallRef]MrbFuncT
 	mrbProcs     map[unsafe.Pointer]MrbFuncT
@@ -60,10 +65,12 @@ type MrbState struct {
 	funcs        []interface{}
 	matrix       [][]interface{}
 	exitChan     chan struct{}
-	injectChan   chan func(mrb *MrbState)
+	injectVMChan  chan RProc
+	injectMainChan chan RProc
 	features     map[string]interface{} // features stash
 	nilValue     Value               // cached nil Value
 	afterInitSym MrbSym              // cached mrb.Intern("after_init")
+
 }
 
 // NewCore create state is MrbState without gems,
@@ -77,6 +84,7 @@ func NewCore() (*MrbState, error) {
 	mrb := &MrbState{
 		cmrb,
 		sync.Mutex{},
+		0,
 		sync.WaitGroup{},
 		make(map[GoCallRef]MrbFuncT),
 		make(map[unsafe.Pointer]MrbFuncT),
@@ -85,7 +93,8 @@ func NewCore() (*MrbState, error) {
 		make([]interface{}, 0, 255),
 		make([][]interface{}, 500),
 		make(chan struct{}),
-		make(chan func(mrb *MrbState)),
+		nil,
+		nil,
 		make(map[string]interface{}),
 		Value{C.mrb_nil_value()},
 		0,
@@ -220,15 +229,81 @@ func (mrb *MrbState) ExitChan() chan struct{} {
 	return mrb.exitChan
 }
 
+//export inject_run
+func inject_run(idx C.mrb_int) {
+	mrb := getMrbStateIndex(int(idx))
+
+	select {
+	case <-mrb.exitChan:
+	case proc := <-mrb.injectVMChan:
+		_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
+	default:
+	}
+}
+
+// Inject code to be executed in mrb
+func (mrb *MrbState) Inject(proc RProc) {
+	if atomic.LoadInt32(&mrb.stack) == 0 {
+		mrb.startInjector()
+	}
+
+	select {
+	case mrb.injectVMChan <- proc:
+		return
+	case <-mrb.exitChan:
+		return
+	default:
+	}
+
+	select {
+	case mrb.injectMainChan <-proc:
+	case <-mrb.exitChan:
+	}
+}
+
+// startInjector for code to be executed from gorputines in main mrb
+func (mrb *MrbState) startInjector() {
+	mrb.Lock()
+	mrb.injectMainChan = make(chan RProc)
+	mrb.injectVMChan = make(chan RProc)
+	C.set_mrb_injector(mrb.p)
+	atomic.StoreInt32(&mrb.stack, 1)
+	mrb.Unlock()
+
+	var injectorLock sync.Mutex
+
+	go func() {
+		for proc := range mrb.injectMainChan {
+			injectorLock.Lock()
+			_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
+			injectorLock.Unlock()
+		}
+	}()
+}
+
 // Close oruby state
 // before closing mruby state, mrb.ExitChan() is closed
-// so all goroutines can close
+// so all goroutines are signaled to close
+//
+// Go routines from Gems that have exit procs should
+// send proc via mrb.InjectChan() and then signal mrb.WaitGroup.Done()
+// After mrb.WaitGroup.Wait() finishes, mrb.InjectChan is closed.
 func (mrb *MrbState) Close() {
 	if mrb.p != nil {
 		// Signal all mrb goroutines that we are closing
 		// and Wait all well-behaved goroutines to finish
 		close(mrb.exitChan)
+
+		// Go routines from Gems that send exit procs should
+		// send proc to mrb.InjectChan() and then signal mrb.WaitGroup.Done()
 		mrb.WaitGroup.Wait()
+
+		if mrb.injectVMChan != nil {
+			close(mrb.injectVMChan)
+		}
+		if mrb.injectMainChan != nil {
+			close(mrb.injectMainChan)
+		}
 
 		C.mrb_close(mrb.p)
 

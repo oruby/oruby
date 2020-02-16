@@ -98,7 +98,7 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 				cmd, ok := handlers.current[sig]
 				if ok && cmd.IsProc() {
 					//TODO: This doesn't work. It needs to inject into main thread
-					mrb.Call(cmd, "call")
+					mrb.Inject(mrb.RProc(cmd))
 				}
 			case <-mrb.ExitChan():
 				// gracefull close goroutine on mrb state close
@@ -107,7 +107,7 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 
 				// zero signal handler, executed at MrbState closing
 				if !handlers.exitHandler.IsNil() {
-					mrb.Call(handlers.exitHandler, "call")
+					mrb.Inject(mrb.RProc(handlers.exitHandler))
 				}
 
 				handlers.current = nil

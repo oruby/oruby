@@ -1,0 +1,98 @@
+# Signal gem for ORuby (EXPERIMENTAL)
+
+This oruby gem is not part of the ORuby fullcore.
+
+This is EXPERIMENTAL code. MRuby does not have any support for concurrent access, and
+Go singal handling is done via goroutines and channels. So things are prone to race conditions.
+
+If you are using ORuby scripting, signals should (probably) not be handled via script code.
+
+Nice thing with ORuby gems is that this code can be separated in gem, where it can
+be played with, tested.
+
+## Install
+
+```go
+import (
+	"github.com/oruby/oruby"
+
+	_ "github.com/oruby/oruby/gem/signal"
+)
+```
+
+## Docs
+
+Signal gem follows ORuby "core gems code" to be as close as possible to MRI Ruby core,
+so you can see consult docs for Ruby Signal module.
+
+Implementation is thin scripting over standard Go signal handling. Which means that
+everything about Go signal handling sholud be considered. Signal consts are added for Windows,
+Linux and macOS, plus SIGINT and SIGKILL which are supported on all Go platforms.
+
+## Implementation
+
+At the moment, the implementation uses ```mrb.Inject(rproc)``` on signal receive to route
+proc to main mrb goroutine, where it is executed in VM, or out of VM if VM is not executing.
+This is still EXPERIMENTAL, and can lead to unexpected behaviour.
+
+Things that work, but need mor testing:
+
+  * Signals received while VM is executing - serialized using chans and VM C callback in mruby
+  * EXIT Signals - these procs get executed on oruby.MrbState ```Close()```
+
+Things that can error:
+
+  * Signals recevied while VM is not executing. This is "gray" area, since in MRI Ruby
+    VM is executing always. This is a situation where signal handler is set, for example
+    via ```mrb.Eval()```, and signal is arriving after eval, when no oruby VM code is executing.
+    At that moment, code is just executed. But since mruby does not have sync primitives
+    some other C API code might be executing and accessing state.
+
+    Since Go handler is goroutine, only right thing to do is to lock every API call, which
+    is something I would like to avoid.
+
+    Alternative solution would be to leave manual API which will execute signal procs,
+    and leave it to the user to call it when needed.
+
+## Usage
+
+```go
+package main
+
+import "github.com/oruby/oruby"
+
+func main() {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	// Goroutine which sends SIGUSR1 to current process 1 second after execution
+	go func() {
+		<-time.After(1 * time.Second)
+		_= syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+	}()
+
+	// ORuby script with infinite loop that gets interupted via signal
+	_,_= mrb.Eval(`
+		$testv = 0
+		Signal.trap("USR1") { p "Received USR1"; raise StopIteration }
+		Signal.trap(0) { p "Exited." }
+
+		# Infinite loop
+		loop do
+			$testv = 1
+		end
+	`)
+}
+
+// Should output:
+// "Received USR1"
+// "Exited."
+```
+
+## License
+
+MIT
+
+## Authors
+
+* Dušan D. Majkić (oruby)
