@@ -1,0 +1,86 @@
+# Thread gem for ORuby (EXPERIMENTAL)
+
+This oruby gem is not part of the ORuby fullcore.
+
+This is EXPERIMENTAL code. MRuby does not have any support for concurrent access.
+
+If you are using ORuby scripting, you should (probably) create oruby.MrbState for any
+concurrent goroutine, and communicate with other states in other goroutines using Go patterns.
+
+## Install
+
+```go
+import (
+	"github.com/oruby/oruby"
+
+	_ "github.com/oruby/oruby/gem/thread"
+)
+```
+
+## Docs
+
+Thread gem follows ORuby "core gems code" to be as close as possible to MRI Ruby core,
+so you can see consult docs for Ruby Thread methods.
+
+## Implementation
+
+Current implementation is port of mruby-thread [mruby-thread][mruby-thread] which clones
+mruby state, and then block is run in new thread, in that separete cloned state.
+
+I hold it that this idea is so cool, and nice example of out-of-the-box-thinking solution.
+It solves basic issue: no concurrency support in mruby. Yet, instead of polluting API with
+locks, GIL, and who-knows-what it clones entire state and runs it in its own thread.
+
+There are downsides:
+
+	* It is slow to start a new thread. It takes time and memory to copy everything a
+    state holds - variables, symols, objects, methods.
+  * Not everything can be cloned by simple copying.
+
+Alternatives:
+
+	 * Go implementation could speed up, or skip some copying
+	 * Go have lightwieght threads, but that means locks or something like GIL
+	 * Again: separate ORuby state can be created for every therad, and then use Go
+	   patterns for thread communication.
+
+## Usage
+
+```go
+package main
+
+import (
+	"github.com/oruby/oruby"
+
+	_ "github.com/oruby/oruby/gem/thread"
+)
+
+func main() {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	v, err := mrb.Eval(`
+		Thread.start { "yea" }.join
+	`)
+
+	println(v.String())
+}
+
+// Should output:
+// "yea"
+```
+
+## License
+
+ORuby is available as open source under the terms of the [MIT License][license]
+
+(c) 2020, Dušan D. Majkić
+
+## Authors
+
+* Dušan D. Majkić [oruby]
+* Yasuhiro Matsumoto [mruby-thread]
+
+[license]: http://opensource.org/licenses/MIT
+[oruby]: https://github.com/oruby/oruby
+[mruby-thread]: https://github.com/mattn/mruby-thread

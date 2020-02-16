@@ -38,7 +38,9 @@ func main() {
 
 ## License
 
-MIT
+ORuby is available as open source under the terms of the [MIT License][license]
+
+(c) 2020, Dušan D. Majkić
 
 ## Linked projects
 
@@ -56,7 +58,7 @@ Go-mruby is similar, battle tested, production used and focused project. ORuby i
 
 ORuby tends to support whole of mruby API, with the idea of supporting 
 more on the Go side of thigs: exporting Go interfaces and types, 
-gems via Go packages, Go made stlib, etc. 
+gems via Go packages, stdlib implmented in Go, etc.
 
 ## Authors
 
@@ -64,3 +66,4 @@ gems via Go packages, Go made stlib, etc.
 * Yasuhiro Matsumoto (go-mruby)
 * Yukihiro Matsumoto (mruby and ruby master)
 
+[license]: http://opensource.org/licenses/MIT

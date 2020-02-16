@@ -10,7 +10,7 @@ func TestContext(t *testing.T) {
 	defer mrb.Close()
 
 	v, err := mrb.Eval(`
-		Thread.new { "yea" }.join
+		Thread.start { "yea" }.join
 	`)
 	if err != nil {
 		t.Error(err)

@@ -35,12 +35,12 @@ At the moment, the implementation uses ```mrb.Inject(rproc)``` on signal receive
 proc to main mrb goroutine, where it is executed in VM, or out of VM if VM is not executing.
 This is still EXPERIMENTAL, and can lead to unexpected behaviour.
 
-Things that work, but need mor testing:
+Things that work, but need more testing:
 
   * Signals received while VM is executing - serialized using chans and VM C callback in mruby
   * EXIT Signals - these procs get executed on oruby.MrbState ```Close()```
 
-Things that can error:
+Things that can bomb:
 
   * Signals recevied while VM is not executing. This is "gray" area, since in MRI Ruby
     VM is executing always. This is a situation where signal handler is set, for example
@@ -51,15 +51,19 @@ Things that can error:
     Since Go handler is goroutine, only right thing to do is to lock every API call, which
     is something I would like to avoid.
 
-    Alternative solution would be to leave manual API which will execute signal procs,
-    and leave it to the user to call it when needed.
+    Alternative solution would be to have manual API call which will "drain" and execute signal
+    procs and leave it to the user to call it somewhere in context of goroutine where ORuby state
+    runs.
 
 ## Usage
 
 ```go
 package main
 
-import "github.com/oruby/oruby"
+import (
+	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/signal"
+)
 
 func main() {
 	mrb := oruby.MrbOpen()
@@ -82,17 +86,25 @@ func main() {
 			$testv = 1
 		end
 	`)
+
+	println("Out of the Eval")
 }
 
 // Should output:
 // "Received USR1"
+// "Out of the Eval"
 // "Exited."
 ```
 
 ## License
 
-MIT
+ORuby is available as open source under the terms of the [MIT License][license]
+
+(c) 2020, Dušan D. Majkić
 
 ## Authors
 
-* Dušan D. Majkić (oruby)
+* Dušan D. Majkić [oruby]
+
+[license]: http://opensource.org/licenses/MIT
+[oruby]: https://github.com/oruby/oruby
