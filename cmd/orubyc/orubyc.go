@@ -12,11 +12,11 @@ import (
 )
 
 // Extensions
-const {
+const (
 	RitebinExt = ".mrb"
 	CExt = ".c"
 	GoExt = ".go"
-}
+)
 
 type mrbcArgs struct {
 	idx         int
