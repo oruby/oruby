@@ -7,12 +7,13 @@ import (
 )
 
 // RException struct
-type RException struct{
-	p *C.struct_RException
+type RException struct {
+	p   *C.struct_RException
 	mrb *MrbState
 }
-type RExceptionPtr struct{ p *C.struct_RException }
 
+// RExceptionPtr struct wrapper around mruby RException struct pointer
+type RExceptionPtr struct{ p *C.struct_RException }
 
 // RBreak struct
 type RBreak struct{ p *C.struct_RBreak }

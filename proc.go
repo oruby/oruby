@@ -9,8 +9,8 @@ import (
 )
 
 // REnv struct
-type REnv struct{
-	p *C.struct_REnv
+type REnv struct {
+	p   *C.struct_REnv
 	mrb *MrbState
 }
 
@@ -23,7 +23,7 @@ func (e REnv) Type() int { return e.Value().Type() }
 // IsNil check for MrbValue interface
 func (e REnv) IsNil() bool { return e.p == nil }
 
-// IsNil check for MrbValue interface
+// Len returns number of items
 func (e REnv) Len() int { return int(C._MRB_ENV_STACK_LEN(e.p)) }
 
 // Unshare stack unshares Env
@@ -45,7 +45,7 @@ func (mrb *MrbState) EnvUnshare(env REnv) {
 }
 
 // SetEnv creates and sets new Env object with stack Values
-func (p RProc) SetEnv(stackItems... Value) {
+func (p RProc) SetEnv(stackItems ...Value) {
 	if len(stackItems) == 0 {
 		C._mrb_create_env(p.mrb.p, p.p, 0, nil)
 		return
@@ -64,8 +64,8 @@ func (e REnv) AdjustStackLength(nlocals int) {
 }
 
 // RProc struct
-type RProc struct{
-	p *C.struct_RProc
+type RProc struct {
+	p   *C.struct_RProc
 	mrb *MrbState
 }
 
@@ -112,7 +112,7 @@ func (p RProc) FlagUnset(flag int) {
 }
 
 // Upper returns upper proc
-func (p RProc) Upper() RProc { return RProc{p.p.upper ,p.mrb} }
+func (p RProc) Upper() RProc { return RProc{p.p.upper, p.mrb} }
 
 // SetUpper returns upper proc
 func (p RProc) SetUpper(upper RProc) { p.p.upper = upper.p }
@@ -125,7 +125,7 @@ func (p RProc) IRep() MrbIrep {
 	return MrbIrep{C._rproc_body_irep(p.p), p.mrb}
 }
 
-// SetUpper returns upper proc
+// Env returns REnv proc environment
 func (p RProc) Env() REnv {
 	if !p.HasEnv() {
 		return REnv{nil, p.mrb}
@@ -192,7 +192,7 @@ func MrbProcValue(p RProc) Value { return p.Value() }
 // ProcNew creates new RProc from irep
 func (mrb *MrbState) ProcNew(irep MrbIrep) RProc { return RProc{C.mrb_proc_new(mrb.p, irep.p), mrb} }
 
-// ProcPtr eturns RProc from oruby value
+// RProc returns RProc struct from proc ruby value, or nil if vale is not proc
 func (mrb *MrbState) RProc(v MrbValue) RProc {
 	if v.Value().IsNil() {
 		return RProc{nil, mrb}
@@ -230,7 +230,9 @@ func (mrb *MrbState) ProcNewGofunc(f interface{}) RProc {
 }
 
 // ClosureNew creates new closure from irep
-func (mrb *MrbState) ClosureNew(irep MrbIrep) RProc { return RProc{C.mrb_closure_new(mrb.p, irep.p), mrb} }
+func (mrb *MrbState) ClosureNew(irep MrbIrep) RProc {
+	return RProc{C.mrb_closure_new(mrb.p, irep.p), mrb}
+}
 
 // ClosureNewCfunc creates new closure from Go function
 func (mrb *MrbState) ClosureNewCfunc(f MrbFuncT, nlocals int32) RProc {

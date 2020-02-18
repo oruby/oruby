@@ -4,6 +4,7 @@ package oruby
 import "C"
 import "fmt"
 
+// Arguments interface to simplify RArray and RArgs arguments
 type Arguments interface {
 	Len() int
 	Get(mrb *MrbState, i int) interface{}
@@ -14,10 +15,12 @@ type RInterfaceArgs struct {
 	items []interface{}
 }
 
+// Len returns number of items
 func (a RInterfaceArgs) Len() int {
 	return len(a.items)
 }
 
+// Get returns item from mrb state
 func (a RInterfaceArgs) Get(mrb *MrbState, i int) interface{} {
 	return a.items[i]
 }
@@ -28,6 +31,7 @@ type RArgs struct {
 	items []Value
 }
 
+// RArgsNew constructor for RArgs
 func RArgsNew(self Value, items ...Value) RArgs {
 	return RArgs{items}
 }
@@ -47,11 +51,12 @@ func (a RArgs) Item(index int) Value {
 	return a.items[index]
 }
 
+// Get returns item from mrb state
 func (a RArgs) Get(mrb *MrbState, i int) interface{} {
 	return mrb.Intf(a.Item(i))
 }
 
-// Item returns value item at index, or Nil if index is invalid
+// SetItem returns value item at index, or Nil if index is invalid
 func (a RArgs) SetItem(index int, v MrbValue) {
 	l := len(a.items)
 
@@ -346,9 +351,9 @@ func (mrb *MrbState) ScanArgs(args ...interface{}) (int, Value) {
 		default:
 			if err := mrb.Scan(ret, v); err != nil {
 				panic(fmt.Sprintf(
-					"Unsupported '%v'. Must be pointer to one of: bool, string, " +
-						"int[8,16,32,64], uint[8,16,32,64], float[32,64], " +
-						" map[string]interface{}, []string, []interface, " +
+					"Unsupported '%v'. Must be pointer to one of: bool, string, "+
+						"int[8,16,32,64], uint[8,16,32,64], float[32,64], "+
+						" map[string]interface{}, []string, []interface, "+
 						"oruby MrbSym, Value, RObject, RArray, RHash, RProc.\n%v", v, err),
 				)
 			}
@@ -357,4 +362,3 @@ func (mrb *MrbState) ScanArgs(args ...interface{}) (int, Value) {
 	}
 	return argc, Value{C._mrb_get_args_block(mrb.p)}
 }
-

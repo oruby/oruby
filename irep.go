@@ -19,8 +19,8 @@ const (
 const MrbIseqNoFree = 1
 
 // MrbIrep irep struct
-type MrbIrep struct{
-	p *C.mrb_irep
+type MrbIrep struct {
+	p   *C.mrb_irep
 	mrb *MrbState
 }
 
@@ -113,19 +113,19 @@ func (mrb *MrbState) IrepRemoveLV(irep MrbIrep) { C.mrb_irep_remove_lv(mrb.p, ir
 // IsNil returns true if irep is empty
 func (irep MrbIrep) IsNil() bool { return irep.p == nil }
 
-// IrepFree free irep
+// Free irep
 func (irep MrbIrep) Free() { C.mrb_irep_free(irep.mrb.p, irep.p) }
 
-// IrepIncref increase reference to irep
+// Incref increase reference to irep
 func (irep MrbIrep) Incref() { C.mrb_irep_incref(irep.mrb.p, irep.p) }
 
-// IrepDecref decrease reference to irep
+// Decref decrease reference to irep
 func (irep MrbIrep) Decref() { C.mrb_irep_decref(irep.mrb.p, irep.p) }
 
-// IrepCutref cut reference form irep
+// Cutref cut reference form irep
 func (irep MrbIrep) Cutref() { C.mrb_irep_cutref(irep.mrb.p, irep.p) }
 
-// IrepRemoveLV removes local variables from irep
+// RemoveLV removes local variables from irep
 func (irep MrbIrep) RemoveLV() { C.mrb_irep_remove_lv(irep.mrb.p, irep.p) }
 
 // NLocals returns number of local variables
@@ -228,8 +228,8 @@ func (irep MrbIrep) Syms(index int) MrbSym {
 	return MrbSym(slice[index])
 }
 
-// Syms returns MrbSym at index
-func (irep MrbIrep) SetSyms(syms... MrbSym) {
+// SetSyms sets IRep syms
+func (irep MrbIrep) SetSyms(syms ...MrbSym) {
 	buf := irep.mrb.Malloc(uint(C.sizeof_mrb_sym * len(syms)))
 
 	size := C.size_t(C.sizeof_mrb_sym * len(syms))
@@ -241,7 +241,7 @@ func (irep MrbIrep) SetSyms(syms... MrbSym) {
 	irep.p.slen = C.ushort(len(syms))
 }
 
-// Syms returns MrbSym at index
+// SetISeq rsets irep code
 func (irep MrbIrep) SetISeq(iseq []MrbCode) {
 	if len(iseq) == 0 {
 		irep.p.iseq = nil
@@ -259,7 +259,7 @@ func (irep MrbIrep) SetISeq(iseq []MrbCode) {
 	irep.FlagUnset(MrbIseqNoFree)
 }
 
-// Syms returns MrbSym at index
+// CopyISeq copies irep code from source irep
 func (irep MrbIrep) CopyISeq(source MrbIrep) {
 	if source.p.iseq == nil {
 		irep.p.iseq = nil

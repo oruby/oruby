@@ -72,6 +72,7 @@ func (v Value) Int() int {
 	}
 }
 
+// Int64 returns int64 from value
 func (v Value) Int64() int64 {
 	return int64(v.Int())
 }
@@ -118,7 +119,7 @@ func (v Value) Fixnum() int { return v.Int() }
 // Bool returns false if false or nil, true othervise
 func (v Value) Bool() bool { return MrbTest(v) }
 
-// Unitptr returns uintptr from value
+// Uintptr returns uintptr from value
 func (v Value) Uintptr() uintptr { return uintptr(C._mrb_cptr(v.Value().v)) }
 
 // Float64 returns int from value
@@ -361,7 +362,7 @@ func Integer(i int) Value {
 	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
 }
 
-// Int64r returns Value from boolen
+// Int64 returns Value from boolen
 func Int64(i int64) Value {
 	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
 }
@@ -376,9 +377,9 @@ func (mrb *MrbState) BoolValue(b bool) Value {
 
 // Predefined helper values
 var (
-	False = Value{C.mrb_false_value()}
-	Nil   = Value{C.mrb_nil_value()}
+	False    = Value{C.mrb_false_value()}
+	Nil      = Value{C.mrb_nil_value()}
 	nilValue = Value{C.mrb_nil_value()}
-	True  = Value{C.mrb_true_value()}
-	Undef = Value{C.mrb_undef_value()}
+	True     = Value{C.mrb_true_value()}
+	Undef    = Value{C.mrb_undef_value()}
 )

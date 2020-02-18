@@ -128,7 +128,7 @@ func (mrb *MrbState) AryNewFromValues(args ...Value) RArray {
 	// pure C.mrb_ary_new_from_values() is never called
 }
 
-// AryNewFromValues Initializes a new array with initial values
+// AryNewFromMrbValues Initializes a new array with initial values
 func (mrb *MrbState) AryNewFromMrbValues(args ...MrbValue) RArray {
 	return ary(mrb.Value(args).v, mrb)
 	// pure C.mrb_ary_new_from_values() is never called
@@ -175,7 +175,7 @@ func (mrb *MrbState) EnsureArrayType(v MrbValue) RArray {
 		panic(mrb.TypeName(v) + " cannot be converted to Array")
 	}
 
-	return ary(v.Value().v,	mrb)
+	return ary(v.Value().v, mrb)
 }
 
 // CheckArrayType checks array value
