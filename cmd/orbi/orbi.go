@@ -38,7 +38,7 @@ func p(mrb *oruby.MrbState, obj oruby.MrbValue, prompt int) {
 			val = mrb.Call(mrb.Exc(), "inspect")
 		}
 	}
-	if !oruby.MrbStringP(val) {
+	if !val.IsString() {
 		println(mrb.ObjAsString(obj).String())
 		return
 	}
@@ -202,7 +202,7 @@ func parseArgs(mrb *oruby.MrbState, args *Args) error {
 	return nil
 }
 
-/* Print a short remark for the user */
+// Print a short remark for the user
 func printHint() {
 	print("mirb - Embeddable Interactive Ruby Shell\n\n")
 }
