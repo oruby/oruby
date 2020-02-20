@@ -2,9 +2,6 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
-import (
-	"unsafe"
-)
 
 // RException struct
 type RException struct{
@@ -22,11 +19,27 @@ func MrbExcPtr(v MrbValue) RExceptionPtr {
 	return RExceptionPtr{(*C.struct_RException)(C._mrb_ptr(v.Value().v))}
 }
 
-// SysFail error
-func (mrb *MrbState) SysFail(mesg string) {
-	cmesg := C.CString(mesg)
-	defer C.free(unsafe.Pointer(cmesg))
-	C.mrb_sys_fail(mrb.p, cmesg)
+// SysFail return SystemCallError with message
+func (mrb *MrbState) SysFail(mesg string) Value {
+	no := int(C.errno)
+
+	if mrb.ClassDefined("SystemCallError") {
+		sce := mrb.ClassGet("SystemCallError")
+		var result Value
+
+		if mesg != "" {
+			result, _= mrb.FuncallWithBlock(sce, mrb.Intern("_sys_fail"), no, mesg)
+		} else {
+			result, _= mrb.FuncallWithBlock(sce, mrb.Intern("_sys_fail"), no)
+		}
+		return result
+	} else {
+		return mrb.Raise(mrb.ERuntimeError(), mesg)
+	}
+
+	// cmesg := C.CString(mesg)
+	// defer C.free(unsafe.Pointer(cmesg))
+	// C.mrb_sys_fail(mrb.p, cmesg)
 }
 
 // ExcNewStr create new exception

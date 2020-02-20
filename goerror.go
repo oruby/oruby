@@ -23,6 +23,7 @@ var errFrozenError = errors.New("FrozenError")
 var errNotImplementedError = errors.New("NotImplementedError")
 var errFloatDomainError = errors.New("FloatDomainError")
 var errKeyError = errors.New("KeyError")
+var errSystemCallError = errors.New("SystemCallError")
 
 // ERuntimeError error helper for Go clases exported to oruby
 func ERuntimeError(format string, args ...interface{}) error {
@@ -97,6 +98,11 @@ func EFloatDomainError(format string, args ...interface{}) error {
 // EKeyError error helper for Go clases exported to oruby
 func EKeyError(format string, args ...interface{}) error {
 	return Raisef(errKeyError, format, args...)
+}
+
+// ESystemCallError error helper for Go clases exported to oruby
+func ESystemCallError(format string, args ...interface{}) error {
+	return Raisef(errSystemCallError, format, args...)
 }
 
 // EError error helper for Go clases exported to oruby
