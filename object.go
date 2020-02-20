@@ -54,7 +54,7 @@ func (f RFiber) Type() int { return f.Value().Type() }
 // IsNil check for MrbValue interface
 func (f RFiber) IsNil() bool { return f.p == nil }
 
-// Intf implements ValueMigrator interface for RString
+// Interface returns Go interface from RObject
 func (obj RObject) Interface() interface{} {
 	return obj.mrb.Intf(obj)
 }
@@ -89,7 +89,7 @@ func (v Value) RBasic() RBasic {
 	return RBasic{(*C.struct_RBasic)(C._mrb_ptr(v.v))}
 }
 
-// BasicPtr returns RBasic object pointer from value
+// RBasicPtr returns RBasic object pointer from value
 func (mrb *MrbState) RBasicPtr(v MrbValue) *RBasic {
 	if !v.Value().HasBasic() {
 		return nil

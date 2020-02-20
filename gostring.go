@@ -24,16 +24,16 @@ func (s RString) Modify() { C.mrb_str_modify(s.mrb.p, s.Ptr().p) }
 func (s RString) Flags() int { return int(C._mrb_value_flags(s.v)) }
 
 // IsFrozen returns true if string is frozen
-func (s RString) IsFrozen() bool { return s.Flags() & MrbFlObjIsFrozen != 0 }
+func (s RString) IsFrozen() bool { return s.Flags()&MrbFlObjIsFrozen != 0 }
 
-// IsSharedn returns true if string is shared
-func (s RString) IsShared() bool { return s.Flags() & MrbStrShared != 0 }
+// IsShared returns true if string is shared
+func (s RString) IsShared() bool { return s.Flags()&MrbStrShared != 0 }
 
 // IsFShared returns true if string is fshared
-func (s RString) IsFShared() bool { return s.Flags() & MrbStrFShared != 0 }
+func (s RString) IsFShared() bool { return s.Flags()&MrbStrFShared != 0 }
 
 // IsNoFree returns true if string is marked with MrbStrNofree flag
-func (s RString) IsNoFree() bool { return s.Flags() & MrbStrNofree != 0 }
+func (s RString) IsNoFree() bool { return s.Flags()&MrbStrNofree != 0 }
 
 // ModifyKeepASCII modify stringwith keeping ASCII flag if set
 func (s RString) ModifyKeepASCII() { C.mrb_str_modify_keep_ascii(s.mrb.p, s.Ptr().p) }

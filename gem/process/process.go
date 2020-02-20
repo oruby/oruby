@@ -21,10 +21,10 @@ func init() {
 		mrb.SetGV("$$", os.Getpid())
 		mrb.SetGV("$?", nil) // last_status
 
-		mrb.DefineGlobalFunction("exec", procExec, -1)
-		mrb.DefineGlobalFunction("fork", procFork, mrb.ArgsAny())
+		mrb.DefineGlobalFunction("exec", procExec, mrb.ArgsAny())
+		//mrb.DefineGlobalFunction("fork", procFork, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("exit!", procExit, mrb.ArgsOpt(1))
-		mrb.DefineGlobalFunction("system", procSystem, -1)
+		mrb.DefineGlobalFunction("system", procSystem, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
 		mrb.DefineGlobalFunction("sleep", procSleep, mrb.ArgsOpt(1))
 		mrb.DefineGlobalFunction("exit", procExit, mrb.ArgsOpt(1))
@@ -34,31 +34,32 @@ func init() {
 		mProc.Const("WNOHANG", syscall.WNOHANG)
 		mProc.Const("WUNTRACED", syscall.WUNTRACED)
 
-		mrb.DefineMethod(mProc, "exec", procExec, -1)
-		mrb.DefineMethod(mProc, "fork", procFork, mrb.ArgsAny())
+		mrb.DefineMethod(mProc, "exec", procExec, mrb.ArgsAny())
+		//mrb.DefineMethod(mProc, "fork", procFork, mrb.ArgsAny())
 		mrb.DefineMethod(mProc, "spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
 		mrb.DefineMethod(mProc, "exit!", procExit, mrb.ArgsOpt(1))
 		mrb.DefineMethod(mProc, "exit", procExit, mrb.ArgsOpt(1))
 		mrb.DefineMethod(mProc, "abort", procAbort, mrb.ArgsOpt(1))
-		mrb.DefineMethod(mProc, "last_status", proc_s_last_status, 0)
+		mrb.DefineMethod(mProc, "last_status", procLastStatus, mrb.ArgsNone())
 		mrb.DefineMethod(mProc, "kill", procKill, mrb.ArgsReq(2)+mrb.ArgsRest())
 		mrb.DefineMethod(mProc, "wait", procWait, mrb.ArgsOpt(2))
-		mrb.DefineMethod(mProc, "wait2", proc_wait2, -1)
+		mrb.DefineMethod(mProc, "wait2", procWait2, mrb.ArgsOpt(2))
 		mrb.DefineMethod(mProc, "waitpid", procWait, mrb.ArgsOpt(2))
-		mrb.DefineMethod(mProc, "waitpid2", proc_wait2, -1)
-		mrb.DefineMethod(mProc, "waitall", proc_waitall, 0)
+		mrb.DefineMethod(mProc, "waitpid2", procWait2, mrb.ArgsOpt(2))
+		mrb.DefineMethod(mProc, "waitall", procWaitall, mrb.ArgsNone())
 		mrb.DefineMethod(mProc, "detach", procDetach, mrb.ArgsReq(1))
 
 		if mrb.ClassDefined("Thread") {
 			cWaiter := mrb.DefineClassUnder(mProc, "Waiter", mrb.ClassGet("Thread"))
 			cWaiter.UndefClassMethod("new")
-			cWaiter.DefineMethod("pid", detach_process_pid, 0)
+			//cWaiter.DefineMethod("pid", detachProcessPID, mrb.ArgsNone())
 		}
 
 		initStatus(mProc)
 
 		mrb.DefineModuleFunc(mProc, "pid", os.Getpid)
 		mrb.DefineModuleFunc(mProc, "ppid", os.Getppid)
+
 		mrb.DefineModuleFunc(mProc, "getpgrp", syscall.Getpgrp)
 		mrb.DefineModuleFunc(mProc, "setpgrp", syscall.Setgroups)
 		mrb.DefineModuleFunc(mProc, "getpgid", syscall.Getpgid)
@@ -72,8 +73,8 @@ func init() {
 		mProc.Const("PRIO_PGRP", syscall.PRIO_PGRP)
 		mProc.Const("PRIO_USER", syscall.PRIO_USER)
 
-		mrb.DefineModuleFunction(mProc, "getrlimit", proc_getrlimit, 1)
-		mrb.DefineModuleFunction(mProc, "setrlimit", proc_setrlimit, -1)
+		//mrb.DefineModuleFunction(mProc, "getrlimit", procGetrlimit, 1)
+		//mrb.DefineModuleFunction(mProc, "setrlimit", procSetrlimit, -1)
 
 		setConsts(mProc)
 
@@ -98,23 +99,24 @@ func init() {
 		mProc.Const("RLIMIT_STACK", RLIMIT_STACK)
 
 		mrb.DefineModuleFunc(mProc, "uid", os.Getuid)
-		mrb.DefineModuleFunc(mProc, "uid=", syscall.Setuid)
 		mrb.DefineModuleFunc(mProc, "gid", os.Getgid)
-		mrb.DefineModuleFunc(mProc, "gid=", syscall.Setgid)
-		mrb.DefineModuleFunc(mProc, "euid", syscall.Geteuid)
-		mrb.DefineModuleFunc(mProc, "euid=", syscall.Seteuid)
-		mrb.DefineModuleFunc(mProc, "egid", syscall.Getegid)
-		mrb.DefineModuleFunc(mProc, "egid=", syscall.Setegid)
-		mrb.DefineModuleFunc(mProc, "initgroups", proc_initgroups, 2)
+		mrb.DefineModuleFunc(mProc, "euid", os.Geteuid)
+		mrb.DefineModuleFunc(mProc, "egid", os.Getegid)
 		mrb.DefineModuleFunc(mProc, "groups", os.Getgroups)
-		mrb.DefineModuleFunc(mProc, "groups=", proc_setgroups, 1)
-		mrb.DefineModuleFunc(mProc, "maxgroups", proc_getmaxgroups, 0)
-		mrb.DefineModuleFunc(mProc, "maxgroups=", proc_setmaxgroups, 1)
-		mrb.DefineModuleFunc(mProc, "daemon", proc_daemon, -1)
-		mrb.DefineModuleFunc(mProc, "times", rb_proc_times, 0)
 
-		mrb.DefineModuleFunction(mProc, "clock_gettime", rb_clock_gettime, -1)
-		mrb.DefineModuleFunction(mProc, "clock_getres", rb_clock_getres, -1)
+		mrb.DefineModuleFunc(mProc, "uid=", syscall.Setuid)
+		mrb.DefineModuleFunc(mProc, "gid=", syscall.Setgid)
+		mrb.DefineModuleFunc(mProc, "euid=", syscall.Seteuid)
+		mrb.DefineModuleFunc(mProc, "egid=",  syscall.Setegid)
+		//mrb.DefineModuleFunc(mProc, "initgroups", proc_initgroups, 2)
+		//mrb.DefineModuleFunc(mProc, "groups=", proc_setgroups, 1)
+		//mrb.DefineModuleFunc(mProc, "maxgroups", proc_getmaxgroups, 0)
+		//mrb.DefineModuleFunc(mProc, "maxgroups=", proc_setmaxgroups, 1)
+		//mrb.DefineModuleFunc(mProc, "daemon", proc_daemon, -1)
+		//mrb.DefineModuleFunc(mProc, "times", rb_proc_times, 0)
+
+		//mrb.DefineModuleFunction(mProc, "clock_gettime", rb_clock_gettime, -1)
+		//mrb.DefineModuleFunction(mProc, "clock_getres", rb_clock_getres, -1)
 
 		//cProcessTms = rb_struct_define_under(mProc, "Tms", "utime", "stime", "cutime", "cstime", NULL)
 		/* An obsolete name of Process::Tms for backward compatibility */
@@ -126,22 +128,22 @@ func init() {
 		mrb.DefineModuleFunc(mProcGID, "gid", os.Getgid)
 		mrb.DefineModuleFunc(mProcUID, "eid", os.Geteuid)
 		mrb.DefineModuleFunc(mProcGID, "gid", os.Getegid)
-		mrb.DefineModuleFunction(mProcUID, "change_privilege", p_uid_change_privilege, 1)
-		mrb.DefineModuleFunction(mProcGID, "change_privilege", p_gid_change_privilege, 1)
+		//mrb.DefineModuleFunction(mProcUID, "change_privilege", p_uid_change_privilege, 1)
+		//mrb.DefineModuleFunction(mProcGID, "change_privilege", p_gid_change_privilege, 1)
 		mrb.DefineModuleFunc(mProcUID, "grant_privilege", syscall.Seteuid)
 		mrb.DefineModuleFunc(mProcGID, "grant_privilege", syscall.Seteuid)
 		mrb.DefineAlias(mrb.SingletonClass(mProcUID), "eid=", "grant_privilege")
 		mrb.DefineAlias(mrb.SingletonClass(mProcGID), "eid=", "grant_privilege")
-		mrb.DefineModuleFunction(mProcUID, "re_exchange", p_uid_exchange, 0)
-		mrb.DefineModuleFunction(mProcGID, "re_exchange", p_gid_exchange, 0)
-		mrb.DefineModuleFunction(mProcUID, "re_exchangeable?", p_uid_exchangeable, 0)
-		mrb.DefineModuleFunction(mProcGID, "re_exchangeable?", p_gid_exchangeable, 0)
-		mrb.DefineModuleFunction(mProcUID, "sid_available?", p_uid_have_saved_id, 0)
-		mrb.DefineModuleFunction(mProcGID, "sid_available?", p_gid_have_saved_id, 0)
-		mrb.DefineModuleFunction(mProcUID, "switch", p_uid_switch, 0)
-		mrb.DefineModuleFunction(mProcGID, "switch", p_gid_switch, 0)
-		mrb.DefineModuleFunction(mProcUID, "from_name", p_uid_from_name, 1)
-		mrb.DefineModuleFunction(mProcGID, "from_name", p_gid_from_name, 1)
+		//mrb.DefineModuleFunction(mProcUID, "re_exchange", p_uid_exchange, 0)
+		//mrb.DefineModuleFunction(mProcGID, "re_exchange", p_gid_exchange, 0)
+		//mrb.DefineModuleFunction(mProcUID, "re_exchangeable?", p_uid_exchangeable, 0)
+		//mrb.DefineModuleFunction(mProcGID, "re_exchangeable?", p_gid_exchangeable, 0)
+		//mrb.DefineModuleFunction(mProcUID, "sid_available?", p_uid_have_saved_id, 0)
+		//mrb.DefineModuleFunction(mProcGID, "sid_available?", p_gid_have_saved_id, 0)
+		//mrb.DefineModuleFunction(mProcUID, "switch", p_uid_switch, 0)
+		//mrb.DefineModuleFunction(mProcGID, "switch", p_gid_switch, 0)
+		//mrb.DefineModuleFunction(mProcUID, "from_name", p_uid_from_name, 1)
+		//mrb.DefineModuleFunction(mProcGID, "from_name", p_gid_from_name, 1)
 
 		mSys := mrb.DefineModuleUnder(mProc, "Sys")
 		mrb.DefineModuleFunc(mSys, "getuid", os.Getuid)
@@ -170,7 +172,7 @@ func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
 	//TODO: start shell
-	err := syscall.Exec(runner.cmd.Args[0],runner.cmd.Args, runner.cmd.Env)
+	err := syscall.Exec(runner.cmd.Args[0], runner.cmd.Args, runner.cmd.Env)
 	if err != nil {
 		return mrb.RaiseError(oruby.EError("SystemCallError", err.Error()))
 	}
@@ -186,7 +188,7 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.ERuntimeError().RaiseError(err)
 	}
 
-	return doWait(mrb, pid, 0)
+	return doWait(mrb, self, pid, 0)
 }
 
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -200,22 +202,70 @@ func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.FixnumValue(pid)
 }
 
-func doWait(mrb *oruby.MrbState, pid, flags int) oruby.MrbValue {
+func setStatus(mrb *oruby.MrbState, state *status) {
+	if state == nil {
+		mrb.SetGV("$?", mrb.NilValue())
+		return
+	}
+	mrb.SetGV("$?", mrb.Value(state))
+}
+
+func doWait(mrb *oruby.MrbState, self oruby.Value, pid, flags int) oruby.Value {
 	lastState := &status{}
 
 	ret, err := platformWait(pid, flags, lastState)
 	if err != nil {
+		setStatus(mrb, nil)
 		return mrb.ERuntimeError().RaiseError(err)
 	}
 
-	mrb.SetGV("$?", mrb.Value(lastState))
+	setStatus(mrb, lastState)
 
 	return mrb.FixnumValue(ret)
 }
 
 func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	pid, flags := mrb.GetArgs2(-1, 0)
-	return doWait(mrb, pid.Int(), flags.Int())
+	return doWait(mrb, self, pid.Int(), flags.Int())
+}
+
+func procLastStatus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.GetGV("$?")
+}
+
+func procWait2(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	pid, flags := mrb.GetArgs2(-1, 0)
+
+	ret := doWait(mrb, self, pid.Int(), flags.Int())
+	if !ret.IsFixnum() {
+		return ret
+	}
+
+	return mrb.AryNewFromValues(ret, mrb.GetGV("$?"))
+}
+
+func procWaitall(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	var pid int
+	var err error
+	var ret = mrb.AryNew()
+
+	setStatus(mrb, nil)
+
+	for pid >= 0 {
+		lastState := &status{}
+		pid, err = platformWait(pid, 0, lastState)
+		if pid == -1 {
+			break
+		}
+		if err != nil {
+			setStatus(mrb, nil)
+			return mrb.ERuntimeError().RaiseError(err)
+		}
+		setStatus(mrb, lastState)
+		ret.Push(mrb.AryNewFromValues(mrb.FixnumValue(pid), mrb.Value(lastState)))
+	}
+
+	return ret
 }
 
 func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

@@ -4,6 +4,6 @@ import (
 	"github.com/oruby/oruby"
 )
 
-func initPlatform(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
+func initPlatformUnix(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
 
 }

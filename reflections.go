@@ -158,7 +158,7 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 		}
 
 		opt := 0
-		for i := v.NumIn() - 1; i >= 0; i--  {
+		for i := v.NumIn() - 1; i >= 0; i-- {
 			if v.In(i).Kind() != reflect.Ptr {
 				break
 			}
@@ -188,6 +188,7 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 	c.mrb.Unlock()
 }
 
+// AttachType registeres alternate Go type with RClass
 func (c RClass) AttachType(zeroType interface{}) {
 	t := reflect.TypeOf(zeroType)
 	switch t.Kind() {
@@ -402,4 +403,3 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 	}
 	return nil
 }
-

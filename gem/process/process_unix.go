@@ -1,8 +1,9 @@
 package process
 
 import (
-	"github.com/oruby/oruby"
 	"syscall"
+
+	"github.com/oruby/oruby"
 )
 
 // RLimit pseudo constants
@@ -16,6 +17,13 @@ const (
 	RLIMIT_NOFILE = syscall.RLIMIT_NOFILE
 	RLIM_INFINITY = syscall.RLIM_INFINITY
 )
+
+
+func initPlatform(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
+
+	initPlatformUnix(mrb, mProc, mSys)
+}
+
 
 type limitsMap = map[int]syscall.Rlimit
 
@@ -70,7 +78,7 @@ func (runner *cmdRunner) run() (int, error) {
 	return runner.cmd.Process.Pid, err
 }
 
-func platformWait(pid, flags int, last_state *status) (int, error) {
+func platformWait(pid, flags int, lastState *status) (int, error) {
 	var waitStatus syscall.WaitStatus
 
 	ret, err := syscall.Wait4(pid, &waitStatus, flags, nil)
@@ -78,19 +86,19 @@ func platformWait(pid, flags int, last_state *status) (int, error) {
 		return ret, err
 	}
 
-	last_state.Pid = pid
-	last_state.Exitstatus = waitStatus.ExitStatus()
-	last_state.ToI = uint32(waitStatus.ExitStatus())
-	last_state.IsCoredump = waitStatus.CoreDump()
-	last_state.IsExited   = waitStatus.Exited()
-	last_state.IsSignaled = waitStatus.Signaled()
-	last_state.IsStopped  = waitStatus.Stopped()
-	last_state.IsSucess   = waitStatus.ExitStatus() == 0
-	last_state.platformData = &waitStatus
-	last_state.Stopsig  = int(waitStatus.StopSignal())
-	last_state.Termsig  = int(waitStatus.Signal())
+	lastState.Pid = pid
+	lastState.Exitstatus = waitStatus.ExitStatus()
+	lastState.ToI = uint32(waitStatus.ExitStatus())
+	lastState.IsCoredump = waitStatus.CoreDump()
+	lastState.IsExited = waitStatus.Exited()
+	lastState.IsSignaled = waitStatus.Signaled()
+	lastState.IsStopped = waitStatus.Stopped()
+	lastState.IsSucess = waitStatus.ExitStatus() == 0
+	lastState.platformData = &waitStatus
+	lastState.Stopsig = int(waitStatus.StopSignal())
+	lastState.Termsig = int(waitStatus.Signal())
 
-	return int(last_state.ToI), nil
+	return int(lastState.ToI), nil
 }
 
 func platformKill(pid, sig int) error {
