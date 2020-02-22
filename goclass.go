@@ -48,11 +48,11 @@ func (c RClass) New(args ...interface{}) (RObject, error) {
 	return RObject{obj.Value().v, c.mrb}, nil
 }
 
-// NewInstance creates new object instance
-func (c RClass) NewInstance(args ...MrbValue) (Value, error) {
+// NewInstance creates new object instance, panics on error
+func (c RClass) NewInstance(args ...interface{}) Value {
 	argv := make([]C.mrb_value, len(args)+1)
 	for i := range args {
-		argv[i] = args[i].Value().v
+		argv[i] = c.mrb.Value(args[i]).v
 	}
 	v, err := c.mrb.try(func() C.mrb_value {
 		return C.mrb_obj_new(
@@ -64,7 +64,12 @@ func (c RClass) NewInstance(args ...MrbValue) (Value, error) {
 	})
 
 	runtime.KeepAlive(argv)
-	return v, err
+
+	if err != nil {
+		panic(err)
+	}
+
+	return v
 }
 
 // DataValue converts go struct or interface to ruby Value
