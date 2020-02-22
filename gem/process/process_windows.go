@@ -17,7 +17,7 @@ const (
 	RLIM_INFINITY = 0x7fffffffffffffff
 )
 
-func initPlatform(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
+func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RClass) {
 
 }
 

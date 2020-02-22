@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/user"
+	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -12,10 +15,16 @@ import (
 	_ "github.com/oruby/oruby/gem/signal"
 )
 
+type processData struct {
+	savedUserID int
+	wakeupChan  chan struct{}
+	tms         oruby.RClass
+}
+
 func init() {
 	oruby.Gem("process", func(mrb *oruby.MrbState) interface{} {
 		// Require thread, ignore if it is not included in gems
-		// mrb.Require("thread")
+		//mrb.Require("thread")
 		mrb.Require("signal")
 
 		mrb.SetGV("$$", os.Getpid())
@@ -30,9 +39,21 @@ func init() {
 		mrb.DefineGlobalFunction("exit", procExit, mrb.ArgsOpt(1))
 		mrb.DefineGlobalFunction("abort", procAbort, mrb.ArgsOpt(1))
 
-		mProc := mrb.DefineModule("Process")
-		mProc.Const("WNOHANG", syscall.WNOHANG)
-		mProc.Const("WUNTRACED", syscall.WUNTRACED)
+		tmsV := mrb.Class("Struct").Call("new",
+			mrb.Intern("utime"),
+			mrb.Intern("stime"),
+			mrb.Intern("cutime"),
+			mrb.Intern("cstime"),
+		)
+
+		mProc := mrb.DefineGoModule("Process", &processData{
+			savedUserID: os.Geteuid(),
+			wakeupChan:  make(chan struct{}),
+			tms: mrb.ClassPtr(tmsV.Value()),
+		})
+
+		mProc.Const("WNOHANG",   1)
+		mProc.Const("WUNTRACED", 2)
 
 		mrb.DefineMethod(mProc, "exec", procExec, mrb.ArgsAny())
 		//mrb.DefineMethod(mProc, "fork", procFork, mrb.ArgsAny())
@@ -59,22 +80,6 @@ func init() {
 
 		mrb.DefineModuleFunc(mProc, "pid", os.Getpid)
 		mrb.DefineModuleFunc(mProc, "ppid", os.Getppid)
-
-		mrb.DefineModuleFunc(mProc, "getpgrp", syscall.Getpgrp)
-		mrb.DefineModuleFunc(mProc, "setpgrp", syscall.Setgroups)
-		mrb.DefineModuleFunc(mProc, "getpgid", syscall.Getpgid)
-		mrb.DefineModuleFunc(mProc, "setpgid", syscall.Setpgid)
-		mrb.DefineModuleFunc(mProc, "getsid", syscall.Getsid)
-		mrb.DefineModuleFunc(mProc, "setsid", syscall.Setsid)
-		mrb.DefineModuleFunc(mProc, "getpriority", syscall.Getpriority)
-		mrb.DefineModuleFunc(mProc, "setpriority", syscall.Setpriority)
-
-		mProc.Const("PRIO_PROCESS", syscall.PRIO_PROCESS)
-		mProc.Const("PRIO_PGRP", syscall.PRIO_PGRP)
-		mProc.Const("PRIO_USER", syscall.PRIO_USER)
-
-		//mrb.DefineModuleFunction(mProc, "getrlimit", procGetrlimit, 1)
-		//mrb.DefineModuleFunction(mProc, "setrlimit", procSetrlimit, -1)
 
 		setConsts(mProc)
 
@@ -103,47 +108,38 @@ func init() {
 		mrb.DefineModuleFunc(mProc, "euid", os.Geteuid)
 		mrb.DefineModuleFunc(mProc, "egid", os.Getegid)
 		mrb.DefineModuleFunc(mProc, "groups", os.Getgroups)
+		mrb.DefineModuleFunction(mProc, "initgroups", procInitgroups, mrb.ArgsArg(1,1))
 
-		mrb.DefineModuleFunc(mProc, "uid=", syscall.Setuid)
-		mrb.DefineModuleFunc(mProc, "gid=", syscall.Setgid)
-		mrb.DefineModuleFunc(mProc, "euid=", syscall.Seteuid)
-		mrb.DefineModuleFunc(mProc, "egid=",  syscall.Setegid)
-		//mrb.DefineModuleFunc(mProc, "initgroups", proc_initgroups, 2)
-		//mrb.DefineModuleFunc(mProc, "groups=", proc_setgroups, 1)
-		//mrb.DefineModuleFunc(mProc, "maxgroups", proc_getmaxgroups, 0)
-		//mrb.DefineModuleFunc(mProc, "maxgroups=", proc_setmaxgroups, 1)
-		//mrb.DefineModuleFunc(mProc, "daemon", proc_daemon, -1)
-		//mrb.DefineModuleFunc(mProc, "times", rb_proc_times, 0)
-
-		//mrb.DefineModuleFunction(mProc, "clock_gettime", rb_clock_gettime, -1)
-		//mrb.DefineModuleFunction(mProc, "clock_getres", rb_clock_getres, -1)
-
-		//cProcessTms = rb_struct_define_under(mProc, "Tms", "utime", "stime", "cutime", "cstime", NULL)
-		/* An obsolete name of Process::Tms for backward compatibility */
-		//mrb.DefineConst(rb_cStruct, "Tms", rb_cProcessTms)
-		//rb_deprecate_constant(rb_cStruct, "Tms")
 		mProcUID := mrb.DefineModuleUnder(mProc, "UID")
 		mProcGID := mrb.DefineModuleUnder(mProc, "GID")
 		mrb.DefineModuleFunc(mProcUID, "rid", os.Getuid)
 		mrb.DefineModuleFunc(mProcGID, "gid", os.Getgid)
 		mrb.DefineModuleFunc(mProcUID, "eid", os.Geteuid)
 		mrb.DefineModuleFunc(mProcGID, "gid", os.Getegid)
-		//mrb.DefineModuleFunction(mProcUID, "change_privilege", p_uid_change_privilege, 1)
-		//mrb.DefineModuleFunction(mProcGID, "change_privilege", p_gid_change_privilege, 1)
-		mrb.DefineModuleFunc(mProcUID, "grant_privilege", syscall.Seteuid)
-		mrb.DefineModuleFunc(mProcGID, "grant_privilege", syscall.Seteuid)
-		mrb.DefineAlias(mrb.SingletonClass(mProcUID), "eid=", "grant_privilege")
-		mrb.DefineAlias(mrb.SingletonClass(mProcGID), "eid=", "grant_privilege")
-		//mrb.DefineModuleFunction(mProcUID, "re_exchange", p_uid_exchange, 0)
-		//mrb.DefineModuleFunction(mProcGID, "re_exchange", p_gid_exchange, 0)
-		//mrb.DefineModuleFunction(mProcUID, "re_exchangeable?", p_uid_exchangeable, 0)
-		//mrb.DefineModuleFunction(mProcGID, "re_exchangeable?", p_gid_exchangeable, 0)
-		//mrb.DefineModuleFunction(mProcUID, "sid_available?", p_uid_have_saved_id, 0)
-		//mrb.DefineModuleFunction(mProcGID, "sid_available?", p_gid_have_saved_id, 0)
-		//mrb.DefineModuleFunction(mProcUID, "switch", p_uid_switch, 0)
-		//mrb.DefineModuleFunction(mProcGID, "switch", p_gid_switch, 0)
-		//mrb.DefineModuleFunction(mProcUID, "from_name", p_uid_from_name, 1)
-		//mrb.DefineModuleFunction(mProcGID, "from_name", p_gid_from_name, 1)
+
+		mrb.DefineModuleFunc(mProcUID, "from_name", func(name string)(int,error) {
+			g, err := user.Lookup(name)
+			if err != nil {
+				return -1, oruby.EArgumentError(err.Error())
+			}
+			gid, err := strconv.Atoi(g.Gid)
+			if err != nil {
+				return -1, oruby.EArgumentError(err.Error())
+			}
+			return gid, nil
+		})
+
+		mrb.DefineModuleFunc(mProcGID, "from_name", func(name string)(int,error) {
+			g, err := user.LookupGroup(name)
+			if err != nil {
+				return -1, oruby.EArgumentError(err.Error())
+			}
+			gid, err := strconv.Atoi(g.Gid)
+			if err != nil {
+				return -1, oruby.EArgumentError(err.Error())
+			}
+			return gid, nil
+		})
 
 		mSys := mrb.DefineModuleUnder(mProc, "Sys")
 		mrb.DefineModuleFunc(mSys, "getuid", os.Getuid)
@@ -151,21 +147,43 @@ func init() {
 		mrb.DefineModuleFunc(mSys, "getgid", os.Getgid)
 		mrb.DefineModuleFunc(mSys, "getegid", os.Getegid)
 
-		mrb.DefineModuleFunc(mSys, "setuid", syscall.Setuid)
-		mrb.DefineModuleFunc(mSys, "setgid", syscall.Setgid)
-		//mrb.DefineModuleFunc(mSys, "setruid", syscall.Setruid)
-		//mrb.DefineModuleFunc(mSys, "setrgid", syscall.Setrgid)
-		mrb.DefineModuleFunc(mSys, "seteuid", syscall.Seteuid)
-		mrb.DefineModuleFunc(mSys, "setegid", syscall.Setegid)
-		mrb.DefineModuleFunc(mSys, "setreuid", syscall.Setreuid)
-		mrb.DefineModuleFunc(mSys, "setregid", syscall.Setregid)
-		//mrb.DefineModuleFunc(mSys, "setresuid", syscall.Setresuid)
-		//mrb.DefineModuleFunc(mSys, "setresgid", syscall.Setresgid)
-		mrb.DefineModuleFunc(mSys, "issetugid", syscall.Issetugid)
-
-		initPlatform(mrb, mProc, mSys)
+		initPlatform(mrb, mProc, mProcUID, mProcGID, mSys)
 		return nil
 	})
+}
+
+func procInitgroups(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	name, gid := mrb.GetArgs2()
+	if !name.IsString() {
+		return mrb.EArgumentError().Raisef("invalid user name: %v", mrb.String(name))
+	}
+
+	u, err := user.Lookup(name.String())
+	if err != nil {
+		return mrb.SysFail(err)
+	}
+	ret := mrb.AryNewFromValues(gid)
+	isWin := runtime.GOOS == "windows"
+	grps, err := u.GroupIds()
+	if err != nil {
+		return mrb.SysFail(err)
+	}
+
+	for _, grp := range grps {
+		if isWin {
+			ret.PushString(grp)
+		} else {
+			grpid, err := strconv.Atoi(grp)
+			if err != nil {
+				// if some Unix variant decides for string groups, add as string
+				ret.PushString(grp)
+				continue
+			}
+
+			ret.PushInt(grpid)
+		}
+	}
+	return ret
 }
 
 func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -259,7 +277,7 @@ func procWaitall(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 		if err != nil {
 			setStatus(mrb, nil)
-			return mrb.ERuntimeError().RaiseError(err)
+			return mrb.SysFail(err)
 		}
 		setStatus(mrb, lastState)
 		ret.Push(mrb.AryNewFromValues(mrb.FixnumValue(pid), mrb.Value(lastState)))
@@ -278,6 +296,7 @@ func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if p.Release() != nil {
 		return mrb.NilValue()
 	}
+
 	return mrb.FixnumValue(pid)
 }
 
@@ -330,13 +349,17 @@ func procSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if t.IsNil() {
 		duration = time.Duration(math.MaxInt64)
 	} else {
-		duration = time.Duration(int(t.Float64() * 1000))
+		duration = time.Duration(int64(t.Float64() * 1000000000))
 	}
+
+	procData := mrb.GetModuleData(self).(*processData)
 
 	select {
 	case <-mrb.ExitChan():
 		break
-	case <-time.After(duration * time.Millisecond):
+	case <- procData.wakeupChan:
+		break
+	case <-time.After(duration * time.Nanosecond):
 		break
 	}
 

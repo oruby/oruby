@@ -117,7 +117,7 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 	}
 
 	// If no options given - last item is also param
-	if !options.IsHash() {
+	if !options.IsHash() && args.Len() > 1 {
 		params = append(params, mrb.String(options))
 		options = mrb.NilValue()
 	}
@@ -128,6 +128,11 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 func (runner *cmdRunner) setENV(env oruby.Value) {
 	mrb := runner.mrb
 	EnvIsHash := env.IsHash()
+
+	if !EnvIsHash && !runner.unsetenvOther {
+		runner.cmd.Env = os.Environ()
+		return
+	}
 
 	for _, v := range os.Environ() {
 		kv := strings.Split(v, "=")
