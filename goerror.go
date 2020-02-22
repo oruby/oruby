@@ -187,13 +187,16 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 		return mrb.EStandardErrorClass()
 	}
 
-	c := mrb.ConstGet(mrb.ObjectClass().Value(), mrb.Intern(estr))
-	if c.Type() != MrbTTClass {
-		return mrb.EStandardErrorClass()
-	}
+	eid := mrb.Intern(estr)
+	if mrb.ConstDefined(mrb.ObjectClass(), eid) {
+		c := mrb.ConstGet(mrb.ObjectClass(), eid)
+		if c.Type() != MrbTTClass {
+			return mrb.EStandardErrorClass()
+		}
 
-	if mrb.ObjIsKindOf(c, mrb.EExceptionClass()) {
-		return mrb.ClassOf(c)
+		if mrb.ObjIsKindOf(c, mrb.EExceptionClass()) {
+			return mrb.ClassOf(c)
+		}
 	}
 
 	return mrb.EStandardErrorClass()
