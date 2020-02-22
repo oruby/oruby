@@ -245,7 +245,32 @@ func (mrb *MrbState) DefineGoClassUnder(outer RClass, name string, constructor i
 	return klass
 }
 
-// Scan oruby value to pointed variable
+// DefineGoModule defines ruby modeule with interface attached
+// interface can be used to store and retreive additional data
+// no destructor is called on data, so it should contain only data
+// that can be safely GC-ed on MrbState close
+func (mrb *MrbState) DefineGoModuleUnder(outer RClass, name string, data interface{}) RClass {
+	klass := mrb.DefineModuleUnder(outer, name)
+	mrb.setHook(unsafe.Pointer(klass.p), data)
+	return klass
+}
+
+// DefineGoModule defines ruby modeule with interface attached
+// interface can be used to store and retreive additional data
+// no destructor is called on data, so it should contain only data
+// that can be safely GC-ed on MrbState close
+func (mrb *MrbState) DefineGoModule(name string, data interface{}) RClass {
+	klass := mrb.DefineModule(name)
+	mrb.setHook(unsafe.Pointer(klass.p), data)
+	return klass
+}
+
+// GetModuleData returns interface data attached to module with DefineGoModule
+func (mrb *MrbState) GetModuleData(module Value) interface{} {
+	return mrb.getHook(unsafe.Pointer(mrb.ClassPtr(module).p))
+}
+
+// Scan oruby Value to pointed variable
 func (mrb *MrbState) Scan(o MrbValue, in interface{}) (err error) {
 	defer errorHandler(&err)
 
