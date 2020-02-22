@@ -16,6 +16,7 @@ func init() {
 		threadClass.DefineMethod("initialize", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
 		threadClass.DefineAlias("terminate", "kill")
 		threadClass.DefineModuleFunction("start", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
+		threadClass.DefineModuleFunction("go", goThread, mrb.ArgsAny()+mrb.ArgsBlock())
 
 		mutexClass := mrb.DefineGoClass( "Mutex", newMutex)
 		mutexClass.DefineMethod("sleep", mutexSleep,mrb.ArgsReq(1))

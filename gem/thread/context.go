@@ -3,17 +3,23 @@ package thread
 import (
 	"github.com/oruby/oruby"
 	"runtime"
+	"sync"
 )
 
+type ThreadFuncT = func(...interface{})interface{}
+
 type Context struct {
+	sync.Mutex
 	mrb *oruby.MrbState
 	mrbCaller *oruby.MrbState
 	args oruby.RArgs
 	proc oruby.RProc
+	f ThreadFuncT
 	result oruby.Value
 	resultCaller oruby.Value
 	alive bool
 }
+
 
 func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, proc := mrb.GetArgsWithBlock()
@@ -22,18 +28,20 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.ClassGet("ThreadError").Raise("must be called with a block")
 	}
 
-	if mrb.RProc(proc).IsCFunc() {
+	if proc.IsCFunc() {
 		return mrb.ERuntimeError().Raise("forking C defined block")
 	}
 
 	c := &Context{
-		mrb: oruby.MrbOpen(),
-		mrbCaller: mrb,
-		args: args,
-		proc: proc,
-		result: mrb.NilValue(),
-		resultCaller: mrb.NilValue(),
-		alive: false,
+		sync.Mutex{},
+		oruby.MrbOpen(),
+		mrb,
+		args,
+		proc,
+		nil,
+		mrb.NilValue(),
+		mrb.NilValue(),
+		false,
 	}
 
 	err := c.migrateState()
@@ -46,6 +54,46 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	c.alive = true
+	c.mrb.WaitGroup.Add(1)
+	go c.worker()
+
+	mrb.DataSetInterface(self, c)
+
+	return self
+}
+
+// goThread creates lightweit thread based go function executed via goroutine
+func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args, proc := mrb.GetArgsWithBlock()
+
+	if proc.IsNil() {
+		proc = mrb.RProc(args.Item(-1))
+		if proc.IsNil() {
+			return mrb.ClassGet("ThreadError").Raise("must be called with a block or proc argument")
+		}
+	}
+
+	c := &Context{
+		sync.Mutex{},
+		oruby.MrbOpen(),
+		mrb,
+		args,
+		proc,
+		nil,
+		mrb.NilValue(),
+		mrb.NilValue(),
+		true,
+	}
+
+	switch f := proc.Data().(type) {
+	case oruby.MrbFuncT:
+		c.proc = proc
+	case ThreadFuncT:
+		c.f = f
+	case nil:
+	}
+
+
 	c.mrb.WaitGroup.Add(1)
 	go c.worker()
 
@@ -68,11 +116,14 @@ func (c *Context) Join() (interface{}, error) {
 	}
 
 	c.mrb.WaitGroup.Wait()
+
+	c.Lock()
+	defer c.Unlock()
+
 	v, err := c.migrateValue(c.result)
 	if err != nil {
 		return nil, err
 	}
-
 	c.resultCaller = v.Value()
 	c.mrb.Close()
 	c.mrb = nil
@@ -85,8 +136,12 @@ func (c *Context) Kill() interface{} {
 		return nil
 	}
 
+	c.Lock()
+	defer c.Unlock()
+
 	c.mrb.Close()
 	c.mrb = nil
+	c.alive = false
 
 	return c.result
 }
@@ -96,6 +151,9 @@ func (c *Context) Pass() {
 }
 
 func (c *Context) IsAlive() bool {
+	c.Lock()
+	defer c.Unlock()
+
 	return c.alive
 }
 
