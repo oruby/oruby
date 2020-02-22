@@ -133,6 +133,32 @@ func (p RProc) Env() REnv {
 	return REnv{C._MRB_PROC_ENV(p.p), p.mrb}
 }
 
+// EnvGet returns REnv Value at index i
+func (p RProc) EnvGet(i int) Value {
+	if !p.HasEnv() {
+		return p.mrb.nilValue
+	}
+	return p.mrb.ProcCFuncEnvGet(i)
+}
+
+// Data returns Go function from C proc
+func (p RProc) Data() interface{} {
+	if !p.IsCFunc() {
+		return nil
+	}
+
+	if !p.HasEnv() {
+		return p.mrb.mrbProcs[unsafe.Pointer(p.p)]
+	}
+
+	i := p.mrb.ProcCFuncEnvGet(0)
+	if !i.IsFixnum() {
+		return p.mrb.mrbProcs[unsafe.Pointer(p.p)]
+	}
+	return p.mrb.funcs[i.Int()]
+}
+
+
 // SetTargetClass sets target class for proc
 func (p RProc) SetTargetClass(c RClass) {
 	C._MRB_PROC_SET_TARGET_CLASS(c.mrb.p, p.p, c.p)
