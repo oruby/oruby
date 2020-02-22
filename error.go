@@ -21,26 +21,16 @@ func MrbExcPtr(v MrbValue) RExceptionPtr {
 }
 
 // SysFail return SystemCallError with message
-func (mrb *MrbState) SysFail(mesg string) Value {
-	no := int(C.errno)
-
+func (mrb *MrbState) SysFail(err error) Value {
 	if mrb.ClassDefined("SystemCallError") {
-		sce := mrb.ClassGet("SystemCallError")
-		var result Value
-
-		if mesg != "" {
-			result, _= mrb.FuncallWithBlock(sce, mrb.Intern("_sys_fail"), no, mesg)
-		} else {
-			result, _= mrb.FuncallWithBlock(sce, mrb.Intern("_sys_fail"), no)
-		}
-		return result
-	} else {
-		return mrb.Raise(mrb.ERuntimeError(), mesg)
+		// mruby: if class SystemCallError exists, return SystemCallError._sys_fail(no, mesg)
+		// oruby: Go handles sysstem call errors, with messages
+		return mrb.Raise(mrb.ClassGet("SystemCallError"), err.Error())
 	}
 
-	// cmesg := C.CString(mesg)
-	// defer C.free(unsafe.Pointer(cmesg))
-	// C.mrb_sys_fail(mrb.p, cmesg)
+	return mrb.Raise(mrb.ERuntimeError(), err.Error())
+
+	// C.mrb_sys_fail(mrb.p, cmesg) never called
 }
 
 // ExcNewStr create new exception
