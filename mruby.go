@@ -885,18 +885,18 @@ func go_mrb_proc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 }
 
 // DefineMethod for class
-func (mrb *MrbState) DefineMethod(klass RClass, name string, f MrbFuncT, count MrbAspec) {
+func (mrb *MrbState) DefineMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
 	// function reference is set as oruby function env
 	idx := mrb.registerFuncIndex(f)
-	C._mrb_method_new_cfunc(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(count))
+	C._mrb_method_new_cfunc(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
 }
 
 // DefineClassMethod creates new oruby class method
-func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, count MrbAspec) {
+func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
-	C.mrb_define_class_method(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
+	C.mrb_define_class_method(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(aspec))
 
 	mrb.Lock()
 	mrb.mrbFuncs[GoCallRef{klass.p.c, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
@@ -904,12 +904,12 @@ func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, co
 }
 
 // DefineSingletonMethod creates new  method for oruby singleton object
-func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT, count MrbAspec) {
+func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT, aspec MrbAspec) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
 	objPtr := obj.p()
-	C.mrb_define_singleton_method(mrb.p, objPtr, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
+	C.mrb_define_singleton_method(mrb.p, objPtr, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(aspec))
 
 	mrb.Lock()
 	mrb.mrbFuncs[GoCallRef{objPtr.c, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
@@ -917,12 +917,12 @@ func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT,
 }
 
 // DefineModuleFunction creates new oruby module function
-func (mrb *MrbState) DefineModuleFunction(klass RClass, name string, f MrbFuncT, count MrbAspec) {
+func (mrb *MrbState) DefineModuleFunction(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	mid := C.mrb_intern(mrb.p, cname, C.size_t(len(name)))
 
-	C.mrb_define_module_function(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(count))
+	C.mrb_define_module_function(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(aspec))
 
 	mrb.Lock()
 	mrb.mrbFuncs[GoCallRef{klass.p, mid}] = f
@@ -1077,15 +1077,13 @@ func (mrb *MrbState) ModuleGetUnder(outer RClass, name string) RClass {
 }
 
 // NotImplemented function to raise NotImplementedError with current method name
-func (mrb *MrbState) NotImplemented() error {
-	return mrb.tryE(func() {
-		C.mrb_notimplement(mrb.p)
-	})
+func (mrb *MrbState) NotImplemented(*MrbState, Value) MrbValue {
+	return mrb.ENotImplementedError().Raise("not implemented")
 }
 
 // NotImplementM a function to be replacement of unimplemented method - Go version
-func NotImplementM(mrb *MrbState, self Value) MrbValue {
-	panic(mrb.NotImplemented())
+func NotImplementedM(mrb *MrbState, self Value) MrbValue {
+	return mrb.NotImplemented(mrb, self)
 }
 
 // ObjDup duplicates MrbValue object
@@ -1134,9 +1132,7 @@ func ArgsReq(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 18) }
 func ArgsOpt(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 13) }
 
 // ArgsArg mandatory and optinal arguments
-func ArgsArg(req, opt int) MrbAspec {
-	return MrbAspec(ArgsReq(req) | ArgsOpt(opt))
-}
+func ArgsArg(req, opt int) MrbAspec { return ArgsReq(req) | ArgsOpt(opt) }
 
 // ArgsRest rest argument
 func ArgsRest() MrbAspec { return MrbAspec(1 << 12) }
@@ -1162,31 +1158,31 @@ func ArgsAny() MrbAspec { return ArgsRest() }
 func ArgsNone() MrbAspec { return MrbAspec(0) }
 
 // ArgsReq number of required arguments
-func (mrb *MrbState) ArgsReq(n int) MrbAspec { return ArgsReq(n) }
+func (mrb *MrbState) ArgsReq(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 18) }
 
 // ArgsOpt number of optional arguments
-func (mrb *MrbState) ArgsOpt(n int) MrbAspec { return ArgsOpt(n) }
+func (mrb *MrbState) ArgsOpt(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 13) }
 
 // ArgsArg number of required and optional arguments
-func (mrb *MrbState) ArgsArg(req, opt int) MrbAspec { return ArgsArg(req, opt) }
+func (mrb *MrbState) ArgsArg(req, opt int) MrbAspec { return ArgsReq(req) | ArgsOpt(opt) }
 
 // ArgsRest rest arguments
-func (mrb *MrbState) ArgsRest() MrbAspec { return ArgsRest() }
+func (mrb *MrbState) ArgsRest() MrbAspec { return MrbAspec(1 << 12) }
 
 // ArgsPost number of post arguments
-func (mrb *MrbState) ArgsPost(n int) MrbAspec { return ArgsPost(n) }
+func (mrb *MrbState) ArgsPost(n int) MrbAspec { return MrbAspec((uint32(n) & 0x1f) << 7)}
 
 // ArgsKey number of key arguments
 func (mrb *MrbState) ArgsKey(n1, n2 int) MrbAspec { return ArgsKey(n1, n2) }
 
 // ArgsBlock block argument
-func (mrb *MrbState) ArgsBlock() MrbAspec { return ArgsBlock() }
+func (mrb *MrbState) ArgsBlock() MrbAspec { return MrbAspec(1)}
 
 // ArgsAny any number and type of arguments
-func (mrb *MrbState) ArgsAny() MrbAspec { return ArgsAny() }
+func (mrb *MrbState) ArgsAny() MrbAspec { return MrbAspec(1 << 12)}
 
 // ArgsNone no arguments
-func (mrb *MrbState) ArgsNone() MrbAspec { return ArgsNone() }
+func (mrb *MrbState) ArgsNone() MrbAspec { return MrbAspec(0) }
 
 // GetMID get method symbol
 func (mrb *MrbState) GetMID() MrbSym {
