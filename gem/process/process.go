@@ -2,11 +2,14 @@ package process
 
 import (
 	"fmt"
+	"github.com/oruby/oruby/gem/signal"
 	"math"
 	"os"
 	"os/user"
 	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +19,8 @@ import (
 )
 
 type processData struct {
+	sync.Mutex
+	runners		map[int]*cmdRunner
 	savedUserID int
 	wakeupChan  chan struct{}
 	tms         oruby.RClass
@@ -31,6 +36,7 @@ func init() {
 		mrb.SetGV("$?", nil) // last_status
 
 		mrb.DefineGlobalFunction("exec", procExec, mrb.ArgsAny())
+		// Unsupported fork shoud not respond to 'fork' method
 		//mrb.DefineGlobalFunction("fork", procFork, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("exit!", procExit, mrb.ArgsOpt(1))
 		mrb.DefineGlobalFunction("system", procSystem, mrb.ArgsAny())
@@ -46,29 +52,32 @@ func init() {
 			mrb.Intern("cstime"),
 		)
 
-		mProc := mrb.DefineGoModule("Process", &processData{
+		mProcData := &processData{
 			savedUserID: os.Geteuid(),
 			wakeupChan:  make(chan struct{}),
 			tms: mrb.ClassPtr(tmsV.Value()),
-		})
+			runners: make(map[int]*cmdRunner, 10),
+		}
+
+		mProc := mrb.DefineGoModule("Process", mProcData)
 
 		mProc.Const("WNOHANG",   1)
 		mProc.Const("WUNTRACED", 2)
 
-		mrb.DefineMethod(mProc, "exec", procExec, mrb.ArgsAny())
-		//mrb.DefineMethod(mProc, "fork", procFork, mrb.ArgsAny())
-		mrb.DefineMethod(mProc, "spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
-		mrb.DefineMethod(mProc, "exit!", procExit, mrb.ArgsOpt(1))
-		mrb.DefineMethod(mProc, "exit", procExit, mrb.ArgsOpt(1))
-		mrb.DefineMethod(mProc, "abort", procAbort, mrb.ArgsOpt(1))
-		mrb.DefineMethod(mProc, "last_status", procLastStatus, mrb.ArgsNone())
-		mrb.DefineMethod(mProc, "kill", procKill, mrb.ArgsReq(2)+mrb.ArgsRest())
-		mrb.DefineMethod(mProc, "wait", procWait, mrb.ArgsOpt(2))
-		mrb.DefineMethod(mProc, "wait2", procWait2, mrb.ArgsOpt(2))
-		mrb.DefineMethod(mProc, "waitpid", procWait, mrb.ArgsOpt(2))
-		mrb.DefineMethod(mProc, "waitpid2", procWait2, mrb.ArgsOpt(2))
-		mrb.DefineMethod(mProc, "waitall", procWaitall, mrb.ArgsNone())
-		mrb.DefineMethod(mProc, "detach", procDetach, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(mProc, "exec", procExec, mrb.ArgsAny())
+		//mrb.DefineClassMethod(mProc, "fork", procFork, mrb.ArgsAny())
+		mrb.DefineClassMethod(mProc, "spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
+		mrb.DefineClassMethod(mProc, "exit!", procExit, mrb.ArgsOpt(1))
+		mrb.DefineClassMethod(mProc, "exit", procExit, mrb.ArgsOpt(1))
+		mrb.DefineClassMethod(mProc, "abort", procAbort, mrb.ArgsOpt(1))
+		mrb.DefineClassMethod(mProc, "last_status", procLastStatus, mrb.ArgsNone())
+		mrb.DefineClassMethod(mProc, "kill", procKill, mrb.ArgsReq(2)+mrb.ArgsRest())
+		mrb.DefineClassMethod(mProc, "wait", procWait, mrb.ArgsOpt(2))
+		mrb.DefineClassMethod(mProc, "wait2", procWait2, mrb.ArgsOpt(2))
+		mrb.DefineClassMethod(mProc, "waitpid", procWait, mrb.ArgsOpt(2))
+		mrb.DefineClassMethod(mProc, "waitpid2", procWait2, mrb.ArgsOpt(2))
+		mrb.DefineClassMethod(mProc, "waitall", procWaitall, mrb.ArgsNone())
+		mrb.DefineClassMethod(mProc, "detach", procDetach, mrb.ArgsReq(1))
 
 		if mrb.ClassDefined("Thread") {
 			cWaiter := mrb.DefineClassUnder(mProc, "Waiter", mrb.ClassGet("Thread"))
@@ -148,8 +157,28 @@ func init() {
 		mrb.DefineModuleFunc(mSys, "getegid", os.Getegid)
 
 		initPlatform(mrb, mProc, mProcUID, mProcGID, mSys)
-		return nil
+
+		return mProcData
 	})
+}
+
+func getProcData(mrb *oruby.MrbState, self oruby.Value) *processData {
+	if procData, ok := mrb.GetModuleData(self).(*processData); ok {
+		return procData
+	}
+
+	mProc := mrb.ModuleGet("Process").Value()
+	return mrb.GetModuleData(mProc).(*processData)
+}
+
+func getRunner(procData *processData, pid int) *cmdRunner {
+	procData.Lock()
+	runner, ok := procData.runners[pid]
+	procData.Unlock()
+	if ok && runner.cmd.ProcessState == nil {
+		return runner
+	}
+	return nil
 }
 
 func procInitgroups(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -186,12 +215,22 @@ func procInitgroups(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return ret
 }
 
+func errorState(err error) *status {
+	return &status{
+		Pid: 0,
+		Exitstatus: 127,
+		IsSucess: false,
+		IsExited: true,
+	}
+}
+
 func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
 	//TODO: start shell
-	err := syscall.Exec(runner.cmd.Args[0], runner.cmd.Args, runner.cmd.Env)
+	err := syscall.Exec(runner.cmd.Path, runner.cmd.Args, runner.cmd.Env)
 	if err != nil {
+		setStatus(mrb, errorState(err))
 		return mrb.RaiseError(oruby.EError("SystemCallError", err.Error()))
 	}
 	return mrb.NilValue()
@@ -201,12 +240,29 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
 
+	shell := platformGetShell()
+	//exec.Command(shell, "-c", strings.Join(runner.cmd.Args, " "))
+	runner.cmd.Args = []string{shell, "-c", strings.Join(runner.cmd.Args, " ")}
+	runner.cmd.Path = shell
+
 	pid, err := runner.run()
 	if err != nil {
+		setStatus(mrb, errorState(err))
 		return mrb.ERuntimeError().RaiseError(err)
 	}
 
-	return doWait(mrb, self, pid, 0)
+	ret, state := runner.Wait(pid, 0)
+
+	// Error
+	if !ret.IsFixnum() {
+		if runner.exception {
+			return ret
+		}
+		mrb.ExcClear()
+		return mrb.NilValue()
+	}
+
+	return mrb.BoolValue(state.Exitstatus == 0)
 }
 
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -215,8 +271,15 @@ func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	pid, err := runner.run()
 	if err != nil {
+		setStatus(mrb, errorState(err))
 		return mrb.ERuntimeError().RaiseError(err)
 	}
+
+	procData := getProcData(mrb, self)
+	procData.Lock()
+	procData.runners[pid] = runner
+	procData.Unlock()
+
 	return mrb.FixnumValue(pid)
 }
 
@@ -228,23 +291,50 @@ func setStatus(mrb *oruby.MrbState, state *status) {
 	mrb.SetGV("$?", mrb.Value(state))
 }
 
-func doWait(mrb *oruby.MrbState, self oruby.Value, pid, flags int) oruby.Value {
-	lastState := &status{}
+func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	pidV, flagsV := mrb.GetArgs2(-1, 0)
+	procData := getProcData(mrb, self)
+	pid := pidV.Int()
+	flags := flagsV.Int()
 
+	// Pid of process
+	if pid > 0 {
+		runner := getRunner(procData, pid)
+		if runner != nil {
+			ret, _ := runner.Wait(runner.cmd.Process.Pid, flags)
+			procData.Lock()
+			delete(procData.runners, pid)
+			procData.Unlock()
+			return ret
+		}
+	}
+
+	// Any child
+	if pid == -1 {
+		procData.Lock()
+		for pid, runner := range procData.runners {
+			if runner.cmd.ProcessState != nil {
+				continue
+			}
+			delete(procData.runners, pid)
+			procData.Unlock()
+
+			ret, _ := runner.Wait(pid, flags)
+			return ret
+		}
+		procData.Unlock()
+	}
+
+	// Pid not in runners
+	lastState := &status{Pid: pid}
 	ret, err := platformWait(pid, flags, lastState)
+	mrb.SetGV("$?", mrb.Value(lastState))
+
 	if err != nil {
-		setStatus(mrb, nil)
 		return mrb.ERuntimeError().RaiseError(err)
 	}
 
-	setStatus(mrb, lastState)
-
 	return mrb.FixnumValue(ret)
-}
-
-func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	pid, flags := mrb.GetArgs2(-1, 0)
-	return doWait(mrb, self, pid.Int(), flags.Int())
 }
 
 func procLastStatus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -252,63 +342,147 @@ func procLastStatus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func procWait2(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	pid, flags := mrb.GetArgs2(-1, 0)
+	pidV, flags := mrb.GetArgs2(-1, 0)
+	procData := getProcData(mrb, self)
+	pid := pidV.Int()
+	ret := mrb.NilValue()
+	var state *status
 
-	ret := doWait(mrb, self, pid.Int(), flags.Int())
+	runner := getRunner(procData, pid)
+	if runner != nil {
+		ret, state = runner.Wait(pid, flags.Int())
+	}
+
+	if ret.IsNil() {
+		state = &status{Pid: pid}
+		result, err := platformWait(pid, flags.Int(), state)
+		mrb.SetGV("$?", mrb.Value(state))
+		if err != nil {
+			return mrb.ERuntimeError().RaiseError(err)
+		}
+
+		ret = mrb.FixnumValue(result)
+	}
+
 	if !ret.IsFixnum() {
 		return ret
 	}
 
-	return mrb.AryNewFromValues(ret, mrb.GetGV("$?"))
+	return mrb.AryNewFromValues(ret, mrb.Value(state))
 }
 
 func procWaitall(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	var pid int
 	var err error
 	var ret = mrb.AryNew()
+	procData := getProcData(mrb, self)
 
 	setStatus(mrb, nil)
 
+	runnersCleared := false
 	for pid >= 0 {
+		if !runnersCleared {
+			procData.Lock()
+			keys := make([]*cmdRunner, 0, len(procData.runners))
+			for _,v := range procData.runners {
+				if v.cmd.ProcessState != nil {
+					continue
+				}
+				keys = append(keys, v)
+			}
+			procData.Unlock()
+
+			for _, runner := range keys {
+				rret, state := runner.Wait(runner.cmd.Process.Pid, 0)
+				if !rret.IsFixnum() {
+					return rret
+				}
+				ret.Push(mrb.AryNewFromValues(rret, mrb.Value(state)))
+			}
+			runnersCleared = true
+		}
+
 		lastState := &status{}
 		pid, err = platformWait(pid, 0, lastState)
+		setStatus(mrb, lastState)
+
 		if pid == -1 {
 			break
 		}
 		if err != nil {
-			setStatus(mrb, nil)
 			return mrb.SysFail(err)
 		}
-		setStatus(mrb, lastState)
+
 		ret.Push(mrb.AryNewFromValues(mrb.FixnumValue(pid), mrb.Value(lastState)))
 	}
+
+	procData.Lock()
+	procData.runners = make(map[int]*cmdRunner, 10)
+	procData.Unlock()
 
 	return ret
 }
 
 func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	var p *os.Process
+	var err error
 	pid := mrb.GetArgsFirst().Int()
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return mrb.NilValue()
+	procData := getProcData(mrb, self)
+
+	runner := getRunner(procData, pid)
+	if runner != nil {
+		procData.Lock()
+		delete(procData.runners, pid)
+		procData.Unlock()
+
+		p = runner.cmd.Process
+	}
+
+	if p == nil {
+		p, err = os.FindProcess(pid)
+		if err != nil {
+			return mrb.NilValue()
+		}
 	}
 
 	if p.Release() != nil {
 		return mrb.NilValue()
 	}
-
 	return mrb.FixnumValue(pid)
 }
 
 func procKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
-	sig := args.Item(1)
+	sig, _, err := signal.GetSignalFromArgument(mrb, args.Item(0))
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	procData := getProcData(mrb, self)
 
 	for i := 1; i < args.Len(); i++ {
-		pid := args.ItemDef(i, mrb.NilValue())
-		err := platformKill(pid.Int(), sig.Int())
-		if err != nil {
-			return mrb.RaiseError(err)
+		pid := args.ItemDefInt(i, -1)
+		if pid < 0 {
+			continue
+		}
+
+		found := false
+		if pid > 0 {
+			runner := getRunner(procData, pid)
+			if runner != nil {
+				found = true
+				err := runner.cmd.Process.Signal(syscall.Signal(sig))
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+			}
+		}
+
+		if !found {
+			err := platformKill(pid, sig)
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
 		}
 	}
 	return mrb.NilValue()
@@ -352,7 +526,7 @@ func procSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		duration = time.Duration(int64(t.Float64() * 1000000000))
 	}
 
-	procData := mrb.GetModuleData(self).(*processData)
+	procData := getProcData(mrb, self)
 
 	select {
 	case <-mrb.ExitChan():

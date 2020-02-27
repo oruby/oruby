@@ -129,11 +129,6 @@ func (mrb *MrbState) DataCheckInterface(obj MrbValue) {
 
 // DataGetInterface retreives interface from RData value without check
 func (mrb *MrbState) DataGetInterface(obj MrbValue) interface{} {
-	ret := C.mrb_data_check_get_ptr(mrb.p, obj.Value().v, C.mrb_interface_data_type())
-	if ret == nil {
-		return nil
-	}
-
 	return mrb.getHook(unsafe.Pointer(RDATA(obj).p))
 }
 

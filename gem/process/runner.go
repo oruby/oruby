@@ -17,6 +17,7 @@ type cmdRunner struct {
 	oldUmask      int
 	closeOthers   bool
 	unsetenvOther bool
+	exception     bool
 	fIn           oruby.Value
 	fOut          oruby.Value
 	fErr          oruby.Value
@@ -30,7 +31,13 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 	// Create command
 	runner := &cmdRunner{
 		mrb:         mrb,
-		cmd:         exec.Command(command, params...),
+		cmd:         &exec.Cmd{
+			Path: command,
+			Args: params,
+			Stdout: os.Stdout,
+			Stdin: os.Stdin,
+			Stderr: os.Stderr,
+		},
 		closeOthers: true,
 		fIn:         mrb.NilValue(),
 		fOut:        mrb.NilValue(),
@@ -75,6 +82,8 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 			runner.fOut = val
 		case "err":
 			runner.fErr = val
+		case "exception":
+			runner.exception = val.Bool()
 		}
 
 		return 0
@@ -255,4 +264,49 @@ func (runner *cmdRunner) setStdOut(val oruby.Value) {
 
 func (runner *cmdRunner) setStdErr(val oruby.Value) {
 
+}
+
+func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {
+	var err error
+	var ret int
+	mrb := runner.mrb
+
+	lastState := &status{Pid: pid}
+	if (runner.cmd == nil) || (runner.cmd.Process == nil) || (runner.cmd.Process.Pid != pid) {
+		ret, err = platformWait(pid, flags, lastState)
+	} else {
+		// Error ignoead as it can be only "Wait already called", in which case
+		// ProcessState exists
+		err = runner.cmd.Wait()
+		if err != nil {
+			mrb.SetGV("$?", nil)
+			if runner.cmd.ProcessState == nil {
+				return mrb.ERuntimeError().RaiseError(err), lastState
+			}
+		}
+		state := runner.cmd.ProcessState
+		ret = pid
+
+		lastState.Pid = pid
+		lastState.Exitstatus = state.ExitCode()
+		lastState.ToI = uint32(state.ExitCode())
+		lastState.IsCoredump = false
+		lastState.IsExited = state.Exited()
+		lastState.IsSignaled = false
+		lastState.IsStopped = state.Exited()
+		lastState.IsSucess = state.Success()
+		lastState.platformData = state.Sys()
+		lastState.Stopsig = nil
+		lastState.Termsig = nil
+
+		platformUpdateState(lastState, state.Sys())
+	}
+
+	mrb.SetGV("$?", mrb.Value(lastState))
+
+	if err != nil {
+		return mrb.ERuntimeError().RaiseError(err), lastState
+	}
+
+	return mrb.FixnumValue(ret), lastState
 }

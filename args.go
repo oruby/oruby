@@ -33,7 +33,7 @@ type RArgs struct {
 
 // RArgsNew constructor for RArgs
 func RArgsNew(self Value, items ...Value) RArgs {
-	return RArgs{items}
+	return RArgs{ append([]Value{self}, items...) }
 }
 
 // Item returns value item at index, or Nil if index is invalid
@@ -143,8 +143,8 @@ func (mrb *MrbState) GetArgs3(defaults ...interface{}) (Value, Value, Value) {
 	return args.Item(0).Value(), args.Item(1).Value(), args.Item(2).Value()
 }
 
-// Args returns all arguments passed to MrbFuncT function as Go slice
-func (mrb *MrbState) selfArgs(self MrbValue) []Value {
+// SelfArgs returns all arguments passed to function as Go slice, with arg0 as first argument
+func (mrb *MrbState) GetSelfArgs(self MrbValue) RArgs {
 	argc := int(C.mrb_get_argc(mrb.p))
 	args := C.mrb_get_argv(mrb.p)
 	ret := make([]Value, argc+1)
@@ -152,7 +152,7 @@ func (mrb *MrbState) selfArgs(self MrbValue) []Value {
 	for i := 1; i < argc; i++ {
 		ret[i] = Value{C._mrb_get_arg(args, C.int(i))}
 	}
-	return ret
+	return RArgs{ret}
 }
 
 // Args returns all arguments passed to MrbFuncT function as Go slice

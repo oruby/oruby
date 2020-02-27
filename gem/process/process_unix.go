@@ -201,6 +201,20 @@ func (runner *cmdRunner) parseOptionsOS(options oruby.Value) {
 	}
 }
 
+func (runner *cmdRunner) forkExec() (int, error) {
+	files := make([]uintptr, len(runner.cmd.ExtraFiles))
+	for i, f := range runner.cmd.ExtraFiles {
+		files[i] = f.Fd()
+	}
+
+	return syscall.ForkExec(runner.cmd.Args[0], runner.cmd.Args, &syscall.ProcAttr{
+		Dir:   runner.cmd.Dir,
+		Env:   runner.cmd.Env,
+		Files: files,
+		Sys:   runner.cmd.SysProcAttr,
+	})
+}
+
 func (runner *cmdRunner) run() (int, error) {
 	err := runner.cmd.Start()
 	if err != nil {
@@ -211,15 +225,35 @@ func (runner *cmdRunner) run() (int, error) {
 	return runner.cmd.Process.Pid, err
 }
 
+func platformGetShell() string {
+	if shell, ok := os.LookupEnv("SHELL"); ok {
+		return shell
+	}
+	shell := "/bin/bash"
+	if _, err := os.Stat(shell); err == nil {
+		return shell
+	}
+	return "/bin/sh"
+}
+
 func platformWait(pid, flags int, lastState *status) (int, error) {
 	var waitStatus syscall.WaitStatus
+	var err error
+	var ret int
 
-	ret, err := syscall.Wait4(pid, &waitStatus, flags, nil)
-	if err != nil {
-		return ret, err
+	ret, err = syscall.Wait4(pid, &waitStatus, flags, nil)
+	lastState.Pid = ret
+	platformUpdateState(lastState, waitStatus)
+
+	return ret, err
+}
+
+func  platformUpdateState(lastState *status, sysState interface{}) {
+	waitStatus, ok := sysState.(syscall.WaitStatus)
+	if !ok {
+		return
 	}
 
-	lastState.Pid = pid
 	lastState.Exitstatus = waitStatus.ExitStatus()
 	lastState.ToI = uint32(waitStatus.ExitStatus())
 	lastState.IsCoredump = waitStatus.CoreDump()
@@ -228,10 +262,15 @@ func platformWait(pid, flags int, lastState *status) (int, error) {
 	lastState.IsStopped = waitStatus.Stopped()
 	lastState.IsSucess = waitStatus.ExitStatus() == 0
 	lastState.platformData = &waitStatus
-	lastState.Stopsig = int(waitStatus.StopSignal())
-	lastState.Termsig = int(waitStatus.Signal())
 
-	return int(lastState.ToI), nil
+	if waitStatus.StopSignal() >= 0 {
+		stopSig := int(waitStatus.StopSignal())
+		lastState.Stopsig = &stopSig
+	}
+	if waitStatus.Signal() >= 0 {
+		termSig := int(waitStatus.Signal())
+		lastState.Termsig = &termSig
+	}
 }
 
 func platformKill(pid, sig int) error {

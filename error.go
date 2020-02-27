@@ -20,6 +20,11 @@ func MrbExcPtr(v MrbValue) RExceptionPtr {
 	return RExceptionPtr{(*C.struct_RException)(C._mrb_ptr(v.Value().v))}
 }
 
+// ExcNewStr create new exception
+func (mrb *MrbState) ExcNewStr(c RClass, str MrbValue) Value {
+	return Value{C.mrb_exc_new_str(mrb.p, c.p, str.Value().v)}
+}
+
 // SysFail return SystemCallError with message
 func (mrb *MrbState) SysFail(err error) Value {
 	if mrb.ClassDefined("SystemCallError") {
@@ -31,11 +36,6 @@ func (mrb *MrbState) SysFail(err error) Value {
 	return mrb.Raise(mrb.ERuntimeError(), err.Error())
 
 	// C.mrb_sys_fail(mrb.p, cmesg) never called
-}
-
-// ExcNewStr create new exception
-func (mrb *MrbState) ExcNewStr(c RClass, str MrbValue) Value {
-	return Value{C.mrb_exc_new_str(mrb.p, c.p, str.Value().v)}
 }
 
 // MakeException from go values
@@ -62,7 +62,7 @@ func (mrb *MrbState) ExcBacktrace(exc MrbValue) Value {
 // GetBacktrace from current state exception
 func (mrb *MrbState) GetBacktrace() Value { return Value{C.mrb_get_backtrace(mrb.p)} }
 
-//func (mrb *MrbState) NoMethodError(id MrbSym, fmt string,  ) {
+//func (mrb *MrbState) NoMethodError(mid MrbSym, fmt string,  ) {
 //   TODO: mrb_no_method_error
 //	 C.mrb_no_method_error(mrb_state *mrb, mrb_sym id, mrb_int argc, const mrb_value *argv, const char *fmt, ...);
 //}

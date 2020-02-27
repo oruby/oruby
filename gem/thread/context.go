@@ -20,7 +20,6 @@ type Context struct {
 	alive bool
 }
 
-
 func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, proc := mrb.GetArgsWithBlock()
 
@@ -92,7 +91,6 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		c.f = f
 	case nil:
 	}
-
 
 	c.mrb.WaitGroup.Add(1)
 	go c.worker()

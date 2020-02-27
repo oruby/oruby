@@ -10,9 +10,9 @@ type status struct {
 	ToI          uint32
 	Pid          int
 	IsStopped    bool
-	Stopsig      int
+	Stopsig      *int
 	IsSignaled   bool
-	Termsig      int
+	Termsig      *int
 	IsExited     bool
 	Exitstatus   int
 	IsSucess     bool
@@ -46,5 +46,5 @@ func initStatus(mProc oruby.RClass) {
 	cProcessStatus.UndefClassMethod("new")
 	cProcessStatus.DefineAlias("==","equal")
 	cProcessStatus.DefineAlias("&", "bit_and")
-	cProcessStatus.DefineAlias(">>","r_shift",)
+	cProcessStatus.DefineAlias(">>","r_shift")
 }

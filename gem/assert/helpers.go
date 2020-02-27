@@ -8,11 +8,23 @@ import (
 )
 
 // Expect is simple testing function which raises error if condition is not met
-func Expect(t *testing.T, condition bool, eformat string, args ...interface{}) {
+func Expect(t *testing.T, to bool, eformat string, args ...interface{}) {
 	t.Helper()
-	if !condition {
+	if !to {
 		t.Errorf(eformat, args...)
 	}
+}
+
+// Expect is simple testing function which raises error if condition is not met
+func Include(t *testing.T, v1 interface{}, in ...interface{}) {
+	t.Helper()
+
+	for _,v2 := range in {
+		if reflect.DeepEqual(v1, v2) {
+			return
+		}
+	}
+	t.Errorf("Expected '%v' to be in %v", v1, in)
 }
 
 // ExpectEql expects both arguments to be equal

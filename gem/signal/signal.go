@@ -45,7 +45,7 @@ func init() {
 	})
 }
 
-func getSignal(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
+func GetSignalFromArgument(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
 	if sv.IsString() || sv.IsSymbol() {
 		name := mrb.String(sv)
 		if signo, ok := signals[name]; ok {
@@ -58,7 +58,7 @@ func getSignal(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
 			}
 		}
 
-		return 0, "", oruby.EArgumentError("signal unknown: %v", name)
+		return 0, "", oruby.EArgumentError("unsupported signal `%v'", name)
 	}
 
 	var sig int
@@ -67,7 +67,7 @@ func getSignal(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
 	} else {
 		sigv := mrb.Call(sv, "to_int")
 		if !sigv.IsFixnum() {
-			return 0, "", oruby.EArgumentError("signal unknown: %v", mrb.Inspect(sv))
+			return 0, "", oruby.EArgumentError("unsupported signal `%v'", mrb.Inspect(sv))
 		}
 		sig = sigv.Int()
 	}
@@ -123,7 +123,7 @@ func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	sigValue := args.Item(0)
 	command  := args.ItemDef(1, block)
 
-	sigID, name, err := getSignal(mrb, mrb.Value(sigValue))
+	sigID, name, err := GetSignalFromArgument(mrb, mrb.Value(sigValue))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -195,7 +195,7 @@ func sigName(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func esignalInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
-	signo, name, err := getSignal(mrb, args.Item(0))
+	signo, name, err := GetSignalFromArgument(mrb, args.Item(0))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

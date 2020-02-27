@@ -164,6 +164,12 @@ func (v Value) IsSingletonClass() bool { return C._mrb_type(v.v) == MrbTTSClass 
 // IsModule Checks if oruby value is module value
 func (v Value) IsModule() bool { return C._mrb_type(v.v) == MrbTTModule }
 
+// IsBool checks if oruby value is bool value
+func (v Value) IsBool() bool {
+	t := C._mrb_type(v.v)
+	return t == MrbTTTrue || (t == MrbTTFalse && C._mrb_nil_p(v.v) == 0)
+}
+
 // Flags returns object flags or 0 for simple values
 func (v Value) Flags() int { return int(C._mrb_value_flags(v.v)) }
 
@@ -676,7 +682,9 @@ func errorHandler(err *error) {
 
 // RunCode executes oruby code string
 func (mrb *MrbState) RunCode(code string, args ...interface{}) error {
-	mrb.DefineGlobalConst("ARGV", mrb.Value(args))
+	if len(args) > 0 {
+		mrb.DefineGlobalConst("ARGV", mrb.Value(args))
+	}
 	_, err := mrb.Eval(code)
 	return err
 }
@@ -684,6 +692,7 @@ func (mrb *MrbState) RunCode(code string, args ...interface{}) error {
 // Eval evaluates code string and returns calculated result
 func (mrb *MrbState) Eval(code string) (result RObject, err error) {
 //	defer errorHandler(&err)
+	mrb.ExcClear()
 
 	cxt := mrb.MrbcContextNew()
 	cxt.SetCaptureErrors(true)

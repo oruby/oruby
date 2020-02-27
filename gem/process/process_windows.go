@@ -41,6 +41,17 @@ func (runner *cmdRunner) parseOptionsOS(options oruby.Value) func() {
 	return ret
 }
 
+func platformGetShell() string {
+	if shell, ok := os.LookupEnv("ComSpec"); ok {
+		return shell
+	}
+	if shell, ok := os.LookupEnv("COMSPEC"); ok {
+		return shell
+	}
+	return os.GetEnv("SYSTEMROOT") + "\\System32\\cmd.exe"
+}
+
+
 func (runner *cmdRunner) run() (int, error) {
 	os.StartProcess()
 	err := runner.cmd.Start()
@@ -48,4 +59,49 @@ func (runner *cmdRunner) run() (int, error) {
 		return 0, err
 	}
 	return runner.cmd.Process.Pid, nil
+}
+
+func (runner *cmdRunner) platformWait(pid, flags int, lastState *status) (int, error) {
+	var waitStatus syscall.WaitStatus
+	ret, err := syscall.Wait4(pid, &waitStatus, flags, nil)
+	platformUpdateState(lastState, waitStatus)
+
+	return ret, err
+}
+
+func  platformUpdateState(lastState *status, sysState interface{}) {
+	waitStatus, ok := sysState.(syscall.WaitStatus)
+	if !ok {
+		return
+	}
+
+	lastState.Pid = pid
+	lastState.Exitstatus = waitStatus.ExitStatus()
+	lastState.ToI = uint32(waitStatus.ExitStatus())
+	lastState.IsCoredump = waitStatus.CoreDump()
+	lastState.IsExited = waitStatus.Exited()
+	lastState.IsSignaled = waitStatus.Signaled()
+	lastState.IsStopped = waitStatus.Stopped()
+	lastState.IsSucess = waitStatus.ExitStatus() == 0
+	lastState.platformData = &waitStatus
+	if waitStatus.StopSignal() >= 0 {
+		*lastState.Stopsig = int(waitStatus.StopSignal())
+	}
+	if waitStatus.Signal() >= 0 {
+		*lastState.Termsig = int(waitStatus.Signal())
+	}
+}
+
+func (runner *cmdRunner) forkExec() (int, error) {
+	files := make([]uintptr, len(runner.cmd.ExtraFiles))
+	for i, f := range runner.cmd.ExtraFiles {
+		files[i] = f.Fd()
+	}
+
+	return syscall.ForkExec(runner.cmd.Args[0], runner.cmd.Args, &syscall.ProcAttr{
+		Dir:   runner.cmd.Dir,
+		Env:   runner.cmd.Env,
+		Files: files,
+		Sys:   runner.cmd.SysProcAttr,
+	})
 }
