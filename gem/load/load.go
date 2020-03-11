@@ -135,7 +135,7 @@ func resolveFeaturePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.Raisef(mrb.ClassGet("ELoadError"), err.Error())
 	}
-	return mrb.StrNewStatic(name)
+	return mrb.StrNew(name)
 }
 
 func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -214,7 +214,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 		return mrb.FalseValue()
 	}
 
-	nameValue := mrb.StrNewStatic(name)
+	nameValue := mrb.StrNew(name)
 
 	// Check if file is set to be loaded
 	if loadingFilesFind(mrb, nameValue) {
