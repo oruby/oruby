@@ -26,7 +26,7 @@ func (a RArray) Splat() RArray {
 func (a RArray) Push(val MrbValue) { C.mrb_ary_push(a.mrb.p, a.v, val.Value().v) }
 
 // PushString pushes string to oruby array
-func (a RArray) PushString(s string) { C.mrb_ary_push(a.mrb.p, a.v, a.mrb.StrNewStatic(s).v) }
+func (a RArray) PushString(s string) { C.mrb_ary_push(a.mrb.p, a.v, a.mrb.StrNew(s).v) }
 
 // PushInt pushes int to oruby array
 func (a RArray) PushInt(val int) { C.mrb_ary_push(a.mrb.p, a.v, MrbFixnumValue(val).v) }
