@@ -76,29 +76,6 @@ func TestRClass_Const(t *testing.T) {
 	ExpectEql(t, class.mrb.Intf(v), 123456)
 }
 
-func TestRClass_Def(t *testing.T) {
-	mrb, closer := setupState(t, "Test")
-	defer closer()
-
-	class := mrb.Class("Test")
-	class.Def("name1", func(mrb *MrbState, self Value) MrbValue {
-		return mrb.Value("name1_ok")
-	}, ArgsNone())
-
-	class.Def("name2", func() string { return "name2_ok" })
-
-	obj, err := class.New()
-	if err != nil {
-		t.Error(err)
-	}
-
-	v1 := obj.Call("name1")
-	v2 := obj.Call("name2")
-
-	ExpectEql(t, mrb.Intf(v1), "name1_ok")
-	ExpectEql(t, mrb.Intf(v2), "name2_ok")
-}
-
 func TestRClass_DefineAlias(t *testing.T) {
 	mrb, closer := setupState(t, "Test")
 	defer closer()
