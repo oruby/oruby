@@ -10,8 +10,10 @@ import (
 // RData struct
 type RData struct{ p *C.struct_RData }
 
-// data
-//type FreeRDataProc = procedure(mrb mrb_state, data Pointer)
+// Closer interface is called when Go value is GC-ed from mruby state
+type Freer interface {
+	Free()
+}
 
 // Value implements MrbValue interface
 func (d RData) Value() Value { return mrbObjValue(unsafe.Pointer(d.p)) }
@@ -154,7 +156,8 @@ func (mrb *MrbState) DataSetInterface(obj Value, datap interface{}) {
 
 	// Release existing data
 	if RDATA(obj).p.data != nil {
-		mrb_free_goref(mrb.p, p)
+		//mrb_free_goref(mrb.p, p)
+		mrb.setHook(p, nil)
 	}
 
 	// Set reference to avoid GC

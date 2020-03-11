@@ -3,6 +3,7 @@ package oruby
 // #include "go-mrb.h"
 import "C"
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -120,6 +121,11 @@ func (mrb *MrbState) setHook(p unsafe.Pointer, v interface{}) {
 		delete(mrb.hooks, p)
 	} else {
 		mrb.hooks[p] = v
+		if freer, ok := v.(Freer); ok {
+			runtime.SetFinalizer(&freer, func(c Freer){
+				c.Free()
+			})
+		}
 	}
 }
 
