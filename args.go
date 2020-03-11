@@ -56,6 +56,16 @@ func (a RArgs) Get(mrb *MrbState, i int) interface{} {
 	return mrb.Intf(a.Item(i))
 }
 
+// GetLastHash returns last item if it is a hash
+// idiom is used in Ruby function definitions
+func (a RArgs) GetLastHash() Value {
+	item := a.Item(-1)
+	if !item.IsHash() {
+		return nilValue
+	}
+	return item
+}
+
 // SetItem returns value item at index, or Nil if index is invalid
 func (a RArgs) SetItem(index int, v MrbValue) {
 	l := len(a.items)
