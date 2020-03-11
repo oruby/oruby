@@ -109,6 +109,10 @@ func NewCore() (*MrbState, error) {
 	// Experimental gorutine support
 	mrb.DefineMethod(mrb.KernelModule(), "go", goMrbGo, ArgsBlock())
 
+	// SystemCallError exception
+	// mruby code have SystemCallError::_sys_fail method, but it is not used
+	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
+
 	return mrb, nil
 }
 
@@ -385,7 +389,7 @@ func (mrb *MrbState) Value(o interface{}) Value {
 	case float64:
 		return mrb.FloatValue(v)
 	case string:
-		return mrb.StrNewStatic(v)
+		return mrb.StrNew(v)
 	case uintptr:
 		return mrb.CPtrValue(v)
 	case unsafe.Pointer:
@@ -407,7 +411,7 @@ func (mrb *MrbState) Value(o interface{}) Value {
 	case []string:
 		ary := mrb.AryNewCapa(len(v))
 		for i := 0; i < len(v); i++ {
-			ary.Push(mrb.StrNewStatic(v[i]))
+			ary.Push(mrb.StrNew(v[i]))
 		}
 		return ary.Value()
 	case []int:
@@ -462,7 +466,7 @@ func (mrb *MrbState) valueValue(v reflect.Value) Value {
 		vv := v.Complex()
 		return mrb.NewInstance("Complex", real(vv), imag(vv)).Value()
 	case reflect.String:
-		return mrb.StrNewStatic(v.String())
+		return mrb.StrNew(v.String())
 	case reflect.Bool:
 		return Bool(v.Bool())
 	case reflect.Array, reflect.Slice:
@@ -1418,14 +1422,11 @@ func (mrb *MrbState) Free(buffer Buff) {
 }
 
 // StrNew Allocates new C string from go string
-func (mrb *MrbState) StrNew(s string) RString {
+func (mrb *MrbState) StrNew(s string) Value {
 	cs := C.CString(s)
 	size := len(s)
 	defer C.free(unsafe.Pointer(cs))
-	return RString{RObject{
-		C.mrb_str_new(mrb.p, cs, C.size_t(size)),
-		mrb,
-	}}
+	return Value{C.mrb_str_new(mrb.p, cs, C.size_t(size)) }
 }
 
 // StrNewStatic is an alias for StrNew
@@ -1921,6 +1922,9 @@ func (mrb *MrbState) EFloatDomainError() RClass { return mrb.ExcGet("FloatDomain
 // EKeyError oruby error
 func (mrb *MrbState) EKeyError() RClass { return mrb.ExcGet("KeyError") }
 
+// EKeyError oruby error
+func (mrb *MrbState) ESystemCallError() RClass { return mrb.ExcGet("SystemCallError") }
+
 // Yield block with value
 func (mrb *MrbState) Yield(b, arg MrbValue) (Value, error) {
 	return mrb.try(func()C.mrb_value{
@@ -1970,14 +1974,23 @@ func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ..
 // YieldCont continue execution to the proc
 // this function should always be called as the last function of a method. e.g.:
 //
-//      return mrb,YieldCont(proc, self, args...);
-func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) (Value, error) {
+//      return mrb,YieldCont(proc, self, args...)
+func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) Value {
 	//mrb_yield_cont(mrb_state*mrb, mrb_value b, mrb_value self, mrb_int argc, const mrb_value *argv);
+	if b.IsNil() {
+		return mrb.EArgumentError().Raise("no block given")
+	}
+
 	argc := len(args)
 	if argc == 0 {
-		return mrb.try(func()C.mrb_value {
+		ret, err := mrb.try(func()C.mrb_value {
 			return C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, 0, nil)
 		})
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+
+		return ret
 	}
 
 	argv := make([]C.mrb_value, argc)
@@ -1985,9 +1998,15 @@ func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) (Val
 		argv[i] = mrb.Value(args[i]).v
 	}
 
-	return mrb.try(func()C.mrb_value {
+	ret, err := mrb.try(func()C.mrb_value {
 		return C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, C.mrb_int(argc), &argv[0])
 	})
+
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	return ret
 }
 
 
