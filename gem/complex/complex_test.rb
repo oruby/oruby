@@ -22,7 +22,7 @@ assert 'Complex::polar' do
 end
 
 assert 'Complex::rectangular' do
-  assert_complex Complex.rectangular(1, 2), (1 + 2i)
+  assert_complex Complex.rectangular(3, 4), (3 + 4i)
 end
 
 assert 'Complex#*' do
@@ -125,7 +125,7 @@ assert 'Complex#real?' do
 end
 
 assert 'Complex::rectangular' do
-  assert_equal Complex(1, 2).rectangular, [1, 2]
+  assert_equal Complex(5, 6).rectangular, [5, 6]
 end
 
 assert 'Complex::to_c' do

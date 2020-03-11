@@ -30,7 +30,7 @@ func initPolar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func init() {
 	oruby.Gem("complex", func(mrb *oruby.MrbState) interface{} {
 		cpxClass := mrb.DefineClass("Complex", mrb.ClassGet("Numeric"))
-		cpxClass.RegisterGoClass(new(RComplex))
+		cpxClass.RegisterGoClass(newComplex(0,0))
 		cpxClass.Populate()
 
 		initComplex := func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
