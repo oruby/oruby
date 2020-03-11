@@ -59,7 +59,16 @@ func (c RClass) Populate() {
 		}
 	}
 
-	targetType := v.Elem()
+	var targetType reflect.Type
+
+	switch v.Kind() {
+	case reflect.Struct:
+		targetType = v
+	case reflect.Ptr:
+		targetType = v.Elem()
+	default:
+		return
+	}
 
 	// Only struct types support fields; Intf type does not.
 	if targetType.Kind() == reflect.Struct {
@@ -201,6 +210,8 @@ func (c RClass) AttachType(zeroType interface{}) {
 	case reflect.String:
 		panic("string type is not supported as attached type")
 	}
+
+	MrbSetInstanceTT(c, MrbTTData)
 
 	// Connect with Go world
 	c.mrb.Lock()
