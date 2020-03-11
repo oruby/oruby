@@ -208,18 +208,6 @@ func (c RClass) DefineClassFunc(name string, f interface{}) {
 	c.mrb.DefineClassFunc(c, name, f)
 }
 
-// DefF defines Go function as method. Supports following calls:
-//   class.DefF(SomeGoFunction) -> equals to def some_go_function(arg1, arg2...)
-func (c RClass) DefF(f interface{}) {
-	v := reflect.ValueOf(f)
-	name := SnakeCase(v.Type().Name())
-	if name == "" {
-		panic("you must name annonymous func: ...Def(\"func_name\", func(){ return 1 })")
-	}
-	c.mrb.DefineMethodFuncID(c, c.mrb.Intern(name), f)
-	return
-}
-
 // UndefMethod removes method from oruby class
 func (c RClass) UndefMethod(name string) {
 	c.mrb.UndefMethod(c, name)
@@ -233,23 +221,6 @@ func (c RClass) UndefClassMethod(name string) {
 // DefineMethod on class via MrbFuncT type function
 func (c RClass) DefineMethod(name string, f MrbFuncT, params MrbAspec) {
 	c.mrb.DefineMethod(c, name, f, params)
-}
-
-// Def define method. Supports following calls:
-//   class.Def(\"func_name\", SomeGoFunction)
-//   class.Def(\"func_name\", func(){ return 1 })
-//   class.Def(\"func_name\", MrbMethodT function, MrbAspec) -> alias for DefineMethod
-func (c RClass) Def(name string, f interface{}, args ...interface{}) {
-	mID := c.mrb.Intern(name)
-	if mrbFunc, ok := f.(func(*MrbState, Value) MrbValue); ok {
-		if len(args) == 0 {
-			panic("type MrbFuncT reqires MrbAspec parameter: ...Def(\"f\", mrbFunc, mrb.ArgsNone())")
-		}
-		c.mrb.DefineMethodID(c, mID, mrbFunc, args[0].(MrbAspec))
-		return
-	}
-
-	c.mrb.DefineMethodFuncID(c, mID, f)
 }
 
 // DefineMethodFunc defines function
