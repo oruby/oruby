@@ -10,8 +10,6 @@ import (
 
 func init() {
 	oruby.Gem("assert", func(mrb *oruby.MrbState) interface{} {
-		// mrb.KernelModule().DefineMethod("t_print", t_print, MRB_ARGS_ANY());
-		// Override oruby print functions so mrb output behave as go output
 		mrb.DefineMethodFunc(mrb.KernelModule(), "_str_match?", regexp.MatchString)
 
 		mrbtest := mrb.DefineModule("Mrbtest")
