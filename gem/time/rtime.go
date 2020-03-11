@@ -153,9 +153,9 @@ func timeInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
 
 	if t.Location() == time.Local {
-		return mrb.StrNewStatic(t.Format("2006-01-02 15:04:05 -0700"))
+		return mrb.StrNew(t.Format("2006-01-02 15:04:05 -0700"))
 	}
-	return mrb.StrNewStatic(t.Format("2006-01-02 15:04:05 MST"))
+	return mrb.StrNew(t.Format("2006-01-02 15:04:05 MST"))
 }
 
 func timeToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -164,7 +164,7 @@ func timeToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func timeAsctime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
-	return mrb.StrNewStatic(t.Format("Mon Jan _2 15:04:05 2006"))
+	return mrb.StrNew(t.Format("Mon Jan _2 15:04:05 2006"))
 }
 
 func timeDay(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -297,7 +297,7 @@ func timeIsSaturday(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func timeZone(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
 	zone, _ := t.Zone()
-	return mrb.StrNewStatic(zone)
+	return mrb.StrNew(zone)
 }
 
 // isTimeDST returns true if time t occurs within daylight saving time
@@ -343,6 +343,6 @@ func timeToA(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		oruby.Integer(int(t.Weekday())),
 		oruby.Integer(t.YearDay()),
 		oruby.Bool(isDST(t)),
-		mrb.StrNewStatic(zone),
+		mrb.StrNew(zone),
 	)
 }

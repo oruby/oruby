@@ -183,7 +183,7 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 	case oruby.MrbTTFixnum:
 		i := oruby.MrbFixnum(idx)
 		if s, isNil := m.toString(i); !isNil {
-			return mrb.StrNewStatic(s)
+			return mrb.StrNew(s)
 		}
 		return mrb.NilValue()
 	default:
@@ -200,7 +200,7 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 	for i, name := range m.Names() {
 		if i < m.Size() && name == s {
 			if str, isNil := m.toString(i + 1); !isNil {
-				return mrb.StrNewStatic(str)
+				return mrb.StrNew(str)
 			}
 			return mrb.NilValue()
 		}

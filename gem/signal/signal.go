@@ -177,7 +177,7 @@ func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func sigList(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ret := mrb.HashNewCapa(len(signals))
 	for k, v := range signals {
-		ret.Set(mrb.StrNewStatic(k), mrb.FixnumValue(v))
+		ret.Set(mrb.StrNew(k), mrb.FixnumValue(v))
 	}
 	return ret
 }
@@ -186,7 +186,7 @@ func sigName(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	sig := mrb.GetArgsFirst().Int()
 	for k, v := range signals {
 		if v == sig {
-			return mrb.StrNewStatic(k)
+			return mrb.StrNew(k)
 		}
 	}
 
