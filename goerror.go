@@ -5,6 +5,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -180,9 +181,18 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 		return mrb.getErrorKlass(e.err)
 	}
 
-	estr := err.Error()
+	if errors.Is(err, &os.SyscallError{}) || os.IsExist(err) || os.IsNotExist(err) ||
+		os.IsPermission(err) || os.IsTimeout(err)  {
+		return mrb.ESystemCallError()
+	}
 
-	// Class name shoudld be non-empty, uppercse starting string, without whitespace
+	sep := strings.SplitN(err.Error(), ": ", 2)
+	if len(sep) == 0 {
+		return mrb.EStandardErrorClass()
+	}
+	estr := sep[0]
+
+	// Class name should be non-empty, uppercase starting string, without whitespace
 	if estr == "" || estr[1] < 'A' || strings.ContainsAny(estr, " \t\r\n") {
 		return mrb.EStandardErrorClass()
 	}
