@@ -109,8 +109,8 @@ func init() {
 		cIO.DefineMethod("ungetc", ioUngetc, mrb.ArgsReq(1))
 		cIO.DefineMethod("write", ioWrite, mrb.ArgsAny())
 
-		cIO.DefineMethod("readNonblock", ioReadNonblock, mrb.ArgsArg(1,2))
-		cIO.DefineMethod("writeNonblock", ioWriteNonblock, mrb.ArgsArg(1,1))
+		cIO.DefineMethod("readNonblock",  mrb.NotImplemented, mrb.ArgsArg(1,2))
+		cIO.DefineMethod("writeNonblock", mrb.NotImplemented, mrb.ArgsArg(1,1))
 
 		ioError := mrb.DefineClass("IOError", mrb.EStandardErrorClass())
 		mrb.DefineClass("EOFError", ioError)

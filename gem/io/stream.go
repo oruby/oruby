@@ -1147,12 +1147,3 @@ func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.Int64(cnt)
 }
 
-func ioWriteNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-
-}
-
-func ioReadNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-
-}
-
-
