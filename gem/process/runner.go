@@ -18,9 +18,6 @@ type cmdRunner struct {
 	closeOthers   bool
 	unsetenvOther bool
 	exception     bool
-	fIn           oruby.Value
-	fOut          oruby.Value
-	fErr          oruby.Value
 	cleanup       func()
 	err           error
 }
@@ -35,13 +32,10 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 			Path: command,
 			Args: params,
 			Stdout: os.Stdout,
-			Stdin: os.Stdin,
+			Stdin:  os.Stdin,
 			Stderr: os.Stderr,
 		},
 		closeOthers: true,
-		fIn:         mrb.NilValue(),
-		fOut:        mrb.NilValue(),
-		fErr:        mrb.NilValue(),
 	}
 
 	mrb.HashValueForEach(options, func(key, val oruby.Value) int {
@@ -76,12 +70,6 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 			runner.closeOthers = val.Bool()
 		case "unsetenv_others":
 			runner.unsetenvOther = val.Bool()
-		case "in":
-			runner.fIn = val
-		case "out":
-			runner.fOut = val
-		case "err":
-			runner.fErr = val
 		case "exception":
 			runner.exception = val.Bool()
 		}
@@ -218,18 +206,13 @@ func (runner *cmdRunner) parseFd(key, val oruby.Value) {
 		}
 	}
 
-	//if mrb.ObjIsKindOf(o, mrb.ClassGet("IO")) {
-	//
-	//}
-
 	if key.IsArray() && key.Len() > 0 {
 		writer := runner.getWriter(val)
 		for i := 0; i < key.Len(); i++ {
-			runner.parseFd(mrb.AryRef(key, 0), mrb.Value(writer).Value())
+			runner.parseFd(mrb.AryRef(key, i), mrb.Value(writer).Value())
 		}
 		return
 	}
-
 }
 
 func (runner *cmdRunner) getReader(val oruby.Value) io.Reader {
@@ -252,18 +235,6 @@ func (runner *cmdRunner) getWriter(val oruby.Value) io.Writer {
 	}
 
 	return nil
-}
-
-func (runner *cmdRunner) setStdIn(val oruby.Value) {
-
-}
-
-func (runner *cmdRunner) setStdOut(val oruby.Value) {
-
-}
-
-func (runner *cmdRunner) setStdErr(val oruby.Value) {
-
 }
 
 func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {

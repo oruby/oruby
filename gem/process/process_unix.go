@@ -193,7 +193,10 @@ func (runner *cmdRunner) parseOptionsOS(options oruby.Value) {
 
 	if runner.pgroup != nil {
 		runner.cmd.SysProcAttr.Pgid = *runner.pgroup
+		runner.cmd.SysProcAttr.Setpgid = true
+		runner.cmd.SysProcAttr.Setsid = true
 	}
+
 	runner.cleanup = func() {
 		if runner.oldUmask != 0 {
 			syscall.Umask(runner.oldUmask)
