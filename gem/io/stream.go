@@ -1103,12 +1103,24 @@ func ioToIo(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
+// TODO: not same as MRI, which modifies internal buffer with byte
 func ioUngetbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-
+	if r, ok := mrb.Data(self).(*bufio.Reader); ok {
+		if err := r.UnreadByte(); err != nil {
+			return mrb.RaiseError(err)
+		}
+	}
+	return mrb.NilValue()
 }
 
+// TODO: not same as MRI, which modifies internal buffer with chr
 func ioUngetc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-
+	if r, ok := mrb.Data(self).(*bufio.Reader); ok {
+		if err := r.UnreadRune(); err != nil {
+			return mrb.RaiseError(err)
+		}
+	}
+	return mrb.NilValue()
 }
 
 func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
