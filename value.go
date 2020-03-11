@@ -357,12 +357,17 @@ func Bool(b bool) Value {
 	return Value{C.mrb_false_value()}
 }
 
-// Integer returns Value from boolen
+// Integer returns Value from int
 func Integer(i int) Value {
 	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
 }
 
-// Int64 returns Value from boolen
+// Int returns Value from int
+func Int(i int) Value {
+	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
+}
+
+// Int64 returns Value from int64
 func Int64(i int64) Value {
 	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
 }
