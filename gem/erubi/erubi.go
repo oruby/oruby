@@ -39,5 +39,5 @@ func erubiH(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	v := mrb.GetArgsFirst()
 	s := html.EscapeString(mrb.String(v))
 
-	return mrb.StrNewStatic(s)
+	return mrb.StrNew(s)
 }
