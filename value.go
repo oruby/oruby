@@ -92,7 +92,7 @@ func (v Value) String() string {
 	case MrbTTTrue:
 		return "true"
 	default:
-		panic("value cannot be converted directly to string, try converting with oruby state - mrb.String()")
+		panic("TypeError: no direct conversion into String. Try mrb.String(v)")
 	}
 }
 

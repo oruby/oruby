@@ -35,6 +35,14 @@ func Equal(t *testing.T, v1, v2 interface{}) {
 	//expect(t, (v1 == v2), "Expected %v to equal %v", v1, v2)
 }
 
+// EqualE
+func EqualE(t *testing.T, v1, err error, v2 interface{}) {
+	t.Helper()
+	NilError(t, err)
+	Expect(t, reflect.DeepEqual(v1, v2), "Expected '%v' to equal '%v'", v1, v2)
+	//expect(t, (v1 == v2), "Expected %v to equal %v", v1, v2)
+}
+
 // Nil should be used to check returned Go error.
 func Nil(t *testing.T, i error, eformat string, args ...interface{}) {
 	t.Helper()
@@ -43,9 +51,11 @@ func Nil(t *testing.T, i error, eformat string, args ...interface{}) {
 
 // NilError should be used to check returned Go error.
 // Test fails if there is error.
-func NilError(t *testing.T, i error) {
+func NilError(t *testing.T, err error) {
 	t.Helper()
-	Expect(t, i == nil, "Error: %v", i)
+	if err != nil {
+		t.Fatalf("Error: %v", err)
+	}
 }
 
 // Error expects Go error to be non-nil

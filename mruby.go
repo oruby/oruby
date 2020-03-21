@@ -45,12 +45,6 @@ type MrbAtexitFunc func(mrb *MrbState)
 // MrbInjectT is function run at oruby state Inject chan
 type MrbInjectT func(mrb *MrbState)
 
-// GoCallRef key for keeping call references
-type GoCallRef struct {
-	klass *C.struct_RClass
-	id    C.mrb_sym
-}
-
 // MrbState is main oruby context for running code
 type MrbState struct {
 	p *C.mrb_state
@@ -58,7 +52,6 @@ type MrbState struct {
 	sync.Mutex
 	stack int32
 	WaitGroup    sync.WaitGroup
-	mrbFuncs     map[GoCallRef]MrbFuncT
 	mrbProcs     map[unsafe.Pointer]MrbFuncT
 	classmap     map[reflect.Type]unsafe.Pointer
 	hooks        map[unsafe.Pointer]interface{}
@@ -86,7 +79,6 @@ func NewCore() (*MrbState, error) {
 		sync.Mutex{},
 		0,
 		sync.WaitGroup{},
-		make(map[GoCallRef]MrbFuncT),
 		make(map[unsafe.Pointer]MrbFuncT),
 		make(map[reflect.Type]unsafe.Pointer),
 		make(map[unsafe.Pointer]interface{}),
@@ -295,7 +287,7 @@ func (mrb *MrbState) Close() {
 		// and Wait all well-behaved goroutines to finish
 		close(mrb.exitChan)
 
-		// Go routines from Gems that send exit procs should
+		// Goroutines from Gems that send exit procs should
 		// send proc to mrb.InjectChan() and then signal mrb.WaitGroup.Done()
 		mrb.WaitGroup.Wait()
 
@@ -316,7 +308,6 @@ func (mrb *MrbState) Close() {
 		mrb.p = nil
 
 		mrb.mrbProcs = nil
-		mrb.mrbFuncs = nil
 		mrb.classmap = nil
 		mrb.hooks = nil
 		mrb.funcs = nil
@@ -346,7 +337,7 @@ func New() (*MrbState, error) {
 func goMrbGo(mrb *MrbState, self Value) MrbValue {
 	block := mrb.GetArgsBlock()
 	go func() {
-		_ = mrb.Call(block, "call")
+		_,_ = mrb.FuncallWithBlock(block, mrb.Intern("call"))
 	}()
 
 	return nilValue
@@ -848,31 +839,13 @@ func (mrb *MrbState) PrependModule(cla, prepend RClass) {
 	C.mrb_prepend_module(mrb.p, cla.p, prepend.p)
 }
 
-//export go_mrb_func_callback
-func go_mrb_func_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
-	mrb := states[int(C._mrb_get_idx(cmrb))]
-
-	mrb.Lock()
-	f := mrb.mrbFuncs[GoCallRef{cmrb.c.ci.target_class, cmrb.c.ci.mid}]
-	mrb.Unlock()
-
-	if f == nil {
-		method := mrb.SymString(MrbSym(cmrb.c.ci.mid))
-		*ret = mrb.Raisef(mrb.ERuntimeError(), "go_mrb_func_callback: Function '%v' reference not found.", method).v
-		return
-	}
-
-	*ret = f(mrb, Value{*self}).Value().v
-	return
-}
-
 //export go_mrb_func_env_callback
-func go_mrb_func_env_callback(cmrb *C.mrb_state, self C.mrb_value, idx C.mrb_int) C.mrb_value {
-	mrb := states[int(C._mrb_get_idx(cmrb))]
+func go_mrb_func_env_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.mrb_value {
+	mrb := states[int(mrbidx)]
 
 	fx := mrb.getMrbFuncT(uint(idx))
 	if fx == nil {
-		method := mrb.SymString(MrbSym(cmrb.c.ci.mid))
+		method := mrb.SymString(mrb.GetMID())
 		return mrb.Raisef(mrb.ERuntimeError(), "go_mrb_func_env_callback: Function '%v' reference not found.", method).v
 	}
 
@@ -880,21 +853,19 @@ func go_mrb_func_env_callback(cmrb *C.mrb_state, self C.mrb_value, idx C.mrb_int
 }
 
 //export go_mrb_proc_callback
-func go_mrb_proc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
-	mrb := states[int(C._mrb_get_idx(cmrb))]
+func go_mrb_proc_callback(mrbidx C.mrb_int, self C.mrb_value) C.mrb_value {
+	mrb := states[int(mrbidx)]
 
 	mrb.Lock()
-	f := mrb.mrbProcs[C._mrb_ptr(*self)]
+	f := mrb.mrbProcs[C._mrb_ptr(self)]
 	mrb.Unlock()
 
 	if f == nil {
-		method := mrb.SymString(MrbSym(cmrb.c.ci.mid))
-		*ret = mrb.Raisef(mrb.ETypeError(), "go_mrb_proc_callback: Function '%v' reference not found.", method).v
-		return
+		method := mrb.SymString(mrb.GetMID())
+		return mrb.Raisef(mrb.ETypeError(), "go_mrb_proc_callback: Function '%v' reference not found.", method).v
 	}
 
-	*ret = f(mrb, Value{*self}).Value().v
-	return
+	return f(mrb, Value{self}).Value().v
 }
 
 // DefineMethod for class
@@ -906,41 +877,24 @@ func (mrb *MrbState) DefineMethod(klass RClass, name string, f MrbFuncT, aspec M
 
 // DefineClassMethod creates new oruby class method
 func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-
-	C.mrb_define_class_method(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(aspec))
-
-	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{klass.p.c, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
-	mrb.Unlock()
+	idx := mrb.registerFuncIndex(f)
+	C._define_class_method(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
 }
 
 // DefineSingletonMethod creates new  method for oruby singleton object
 func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT, aspec MrbAspec) {
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-
-	objPtr := obj.p()
-	C.mrb_define_singleton_method(mrb.p, objPtr, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(aspec))
-
-	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{objPtr.c, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))}] = f
-	mrb.Unlock()
+	if !obj.Value().HasBasic() {
+		panic("value does not have RBasic object structure")
+	}
+	klass := MrbClassPtr(obj)
+	idx := mrb.registerFuncIndex(f)
+	C._define_class_method(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
 }
 
 // DefineModuleFunction creates new oruby module function
 func (mrb *MrbState) DefineModuleFunction(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-	mid := C.mrb_intern(mrb.p, cname, C.size_t(len(name)))
-
-	C.mrb_define_module_function(mrb.p, klass.p, cname, (*[0]byte)(C.set_mrb_callback), C.mrb_aspec(aspec))
-
-	mrb.Lock()
-	mrb.mrbFuncs[GoCallRef{klass.p, mid}] = f
-	mrb.mrbFuncs[GoCallRef{klass.p.c, mid}] = f
-	mrb.Unlock()
+	mrb.DefineClassMethod(klass, name, f, aspec)
+	mrb.DefineMethod(klass, name, f, aspec)
 }
 
 // DefineConst creates new oruby class const
@@ -951,25 +905,19 @@ func (mrb *MrbState) DefineConst(klass RClass, name string, value MrbValue) {
 }
 
 // UndefMethod removes method from oruby class
+// note: function reference stays in matrix
 func (mrb *MrbState) UndefMethod(klass RClass, name string) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-
-	mrb.Lock()
-	delete(mrb.mrbFuncs, GoCallRef{klass.p, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
-	mrb.Unlock()
 
 	C.mrb_undef_method(mrb.p, klass.p, cname)
 }
 
 // UndefClassMethod removes method from oruby class
+// note: function reference stays in matrix
 func (mrb *MrbState) UndefClassMethod(klass RClass, name string) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-
-	mrb.Lock()
-	delete(mrb.mrbFuncs, GoCallRef{klass.p, C.mrb_intern(mrb.p, cname, C.size_t(len(name)))})
-	mrb.Unlock()
 
 	C.mrb_undef_class_method(mrb.p, klass.p, cname)
 }
@@ -1230,17 +1178,6 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 		}
 	}
 
-	if (self.Type() == C.MRB_TT_DATA) || (self.Type() == C.MRB_TT_OBJECT) {
-		mrb.Lock()
-		ff := mrb.mrbFuncs[GoCallRef{mrb.ClassPtr(self.Value()).p, C.mrb_sym(nameSym)}]
-		mrb.Unlock()
-
-		if ff != nil {
-			result := mrb.callFunc(reflect.ValueOf(ff), RInterfaceArgs{args})
-			return mrb.handleResults(result)
-		}
-	}
-
 	a := make([]C.mrb_value, l+1)
 	for i := range args {
 		a[i] = mrb.Value(args[i]).v
@@ -1269,14 +1206,16 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 // FuncallWithBlock call function with arguments. Last argument passed should be block
 // Valid values for block are RProc types, or Go functions which get converted to RProc value
 func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...interface{}) (Value, error) {
-	var block Value
+	block := nilValue
 	argc := len(args)
 
 	if argc > 0 {
 		block = mrb.Value(args[len(args)-1])
-		argc--
-	} else {
-		block = nilValue
+		if block.IsProc() {
+			argc--
+		} else {
+			block = nilValue
+		}
 	}
 
 	a := make([]C.mrb_value, argc+1)
@@ -1296,7 +1235,7 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 
 	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
 		desc := mrb.Call(v, "to_s")
-		err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
+		err = fmt.Errorf("%v.%v -> %v (%v)", mrb.ClassOf(self).Name(), mrb.SymName(nameSym), mrb.String(desc), mrb.ClassOf(v).Name())
 	}
 
 	runtime.KeepAlive(a)
@@ -1826,18 +1765,16 @@ func (mrb *MrbState) Raisef(c RClass, format string, args ...interface{}) Value 
 // errors then coresponding ruby error is raised. For example:
 //
 //    err := oruby.EArgumentError("Unknovn argument %v", someArg)
-//    mrb.RaiseError(err)
+//    return mrb.RaiseError(err) -> oruby.Value <#ArgumentError>
 //
 func (mrb *MrbState) RaiseError(err error) Value {
 	return mrb.Raise(mrb.getErrorKlass(err), err.Error())
 }
 
 // NameError error
-func (mrb *MrbState) NameError(id MrbSym, format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	cmsg := C.CString(msg)
-	defer C.free(unsafe.Pointer(cmsg))
-	C._mrb_name_error(mrb.p, C.mrb_sym(id), cmsg)
+func (mrb *MrbState) NameError(id MrbSym, format string, args ...interface{}) Value {
+	msg := mrb.SymName(id) + ": " + fmt.Sprintf("%v:"+format, args...)
+	return mrb.ENameError().Raise(msg)
 	// pure C.mrb_name_error() is never called
 }
 
@@ -2103,15 +2040,20 @@ func (mrb *MrbState) ObjIsInstanceOf(obj MrbValue, klass RClass) bool {
 
 // FuncBasicP returns true if function is basic method id
 func (mrb *MrbState) FuncBasicP(obj MrbValue, mid MrbSym, f MrbFuncT) bool {
-	mrb.Lock()
-	f2 := mrb.mrbFuncs[GoCallRef{RCLASS(obj).p, C.mrb_sym(mid)}]
-	mrb.Unlock()
+	m := mrb.MethodSearchVM(mrb.ClassOf(obj), mid)
 
-	fv1 := reflect.ValueOf(f)
-	fv2 := reflect.ValueOf(f2)
+	p := RProc{C._MRB_METHOD_PROC(m.m), mrb}
+	if p.IsNil() || !p.IsCFunc() || p.HasEnv() {
+		return false
+	}
 
-	return fv1.Pointer() == fv2.Pointer()
-	//return bool(C.mrb_func_basic_p(mrb.p, obj.Value().v, C.mrb_sym(mid), f))
+	f2, err := mrb.getFunc(uint(p.EnvGet(0).Int()))
+	if err != nil {
+		return false
+	}
+
+	return reflect.ValueOf(f).Pointer() == reflect.ValueOf(f2).Pointer()
+	// C.mrb_func_basic_p() never called
 }
 
 // FiberResume resume a Fiber. Implemented in oruby-fiber
@@ -2213,7 +2155,6 @@ func (mrb *MrbState) ShowCopyright() {
 // C.mrb_format() is unsupported
 
 // mrb_assert(p) assert(p)
-
 //func (mrb *MrbState) GC_mark_mt(cl RClass)           { C.mrb_gc_mark_mt(mrb.p, cl.p) }
 //func (mrb *MrbState) GC_mark_mt_size(cl RClass) uint { return uint(C.mrb_gc_mark_mt_size(mrb.p, cl.p)) }
 //func (mrb *MrbState) GC_free_mt(cl RClass)           { C.mrb_gc_free_mt(mrb.p, cl.p) }
@@ -2245,31 +2186,30 @@ func mrb_free_goref(cmrb *C.mrb_state, p unsafe.Pointer) {
 }
 
 //export go_gofunc_callback
-func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
-	mrb := states[int(C._mrb_get_idx(cmrb))]
+func go_gofunc_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.mrb_value {
+	mrb := states[int(mrbidx)]
 	var result []reflect.Value
 	var err error
 
-	// println("\nCalling", mrb.ClassOf(Value{*self}).Name(), mrb.SymString(mrb.GetMID()))
+	// println("\nCalling", mrb.ClassOf(Value{self}).Name(), mrb.SymString(mrb.GetMID()))
 
-	v := C.mrb_proc_cfunc_env_get(cmrb, C.mrb_int(0))
-	ff, _ := mrb.getFunc(uint(C._mrb_fixnum(v)))
+	ff, _ := mrb.getFunc(uint(idx))
 	f := reflect.ValueOf(ff)
 	if f.Kind() != reflect.Func {
-		*ret = mrb.Raisef(mrb.ERuntimeError(), "go_gofunc_callback: Function '%v' reference not valid.", mrb.SymString(MrbSym(cmrb.c.ci.mid))).v
-		return
+		return mrb.ERuntimeError().Raisef("go_gofunc_callback: '%v' reference invalid", mrb.SymString(mrb.GetMID())).v
 	}
 
 	// fetch args
-	args := C.mrb_get_argv(cmrb)
-	argc := int(C.mrb_get_argc(cmrb))
+	args := C.mrb_get_argv(mrb.p)
+	argc := int(C.mrb_get_argc(mrb.p))
+	//argsSlice := (*[1 << 28]C.mrb_value)(unsafe.Pointer(args))[:argc:argc]
 
 	var goself interface{}
 	rcvr := 0
 
 	// Check if fn is a method. If it is - receiver is the first argument
-	if C._mrb_type(*self) == C.MRB_TT_DATA {
-		goself = mrb.getHook(C._mrb_ptr(*self))
+	if (C._mrb_type(self) == C.MRB_TT_DATA) || (C._mrb_type(self) == C.MRB_TT_OBJECT) {
+		goself = mrb.getHook(C._mrb_ptr(self))
 		if goself != nil {
 			rcvr = 1
 		}
@@ -2282,9 +2222,8 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 
 	// Check number of params
 	if (argc + rcvr) < (f.Type().NumIn() - variadic) {
-		//println("Calling", mrb.ClassOf(Value{*self}).Name(), mrb.Sym2string(MrbSym(cmrb.c.ci.mid)))
-		*ret = mrb.Raisef(mrb.ERuntimeError(), "%v: Expected %d parameters supplied %d.", f.Type().Name(), f.Type().NumIn(), argc+rcvr).v
-		return
+		//println("Calling", mrb.ClassOf(Value{self}).Name(), mrb.SymString(mrb.GetMID()))
+		return mrb.Raisef(mrb.ERuntimeError(), "%v: Expected %d parameters supplied %d.", f.Type().Name(), f.Type().NumIn(), argc+rcvr).v
 	}
 
 	in := make([]reflect.Value, rcvr+argc)
@@ -2306,8 +2245,7 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 		inType := f.Type().In(i)
 		in[i], err = assignValue(arg, inType)
 		if err != nil {
-			*ret = mrb.RaiseError(err).v
-			return
+			return mrb.RaiseError(err).v
 		}
 	}
 
@@ -2316,11 +2254,10 @@ func go_gofunc_callback(cmrb *C.mrb_state, self, ret *C.mrb_value) {
 
 	res, err := mrb.handleResults(result)
 	if err != nil {
-		*ret = mrb.Raise(mrb.getErrorKlass(err), err.Error()).v
-		return
+		return mrb.Raise(mrb.getErrorKlass(err), err.Error()).v
 	}
 
-	*ret = res.v
+	return res.v
 }
 
 // DefineModuleFunc define module function

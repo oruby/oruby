@@ -10,6 +10,11 @@ func (h RHash) Ptr() RHashPtr { return MrbHashPtr(Value{h.v}) }
 // Set sets a keys and values to hashes
 func (h RHash) Set(key, val MrbValue) { C.mrb_hash_set(h.mrb.p, h.v, key.Value().v, val.Value().v) }
 
+// Set sets a keys and values to hashes
+func (h RHash) SetI(key, val interface{}) {
+	C.mrb_hash_set(h.mrb.p, h.v, h.mrb.Value(key).v, h.mrb.Value(val).v)
+}
+
 // Get gets a value from a key. If the key is not found, the default of the hash is used
 func (h RHash) Get(key MrbValue) Value {
 	return Value{C.mrb_hash_get(h.mrb.p, h.v, key.Value().v)}

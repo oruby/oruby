@@ -9,7 +9,7 @@ import (
 
 func initFileStat(mrb *oruby.MrbState, fileClass oruby.RClass) {
 	fileStat := mrb.DefineClassUnder(fileClass, "Stat", mrb.ObjectClass())
-	fileStat.AttachType((os.FileInfo)(nil))
+	fileStat.AttachType(os.Stat)
 	fileStat.Include(mrb.ModuleGet("Comparable"))
 
 	fileStat.DefineMethod("initialize", statInit, mrb.ArgsReq(1))

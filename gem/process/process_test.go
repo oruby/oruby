@@ -116,6 +116,20 @@ func TestSpawn(t *testing.T) {
 	assert.Expect(t, last.IsSucess, "Should be sucessful")
 }
 
+func TestSpawnWithParams(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	pid, err := mrb.Eval("$pid = Process.spawn('/bin/echo test')")
+	assert.NilError(t, err)
+	assert.Expect(t, pid.Value().IsFixnum(), "expected pid, got %v", pid.String())
+
+	// Wait for it to finish
+	ret, err := mrb.Eval("Process.wait $pid")
+	assert.NilError(t, err)
+	assert.Expect(t, ret.Value().IsFixnum(), "expeted pid, got %v", ret.String())
+}
+
 func TestWait(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

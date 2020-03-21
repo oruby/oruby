@@ -186,6 +186,10 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 		return mrb.ESystemCallError()
 	}
 
+	if _, ok := err.(*os.PathError); ok {
+		return mrb.ESystemCallError()
+	}
+
 	sep := strings.SplitN(err.Error(), ": ", 2)
 	if len(sep) == 0 {
 		return mrb.EStandardErrorClass()

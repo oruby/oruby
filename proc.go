@@ -240,7 +240,7 @@ func (p RProc) NLocals() int {
 
 // ProcNewCFunc creaetes new RProc from go function
 func (mrb *MrbState) ProcNewCFunc(f MrbFuncT) RProc {
-	p := C.mrb_proc_new_cfunc(mrb.p, (*[0]byte)(C.set_mrb_callback))
+	p := C.mrb_proc_new_cfunc(mrb.p, (*[0]byte)(C.set_mrb_proc_callback))
 	mrb.Lock()
 	mrb.mrbProcs[unsafe.Pointer(p)] = f
 	mrb.Unlock()
@@ -262,7 +262,7 @@ func (mrb *MrbState) ClosureNew(irep MrbIrep) RProc {
 
 // ClosureNewCfunc creates new closure from Go function
 func (mrb *MrbState) ClosureNewCfunc(f MrbFuncT, nlocals int32) RProc {
-	p := C.mrb_closure_new_cfunc(mrb.p, (*[0]byte)(C.set_mrb_callback), C.int(nlocals))
+	p := C.mrb_closure_new_cfunc(mrb.p, (*[0]byte)(C.set_mrb_proc_callback), C.int(nlocals))
 	mrb.Lock()
 	mrb.mrbProcs[unsafe.Pointer(p)] = f
 	mrb.Unlock()
@@ -292,7 +292,7 @@ func (mrb *MrbState) ProcNewCFuncWithEnv(f MrbFuncT, env ...MrbValue) RProc {
 		argv[i] = mrb.Value(env[i]).v
 	}
 
-	p := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_mrb_callback), C.mrb_int(argc), &argv[0])
+	p := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_mrb_proc_callback), C.mrb_int(argc), &argv[0])
 	runtime.KeepAlive(argv)
 
 	mrb.Lock()

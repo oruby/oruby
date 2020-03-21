@@ -6,8 +6,8 @@ import (
 )
 
 type superPipe struct {
-	*io.PipeReader
-	*io.PipeWriter
+	io.ReadCloser
+	io.WriteCloser
 	pid int
 	mode int
 }
@@ -26,12 +26,11 @@ func (e pipeError) Error() string {
 }
 
 func (p *superPipe) Close() error {
-	errW := p.PipeWriter.Close()
-	errR := p.PipeReader.Close()
+	errW := p.WriteCloser.Close()
+	errR := p.ReadCloser.Close()
 	if errW != nil || errR != nil {
 		return &pipeError{errW, errR}
 	}
 
 	return nil
 }
-

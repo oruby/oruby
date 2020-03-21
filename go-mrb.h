@@ -273,31 +273,23 @@ static int _MRB_FUNCALL_ARGC_MAX() {
 // Error formating using go fmt
 static void _mrb_name_error(mrb_state *mrb, mrb_sym id, const char *msg) { mrb_name_error(mrb, id, msg); }
 
-// from mruby-go
-#define GOMRUBY_EXC_PROTECT_START \
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp; \
-  struct mrb_jmpbuf c_jmp; \
-  mrb_value result = mrb_nil_value(); \
-  MRB_TRY(&c_jmp) { \
-    mrb->jmp = &c_jmp;
-
-// from mruby-go
-#define GOMRUBY_EXC_PROTECT_END \
-    mrb->jmp = prev_jmp; \
-  } MRB_CATCH(&c_jmp) { \
-    mrb->jmp = prev_jmp; \
-    result = mrb_nil_value();\
-  } MRB_END_EXC(&c_jmp); \
-  mrb_gc_protect(mrb, result); \
-  return result;
-
 static mrb_value
 _mrb_funcall_with_block(mrb_state *mrb, mrb_value b, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value block) {
-  GOMRUBY_EXC_PROTECT_START
-  result = mrb_funcall_with_block(mrb, b, mid, argc, argv, block);
-  GOMRUBY_EXC_PROTECT_END
-}
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_funcall_with_block(mrb, b, mid, argc, argv, block);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);    
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
 
+  return result;
+}
 
 static struct REnv *
 _mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)
@@ -377,15 +369,13 @@ _mrb_proc_env_get(mrb_state *mrb, struct RProc *p, mrb_int idx)
 
 // Callbacks
 extern int  go_partial_hook_callback(struct mrb_parser_state *p);
-extern void go_mrb_callback(mrb_state *mrb, mrb_value *self, mrb_value *ret);
-extern void go_mrb_proc_callback(mrb_state *mrb, mrb_value *self, mrb_value *ret);
 extern int  go_hash_callback(mrb_state *mrb, mrb_value key, mrb_value val, void *data);
 extern int  go_each_object_callback(mrb_state *mrb, struct RBasic *obj, void *data);
-extern void go_gofunc_callback(mrb_state *mrb, mrb_value *self, mrb_value *ret);
-extern void go_mrb_func_callback(mrb_state *mrb, mrb_value *self, mrb_value *ret);
-extern mrb_value go_mrb_func_env_callback(mrb_state *mrb, mrb_value self, mrb_int idx);
+extern mrb_value go_gofunc_callback(mrb_int mrbidx, mrb_value self, int idx);
+extern mrb_value go_mrb_proc_callback(mrb_int mrbidx, mrb_value self);
+extern mrb_value go_mrb_func_env_callback(mrb_int mrbidx, mrb_value self, int idx);
 
-mrb_value set_mrb_callback(mrb_state *mrb, mrb_value self);
+mrb_value set_mrb_proc_callback(mrb_state *mrb, mrb_value self);
 mrb_value set_gofunc_callback(mrb_state *mrb, mrb_value self);
 mrb_value set_mrb_env_callback(mrb_state *mrb, mrb_value self);
 int set_hash_callback(mrb_state *mrb, mrb_value key, mrb_value val, void *data);
@@ -394,6 +384,7 @@ int set_each_object_callback(struct mrb_state *mrb, struct RBasic *obj, void *da
 // static void _mrb_copy_value(mrb_value *v1, mrb_value *v2) { *v1=*v2; }
 void _mrb_proc_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 void _mrb_method_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
+void _define_class_method(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 
 // cmd helpers
 extern void mrb_codedump_all(mrb_state*, struct RProc*);

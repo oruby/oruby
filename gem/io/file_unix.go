@@ -50,3 +50,6 @@ func platformDup(f *os.File) (*os.File, error) {
 	return os.OpenFile(name, flags, perm)
 }
 
+func platformOpenFile(name string, mode int, perm os.FileMode) (int, error) {
+	return syscall.Open(name, mode|syscall.O_CLOEXEC, uint32(perm))
+}

@@ -89,7 +89,7 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 // parseArgsStructure returns env, command, params and options from args
 func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, string, []string, oruby.Value) {
 	env := mrb.NilValue()
-	options := args.Item(-1)
+	options := args.GetLastHash()
 	command := args.Item(0)
 	argStart := 1
 
@@ -101,13 +101,6 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 
 	params := make([]string, 0, args.Len()-argStart+1)
 
-	if command.IsArray() {
-		params = append(params, mrb.AryRef(command, 1).String())
-		command = mrb.AryRef(command, 0)
-	} else {
-		params = append(params, command.String())
-	}
-
 	// Params: from first arg after command, till options
 	for i := argStart; i < args.Len()-1; i++ {
 		params = append(params, mrb.String(args.Item(i)))
@@ -118,7 +111,22 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 		params = append(params, mrb.String(options))
 		options = mrb.NilValue()
 	}
-	return env, command.String(), params, options
+
+	var cmd string
+
+	if command.IsArray() {
+		params = append([]string{mrb.AryRef(command, 1).String()}, params...)
+		cmd = mrb.AryRef(command, 0).String()
+	} else if command.IsString() {
+		shell := platformGetShell()
+		params = append([]string{shell, "-c", command.String()}, params...)
+		cmd = shell
+	} else {
+		cmd = command.String()
+		params = append([]string{cmd}, params...)
+	}
+
+	return env, cmd, params, options
 }
 
 // setENV sets Cmd Environment

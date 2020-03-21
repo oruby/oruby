@@ -53,7 +53,6 @@ func platformGetShell() string {
 
 
 func (runner *cmdRunner) run() (int, error) {
-	os.StartProcess()
 	err := runner.cmd.Start()
 	if err != nil {
 		return 0, err

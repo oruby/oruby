@@ -209,6 +209,10 @@ func (c RClass) AttachType(zeroType interface{}) {
 		panic("simple types (Ints, Bool, Floats, Pointers) are not supported")
 	case reflect.String:
 		panic("string type is not supported as attached type")
+	case reflect.Func:
+		if t.NumOut() > 0 {
+			c.AttachType(t.Out(0))
+		}
 	}
 
 	MrbSetInstanceTT(c, MrbTTData)

@@ -43,7 +43,7 @@ func TestMrbStackedException(t *testing.T) {
 		return
 	}
 
-	if !strings.HasPrefix(err.Error(), "Fail us!") {
+	if !strings.Contains(err.Error(), "Fail us!") {
 		t.Fatalf("Expected 'Fail us!' got '%v'", err.Error())
 		return
 	}

@@ -3,7 +3,7 @@ MRuby::GemBox.new do |conf|
   conf.gem :core => "mruby-metaprog"
 
   # Use standard IO/File class
-  conf.gem :core => "mruby-io"
+  # conf.gem :core => "mruby-io"
 
   # Use standard Array#pack, String#unpack methods
   conf.gem :core => "mruby-pack"
@@ -28,6 +28,12 @@ MRuby::GemBox.new do |conf|
 
   # Use Enumerable module extension
   conf.gem :core => "mruby-enum-ext"
+
+  # Use Enumerable module extension
+  conf.gem :core => "mruby-enum-chain"
+
+  # Use eval and instance_eval
+  conf.gem :core => "mruby-eval"
 
   # Use String class extension
   conf.gem :core => "mruby-string-ext"
@@ -88,6 +94,9 @@ MRuby::GemBox.new do |conf|
 
   # Use Method/UnboundMethod class
   conf.gem :core => "mruby-method"
+
+  # Use Rational class
+  conf.gem :core => "mruby-rational"
 
   # Use mruby-compiler to build other mrbgems
   conf.gem :core => "mruby-compiler"

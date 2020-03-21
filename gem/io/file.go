@@ -15,6 +15,7 @@ func initFile(mrb *oruby.MrbState, ioClass oruby.RClass) {
 
 	initFileConsts(mrb, fileClass)
 	initFileStat(mrb, fileClass)
+	initFileTest(mrb)
 
 	mrb.DefineClassMethod(fileClass, "absolute_path",  fileAbsolutePath,   mrb.ArgsReq(1))
 	mrb.DefineClassMethod(fileClass, "absolute_path?", fileIsAbsolutePath,   mrb.ArgsReq(1))
@@ -33,12 +34,12 @@ func initFile(mrb *oruby.MrbState, ioClass oruby.RClass) {
 	proxyClassMethodToStat(fileClass,"executable?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(fileClass,"executable_real?", mrb.ArgsReq(1))
 	mrb.DefineClassMethod(fileClass, "exist?", fileExist,  mrb.ArgsReq(1))
-	mrb.DefineAlias(fileClass, "exists?", "exist?")
+	mrb.DefineClassMethod(fileClass, "exists?", fileExist,  mrb.ArgsReq(1))
 	mrb.DefineClassMethod(fileClass, "expand_path", fileExpandPath, mrb.ArgsArg(1,1))
 	mrb.DefineClassMethod(fileClass, "extname", fileExtname, mrb.ArgsReq(1))
 	proxyClassMethodToStat(fileClass,"file?",      mrb.ArgsReq(1))
 	mrb.DefineClassMethod(fileClass, "fnmatch", fileMatch, mrb.ArgsArg(2,1))
-	mrb.DefineAlias(fileClass, "fnmatch?", "fnmatch")
+	mrb.DefineClassMethod(fileClass, "fnmatch?", fileMatch, mrb.ArgsArg(2,1))
 	//mrb.DefineClassMethod(fileClass,"foreach", fileForeach, mrb.ArgsReq(1))
 	proxyClassMethodToStat(fileClass,"ftype",      mrb.ArgsReq(1))
 	proxyClassMethodToStat(fileClass,"grpowned",   mrb.ArgsReq(1))
@@ -73,7 +74,7 @@ func initFile(mrb *oruby.MrbState, ioClass oruby.RClass) {
 	mrb.DefineClassMethod(fileClass, "truncate", fileTruncate, mrb.ArgsReq(2))
 	mrb.DefineClassMethod(fileClass, "umask",  fileUmask, mrb.ArgsOpt(1))
 	mrb.DefineClassMethod(fileClass, "unlink", fileUnlink, mrb.ArgsAny())
-	fileClass.DefineAlias("utime", "mtime")
+	proxyClassMethodToStat(fileClass,"utime", mrb.ArgsReq(1))
 	proxyClassMethodToStat(fileClass,"world_readable?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(fileClass,"world_writable?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(fileClass,"writable?",       mrb.ArgsReq(1))
@@ -84,12 +85,12 @@ func initFile(mrb *oruby.MrbState, ioClass oruby.RClass) {
 	mrb.DefineClassMethod(fileClass,"initialize", fileInit, mrb.ArgsReq(1))
 
 	proxyMethodToStat(fileClass, "atime", mrb.ArgsNone())
-	mrb.DefineClassMethod(fileClass, "chmod", fileFChmod, mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "chown", fileFChown, mrb.ArgsReq(2))
+	mrb.DefineMethod(fileClass, "chmod", fileFChmod, mrb.ArgsReq(1))
+	mrb.DefineMethod(fileClass, "chown", fileFChown, mrb.ArgsReq(2))
 	proxyMethodToStat(fileClass, "birthtime", mrb.ArgsNone())
 	proxyMethodToStat(fileClass, "ctime", mrb.ArgsNone())
 	mrb.DefineMethod(fileClass, "flock", fileFlock, mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass,"lstat",  fileLStat, mrb.ArgsReq(1))
+	mrb.DefineMethod(fileClass,"lstat",  fileLStat, mrb.ArgsReq(1))
 	proxyMethodToStat(fileClass, "mtime", mrb.ArgsNone())
 	proxyMethodToStat(fileClass, "size", mrb.ArgsNone())
 	mrb.DefineMethod(fileClass, "to_path", fileToPath, mrb.ArgsReq(1))
@@ -106,7 +107,7 @@ func proxyClassMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbA
 			return mrb.SysFail(err)
 		}
 
-		ret, err := mrb.FuncallWithBlock(mrb.Value(stat), mrb.Intern(name))
+		ret, err := mrb.FuncallWithBlock(mrb.Value(stat), mrb.GetMID())
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -130,7 +131,7 @@ func proxyMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec)
 			return mrb.SysFail(err)
 		}
 
-		ret, err := mrb.FuncallWithBlock(mrb.Value(stat), mrb.Intern(name))
+		ret, err := mrb.FuncallWithBlock(mrb.Value(stat), mrb.GetMID())
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -414,8 +415,13 @@ func fileExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func fileAbsolutePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	name, dir := mrb.GetArgs2("", "")
-	pth := filepath.Join(dir.String(), name.String())
+	name, dir := mrb.GetArgs2("")
+	var pth string
+	if dir.IsNil() {
+		pth = name.String()
+	} else {
+		pth = filepath.Join(dir.String(), name.String())
+	}
 	ret, err := filepath.Abs(pth)
 	if err != nil {
 		return mrb.RaiseError(err)

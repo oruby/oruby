@@ -121,9 +121,9 @@ func (mrb *MrbState) setHook(p unsafe.Pointer, v interface{}) {
 		delete(mrb.hooks, p)
 	} else {
 		mrb.hooks[p] = v
-		if freer, ok := v.(Freer); ok {
-			runtime.SetFinalizer(&freer, func(c Freer){
-				c.Free()
+		if _, ok := v.(Freer); ok {
+			runtime.SetFinalizer(&v, func(v interface{}){
+				v.(Freer).Free()
 			})
 		}
 	}

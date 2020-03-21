@@ -7,7 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"strings"
+	"os/exec"
 )
 
 func init() {
@@ -15,15 +15,16 @@ func init() {
 		cIO := mrb.DefineClass("IO", mrb.ObjectClass())
 		cIO.AttachType((*io.PipeWriter)(nil))
 		cIO.AttachType((*io.PipeReader)(nil))
+		cIO.AttachType((*bufio.Writer)(nil))
+		cIO.AttachType((*bufio.Reader)(nil))
 		cIO.AttachType((*superPipe)(nil))
 
-		cIO.Include(mrb.ModuleGet("Enumerable")) /* 15.2.20.3 */
+		cIO.Include(mrb.ModuleGet("Enumerable"))
 
-		// Not implemented: select and popen fork (command '-')
+		// Not implemented: select and popen with fork command '-')
 		cIO.DefineClassMethod("binread", ioBinread, mrb.ArgsArg(1,2))
 		cIO.DefineClassMethod("binwrite", ioBinwrite, mrb.ArgsArg(2,2))
 		cIO.DefineClassMethod("copy_stream", ioCopyStream, mrb.ArgsArg(2,2))
-		cIO.DefineAlias("for_fd", "new")
 		cIO.DefineClassMethod("foreach", ioForeach, mrb.ArgsArg(2,3)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("pipe", ioPipe, mrb.ArgsOpt(3)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("popen", ioPopen, mrb.ArgsReq(1)+mrb.ArgsRest())
@@ -33,9 +34,10 @@ func init() {
 		cIO.DefineClassMethod("sysopen", ioSSysopen, mrb.ArgsArg(1, 2))
 		cIO.DefineClassMethod("try_convert", ioTryConvert, mrb.ArgsReq(1))
 		cIO.DefineClassMethod("write", ioBinwrite, mrb.ArgsArg(2, 2))
+		cIO.DefineClassMethod("open", ioOpen, mrb.ArgsArg(1, 2)|mrb.ArgsBlock())
+		cIO.DefineClassMethod("for_fd", ioNew, mrb.ArgsArg(1, 2))
 
-		cIO.DefineMethod("open", ioOpen, mrb.ArgsArg(1, 2)|mrb.ArgsBlock()) /* 15.2.20.5.21 (x)*/
-		cIO.DefineMethod("initialize", ioInit, mrb.ArgsArg(1, 2)) /* 15.2.20.5.21 (x)*/
+		cIO.DefineMethod("initialize", ioInit, mrb.ArgsArg(1, 2))
 		cIO.DefineMethod("initialize_copy", ioInitCopy, mrb.ArgsReq(1))
 		cIO.DefineMethod("<<", ioWriteString, mrb.ArgsReq(1))
 		cIO.DefineMethod("advise", mrb.NotImplemented, mrb.ArgsArg(1,2))
@@ -115,6 +117,8 @@ func init() {
 		ioError := mrb.DefineClass("IOError", mrb.EStandardErrorClass())
 		mrb.DefineClass("EOFError", ioError)
 
+		initFile(mrb, cIO)
+
 		return nil
 	})
 }
@@ -131,38 +135,58 @@ func raiseIOErrorf(mrb *oruby.MrbState, format string, args... interface{}) orub
 	return mrb.Raisef(mrb.ExcGet("IOError"), format, args...)
 }
 
-func fooClose()error{ return nil }
-
-func getStream(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}, func()error, error) {
+func getStream(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}, error) {
 	switch item.Type() {
 	case oruby.MrbTTString:
 		ret, err := os.OpenFile(item.String(), mode, 0755)
-		return ret, func()error{ return ret.Close() }, err
+		return ret, err
 	case oruby.MrbTTData:
-		return mrb.Data(item), fooClose, nil
+		return mrb.Data(item), nil
 	}
-	return nil, fooClose, oruby.EArgumentError("IO Stream or name expected")
+	return nil, oruby.EArgumentError("IO Stream or name expected")
+}
+
+func closeStream(s interface{}, isFilePath bool) error {
+	if !isFilePath {
+		return nil
+	}
+	if closer, ok := s.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 func ioCopyStream(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
+	from := args.Item(0)
+	to   := args.Item(1)
 
-	src, srcCloser, err := getStream(mrb, os.O_RDONLY, args.Item(0))
+	src, err := getStream(mrb, os.O_RDONLY, from)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	defer srcCloser()
+	defer closeStream(src, from.IsString())
 
-	dest, destCloser, err := getStream(mrb, os.O_WRONLY, args.Item(1))
+	dest, err := getStream(mrb, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, to)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
 	offset := int64(args.ItemDefInt(3, 0))
 	if offset > 0 {
-		if seaker, ok := src.(io.Seeker); ok {
-			if _, err := seaker.Seek(offset, io.SeekStart); err != nil {
-				_= destCloser()
+		if seeker, ok := src.(io.Seeker); ok {
+			// If IO object, and offset is set copy_stream doesn’t move the current file offset
+			if !from.IsString() {
+				oldPos, err := seeker.Seek(0, io.SeekCurrent)
+				if err != nil {
+					_= closeStream(dest, to.IsString())
+					return mrb.RaiseError(err)
+				}
+				defer func(){ _,_= seeker.Seek(oldPos, io.SeekStart) }()
+			}
+
+			if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
+				_= closeStream(dest, to.IsString())
 				return mrb.RaiseError(err)
 			}
 		}
@@ -172,17 +196,17 @@ func ioCopyStream(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	length := int64(args.ItemDefInt(2, -1))
 	if length < 0 {
-		ret, err = io.Copy(src.(io.Writer), dest.(io.Reader))
+		ret, err = io.Copy(dest.(io.Writer), src.(io.Reader))
 	} else {
-		ret, err = io.CopyN(src.(io.Writer), dest.(io.Reader), length)
+		ret, err = io.CopyN(dest.(io.Writer), src.(io.Reader), length)
 	}
 	if err != nil {
-		_= destCloser()
+		_= closeStream(dest, to.IsString())
 		return mrb.RaiseError(err)
 	}
 
 	// Destination could error on close, discarding writes
-	if err = destCloser(); err != nil {
+	if err = closeStream(dest, to.IsString()); err != nil {
 		return mrb.RaiseError(err)
 	}
 
@@ -210,7 +234,7 @@ func rwNameLenOffset(name string, offset int64, length *int64) (*os.File, error)
 func ioBinread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, lengthV, offsetV := mrb.GetArgs3("", -1,0)
 	offset := offsetV.Int64()
-	length :=  lengthV.Int64()
+	length := lengthV.Int64()
 
 	if (length == -1) && (offset == 0) {
 		b, err := ioutil.ReadFile(name.String())
@@ -238,7 +262,7 @@ func ioBinread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioBinwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, str, offset := mrb.GetArgs3("", "", 0)
 
-	f, err := os.OpenFile(name.String(), os.O_CREATE|os.O_RDWR,0755)
+	f, err := os.OpenFile(name.String(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY,0755)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -256,12 +280,11 @@ func ioBinwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func modestrToFlags(mode string) (int, error) {
-	flags := 0
-
 	if mode == "" {
 		return 0, nil
 	}
 
+	flags := 0
 	switch mode[0] {
 	case 'r':
 		flags = os.O_RDONLY
@@ -277,7 +300,7 @@ func modestrToFlags(mode string) (int, error) {
 		return flags, nil
 	}
 
-	for _, m := range mode {
+	for _, m := range mode[1:] {
 		switch m {
 		case 'b':
 			//flags |= os.O_BINARY
@@ -345,6 +368,10 @@ func parseFlags(mrb *oruby.MrbState, mode, optHash oruby.Value) (int, error) {
 	return flags|flagsOpt, nil
 }
 
+// TODO: this will leak file descriptors, if not properly closed
+//       this method returns int; MRI closes fd when returned variablee is GC-ed
+//       mruby Int/Fixnum is not in GC arena.
+//       mruby DATA structure does get free
 func ioSSysopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	path := args.Item(0)
@@ -360,12 +387,12 @@ func ioSSysopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		flags = os.O_RDONLY
 	}
 
-	f, err := os.OpenFile(mrb.String(path), flags, os.FileMode(perm))
+	f, err := platformOpenFile(mrb.String(path), flags, os.FileMode(perm))
 	if err != nil {
-		return mrb.SysFail(err.Error())
+		return mrb.SysFail(err)
 	}
 
-	return mrb.Value(f.Fd())
+	return mrb.Value(uintptr(f))
 }
 
 func openIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error) {
@@ -413,8 +440,24 @@ func ioInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	mrb.DataSetInterface(self, newStream(ioObject))
+	mrb.DataSetInterface(self, ioObject)
 	return self
+}
+
+func ioNew(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	fd, mode, opt := mrb.GetArgs3()
+
+	ioObject, err := openIO(mrb, fd, mode, opt)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	ret, err := mrb.ObjNew(mrb.ClassPtr(self), ioObject)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	return ret
 }
 
 func ioOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -431,109 +474,70 @@ func ioOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	if !block.IsNil() {
+	if block.IsNil() {
 		return ret
 	}
+	defer func(){
+		//if closer, ok := mrb.Data(ret).(io.Closer); ok {
+		//	_=closer.Close()
+		//}
+	}()
 
 	return mrb.YieldCont(block, self, ret)
 }
 
+// ioPipe internally opens io.Pipe, which return io.PipeReader and io.PipeWriter
 func ioPipe(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	block := mrb.GetArgsBlock()
 
-	reader, writer := io.Pipe()
+	r, w := io.Pipe()
 
 	if !block.IsNil() {
-		return mrb.YieldCont(block, self, reader, writer)
+		return mrb.YieldCont(block, self, r, w)
 	}
 
-	return mrb.AryNewFromValues(mrb.Value(reader), mrb.Value(writer))
+	return mrb.AryNewFromValues(mrb.Value(r), mrb.Value(w))
 }
 
-func openLineReader(mrb *oruby.MrbState, fd, arg1, arg2, opt oruby.Value) (io.Reader, *string, error) {
-	globalSeparator := mrb.GetGV("$/").String()
-	sep := &globalSeparator
-	limit := int64(-1)
-
-	switch arg1.Type() {
-	case oruby.MrbTTString:
-		*sep = arg1.String()
-	case oruby.MrbTTFalse:
-		sep = nil
-	case oruby.MrbTTFixnum:
-		limit = arg1.Int64()
-	}
-
-	if arg2.IsFixnum() {
-		limit = arg2.Int64()
-	}
-
-	f, err := openIO(mrb, fd, mrb.NilValue(), opt)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	reader, ok := f.(io.Reader)
-	if !ok {
-		return nil, nil, oruby.EError("IOError", "file does not support reading")
-	}
-
-	if limit >= 0 {
-		reader = io.LimitReader(reader, limit)
-	}
-	return reader, sep, nil
-}
 
 func ioSReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs()
-	f := a.Item(0)
-	r, sep, err := openLineReader(mrb, f, a.Item(1), a.Item(2), a.GetLastHash() )
+	reader, closer, err := openLineReader(mrb, a.Item(0), a, 1)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	data, err := ioutil.ReadAll(r)
-	if err != nil {
-		return mrb.RaiseError(err)
+	ret := mrb.AryNewCapa(15)
+	for reader.Scan() {
+		ret.PushString(reader.Text())
+	}
+	if closer != nil {
+		_= closer.Close()
 	}
 
-	defer func(){
-		if closer, ok := r.(io.Closer); ok {
-			_= closer.Close()
-		}
-	}()
-
-	if sep == nil {
-		return mrb.BytesValue(data)
-	}
-
-	lines := strings.Split(string(data), *sep)
-	return mrb.Value(lines)
+	return ret
 }
 
 func ioForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a, block := mrb.GetArgsWithBlock()
-	r, sep, err := openLineReader(mrb, a.Item(0), a.Item(1), a.Item(2), a.GetLastHash())
+	reader, closer, err := openLineReader(mrb, a.Item(0), a, 1)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	rs := bufio.NewScanner(r)
-	rs.Split(getSpliter(sep))
-
 	lines := mrb.AryNewCapa(15)
-	for rs.Scan() {
-		if !block.IsNil() {
-			_, err := mrb.YieldArgv(block, rs.Text())
-			if err != nil {
-				return mrb.RaiseError(err)
-			}
+	for reader.Scan() {
+		if block.IsNil() {
+			lines.PushString(reader.Text())
 			continue
 		}
-		lines.PushString(rs.Text())
+		_, err := mrb.YieldArgv(block, reader.Text())
+		if err != nil {
+				return mrb.RaiseError(err)
+			}
 	}
-	if closer, ok := r.(io.Closer); ok {
-		_ = closer.Close()
+	if closer != nil {
+		_= closer.Close()
 	}
 
 	if !block.IsNil() {
@@ -564,7 +568,9 @@ func ioTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ioObject = mrb.Data(f)
 
 		switch ioObject.(type) {
-		case io.Reader, io.Writer, *os.File, *io.PipeReader, *io.PipeWriter:
+		case *os.File:
+			return mrb.Value(ioObject)
+		case io.Reader, io.Writer, *superPipe, *io.PipeReader, *io.PipeWriter:
 			return mrb.Value(ioObject)
 		default:
 			ret, err := mrb.FuncallWithBlock(f, mrb.Intern("to_io"))
@@ -590,40 +596,34 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	args, block := mrb.GetArgsWithBlock()
 	env  := args.Item(0)
-	cmd  := args.Item(1)
+	command := args.Item(1)
 	modeV := args.Item(2)
 	opt  := args.GetLastHash()
 
 	if !env.IsHash() {
-		modeV = cmd
-		cmd = env
+		modeV = command
+		command = env
 		env = mrb.NilValue()
 	}
 
-	if cmd.IsString() && cmd.String() == "-" {
-		return mrb.NotImplemented(mrb,self)
+	if command.IsString() && command.String() == "-" {
+		return mrb.EArgumentError().Raise("fork param '-' is not supported")
+	}
 
-	} else if cmd.IsArray() {
-		arg := mrb.AryEntry(cmd, 0)
+	if command.IsArray() {
+		arg := mrb.AryEntry(command, 0)
 		if arg.IsHash() {
 			if env.IsNil() {
 				env = arg
 			}
-			mrb.AryShift(cmd)
+			mrb.AryShift(command)
 		}
 
-		arg = mrb.AryEntry(cmd, -1)
+		arg = mrb.AryEntry(command, -1)
 		if arg.IsHash() {
 			mrb.HashMerge(opt, arg)
-			mrb.AryPop(cmd)
+			mrb.AryPop(command)
 		}
-	}
-
-	// Pipe connects subprocess with mrb state
-	r,w := io.Pipe()
-
-	if !opt.IsHash() {
-		opt = mrb.HashNew().Value()
 	}
 
 	mode, err := parseFlags(mrb, modeV, opt)
@@ -631,18 +631,40 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	mrb.HashDeleteKey(opt, mrb.Intern("in"))
-	mrb.HashDeleteKey(opt, mrb.Intern("out"))
-	mrb.HashSet(opt, mrb.FixnumValue(0), mrb.Value(w))
-	mrb.HashSet(opt, mrb.FixnumValue(1), mrb.Value(r))
-
-	// Process.spawn(env, cmd, opt)
-	pid, err := mrb.FuncallWithBlock(proc, mrb.Intern("spawn"), env, cmd, opt)
+	// Process.spawn(env, command, opt)
+	var cmdV oruby.Value
+	if env.IsNil() {
+		cmdV, err = mrb.FuncallWithBlock(proc, mrb.Intern("_get_cmd"), command, opt)
+	} else {
+		cmdV, err = mrb.FuncallWithBlock(proc, mrb.Intern("_get_cmd"), env, command, opt)
+	}
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	ret := mrb.Value(&superPipe{r,w, pid.Int(), mode})
+	cmd, ok := mrb.Data(cmdV).(*exec.Cmd)
+	if !ok {
+		return mrb.ERuntimeError().Raise("Process::_get_cmd does not return command")
+	}
+
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+
+	r, err := cmd.StdoutPipe()
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	w, err := cmd.StdinPipe()
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	if err = cmd.Start(); err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	ret := mrb.Value(&superPipe{r, w, cmd.Process.Pid, mode})
 	if block.IsNil() {
 		return ret
 	}
@@ -651,6 +673,9 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	_,_= mrb.FuncallWithBlock(proc, mrb.Intern("wait"), pid)
+
+	if err = cmd.Wait(); err != nil {
+		return mrb.RaiseError(err)
+	}
 	return result
 }

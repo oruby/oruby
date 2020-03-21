@@ -8,44 +8,8 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"strings"
 )
 
-type stream struct {
-	io.Reader
-	io.Writer
-	io.Seeker
-	f interface{}
-	Lineno int64
-}
-
-func newStream(ioobject interface{}) *stream {
-	reader, ok := ioobject.(io.Reader)
-	if !ok {
-		reader = nil
-	}
-	writer, ok := ioobject.(io.Writer)
-	if !ok {
-		writer = nil
-	}
-	seeker, ok := ioobject.(io.Seeker)
-	if !ok {
-		seeker = nil
-	}
-	return &stream{
-		f: ioobject,
-		Reader: reader,
-		Writer: writer,
-		Seeker: seeker,
-	}
-}
-
-func (s *stream) Close() error {
-	if closer, ok := s.f.(io.Closer); ok {
-		return closer.Close()
-	}
-	return nil
-}
 
 func ioInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if f, ok := mrb.Data(self).(*os.File); ok {
@@ -61,23 +25,23 @@ func ioInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if err != nil {
 			return mrb.SysFail(err)
 		}
-		return mrb.Value(newStream(f2))
+		return mrb.Value(f2)
 	}
 
-	return mrb.EArgumentError().Raise("IO stream is not file and does not support cloning")
+	return mrb.EArgumentError().Raise("IO stream is not a file and does not support cloning")
 }
 
-func valueToS(mrb *oruby.MrbState, v oruby.Value) (string, error) {
+func valueToS(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
 	switch v.Type() {
 	case oruby.MrbTTString, oruby.MrbTTFixnum, oruby.MrbTTFalse, oruby.MrbTTTrue:
-		return v.String(), nil
+		return v, nil
 	}
 
 	sv, err := mrb.FuncallWithBlock(v, mrb.Intern("to_s"))
 	if err != nil {
-		return "", err
+		return mrb.NilValue(), err
 	}
-	return sv.String(), nil
+	return sv, nil
 }
 
 func ioWriteString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -92,7 +56,7 @@ func ioWriteString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	_, err = io.WriteString(w, s)
+	_, err = w.Write(s.Bytes())
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -135,7 +99,7 @@ func ioCloseRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok {
 		return raiseIOError(mrb, "IO stream is not duplexed")
 	}
-	_=sp.PipeReader.CloseWithError(errClosed)
+	_= sp.ReadCloser.Close()
 	return mrb.NilValue()
 }
 
@@ -144,7 +108,7 @@ func ioCloseWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok {
 		return raiseIOError(mrb, "IO stream is not duplexed")
 	}
-	_=sp.PipeWriter.CloseWithError(errClosed)
+	_= sp.WriteCloser.Close()
 	return mrb.NilValue()
 }
 
@@ -155,7 +119,7 @@ func ioIsClosed(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if sp, ok := f.(*superPipe); ok {
 		_,err1 := sp.Read(zeroBuf)
 		_,err2 := sp.Write(zeroBuf)
-		return oruby.Bool(errors.Is(err1, errClosed) && errors.Is(err2, errClosed))
+		return oruby.Bool(errors.Is(err1, os.ErrClosed) && errors.Is(err2, os.ErrClosed))
 	}
 
 	r, ok := f.(io.Reader)
@@ -174,27 +138,24 @@ func ioIsClosed(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func ioEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a, block := mrb.GetArgsWithBlock()
-	r, sep, err := openLineReader(mrb, self, a.Item(0), a.Item(1), a.GetLastHash())
+	reader, closer, err := openLineReader(mrb, self, a, 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	rs := bufio.NewScanner(r)
-	rs.Split(getSpliter(sep))
-
 	lines := mrb.AryNewCapa(15)
-	for rs.Scan() {
+	for reader.Scan() {
 		if !block.IsNil() {
-			_, err := mrb.YieldArgv(block, rs.Text())
+			_, err := mrb.YieldArgv(block, reader.Text())
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
 			continue
 		}
-		lines.PushString(rs.Text())
+		lines.PushString(reader.Text())
 	}
-	if closer, ok := r.(io.Closer); ok {
-		_ = closer.Close()
+	if closer != nil {
+		_= closer.Close()
 	}
 
 	if !block.IsNil() {
@@ -330,11 +291,6 @@ func getFile(mrb *oruby.MrbState, self oruby.Value) (*os.File,error) {
 	if f, ok := mrb.Data(self).(*os.File); ok {
 		return f, nil
 	}
-	if stm, ok := mrb.Data(self).(*stream); ok {
-		if f, ok := stm.f.(*os.File); ok {
-			return f, nil
-		}
-	}
 	return nil, oruby.EError("IOError", "IO stream is not a file")
 }
 
@@ -381,39 +337,45 @@ func ioGetc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StrNew(string(b))
 }
 
-func setLastLine(mrb *oruby.MrbState, r io.Reader, line string)  oruby.Value {
+func setLastLine(mrb *oruby.MrbState, self oruby.Value, line string)  oruby.Value {
 	v := mrb.StrNew(line)
 	mrb.GVSet(mrb.Intern("$_"), v)
-	if stm, ok := r.(*stream); ok {
-		stm.Lineno++
+
+	lineno := mrb.Intern("@lineno")
+	noV := mrb.IVGet(self, lineno)
+	no := 0
+	if !noV.IsNil() {
+		no = noV.Int()
 	}
+	_= mrb.IVSet(self, lineno, oruby.MrbFixnumValue(no+1))
+
 	return v
 }
 
+func setLineNo(mrb *oruby.MrbState, self oruby.Value, v int) {
+	_=mrb.IVSet(self, mrb.Intern("@lineno"), mrb.FixnumValue(v))
+}
+
 func ioGets(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	a := mrb.GetArgs()
-	r, sep, err := openLineReader(mrb, self, a.Item(0), a.Item(1), a.GetLastHash())
+	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	line, err := getLine(r, sep)
-	if errors.Is(err, io.EOF) {
+	reader.Scan()
+	if errors.Is(reader.Err(), io.EOF) {
 		return mrb.NilValue()
 	}
-	if err != nil {
+	if reader.Err() != nil {
 		mrb.SetGV("$_", mrb.NilValue())
-		return raiseIOError(mrb, err.Error())
+		return raiseIOError(mrb, reader.Err().Error())
 	}
 
-	return setLastLine(mrb, r, line)
+	return setLastLine(mrb, self, reader.Text())
 }
 
 func ioInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	f := mrb.Data(self)
-	if stm, ok := f.(*stream); ok {
-		f = stm.f
-	}
 
 	if f == os.Stdout {
 		return mrb.StrNew("<IO:STDOUT>")
@@ -429,20 +391,13 @@ func ioInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioLineno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	stm := mrb.Data(self)
-	if stm, ok := stm.(*stream); ok {
-		return oruby.Int64(stm.Lineno)
-	}
-	return oruby.Int(0)
+	return mrb.IVGet(self, mrb.Intern("lineno"))
 }
 
 func ioSetLineno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	no := mrb.GetArgsFirst().Int64()
-	stm := mrb.Data(self)
-	if stm, ok := stm.(*stream); ok {
-		stm.Lineno = no
-	}
-	return oruby.Int64(no)
+	no := mrb.GetArgsFirst().Int()
+	setLineNo(mrb, self, no)
+	return oruby.Int(no)
 }
 
 func ioPid(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -503,30 +458,6 @@ func ioPread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.BytesValue(buf)
 	}
 
-	stm, ok := mrb.Data(self).(*stream)
-	if ok {
-		if r, ok := stm.f.(io.ReaderAt); ok {
-			_, err = r.ReadAt(buf, offset)
-			if err != nil {
-				return mrb.RaiseError(err)
-			}
-			return mrb.BytesValue(buf)
-		}
-		f = stm.f
-		if stm.Seeker != nil {
-			if _,err = stm.Seek(offset, io.SeekStart); err != nil {
-				return mrb.RaiseError(err)
-			}
-			if stm.Reader != nil {
-				_, err = stm.Reader.Read(buf)
-				if err != nil {
-					return mrb.RaiseError(err)
-				}
-				return mrb.BytesValue(buf)
-			}
-		}
-	}
-
 	if seeker, ok := f.(io.Seeker); ok {
 		if _,err = seeker.Seek(offset, io.SeekStart); err != nil {
 			return mrb.RaiseError(err)
@@ -565,7 +496,7 @@ func ioPrint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
-		_, err = io.WriteString(w, s)
+		_, err = w.Write(s.Bytes())
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -657,7 +588,12 @@ func pArray(mrb *oruby.MrbState, ary oruby.Value, w io.Writer) error {
 			return err
 		}
 
-		_, err = io.WriteString(w, s+"\n")
+		_, err = w.Write(s.Bytes())
+		if err != nil {
+			return err
+		}
+
+		_, err = w.Write([]byte{'\n'})
 		if err != nil {
 			return err
 		}
@@ -691,7 +627,12 @@ func ioPuts(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.RaiseError(err)
 		}
 
-		_, err = io.WriteString(w, s+"\n")
+		_, err = w.Write(s.Bytes())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+
+		_, err = w.Write([]byte{'\n'})
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -710,35 +651,11 @@ func ioPwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	if w, ok := f.(io.WriterAt); ok {
-		n, err = w.WriteAt([]byte(s), offset.Int64())
+		n, err = w.WriteAt(s.Bytes(), offset.Int64())
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
 		return oruby.Int(n)
-	}
-
-	stm, ok := mrb.Data(self).(*stream)
-	if ok {
-		if w, ok := stm.f.(io.WriterAt); ok {
-			n, err = w.WriteAt([]byte(s), offset.Int64())
-			if err != nil {
-				return mrb.RaiseError(err)
-			}
-			return oruby.Int(n)
-		}
-		f = stm.f
-		if stm.Seeker != nil {
-			if _,err := stm.Seek(offset.Int64(), io.SeekStart); err != nil {
-				return mrb.RaiseError(err)
-			}
-			if stm.Writer != nil {
-				n, err = io.WriteString(stm.Writer, s)
-				if err != nil {
-					return mrb.RaiseError(err)
-				}
-				return oruby.Int(n)
-			}
-		}
 	}
 
 	if seeker, ok := f.(io.Seeker); ok {
@@ -747,7 +664,7 @@ func ioPwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 
 		if w2, ok := f.(io.Writer); ok {
-			n, err = io.WriteString(w2, s)
+			n, err = w2.Write(s.Bytes())
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
@@ -834,137 +751,36 @@ func ioReadchar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StrNew(string(chr))
 }
 
-func dropCR(data []byte) []byte {
-	if len(data) > 0 && data[len(data)-1] == '\r' {
-		return data[0 : len(data)-1]
-	}
-	return data
-}
-
-func getSpliter(sep *string) bufio.SplitFunc {
-	if sep == nil {
-		return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-			// Return nothing if at end of file and no data passed
-			if atEOF && len(data) == 0 {
-				return 0, nil, io.EOF
-			}
-
-			// If at end of file with data return the data
-			if atEOF {
-				return len(data), data, nil
-			}
-
-			return
-		}
-	}
-
-	if *sep == "\n" {
-		return bufio.ScanLines
-	}
-
-	// paragraphs
-	if *sep == "" {
-		return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-			// Return nothing if at end of file and no data passed
-			if atEOF && len(data) == 0 {
-				return 0, nil, io.EOF
-			}
-
-			// Find the index of the input of a separator
-			if i := strings.Index(string(data), "\n\n"); i >= 0 {
-				return i + 1, dropCR(data[0:i]), nil
-			}
-			// Find the index of the input of a separator
-			if i := strings.Index(string(data), "\n\r\n\r"); i >= 0 {
-				return i + 1, dropCR(data[0:i]), nil
-			}
-
-			// If at end of file with data return the data
-			if atEOF {
-				return len(data), dropCR(data), nil
-			}
-
-			return
-		}
-	}
-
-	// Custom separator
-	return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		// Return nothing if at end of file and no data passed
-		if atEOF && len(data) == 0 {
-			return 0, nil, io.EOF
-		}
-
-		// Find the index of the input of a separator
-		if i := strings.Index(string(data), *sep); i >= 0 {
-			return i + 1, dropCR(data[0:i]), nil
-		}
-
-		// If at end of file with data return the data
-		if atEOF {
-			return len(data), dropCR(data), nil
-		}
-
-		return
-	}
-}
-
-func getLine(r io.Reader, sep *string) (string, error) {
-	if sep == nil {
-		b, err := ioutil.ReadAll(r)
-		return string(b), err
-	}
-
-	rs := bufio.NewScanner(r)
-	rs.Split(getSpliter(sep))
-	rs.Scan()
-
-	return rs.Text(), rs.Err()
-}
-
 func ioReadline(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	a := mrb.GetArgs()
-	r, sep, err := openLineReader(mrb, self, a.Item(0), a.Item(1), a.GetLastHash())
+	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	line, err := getLine(r, sep)
-	if err != nil {
+	reader.Scan()
+	if reader.Err() != nil {
 		mrb.SetGV("$_", mrb.NilValue())
-		if errors.Is(err, io.EOF){
+		if errors.Is(reader.Err(), io.EOF){
 			raiseEOF(mrb)
 		}
-		return raiseIOError(mrb, err.Error())
+		return raiseIOError(mrb, reader.Err().Error())
 	}
 
-	return setLastLine(mrb, r, line)
+	return setLastLine(mrb, self, reader.Text())
 }
 
 func ioReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	a  := mrb.GetArgs()
-	r, sep, err := openLineReader(mrb, self, a.Item(0), a.Item(1), a.GetLastHash())
+	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	if sep == nil {
-		data, err := ioutil.ReadAll(r)
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
-		return mrb.BytesValue(data)
-	}
-
-	rs := bufio.NewScanner(r)
-	rs.Split(getSpliter(sep))
-
 	lines := mrb.AryNewCapa(15)
-	for rs.Scan() {
-		lines.PushString(rs.Text())
+	for reader.Scan() {
+		lines.PushString(reader.Text())
 	}
-	if rs.Err() != io.EOF {
-		return mrb.RaiseError(rs.Err())
+	if reader.Err() != nil && reader.Err() != io.EOF {
+		return mrb.RaiseError(reader.Err())
 	}
 	return lines
 }
@@ -1017,33 +833,20 @@ func ioReopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioRewind(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	var seeker io.Seeker
-	stm, ok := mrb.Data(self).(*stream)
-	if !ok {
-		stm = nil
-		if seeker, ok = mrb.Data(self).(io.Seeker); !ok {
-			return raiseIOError(mrb,"IO object does not support seek")
-		}
-	} else {
-		stm.Lineno = 0
-		seeker = stm.Seeker
-	}
+	setLineNo(mrb, self, 0)
 
-	if seeker != nil {
+	if seeker, ok := mrb.Data(self).(io.Seeker); ok {
 		_, err := seeker.Seek(0, io.SeekStart)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
 	}
+
 	return oruby.Int(0)
 }
 
 func ioSeek(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	offset, whence := mrb.GetArgs2(0, io.SeekStart)
-	stm, ok := mrb.Data(self).(*stream)
-	if !ok {
-		stm = nil
-	}
 
 	seeker, ok := mrb.Data(self).(io.Seeker)
 	if !ok || seeker == nil {
@@ -1055,18 +858,15 @@ func ioSeek(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	if stm != nil {
-		if pos == 0 {
-			stm.Lineno = 0
-		}
+	if pos == 0 {
+		setLineNo(mrb, self, 0)
 	}
 
 	return oruby.Int(0)
 }
 
 func ioStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	stm := mrb.Data(self).(*stream)
-	f, ok := stm.f.(*os.File)
+	f, ok := mrb.Data(self).(*os.File)
 	if ok {
 		stat, err := f.Stat()
 		if err != nil {
@@ -1137,7 +937,7 @@ func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
-		n, err := io.WriteString(w, s)
+		n, err := w.Write(s.Bytes())
 		if err != nil {
 			return mrb.RaiseError(err)
 		}

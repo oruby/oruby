@@ -26,6 +26,16 @@ type processData struct {
 	tms         oruby.RClass
 }
 
+func (procData *processData) getRunner(pid int) *cmdRunner {
+	procData.Lock()
+	runner, ok := procData.runners[pid]
+	procData.Unlock()
+	if ok && runner.cmd.ProcessState == nil {
+		return runner
+	}
+	return nil
+}
+
 func init() {
 	oruby.Gem("process", func(mrb *oruby.MrbState) interface{} {
 		// Require thread, ignore if it is not included in gems
@@ -78,6 +88,7 @@ func init() {
 		mrb.DefineClassMethod(mProc, "waitpid2", procWait2, mrb.ArgsOpt(2))
 		mrb.DefineClassMethod(mProc, "waitall", procWaitall, mrb.ArgsNone())
 		mrb.DefineClassMethod(mProc, "detach", procDetach, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(mProc, "_get_cmd", procGetCmd, mrb.ArgsAny())
 
 		if mrb.ClassDefined("Thread") {
 			cWaiter := mrb.DefineClassUnder(mProc, "Waiter", mrb.ClassGet("Thread"))
@@ -91,26 +102,6 @@ func init() {
 		mrb.DefineModuleFunc(mProc, "ppid", os.Getppid)
 
 		setConsts(mProc)
-
-		mProc.Const("RLIM_SAVED_MAX", RLIM_INFINITY)
-		mProc.Const("RLIM_INFINITY", RLIM_INFINITY)
-		mProc.Const("RLIM_SAVED_CUR", RLIM_INFINITY)
-		mProc.Const("RLIMIT_AS", RLIMIT_AS)
-		mProc.Const("RLIMIT_CORE", RLIMIT_CORE)
-		mProc.Const("RLIMIT_CPU", RLIMIT_CPU)
-		mProc.Const("RLIMIT_DATA", RLIMIT_DATA)
-		mProc.Const("RLIMIT_FSIZE", RLIMIT_FSIZE)
-		//mProc.Const("RLIMIT_MEMLOCK", RLIMIT_MEMLOCK)
-		//mProc.Const("RLIMIT_MSGQUEUE", RLIMIT_MSGQUEUE)
-		//mProc.Const("RLIMIT_MSGQUEUE", RLIMIT_MSGQUEUE)
-		//mProc.Const("RLIMIT_NICE", RLIMIT_NICE)
-		mProc.Const("RLIMIT_NOFILE", RLIMIT_NOFILE)
-		//mProc.Const("RLIMIT_NPROC", RLIMIT_NPROC)
-		//mProc.Const("RLIMIT_RSS", RLIMIT_RSS)
-		//mProc.Const("RLIMIT_RTPRIO", RLIMIT_RTPRIO)
-		//mProc.Const("RLIMIT_RTTIME", RLIMIT_RTTIME)
-		//mProc.Const("RLIMIT_SBSIZE", RLIMIT_SBSIZE)
-		mProc.Const("RLIMIT_STACK", RLIMIT_STACK)
 
 		mrb.DefineModuleFunc(mProc, "uid", os.Getuid)
 		mrb.DefineModuleFunc(mProc, "gid", os.Getgid)
@@ -169,16 +160,6 @@ func getProcData(mrb *oruby.MrbState, self oruby.Value) *processData {
 
 	mProc := mrb.ModuleGet("Process").Value()
 	return mrb.GetModuleData(mProc).(*processData)
-}
-
-func getRunner(procData *processData, pid int) *cmdRunner {
-	procData.Lock()
-	runner, ok := procData.runners[pid]
-	procData.Unlock()
-	if ok && runner.cmd.ProcessState == nil {
-		return runner
-	}
-	return nil
 }
 
 func procInitgroups(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -265,6 +246,18 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.BoolValue(state.Exitstatus == 0)
 }
 
+func procGetCmd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args, block := mrb.GetArgsWithBlock()
+	runner := parseArgs(mrb, args)
+
+	if !block.IsNil() {
+		ret,_ := mrb.YieldArgv(block, mrb.DataValue(runner.cmd))
+		runner.cleanup()
+		return ret
+	}
+	return mrb.DataValue(runner.cmd)
+}
+
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
@@ -299,7 +292,7 @@ func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	// Pid of process
 	if pid > 0 {
-		runner := getRunner(procData, pid)
+		runner := procData.getRunner(pid)
 		if runner != nil {
 			ret, _ := runner.Wait(runner.cmd.Process.Pid, flags)
 			procData.Lock()
@@ -348,7 +341,7 @@ func procWait2(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ret := mrb.NilValue()
 	var state *status
 
-	runner := getRunner(procData, pid)
+	runner := procData.getRunner(pid)
 	if runner != nil {
 		ret, state = runner.Wait(pid, flags.Int())
 	}
@@ -429,7 +422,7 @@ func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	pid := mrb.GetArgsFirst().Int()
 	procData := getProcData(mrb, self)
 
-	runner := getRunner(procData, pid)
+	runner := procData.getRunner(pid)
 	if runner != nil {
 		procData.Lock()
 		delete(procData.runners, pid)
@@ -468,7 +461,7 @@ func procKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 		found := false
 		if pid > 0 {
-			runner := getRunner(procData, pid)
+			runner := procData.getRunner(pid)
 			if runner != nil {
 				found = true
 				err := runner.cmd.Process.Signal(syscall.Signal(sig))

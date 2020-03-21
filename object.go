@@ -4,19 +4,21 @@ package oruby
 import "C"
 import "unsafe"
 
-type (
-	// RBasic represents oruby BasicObject
-	RBasic struct{ p *C.struct_RBasic }
+// RBasic represents oruby BasicObject
+type RBasic struct{ p *C.struct_RBasic }
 
-	// RObject represents oruby Object
-	RObject struct {
-		v   C.mrb_value
-		mrb *MrbState
-	}
+// RObject represents oruby Object
+type RObject struct {
+	v   C.mrb_value
+	mrb *MrbState
+}
 
-	// RFiber repesents oruby Fiber object
-	RFiber struct{ p *C.struct_RFiber }
-)
+// RObjectPtr represents oruby RObject pointer
+type RObjectPtr struct { p *C.struct_RObject }
+
+// RFiber repesents oruby Fiber object
+type RFiber struct{ p *C.struct_RFiber }
+
 
 // Value implements MrbValue interface for RObject
 func (obj RObject) Value() Value { return Value{obj.v} }
@@ -135,8 +137,8 @@ func MrbObjPtr(v MrbValue) uintptr {
 	return uintptr(C._mrb_ptr(v.Value().v))
 }
 
-// RObjectPtr returns pointer to Object if it exists in value
-func (v Value) RObjectPtr() uintptr {
+// Ptr returns pointer to mruby object if it exists in value
+func (v Value) Ptr() uintptr {
 	if !v.Value().HasBasic() {
 		return 0
 	}
