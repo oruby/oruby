@@ -18,7 +18,7 @@ const (
 	fnmGlobNosort = 0x40
 )
 
-func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) {
+func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) oruby.RClass {
 	mrb.SetGV("$/", "\n")
 
 	mrb.SetGV("STDIN", os.Stdin)
@@ -43,9 +43,9 @@ func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) {
 	consts.Const("LOCK_UN", 0x8)
 	consts.Const("LOCK_NB", 0x4)
 
+	consts.Const("Separator", "/")
 	consts.Const("SEPARATOR", "/")
 	consts.Const("PATH_SEPARATOR", os.PathListSeparator)
-	consts.Const("ALT_SEPARATOR", os.PathSeparator)
 
 	consts.Const("NULL",   os.DevNull)
 
@@ -68,4 +68,6 @@ func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) {
 	consts.Const("FNM_GLOB_NOSORT", fnmGlobNosort)
 
 	initPlatformConsts(consts)
+
+	return consts
 }

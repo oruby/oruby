@@ -6,6 +6,8 @@ import (
 )
 
 func initPlatformConsts(consts oruby.RClass) {
+	consts.Const("ALT_SEPARATOR", nil)
+
 	consts.Const("NONBLOCK", syscall.O_NONBLOCK)
 	consts.Const("NOCTTY", syscall.O_NOCTTY)
 	consts.Const("DSYNC", syscall.O_DSYNC)

@@ -1224,7 +1224,7 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 	}
 
 	var err error
-	v := Value{C._mrb_funcall_with_block(
+	v := Value{C.mrb_funcall_with_block(
 			mrb.p,
 			self.Value().v,
 			C.mrb_sym(nameSym),

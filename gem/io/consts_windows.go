@@ -1,6 +1,8 @@
 package io
 
 func initPlatformConsts(consts oruby.RClass) {
+	consts.Const("ALT_SEPARATOR", os.PathSeparator)
+
 	consts.Const("NONBLOCK", syscall.O_NONBLOCK)
 	consts.Const("NOCTTY", syscall.O_NOCTTY)
 	//consts.Const("DSYNC", syscall.O_DSYNC)

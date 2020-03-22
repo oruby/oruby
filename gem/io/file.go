@@ -13,7 +13,8 @@ func initFile(mrb *oruby.MrbState, ioClass oruby.RClass) {
 	fileClass := mrb.DefineClass("File", ioClass)
 	fileClass.AttachType((*os.File)(nil))
 
-	initFileConsts(mrb, fileClass)
+	consts := initFileConsts(mrb, fileClass)
+	fileClass.Include(consts)
 	initFileStat(mrb, fileClass)
 	initFileTest(mrb)
 
@@ -244,6 +245,9 @@ func fileExpandPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func fileExtname(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name := mrb.GetArgsFirst().String()
+	if len(name) > 0 && name[0] == '.' {
+		return mrb.StrNew(filepath.Ext(name[1:]))
+	}
 	return mrb.StrNew(filepath.Ext(name))
 }
 
@@ -293,26 +297,26 @@ func fileIdentical(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func fileSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name := mrb.GetArgsFirst().String()
 	dir, file := filepath.Split(name)
-	return mrb.AryNewFromValues(mrb.StrNew(dir), mrb.StrNew(file))
+	return mrb.AryNewFromValues(mrb.StrNew(filepath.Clean(dir)), mrb.StrNew(file))
 }
 
 func fileDirname(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name := mrb.GetArgsFirst().String()
-	idx := 0
-	for i := len(name) - 1; i >= 0 ; i-- {
-		idx = i
-		if name[idx] != os.PathSeparator && name[idx] != '/' {
-			break
-		}
+	f := mrb.ClassGet("File")
+	sep := f.ConstGet("SEPARATOR").String() +	mrb.String(f.ConstGet("ALT_SEPARATOR"))
+
+	idx := strings.LastIndexAny(name, sep)
+	if idx < 0 {
+		idx = 0
 	}
 
 	ok := false
 	for i := idx; i >= 0 ; i-- {
-		if !ok && (name[i] != os.PathSeparator && name[i] != '/') {
+		if !ok && !strings.Contains(sep, string(name[i])) {
 			ok = true
 			continue
 		}
-		if ok && (name[i] == os.PathSeparator || name[i] == '/') {
+		if ok && strings.Contains(sep, string(name[i])) {
 			continue
 		}
 		name = name[:i]
@@ -349,7 +353,7 @@ func fileLStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func fileMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	n, p, f := mrb.GetArgs3("", "", 0)
+	p, n, f := mrb.GetArgs3("", "", 0)
 	name := n.String()
 	pattern := p.String()
 	flags := f.Int()
@@ -387,7 +391,7 @@ func fileBasename(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func fileRealpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, dir := mrb.GetArgs2("", "")
-	pth := filepath.Join(dir.String(), name.String())
+	pth := filepath.Join(filepath.Clean(dir.String()), name.String())
 	stat, err := os.Stat(pth)
 	if err != nil {
 		return mrb.SysFail(err)
@@ -397,19 +401,19 @@ func fileRealpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func fileRealdirpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, dir := mrb.GetArgs2("", "")
-	pth := filepath.Join(dir.String(), name.String())
+	pth := filepath.Join(filepath.Clean(dir.String()), name.String())
 	stat, err := os.Stat(filepath.Dir(pth))
 	if err != nil {
 		return mrb.SysFail(err)
 	}
-	ret := filepath.Join( filepath.Base(pth), stat.Name())
+	ret := filepath.Join(filepath.Base(pth), stat.Name())
 	return mrb.StrNew(ret)
 }
 
 func fileExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name := mrb.GetArgsFirst().String()
 	if _, err := os.Stat(name); err != nil {
-		return oruby.False
+		return oruby.Bool(!errors.Is(err, os.ErrNotExist))
 	}
 	return oruby.True
 }
