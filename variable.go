@@ -51,6 +51,19 @@ func (mrb *MrbState) ObjIVDefined(obj RObject, sym MrbSym) bool {
 }
 
 // IVGet get instance variable
+func (mrb *MrbState) GetIV(obj MrbValue, name string) Value {
+	return Value{C.mrb_iv_get(mrb.p, obj.Value().v, C.mrb_sym(mrb.Intern(name)))}
+}
+
+// IVGet get instance variable
+func (mrb *MrbState) SetIV(obj MrbValue, name string, v interface{}) {
+	err := mrb.IVSet(obj, mrb.Intern("name"), mrb.Value(v))
+	if err != nil {
+		panic(err)
+	}
+}
+
+// IVGet get instance variable
 func (mrb *MrbState) IVGet(obj MrbValue, sym MrbSym) Value {
 	return Value{C.mrb_iv_get(mrb.p, obj.Value().v, C.mrb_sym(sym))}
 }
