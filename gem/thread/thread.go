@@ -31,6 +31,10 @@ func init() {
 		queueClass.DefineAlias("deq", "pop")
 		queueClass.DefineAlias("shift", "pop")
 
+		sizedQueueClass := mrb.DefineClass("SizedQueue", queueClass)
+		sizedQueueClass.AttachType((*sizedQueue)(nil))
+		sizedQueueClass.DefineMethod("initialize", newSizedQueue, mrb.ArgsReq(1))
+
 		mrb.DefineClass("ThreadError", mrb.EStandardErrorClass())
 		mrb.DefineClass("ClosedQueueError", mrb.ClassGet("StopIteration"))
 

@@ -15,6 +15,10 @@ type queue struct {
 	closed bool
 }
 
+type sizedQueue struct {
+	queue
+}
+
 func newQueue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	q := &queue{
 		sync.Mutex{},
@@ -22,6 +26,24 @@ func newQueue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		make(chan interface{}),
 		list.New(),
 		false,
+	}
+
+	go q.worker()
+
+	mrb.DataSetInterface(self, q)
+	return self
+}
+
+func newSizedQueue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	size := mrb.GetArgsFirst().Int()
+	q := &sizedQueue{
+		queue{
+			sync.Mutex{},
+			mrb,
+			make(chan interface{}, size),
+			list.New(),
+			false,
+		},
 	}
 
 	go q.worker()
