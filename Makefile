@@ -27,12 +27,20 @@ test:
 	go test
 	(cd gem/assert && go test)
 	(cd gem/base64 && go test)
-	(cd gem/complex && go test)
+#	(cd gem/complex && go test)
 	(cd gem/database && go test)
+	(cd gem/env && go test)
 	(cd gem/fullcore && go test)
+	(cd gem/io && go test)
+	(cd gem/io/file && go test)
+	(cd gem/io/popen && go test)
 	(cd gem/json && go test)
 	(cd gem/load && go test)
+	(cd gem/process && go test)
 	(cd gem/regexp && go test)
+#	(cd gem/signal && go test)
+	(cd gem/thread && go test)
+	(cd gem/time && go test)
 	(cd gem/zlib && go test)
 
 libmruby.a :
