@@ -98,7 +98,7 @@ func main() {
 
 ## License
 
-ORuby is available as open source under the terms of the [MIT License][license]
+ORuby is available as open source under the terms of the [Apache License 2.0 License][license]
 
 (c) 2020, Dušan D. Majkić
 
@@ -106,5 +106,5 @@ ORuby is available as open source under the terms of the [MIT License][license]
 
 * Dušan D. Majkić [oruby]
 
-[license]: http://opensource.org/licenses/MIT
+[license]: https://opensource.org/licenses/Apache-2.0
 [oruby]: https://github.com/oruby/oruby
