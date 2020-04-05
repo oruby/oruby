@@ -140,7 +140,7 @@ func initGo(classType reflect.Type, fn reflect.Value) MrbFuncT {
 		if len(result) > 0 && result[len(result)-1].Type() == reflect.TypeOf((*error)(nil)).Elem() {
 			err := result[len(result)-1].Interface()
 			if err != nil {
-				return mrb.getErrorKlass(err.(error)).Raisef("%v.init_go : %v", mrb.ClassOf(self).Name(), err)
+				return mrb.getErrorKlass(err.(error)).Raisef("%v.init_go : %v", mrb.ClassPtr(self).Name(), err)
 			}
 		}
 
@@ -199,7 +199,11 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 
 // AttachType registeres alternate Go type with RClass
 func (c RClass) AttachType(zeroType interface{}) {
-	t := reflect.TypeOf(zeroType)
+	t, ok := zeroType.(reflect.Type)
+	if !ok {
+		t = reflect.TypeOf(zeroType)
+	}
+
 	switch t.Kind() {
 	case reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -209,9 +213,11 @@ func (c RClass) AttachType(zeroType interface{}) {
 		panic("simple types (Ints, Bool, Floats, Pointers) are not supported")
 	case reflect.String:
 		panic("string type is not supported as attached type")
+	case reflect.Interface:
 	case reflect.Func:
 		if t.NumOut() > 0 {
 			c.AttachType(t.Out(0))
+			return
 		}
 	}
 
@@ -331,20 +337,24 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 
 			switch velType.Elem().Kind() {
 			case reflect.String:
-				f = func(v MrbValue) reflect.Value { return reflect.ValueOf(mrb.String(o)) }
+				f = func(v MrbValue) reflect.Value {
+					return reflect.ValueOf(mrb.String(v))
+				}
 			case reflect.Int, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int8,
 				reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint8:
 				f = func(v MrbValue) reflect.Value {
-					in, _ := mrb.Integer(o)
+					in, _ := mrb.Integer(v)
 					return reflect.ValueOf(MrbFixnum(in)).Convert(velType.Elem())
 				}
 			default:
-				f = func(v MrbValue) reflect.Value { return reflect.ValueOf(mrb.Intf(o)).Convert(velType.Elem()) }
+				f = func(v MrbValue) reflect.Value {
+					return reflect.ValueOf(mrb.Intf(v)).Convert(velType.Elem())
+				}
 			}
 
 			for i := 0; i < RArrayLen(o); i++ {
 				av := mrb.AryRef(o, i)
-				reflect.Append(vel, f(av))
+				vel.Set(reflect.Append(vel, f(av)))
 			}
 
 			return nil
