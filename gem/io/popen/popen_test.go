@@ -31,7 +31,7 @@ func Test_ioPopenFork(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	v, err := mrb.Eval(`$p = IO.popen("-")`)
+	_, err := mrb.Eval(`$p = IO.popen("-")`)
 	assert.Error(t, err, "popen Fork via ('-') is not supported")
 }
 

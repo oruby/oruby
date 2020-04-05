@@ -27,7 +27,6 @@ func init() {
 		cIO.DefineClassMethod("copy_stream", ioCopyStream, mrb.ArgsArg(2,2))
 		cIO.DefineClassMethod("foreach", ioForeach, mrb.ArgsArg(2,3)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("pipe", ioPipe, mrb.ArgsOpt(3)|mrb.ArgsBlock())
-		cIO.DefineClassMethod("popen", mrb.NotImplemented, mrb.ArgsReq(1)+mrb.ArgsRest())
 		cIO.DefineClassMethod("readlines", ioSReadlines, mrb.ArgsArg(2, 3))
  		cIO.DefineClassMethod("select", mrb.NotImplemented, mrb.ArgsArg(1, 3))
 		cIO.DefineClassMethod("try_convert", ioTryConvert, mrb.ArgsReq(1))
