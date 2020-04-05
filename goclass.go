@@ -77,9 +77,23 @@ func (c RClass) NewInstance(args ...interface{}) Value {
 // then it checks if obj type is regestered in ruby
 // it then creates oruby object
 func (mrb *MrbState) DataValue(obj interface{}) Value {
+	if obj == nil {
+		return nilValue
+	}
+
 	mrb.Lock()
-	clsptr := mrb.classmap[reflect.TypeOf(obj)]
+	t := reflect.TypeOf(obj)
+	clsptr := mrb.classmap[t]
+
+	if clsptr == nil {
+		for k, v := range mrb.classmap {
+			if k.Kind() == reflect.Interface && t.Implements(k) {
+				clsptr = v
+			}
+		}
+	}
 	mrb.Unlock()
+
 
 	// no registered class - return data
 	if clsptr == nil {
@@ -226,6 +240,11 @@ func (c RClass) DefineMethod(name string, f MrbFuncT, params MrbAspec) {
 // DefineMethodFunc defines function
 func (mrb *MrbState) DefineMethodFunc(klass RClass, name string, f interface{}) {
 	mrb.DefineMethodFuncID(klass, mrb.Intern(name), f)
+}
+
+// DefineMethodFunc defines function
+func (c RClass) DefineMethodFunc(name string, f interface{}) {
+	c.mrb.DefineMethodFuncID(c, c.mrb.Intern(name), f)
 }
 
 // DefineModuleFunction defines module function
