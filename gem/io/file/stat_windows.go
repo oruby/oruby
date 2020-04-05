@@ -1,4 +1,4 @@
-package io
+package file
 
 import (
 	"github.com/oruby/oruby"
@@ -25,12 +25,12 @@ func getExtendedStat(stat os.FileInfo) extendedStat {
 
 func statIsExecutable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|0111 != 0)
+	return oruby.Bool(stat.Mode()&0111 != 0)
 }
 
 func statIsExecutableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|0111 != 0)
+	return oruby.Bool(stat.Mode()&0111 != 0)
 }
 
 func statIsGrpowned(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

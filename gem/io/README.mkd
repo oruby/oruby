@@ -1,0 +1,143 @@
+# IO gem for ORuby
+
+This gem implements Ruby Input/Outpus system.
+It is split into functional "gems".
+
+  * "io" - implements `IO` class on ruby side via Go `io.Reader` and `io.Writer`
+    No file system acces is allowed. Can work with files, but files must be open
+    on Go side and passed to oruby script.
+  * "io/file" - allows file system acces. Implements `File`, `Tempfile`, `Dir`,
+    `File::Stat` over `os.File`, and other Go `os` based methods.
+    Requiering `io/file` will also implement file system methods for oruby `IO`
+    class - `IO::sysopen`, `IO::read`, `IO::write`... using filenames
+  * "io/popen" - implements IO#popen. Requires and includes `process` gem
+  * Missing: "io/nonblocking" - support for nonblock reads and writes
+  * Missing: "io/console" - support for console IO methods
+
+## Install
+
+```go
+import (
+	"github.com/oruby/oruby"
+
+  // work with anything implementing io.Reader and/or io.Writer interface
+	_ "github.com/oruby/oruby/gem/io"
+	// if file system access is needed. Implements File, Tempfile, Dir, File::Stat
+	// depends on (and requires) "io" gem
+	_ "github.com/oruby/oruby/gem/io/file"
+  // popen support. Depends on (and requires) "process" and "io" gems
+	_ "github.com/oruby/oruby/gem/io/popen"
+)
+```
+
+## Docs
+
+Ruby IO subystem is vast and covers whole range of Input/Output including files, path management,
+low-level control, pipes, and works with sockets which implement same interface.
+ORuby idea is to implement ruby corelib and stdlib as indipendent gems which can be
+cherry-picked as needed, so this gem is split by functionality.
+
+# "io" gem
+
+If script needs simple stream processing (io.Reader, io.Writer, io.Seeker), then you should
+include only "io" gem. All Go objects that implement `io.Reader` and `io.Writer` can be mapped
+to `IO` class, allowing all `IO` methods that can be performed via Golang `io` interface methods.
+
+Simple "io" gem will not allow file system access. No files can be open, FD can not be converted
+to file objects. Scripts requiring "io" can only work with Go prepared object.
+
+Since `*os.File` implements `io.Reader` and `io.Writer`, you can work with files, but every file
+must be open and prepared on Go side, and passed to script.
+
+This behaviour is intentional, as scripts are usually restricted. Disallowing direct file and
+file system access is simple and effective security measure. This split also allow alternate
+"io/file" implementation which can be bound to virtual file systems, but this is beyond scope here.
+
+# "io/file" gem
+
+This gem implements direct file and file system access. It maps to Golang `io` and `os` calls,
+and is not restricted in any way. If your Go application has rights to read or write somewhere,
+so can scripts requiring "io/file".
+
+This gem depends on `io`, which is required and included automatically.
+
+Gem `io/file` implements:
+
+    * `File` class, mapped directly to Golang `*os.File`
+    * `Tempfile` class
+    * `File::Stat` class mapped to `os.Fileinfo`
+    * `FileTest` module
+    * `Dir` class which calls coresponding Golang `os` methods
+    * `$stdin`, `$stdout`, `$stderr` global consts mapped to Golang `os.Std*` files
+    * `IO` missing class methods which require filesystem access:
+         * `IO::sysopen`
+         * `IO::binreaad`
+         * `IO::binwrite`
+         * `IO::reaad`
+         * `IO::write`
+         * `IO::for_fd`
+         * `IO::open` and `IO::new` via file descriptor
+         * `IO::copy_stream` with file names as arguments
+         * `IO::foreach` with file name as argument
+
+# "io/popen" gem
+
+`IO#popen` class method is extracted in it's own gem as it allows starting executables which is
+rarely needed in embedded scripts. It also depends on and includes `process` gem which itself
+handles external process starting and manipulation.
+
+In Ruby specification, this method also allows fork calling Ruby process.
+That feature is not supprted via this gem. It could eventually be supported,
+when `thread` gem reaches usable state.
+
+Gem `io/popen` implements:
+
+    * `IO` missing class methods which implement popen support
+        * `IO::popen`
+        * `IO::close_write`
+        * `IO::close_read`
+        * `IO::pid`
+
+## Implementation
+
+Implementation is bound as-close-as-possible to Golang `os` and `io` packages.
+
+## Usage
+
+```go
+package main
+
+import (
+	"github.com/oruby/oruby"
+
+	_ "github.com/oruby/oruby/gem/io/file"
+)
+
+func main() {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	v, _ := mrb.Eval(`
+		File.open("testdata/test.txt") {|f| f.readlines }
+	`)
+
+	println(v.String())
+}
+
+// Should output:
+//  line 1
+//  line 2
+```
+
+## License
+
+ORuby is available as open source under the terms of the [Apache License 2.0 License][license]
+
+(c) 2020, Dušan D. Majkić
+
+## Authors
+
+* Dušan D. Majkić [oruby]
+
+[license]: https://opensource.org/licenses/Apache-2.0
+[oruby]: https://github.com/oruby/oruby

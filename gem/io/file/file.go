@@ -1,4 +1,4 @@
-package io
+package file
 
 import (
 	"errors"
@@ -9,93 +9,101 @@ import (
 	"strings"
 )
 
-func initFile(mrb *oruby.MrbState, ioClass oruby.RClass) {
-	fileClass := mrb.DefineClass("File", ioClass)
-	fileClass.AttachType((*os.File)(nil))
+func init() {
+	oruby.Gem("io/file", func(mrb *oruby.MrbState) interface{} {
+		mrb.Require("io")
+		cIO := initIOMethods(mrb)
 
-	consts := initFileConsts(mrb, fileClass)
-	fileClass.Include(consts)
-	initFileStat(mrb, fileClass)
-	initFileTest(mrb)
+		fileClass := mrb.DefineClass("File", cIO)
+		fileClass.AttachType((*os.File)(nil))
 
-	mrb.DefineClassMethod(fileClass, "absolute_path",  fileAbsolutePath,   mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "absolute_path?", fileIsAbsolutePath,   mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"atime", mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "basename",   fileBasename,   mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"birthtime",  mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"blockdev?",  mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"chardev?",   mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "chmod", fileChmod, mrb.ArgsReq(1) | mrb.ArgsRest())
-	mrb.DefineClassMethod(fileClass, "chown", fileChown, mrb.ArgsReq(2) | mrb.ArgsRest())
-	proxyClassMethodToStat(fileClass,"ctime",      mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "delete", fileUnlink, mrb.ArgsAny())
-	proxyClassMethodToStat(fileClass,"directory?", mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "dirname",    fileDirname,    mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"empty?",           mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"executable?", mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"executable_real?", mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "exist?", fileExist,  mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "exists?", fileExist,  mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "expand_path", fileExpandPath, mrb.ArgsArg(1,1))
-	mrb.DefineClassMethod(fileClass, "extname", fileExtname, mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"file?",      mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "fnmatch", fileMatch, mrb.ArgsArg(2,1))
-	mrb.DefineClassMethod(fileClass, "fnmatch?", fileMatch, mrb.ArgsArg(2,1))
-	//mrb.DefineClassMethod(fileClass,"foreach", fileForeach, mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"ftype",      mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"grpowned",   mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "identical?",  fileIdentical,    mrb.ArgsReq(2))
-	mrb.DefineClassMethod(fileClass, "join", fileJoin, mrb.ArgsAny())
-    //lchmod
-    //lchown
-	mrb.DefineClassMethod(fileClass,"link",   fileLink,  mrb.ArgsReq(2))
-	mrb.DefineClassMethod(fileClass,"lstat",  fileLStat, mrb.ArgsReq(1))
-	//lutime
-	//mkfifo
-	proxyClassMethodToStat(fileClass,"mtime",      mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"owned?",     mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "path",       filePath, mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"pipe?",      mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"readable?",  mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"readable_real?",  mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "readlink",   fileReadlink, mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "realdirpath",fileRealdirpath,   mrb.ArgsArg(1,1))
-	mrb.DefineClassMethod(fileClass, "realpath",   fileRealpath,   mrb.ArgsArg(1,1))
-	mrb.DefineClassMethod(fileClass, "rename",     fileRename, mrb.ArgsReq(2))
-	proxyClassMethodToStat(fileClass,"setgid?",    mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"setuid?",    mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"size",       mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"size?",      mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"socket?",    mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "split",    fileSplit,    mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "stat",     fileStat,     mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"sticky?",    mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "symlink", fileSymlink, mrb.ArgsReq(2))
-	proxyClassMethodToStat(fileClass,"symlink?",   mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass, "truncate", fileTruncate, mrb.ArgsReq(2))
-	mrb.DefineClassMethod(fileClass, "umask",  fileUmask, mrb.ArgsOpt(1))
-	mrb.DefineClassMethod(fileClass, "unlink", fileUnlink, mrb.ArgsAny())
-	proxyClassMethodToStat(fileClass,"utime", mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"world_readable?", mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"world_writable?", mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"writable?",       mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"writable_real?",  mrb.ArgsReq(1))
-	proxyClassMethodToStat(fileClass,"zero?",           mrb.ArgsReq(1))
+		consts := initFileConsts(mrb, fileClass)
+		fileClass.Include(consts)
+		initFileStat(mrb, fileClass)
+		initFileTest(mrb)
+		initTmpFile(mrb, fileClass)
+		initDir(mrb)
 
-	mrb.DefineClassMethod(fileClass,"open", fileOpen, mrb.ArgsReq(1))
-	mrb.DefineClassMethod(fileClass,"initialize", fileInit, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "absolute_path", fileAbsolutePath, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "absolute_path?", fileIsAbsolutePath, mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "atime", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "basename", fileBasename, mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "birthtime", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "blockdev?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "chardev?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "chmod", fileChmod, mrb.ArgsReq(1)|mrb.ArgsRest())
+		mrb.DefineClassMethod(fileClass, "chown", fileChown, mrb.ArgsReq(2)|mrb.ArgsRest())
+		proxyClassMethodToStat(fileClass, "ctime", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "delete", fileUnlink, mrb.ArgsAny())
+		proxyClassMethodToStat(fileClass, "directory?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "dirname", fileDirname, mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "empty?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "executable?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "executable_real?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "exist?", fileExist, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "exists?", fileExist, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "expand_path", fileExpandPath, mrb.ArgsArg(1, 1))
+		mrb.DefineClassMethod(fileClass, "extname", fileExtname, mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "file?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "match?", fileMatch, mrb.ArgsArg(2, 1))
+		mrb.DefineClassMethod(fileClass, "fnmatch", fileFnMatch, mrb.ArgsArg(2, 1))
+		mrb.DefineClassMethod(fileClass, "fnmatch?", fileFnMatch, mrb.ArgsArg(2, 1))
+		proxyClassMethodToStat(fileClass, "ftype", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "grpowned", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "identical?", fileIdentical, mrb.ArgsReq(2))
+		mrb.DefineClassMethod(fileClass, "join", fileJoin, mrb.ArgsAny())
+		mrb.DefineClassMethod(fileClass, "lchown", fileLchown, mrb.ArgsReq(2))
+		mrb.DefineClassMethod(fileClass, "link", fileLink, mrb.ArgsReq(2))
+		mrb.DefineClassMethod(fileClass, "lstat", fileLStat, mrb.ArgsReq(1))
+		//lchmod
+		//lutime
+		mrb.DefineClassMethod(fileClass, "mkfifo", fileMkfifio, mrb.ArgsArg(1, 1))
+		proxyClassMethodToStat(fileClass, "mtime", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "owned?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "path", filePath, mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "pipe?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "readable?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "readable_real?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "readlink", fileReadlink, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "realdirpath", fileRealdirpath, mrb.ArgsArg(1, 1))
+		mrb.DefineClassMethod(fileClass, "realpath", fileRealpath, mrb.ArgsArg(1, 1))
+		mrb.DefineClassMethod(fileClass, "rename", fileRename, mrb.ArgsReq(2))
+		proxyClassMethodToStat(fileClass, "setgid?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "setuid?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "size", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "size?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "socket?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "split", fileSplit, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "stat", fileStat, mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "sticky?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "symlink", fileSymlink, mrb.ArgsReq(2))
+		proxyClassMethodToStat(fileClass, "symlink?", mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "truncate", fileTruncate, mrb.ArgsReq(2))
+		mrb.DefineClassMethod(fileClass, "umask", fileUmask, mrb.ArgsOpt(1))
+		mrb.DefineClassMethod(fileClass, "unlink", fileUnlink, mrb.ArgsAny())
+		proxyClassMethodToStat(fileClass, "utime", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "world_readable?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "world_writable?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "writable?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "writable_real?", mrb.ArgsReq(1))
+		proxyClassMethodToStat(fileClass, "zero?", mrb.ArgsReq(1))
 
-	proxyMethodToStat(fileClass, "atime", mrb.ArgsNone())
-	mrb.DefineMethod(fileClass, "chmod", fileFChmod, mrb.ArgsReq(1))
-	mrb.DefineMethod(fileClass, "chown", fileFChown, mrb.ArgsReq(2))
-	proxyMethodToStat(fileClass, "birthtime", mrb.ArgsNone())
-	proxyMethodToStat(fileClass, "ctime", mrb.ArgsNone())
-	mrb.DefineMethod(fileClass, "flock", fileFlock, mrb.ArgsReq(1))
-	mrb.DefineMethod(fileClass,"lstat",  fileLStat, mrb.ArgsReq(1))
-	proxyMethodToStat(fileClass, "mtime", mrb.ArgsNone())
-	proxyMethodToStat(fileClass, "size", mrb.ArgsNone())
-	mrb.DefineMethod(fileClass, "to_path", fileToPath, mrb.ArgsReq(1))
-	mrb.DefineMethod(fileClass, "truncate", fileFTruncate, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(fileClass, "open", fileOpen, mrb.ArgsReq(1))
+		mrb.DefineMethod(fileClass, "initialize", fileInit, mrb.ArgsReq(1))
+
+		proxyMethodToStat(fileClass, "atime", mrb.ArgsNone())
+		mrb.DefineMethod(fileClass, "chmod", fileFChmod, mrb.ArgsReq(1))
+		mrb.DefineMethod(fileClass, "chown", fileFChown, mrb.ArgsReq(2))
+		proxyMethodToStat(fileClass, "birthtime", mrb.ArgsNone())
+		proxyMethodToStat(fileClass, "ctime", mrb.ArgsNone())
+		mrb.DefineMethod(fileClass, "flock", fileFlock, mrb.ArgsReq(1))
+		mrb.DefineMethod(fileClass, "lstat", fileLStat, mrb.ArgsReq(1))
+		proxyMethodToStat(fileClass, "mtime", mrb.ArgsNone())
+		proxyMethodToStat(fileClass, "size", mrb.ArgsNone())
+		mrb.DefineMethod(fileClass, "to_path", fileToPath, mrb.ArgsReq(1))
+		mrb.DefineMethod(fileClass, "truncate", fileFTruncate, mrb.ArgsReq(1))
+		return nil
+	})
 }
 
 func proxyClassMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec) {
@@ -107,8 +115,8 @@ func proxyClassMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbA
 		if err != nil {
 			return mrb.SysFail(err)
 		}
-
-		ret, err := mrb.FuncallWithBlock(mrb.Value(stat), mrb.GetMID())
+		statClass := mrb.DataValue(stat)
+		ret, err := mrb.FuncallWithBlock(statClass, mrb.GetMID())
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -132,7 +140,7 @@ func proxyMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec)
 			return mrb.SysFail(err)
 		}
 
-		ret, err := mrb.FuncallWithBlock(mrb.Value(stat), mrb.GetMID())
+		ret, err := mrb.FuncallWithBlock(mrb.DataValue(stat), mrb.GetMID())
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -206,6 +214,23 @@ func fileChown(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.Integer(args.Len() - 2)
 }
 
+func fileLchown(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	uid := -1
+	uidV := args.Item(0)
+	gid := args.Item(1).Int()
+	if !uidV.IsNil() {
+		uid = uidV.Int()
+	}
+
+	for i := 2; i < args.Len(); i++ {
+		if err := os.Lchown(args.Item(i).String(), uid, gid); err != nil {
+			return mrb.SysFail(err)
+		}
+	}
+	return oruby.Integer(args.Len() - 2)
+}
+
 func fileReadlink(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name := mrb.GetArgsFirst().String()
 	ret, err := os.Readlink(name)
@@ -226,21 +251,17 @@ func fileJoin(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func fileExpandPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, dir := mrb.GetArgs2("", "")
-	pth := filepath.Join(filepath.Dir(dir.String()), name.String())
+	pth := filepath.Join(dir.String(), name.String())
 	idx := strings.Index(pth, "~")
 	if idx >= 0 {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			mrb.RaiseError(err)
 		}
-		pth = filepath.Join(pth[:idx-1], home, pth[idx+1:])
+		pth = filepath.Join(pth[:idx], home, pth[idx+1:])
 	}
-	abs, err := filepath.Abs(pth)
-	if err != nil {
-		return mrb.RaiseError(err)
-	}
-
-	return mrb.StrNew(abs)
+	pth = filepath.Clean(pth)
+	return mrb.StrNew(pth)
 }
 
 func fileExtname(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -269,6 +290,9 @@ func getStat(mrb *oruby.MrbState, f oruby.Value) (os.FileInfo, error) {
 	}
 	if !f.IsData() {
 		return nil, oruby.EArgumentError("argument error, expected file name or IO object")
+	}
+	if s, ok := mrb.Data(f).(os.FileInfo); ok {
+		return s, nil
 	}
 	file, ok := mrb.Data(f).(*os.File)
 	if !ok {
@@ -340,7 +364,7 @@ func fileStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.SysFail(err)
 	}
-	return mrb.Value(stat)
+	return mrb.DataValue(stat)
 }
 
 func fileLStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -349,7 +373,7 @@ func fileLStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.SysFail(err)
 	}
-	return mrb.Value(stat)
+	return mrb.DataValue(stat)
 }
 
 func fileMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -358,12 +382,12 @@ func fileMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	pattern := p.String()
 	flags := f.Int()
 
-	if flags|fnmCasefold != 0 {
+	if flags&fnmCasefold != 0 {
 		name = strings.ToLower(name)
 		pattern = strings.ToLower(pattern)
 	}
 
-	if (flags|fnmNoescape != 0) && (runtime.GOOS != "windows") {
+	if (flags&fnmNoescape != 0) && (runtime.GOOS != "windows") {
 		pattern = strings.ReplaceAll(pattern, "\\", "\\\\")
 	}
 
@@ -392,22 +416,24 @@ func fileBasename(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func fileRealpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, dir := mrb.GetArgs2("", "")
 	pth := filepath.Join(filepath.Clean(dir.String()), name.String())
-	stat, err := os.Stat(pth)
+	_, err := os.Stat(pth)
 	if err != nil {
 		return mrb.SysFail(err)
 	}
-	return mrb.StrNew(stat.Name())
+	abspath, err := filepath.Abs(name.String())
+	return mrb.StrNew(abspath)
 }
 
 func fileRealdirpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, dir := mrb.GetArgs2("", "")
 	pth := filepath.Join(filepath.Clean(dir.String()), name.String())
+	fileName := filepath.Base(pth)
 	stat, err := os.Stat(filepath.Dir(pth))
 	if err != nil {
 		return mrb.SysFail(err)
 	}
-	ret := filepath.Join(filepath.Base(pth), stat.Name())
-	return mrb.StrNew(ret)
+	absdir, err := filepath.Abs(stat.Name())
+	return mrb.StrNew(filepath.Join(absdir, fileName))
 }
 
 func fileExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -482,6 +508,7 @@ func fileToPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StrNew(f.Name())
 }
 
+
 func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 	var err error
 	name := args.Item(0).String()
@@ -549,7 +576,7 @@ func fileOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		mrb.SysFail(err)
 	}
-	file := mrb.Value(f)
+	file := mrb.DataValue(f)
 	if block.IsNil() {
 		return file
 	}
@@ -571,3 +598,16 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
+func fileFnMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	p, n, f := mrb.GetArgs3("", "", 0)
+	name := n.String()
+	pattern := p.String()
+	flags := f.Int()
+
+	ret, err := fnmatch(name, pattern, flags)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	return oruby.Bool(ret)
+}

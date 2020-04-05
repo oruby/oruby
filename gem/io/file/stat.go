@@ -1,4 +1,4 @@
-package io
+package file
 
 import (
 	"fmt"
@@ -134,7 +134,7 @@ func statBlksize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func statIsBlockdev(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeDevice != 0)
+	return oruby.Bool(stat.Mode()&os.ModeDevice != 0)
 }
 
 func statBlocks(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -149,7 +149,7 @@ func statBlocks(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func statIsChardev(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeCharDevice != 0)
+	return oruby.Bool(stat.Mode()&os.ModeCharDevice != 0)
 }
 
 func statCtime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -164,7 +164,9 @@ func statCtime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func statDev(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeDevice != 0)
+	ext := getExtendedStat(stat)
+
+	return oruby.Int64(int64(ext.dev))
 }
 
 func statDevMajor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -198,26 +200,27 @@ func statIsFile(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func statFtype(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
 	if stat.IsDir() {
-		return mrb.StrNew("file")
-	}
-	if stat.Mode().IsRegular() {
-		return mrb.StrNew("file")
+		return mrb.StrNew("directory")
 	}
 	mode := stat.Mode()
-	if mode|os.ModeCharDevice != 0 {
+	if mode&os.ModeCharDevice != 0 {
 		return mrb.StrNew("characterSpecial")
 	}
-	if mode|os.ModeSymlink != 0 {
+	if mode&os.ModeSymlink != 0 {
 		return mrb.StrNew("link")
 	}
-	if mode|os.ModeSocket != 0 {
+	if mode&os.ModeSocket != 0 {
 		return mrb.StrNew("socket")
 	}
-	if mode|os.ModeDevice != 0 {
+	if mode&os.ModeDevice != 0 {
 		return mrb.StrNew("blockSpecial")
 	}
-	if mode|os.ModeNamedPipe != 0 {
+	if mode&os.ModeNamedPipe != 0 {
 		return mrb.StrNew("fifo")
+	}
+
+	if stat.Mode().IsRegular() {
+		return mrb.StrNew("file")
 	}
 	return mrb.StrNew("unknown")
 }
@@ -286,7 +289,7 @@ func statIsOwned(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func statIsPipe(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeNamedPipe != 0)
+	return oruby.Bool(stat.Mode()&os.ModeNamedPipe != 0)
 }
 
 func statRdev(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -295,14 +298,20 @@ func statRdev(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.Value(ext.rdev)
 }
 
+var (
+	minorbits = uint(20)
+	minormask = uint((uint(1) << minorbits) - 1)
+)
+
 func statIsRdevMajor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
 	ext := getExtendedStat(stat)
 	if ext.rdev == 0 {
 		return mrb.NilValue()
 	}
-	return mrb.Value(uint64(ext.rdev/256))
 
+	major := int(ext.rdev >> minorbits)
+	return mrb.Value(major)
 }
 
 func statIsRdevMinor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -311,7 +320,9 @@ func statIsRdevMinor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if ext.rdev == 0 {
 		return mrb.NilValue()
 	}
-	return mrb.Value(uint64(ext.rdev%256))
+
+	minor := int(ext.rdev >> minorbits)
+	return mrb.Value(minor)
 }
 
 func statIsReadable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -326,13 +337,13 @@ func statIsReadable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	perm := stat.Mode().Perm()
 
 	if euid == ext.uid  {
-		return oruby.Bool((perm|0400 != 0))
+		return oruby.Bool((perm&0400 != 0))
 	}
 	if os.Getegid() == ext.gid {
-		return oruby.Bool((perm|0040 != 0))
+		return oruby.Bool((perm&0040 != 0))
 	}
 
-	return oruby.Bool(perm|0004 != 0)
+	return oruby.Bool(perm&0004 != 0)
 }
 
 func statIsReadableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -347,23 +358,23 @@ func statIsReadableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	perm := stat.Mode().Perm()
 
 	if uid == ext.uid  {
-		return oruby.Bool((perm|0400 != 0))
+		return oruby.Bool((perm&0400 != 0))
 	}
 	if os.Getgid() == ext.gid {
-		return oruby.Bool((perm|0040 != 0))
+		return oruby.Bool((perm&0040 != 0))
 	}
 
-	return oruby.Bool(perm|0004 != 0)
+	return oruby.Bool(perm&0004 != 0)
 }
 
 func statIsSetgid(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeSetgid != 0)
+	return oruby.Bool(stat.Mode()&os.ModeSetgid != 0)
 }
 
 func statIsSetuid(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeSetuid != 0)
+	return oruby.Bool(stat.Mode()&os.ModeSetuid != 0)
 }
 
 func statSize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -373,17 +384,17 @@ func statSize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func statIsSocket(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeSocket != 0)
+	return oruby.Bool(stat.Mode()&os.ModeSocket != 0)
 }
 
 func statIsSticky(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeSticky != 0)
+	return oruby.Bool(stat.Mode()&os.ModeSticky != 0)
 }
 
 func statIsSymlink(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	return oruby.Bool(stat.Mode()|os.ModeSymlink != 0)
+	return oruby.Bool(stat.Mode()&os.ModeSymlink != 0)
 }
 
 func statUid(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -394,7 +405,7 @@ func statUid(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func statIsWorldReadable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	if stat.Mode().Perm()|0004 == 0 {
+	if stat.Mode().Perm()&0004 == 0 {
 		return mrb.NilValue()
 	}
 	return oruby.Integer(int(stat.Mode().Perm()))
@@ -402,7 +413,7 @@ func statIsWorldReadable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func statIsWorldWritable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
-	if stat.Mode().Perm()|0002 == 0 {
+	if stat.Mode().Perm()&0002 == 0 {
 		return mrb.NilValue()
 	}
 	return oruby.Integer(int(stat.Mode().Perm()))
@@ -420,13 +431,13 @@ func statIsWritable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	perm := stat.Mode().Perm()
 
 	if euid == ext.uid  {
-		return oruby.Bool((perm|0200 != 0))
+		return oruby.Bool((perm&0200 != 0))
 	}
 	if os.Getegid() == ext.gid {
-		return oruby.Bool((perm|0020 != 0))
+		return oruby.Bool((perm&0020 != 0))
 	}
 
-	return oruby.Bool(perm|0002 != 0)
+	return oruby.Bool(perm&0002 != 0)
 }
 
 func statIsWritableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -441,13 +452,13 @@ func statIsWritableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	perm := stat.Mode().Perm()
 
 	if uid == ext.uid  {
-		return oruby.Bool((perm|0200 != 0))
+		return oruby.Bool((perm&0200 != 0))
 	}
 	if os.Getegid() == ext.gid {
-		return oruby.Bool((perm|0020 != 0))
+		return oruby.Bool((perm&0020 != 0))
 	}
 
-	return oruby.Bool(perm|0002 != 0)
+	return oruby.Bool(perm&0002 != 0)
 }
 
 func statIsZero(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

@@ -1,4 +1,4 @@
-package io
+package file
 
 import (
 	"github.com/oruby/oruby"
@@ -24,6 +24,14 @@ func fileFlock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.Integer(0)
 }
 
+func fileMkfifio(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	name, mode := mrb.GetArgs2("", 0666)
+	if err := syscall.Mkfifo(name.String(), uint32(mode.Int())); err != nil {
+		return mrb.RaiseError(err)
+	}
+	return oruby.Int(0)
+}
+
 func platformDup(f *os.File) (*os.File, error) {
 	if fd, err := syscall.Dup(int(f.Fd())); err == nil {
 		return os.NewFile(uintptr(fd), f.Name()), nil
@@ -36,14 +44,14 @@ func platformDup(f *os.File) (*os.File, error) {
 	}
 	ext := getExtendedStat(stat)
 	perm := stat.Mode().Perm()
-	uid := os.Getuid()
+	uid := os.Geteuid()
 	flags := os.O_RDONLY
 
-	if uid == 0 && (perm|0111 != 0) {
+	if uid == 0 && (perm&0111 != 0) {
 		flags = os.O_RDWR
-	} else  if uid == ext.uid  && (perm|0101 != 0) {
+	} else  if uid == ext.uid  && (perm&0101 != 0) {
 		flags = os.O_RDWR
-	} else if os.Getgid() == ext.gid && (perm|0011 != 0) {
+	} else if os.Getegid() == ext.gid && (perm&0011 != 0) {
 		flags = os.O_RDWR
 	}
 
@@ -53,3 +61,4 @@ func platformDup(f *os.File) (*os.File, error) {
 func platformOpenFile(name string, mode int, perm os.FileMode) (int, error) {
 	return syscall.Open(name, mode|syscall.O_CLOEXEC, uint32(perm))
 }
+

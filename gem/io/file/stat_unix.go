@@ -1,4 +1,4 @@
-package io
+package file
 
 import (
 	"github.com/oruby/oruby"
@@ -17,13 +17,13 @@ func statIsExecutableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue 
 	perm := stat.Mode().Perm()
 
 	if uid == ext.uid  {
-		return oruby.Bool((perm|0100 != 0))
+		return oruby.Bool((perm&0100 != 0))
 	}
 	if os.Getgid() == ext.gid {
-		return oruby.Bool((perm|0010 != 0))
+		return oruby.Bool((perm&0010 != 0))
 	}
 
-	return oruby.Bool(perm|0001 != 0)
+	return oruby.Bool(perm&0001 != 0)
 }
 
 func statIsExecutable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -38,13 +38,13 @@ func statIsExecutable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	perm := stat.Mode().Perm()
 
 	if euid == ext.uid  {
-		return oruby.Bool((perm|0100 != 0))
+		return oruby.Bool((perm&0100 != 0))
 	}
 	if os.Getegid() == ext.gid {
-		return oruby.Bool((perm|0010 != 0))
+		return oruby.Bool((perm&0010 != 0))
 	}
 
-	return oruby.Bool(perm|0001 != 0)
+	return oruby.Bool(perm&0001 != 0)
 }
 
 func statIsGrpowned(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

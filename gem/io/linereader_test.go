@@ -17,16 +17,16 @@ func Test_openLineReader(t *testing.T) {
 	defer mrb.Close()
 
 	olr := func(fd, arg1, arg2 interface{}, opt h) (*bufio.Scanner, io.Closer, error) {
+		var err error
+		if name, ok := fd.(string); ok {
+			fd, err = os.Open(name)
+			assert.NilError(t, err)
+		}
 		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2), mrb.Value(opt))
 		return openLineReader(mrb, mrb.Value(fd), args, 0)
 	}
 
-	r, c, err := olr("testdata/test.txt", nil, nil, nil)
-	assert.NilError(t, err)
-	assert.Expect(t, c != nil, "file should implement closer")
-	assert.Equal(t, c.(*os.File).Name(), "testdata/test.txt")
-
-	r, _, err = olr(strings.NewReader("test$test$test$"), "$", nil, nil)
+	r, _, err := olr(strings.NewReader("test$test$test$"), "$", nil, nil)
 	assert.NilError(t, err)
 	r.Scan()
 	assert.NilError(t, r.Err())

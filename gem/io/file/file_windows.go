@@ -1,4 +1,4 @@
-package io
+package file
 
 import (
 	"github.com/oruby/oruby"
@@ -13,6 +13,10 @@ func fileUmask(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func fileFlock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.NotImplemented(mrb, self)
+}
+
+func fileMkfifio(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.NotImplemented()
 }
 
 func platformDup(f *os.File) (*os.File, error) {

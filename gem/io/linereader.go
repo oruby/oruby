@@ -54,7 +54,7 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index
 	lineReader := bufio.NewScanner(reader)
 	lineReader.Split(getSpliter(sep, chomp, limit))
 
-	if closer, ok := reader.(io.Closer); ok {
+	if closer, ok := reader.(io.Closer); ok && !fd.IsData() {
 		return lineReader, closer, nil
 	}
 	return lineReader, nil, nil
