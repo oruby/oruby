@@ -6,7 +6,7 @@ import "fmt"
 
 func (obj RObject) p() *C.struct_RObject { return (*C.struct_RObject)(C._mrb_ptr(obj.v)) }
 
-func (o RObjectPtr) Class() RClassPtr { return RClassPtr{o.p.c } }
+func (o RObjectPtr) Class() RClassPtr { return RClassPtr{o.p.c} }
 
 // Dup duplicates object
 func (obj RObject) Dup() RObject {
@@ -150,6 +150,9 @@ func (obj RObject) Int() int {
 	}
 	return MrbFixnum(result)
 }
+
+// Bool return value as false for nil and false, and true otherwise
+func (obj RObject) Bool() bool { return obj.Value().Bool() }
 
 // Float64 return value as float64
 func (obj RObject) Float64() float64 {

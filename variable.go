@@ -57,7 +57,7 @@ func (mrb *MrbState) GetIV(obj MrbValue, name string) Value {
 
 // IVGet get instance variable
 func (mrb *MrbState) SetIV(obj MrbValue, name string, v interface{}) {
-	err := mrb.IVSet(obj, mrb.Intern("name"), mrb.Value(v))
+	err := mrb.IVSet(obj, mrb.Intern(name), mrb.Value(v))
 	if err != nil {
 		panic(err)
 	}

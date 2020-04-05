@@ -33,7 +33,7 @@ type RArgs struct {
 
 // RArgsNew constructor for RArgs
 func RArgsNew(self Value, items ...Value) RArgs {
-	return RArgs{ append([]Value{self}, items...) }
+	return RArgs{append([]Value{self}, items...)}
 }
 
 // Item returns value item at index, or Nil if index is invalid

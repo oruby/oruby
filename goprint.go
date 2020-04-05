@@ -80,7 +80,7 @@ func printP(mrb *MrbState, self Value) MrbValue {
 
 func printPrintf(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
- 	v, err := mrb.FuncallWithBlock(mrb.KernelModule(), mrb.Intern("sprintf"), args.SliceIntf()...)
+	v, err := mrb.FuncallWithBlock(mrb.KernelModule(), mrb.Intern("sprintf"), args.SliceIntf()...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

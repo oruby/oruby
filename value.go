@@ -117,7 +117,7 @@ func (v Value) Bytes() []byte {
 func (v Value) Fixnum() int { return v.Int() }
 
 // Bool returns false if false or nil, true othervise
-func (v Value) Bool() bool { return MrbTest(v) }
+func (v Value) Bool() bool { return v.Type() != C.MRB_TT_FALSE }
 
 // Uintptr returns uintptr from value
 func (v Value) Uintptr() uintptr { return uintptr(C._mrb_cptr(v.Value().v)) }

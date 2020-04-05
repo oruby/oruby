@@ -4,13 +4,13 @@ import (
 	"fmt"
 )
 
-var gems = make(map[string]func(*MrbState)interface{})
+var gems = make(map[string]func(*MrbState) interface{})
 
 //type MrbInitFunc func(*MrbState)
 
 // Gem register makes a gem available by the provided name.
 // If Register is called twice with the same name it panics.
-func Gem(name string, initFn func(*MrbState)interface{}) {
+func Gem(name string, initFn func(*MrbState) interface{}) {
 	if name == "" {
 		panic("error - empty name not allowed")
 	}
@@ -56,7 +56,6 @@ func (mrb *MrbState) Resolve(name string) (bool, error) {
 	mrb.features[name] = initFn(mrb)
 	return true, nil
 }
-
 
 // Require inits gem from available Go gems if not already initialized
 // returns:

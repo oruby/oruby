@@ -14,11 +14,10 @@ type RObject struct {
 }
 
 // RObjectPtr represents oruby RObject pointer
-type RObjectPtr struct { p *C.struct_RObject }
+type RObjectPtr struct{ p *C.struct_RObject }
 
 // RFiber repesents oruby Fiber object
 type RFiber struct{ p *C.struct_RFiber }
-
 
 // Value implements MrbValue interface for RObject
 func (obj RObject) Value() Value { return Value{obj.v} }

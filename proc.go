@@ -158,7 +158,6 @@ func (p RProc) Data() interface{} {
 	return p.mrb.funcs[i.Int()]
 }
 
-
 // SetTargetClass sets target class for proc
 func (p RProc) SetTargetClass(c RClass) {
 	C._MRB_PROC_SET_TARGET_CLASS(c.mrb.p, p.p, c.p)

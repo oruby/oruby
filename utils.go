@@ -79,7 +79,7 @@ func (mrb *MrbState) callFunc(fn reflect.Value, args Arguments) []reflect.Value 
 		variadic = 1
 	}
 
-	for i := argc-1; i >= 0; i-- {
+	for i := argc - 1; i >= 0; i-- {
 		// Check variadic arguments
 		if i >= ft.NumIn() {
 			// Skip extra value if not variadic
@@ -178,7 +178,7 @@ func toMapSI(mrb *MrbState, v Value) map[string]interface{} {
 	}
 	keys := mrb.HashKeys(v)
 	keyCount := keys.Len()
-	ret  := make(map[string]interface{}, keyCount)
+	ret := make(map[string]interface{}, keyCount)
 
 	for i := 0; i < keyCount; i++ {
 		key := keys.Item(i)
@@ -194,7 +194,7 @@ func toMapII(mrb *MrbState, v Value) map[interface{}]interface{} {
 	}
 	keys := mrb.HashKeys(v)
 	keyCount := keys.Len()
-	ret  := make(map[interface{}]interface{}, keyCount)
+	ret := make(map[interface{}]interface{}, keyCount)
 
 	for i := 0; i < keyCount; i++ {
 		key := keys.Item(i)

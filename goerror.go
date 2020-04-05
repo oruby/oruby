@@ -182,7 +182,7 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 	}
 
 	if errors.Is(err, &os.SyscallError{}) || os.IsExist(err) || os.IsNotExist(err) ||
-		os.IsPermission(err) || os.IsTimeout(err)  {
+		os.IsPermission(err) || os.IsTimeout(err) {
 		return mrb.ESystemCallError()
 	}
 

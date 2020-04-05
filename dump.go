@@ -68,7 +68,7 @@ func (mrb *MrbState) ReadIrepBuf(buffer []byte) (MrbIrep, error) {
 func (mrb *MrbState) ReadIrepFile(fileName string) (MrbIrep, error) {
 	data, err := ioutil.ReadFile(fileName)
 	if err != nil {
-		return MrbIrep{nil,mrb}, err
+		return MrbIrep{nil, mrb}, err
 	}
 
 	return mrb.ReadIrep(data)

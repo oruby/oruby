@@ -12,7 +12,7 @@ type RClassPtr struct{ p *C.struct_RClass }
 
 // MrbMethodT oruby method pointer
 //type MrbMethodT = uintptr
-type MrbMethodT = struct { m C.mrb_method_t }
+type MrbMethodT = struct{ m C.mrb_method_t }
 
 // RClass struct for oruby class
 type RClass struct {
@@ -121,7 +121,7 @@ func (mrb *MrbState) DefineMethodFuncID(c RClass, mid MrbSym, f interface{}) {
 		t := v.Type()
 
 		opt := 0
-		for i := t.NumIn() - 1; i >= 0; i--  {
+		for i := t.NumIn() - 1; i >= 0; i-- {
 			if t.In(i).Kind() != reflect.Ptr {
 				break
 			}
