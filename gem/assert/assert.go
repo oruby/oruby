@@ -3,6 +3,7 @@ package assert
 import (
 	"github.com/oruby/oruby"
 	"math"
+	"math/bits"
 	"regexp"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func init() {
 		mrbtest := mrb.DefineModule("Mrbtest")
 		mrbtest.Const("FIXNUM_MAX", math.MaxInt64)
 		mrbtest.Const("FIXNUM_MIN", math.MinInt64)
-		mrbtest.Const("FIXNUM_BIT", 64)
+		mrbtest.Const("FIXNUM_BIT", bits.UintSize)
 		mrbtest.Const("FLOAT_TOLERANCE", 1e-12)
 
 		_, err := mrb.Eval(code)
