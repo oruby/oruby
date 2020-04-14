@@ -64,3 +64,9 @@ func TestComplex3(t *testing.T) {
 	assert.AssertFile(t, mrb,"complex_test.rb")
 }
 
+func TestComplexRect(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	assrt(t, `Complex(5, 6).rectangular == [5, 6]`)
+}

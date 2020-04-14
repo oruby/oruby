@@ -234,17 +234,16 @@ func (c RComplex) Fdiv(num float64) RComplex {
 }
 
 // Polar of complex number
-func (c RComplex) Polar() []float64 {
-	f1, f2 := cmplx.Polar(c.v)
-	return []float64{f1, f2}
+func (c RComplex) Polar() (float64, float64) {
+	return cmplx.Polar(c.v)
 }
 
 // IsReal returns false for complex number objects
 func (c RComplex) IsReal() bool { return false }
 
 // Rectangular values of real and imaginary of complex number
-func (c RComplex) Rectangular() []float64 {
-	return []float64{real(c.v), imag(c.v)}
+func (c RComplex) Rectangular() (float64, float64) {
+	return real(c.v), imag(c.v)
 }
 
 // ToR conver to Rational

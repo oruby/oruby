@@ -165,7 +165,7 @@ func (mrb *MrbState) handleResults(result []reflect.Value) (Value, error) {
 
 	// Multiple results - return RArray
 	out := mrb.AryNewCapa(lenres)
-	for _, v := range result[:lenres-1] {
+	for _, v := range result[:lenres] {
 		mrb.AryPush(out, mrb.valueValue(v))
 	}
 
