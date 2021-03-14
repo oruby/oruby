@@ -2,7 +2,10 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
-import "unsafe"
+import (
+	"strings"
+	"unsafe"
+)
 
 // POSFIXABLE is positive number fixable
 func POSFIXABLE(f int) bool { return (f <= C.MRB_INT_MAX) }
@@ -50,3 +53,15 @@ func (mrb *MrbState) FloatToStr(x MrbValue, fmt string) Value {
 	return Value{C.mrb_float_to_str(mrb.p, x.Value().v, cfmt)}
 }
 
+// FloatToCStr formats float f as string using format fmt
+func (mrb *MrbState) FloatToCStr(fmt string, f float64) string {
+	const bufSize = 255
+	cfmt := C.CString(fmt)
+	defer C.free(unsafe.Pointer(cfmt))
+	buf := C.CString(strings.Repeat(" ", bufSize))
+	defer C.free(unsafe.Pointer(buf))
+
+	l := C.mrb_float_to_cstr(mrb.p, buf, C.size_t(bufSize), cfmt, C.mrb_float(f))
+
+	return C.GoStringN(buf, l)
+}

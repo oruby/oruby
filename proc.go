@@ -163,6 +163,11 @@ func (p RProc) SetTargetClass(c RClass) {
 	C._MRB_PROC_SET_TARGET_CLASS(c.mrb.p, p.p, c.p)
 }
 
+// Load procedure
+func (p RProc) Load() Value {
+	return Value{ C.mrb_load_proc(p.mrb.p, p.p) }
+}
+
 // MrbAspecReq required
 func MrbAspecReq(a uint32) uint32 { return (a >> 18) & 0x1f }
 
@@ -327,4 +332,8 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 
 	runtime.KeepAlive(args)
 	return RProc{proc, mrb}, ArgsReq(v.Type().NumIn())
+}
+
+func (mrb *MrbState) LoadProc(proc RProc) Value {
+	return Value{ C.mrb_load_proc(mrb.p, proc.p) }
 }

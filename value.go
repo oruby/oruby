@@ -389,3 +389,8 @@ var (
 	True     = Value{C.mrb_true_value()}
 	Undef    = Value{C.mrb_undef_value()}
 )
+
+// Intentionally left unsuported
+// C.mrb_float_read()
+// C.mrb_msvc_vsnprintf()
+// C.mrb_msvc_snprintf()

@@ -138,12 +138,17 @@ func (mrb *MrbState) DefineMethodFuncID(c RClass, mid MrbSym, f interface{}) {
 
 // DefineClassFuncID define class func
 func (mrb *MrbState) DefineClassFuncID(klass RClass, mid MrbAspec, f interface{}) {
-
+// TODO: DefineClassFuncID
 }
 
 // AliasMethod creates method alias
 func (mrb *MrbState) AliasMethod(c RClass, a, b MrbSym) {
 	C.mrb_alias_method(mrb.p, c.p, C.mrb_sym(a), C.mrb_sym(b))
+}
+
+// RemoveMethod removes method from class
+func (mrb *MrbState) RemoveMethod(c RClass, sym MrbSym) {
+	C.mrb_remove_method(mrb.p, c.p, C.mrb_sym(sym))
 }
 
 // MethodSearchVM finds VM method, method is invalid if not found
@@ -164,4 +169,9 @@ func (mrb *MrbState) MethodSearch(cl RClass, id MrbSym) (MrbMethodT, error) {
 func (mrb *MrbState) MethodExists(cl RClass, id MrbSym) bool {
 	m := mrb.MethodSearchVM(cl, id)
 	return C._MRB_METHOD_UNDEF_P(C.mrb_method_t(m.m)) == 0
+}
+
+// ClassReal returns real class
+func (mrb *MrbState) ClassReal(cl RClass) RClass {
+	return RClass{C.mrb_class_real(cl.p), mrb }
 }

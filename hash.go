@@ -36,6 +36,7 @@ func (mrb *MrbState) EnsureHashType(hash MrbValue) RHash {
 		hash.Value().v,
 		mrb,
 	}}
+	// C.mrb_ensure_hash_type() is never called
 }
 
 // CheckHashType new hash with capacity capa
@@ -84,6 +85,11 @@ func (mrb *MrbState) HashKeyP(hash, key MrbValue) bool {
 // HashEmptyP check if the hash is empty
 func (mrb *MrbState) HashEmptyP(hash MrbValue) bool {
 	return C.mrb_hash_empty_p(mrb.p, hash.Value().v) != C.mrb_bool(0)
+}
+
+// HashValues returns an array of values, equivalent to hash.values
+func (mrb *MrbState) HashValues(hash MrbValue) Value {
+	return Value{C.mrb_hash_values(mrb.p, hash.Value().v)}
 }
 
 // HashClear clears the hash

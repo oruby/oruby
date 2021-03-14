@@ -72,8 +72,30 @@ func (mrb *MrbState) ReadIrepFile(fileName string) (MrbIrep, error) {
 	}
 
 	return mrb.ReadIrep(data)
-	// C.mrb_read_irep_file is never called
+	// C.mrb_read_irep_file() is never called
 }
+
+// LoadIrepFile irep load from file
+func (mrb *MrbState) LoadIrepFile(filename string) (Value, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return mrb.NilValue(), err
+	}
+
+	return mrb.LoadIrep(data)
+	// C.mrb_load_irep_file() is never called
+}
+
+// LoadIrepFileCxt irep load from file with mrbc context
+func (mrb *MrbState) LoadIrepFileCxt(filename string, context *MrbcContext) (Value, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return mrb.NilValue(), err
+	}
+	return mrb.LoadIrepCxt(data, context)
+	// C.mrb_load_irep_file_cxt() is never called
+}
+
 
 // dump/load error codes
 //

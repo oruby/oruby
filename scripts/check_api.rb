@@ -11,7 +11,7 @@ header_printed = false
 
 files.each do |f|
   next if FileTest.directory?(f)
-  next if ["boxing_nan.h", "boxing_no.h", "boxing_word.h"].include?(File.basename(f))
+  next if ["boxing_nan.h,", "boxing_no.h", "boxing_word.h"].include?(File.basename(f))
 
   header_printed = false
 

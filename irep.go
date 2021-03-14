@@ -48,17 +48,6 @@ func (mrb *MrbState) LoadIrepBuf(buffer []byte) (Value, error) {
 	return mrb.LoadIrep(buffer)
 }
 
-// LoadIrepFile irep load from buffer
-func (mrb *MrbState) LoadIrepFile(filename string) (Value, error) {
-	data, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return mrb.NilValue(), err
-	}
-
-	return mrb.LoadIrep(data)
-	// C.mrb_load_irep_file() is never called
-}
-
 // LoadIrepCxt irep api
 func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbcContext) (Value, error) {
 	return mrb.try(func() C.mrb_value {

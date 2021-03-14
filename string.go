@@ -25,6 +25,7 @@ func MrbStrPtr(s MrbValue) RStringPtr { return RStringPtr{(*C.struct_RString)(C.
 
 // RStringLen Returns string len
 func RStringLen(s MrbValue) int { return int(C._RSTRING_LEN(s.Value().v)) }
+// C.mrb_str_strlen() never called - it raises on NULL in string, which is fine with Go strings
 
 // RStringCapa Returns string capcaity
 func RStringCapa(a MrbValue) int { return int(C._RSTRING_CAPA(a.Value().v)) }
@@ -74,6 +75,7 @@ func (mrb *MrbState) PtrToStr(p uintptr) RString {
 		C._mrb_ptr_to_str(mrb.p, C.uintptr_t(p)),
 		mrb,
 	}}
+	// C.mrb_ptr_to_str() API is called via underscore helper
 }
 
 // ObjAsString Returns an object as a Ruby string
@@ -97,13 +99,20 @@ func (mrb *MrbState) StrSubstr(str MrbValue, beg, len int) Value {
 // EnsureStringType  Returns a Ruby string type
 func (mrb *MrbState) EnsureStringType(str MrbValue) RString {
 	if !str.Value().IsString() {
-		panic(mrb.TypeName(str) + " cannot be converted to Array")
+		panic(mrb.TypeName(str) + " cannot be converted to String")
 	}
 
 	return RString{RObject{
 		str.Value().v,
 		mrb,
 	}}
+	// C.mrb_ensure_string_type() is never called
+}
+
+// StringType is obsolete; use EnsureStringType
+func (mrb *MrbState) StringType(str MrbValue) RString {
+	return mrb.EnsureStringType(str)
+	// C.mrb_string_type() is never called
 }
 
 // CheckStringType checks string type
@@ -128,7 +137,7 @@ func (mrb *MrbState) StrNewCapa(capa int) RString {
 // StringCstr string from mrb_value
 func (mrb *MrbState) StringCstr(str MrbValue) string {
 	v := str.Value().v
-	return C.GoString(C.mrb_string_value_cstr(mrb.p, &v))
+	return C.GoString(C.mrb_string_cstr(mrb.p, v))
 }
 
 // StringValueCstr string from mrb_value; `str` will be updated
@@ -262,3 +271,7 @@ func (mrb *MrbState) StrCat2(str MrbValue, s string) Value {
 func (mrb *MrbState) StrBufAppend(str, str2 MrbValue) Value {
 	return mrb.StrCatStr(str, str2)
 }
+
+// Intentionally left unsuported
+// C.mrb_string_value_ptr() - obsolete
+// C.mrb_string_value_len() - obsolete

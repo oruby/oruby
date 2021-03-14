@@ -176,6 +176,7 @@ func (mrb *MrbState) EnsureArrayType(v MrbValue) RArray {
 	}
 
 	return ary(v.Value().v, mrb)
+	//C.mrb_ensure_array_type() is never calles
 }
 
 // CheckArrayType checks array value

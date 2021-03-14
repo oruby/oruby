@@ -38,6 +38,13 @@ func (r RRange) Exclusive() bool { return C._RANGE_EXCL(r.p) != 0 }
 func (mrb *MrbState) RangeNew(v1, v2 MrbValue, n bool) Value {
 	return Value{C.mrb_range_new(mrb.p, v1.Value().v, v2.Value().v, iifmb(n))}
 }
+// MrbRangePtr retreive RRange from Value. This method returns error if range is uninitialized
+func  (mrb *MrbState) MrbRangePtr(r MrbValue) (RRange, error ) {
+	result, err := mrb.try(func() C.mrb_value {
+		return RRange{C.mrb_range_ptr(mrb.p, r.Value().v) }.Value().v
+	})
+	return MrbRangePtr(result), err
+}
 
 // RangeBegLen return values
 const (

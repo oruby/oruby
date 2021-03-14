@@ -45,6 +45,11 @@ func (h RHash) EmptyP() bool {
 	return C.mrb_hash_empty_p(h.mrb.p, h.v) != C.mrb_bool(0)
 }
 
+// Values returns values as array
+func (h RHash) Values() RArray {
+	return RArray{ RObject{	C.mrb_hash_values(h.mrb.p, h.v) , h.mrb } }
+}
+
 // Clear clears the hash
 func (h RHash) Clear() RHash {
 	h.v = C.mrb_hash_clear(h.mrb.p, h.v)
