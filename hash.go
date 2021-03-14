@@ -107,11 +107,6 @@ func (mrb *MrbState) HashMerge(hash1, hash2 MrbValue) {
 	return
 }
 
-// RHashTbl allocates st_table if not available.
-func RHashTbl(h MrbValue) uintptr {
-	return uintptr(unsafe.Pointer((*C.struct_RHash)(C._mrb_ptr(h.Value().v)).ht))
-}
-
 // RHashIfNone get ifnone value from hash
 func (mrb *MrbState) RHashIfNone(h MrbValue) Value {
 	return mrb.IVGet(h, mrb.Intern("ifnone"))

@@ -63,7 +63,7 @@ static mrb_int _cmrb_get_idx(uintptr_t cmrb) {
 
 extern void inject_run(mrb_int idx);
 
-static void injector(struct mrb_state* mrb, struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
+static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
 	inject_run(_mrb_get_idx(mrb));
 //	mrb_raise(mrb, E_TYPE_ERROR, "braek from vm_exec");
 }
@@ -128,9 +128,9 @@ static mrb_bool _mrb_is_nil(mrb_value o)    {
 static int  _MRB_RHASH_PROCDEFAULT_P(mrb_value h) { return MRB_RHASH_PROCDEFAULT_P(h); }
 
 // Env, Proc
-static void _set_last_stack_value(mrb_state *mrb, mrb_value v) { *(mrb->c->stack + 1) = v; }
-static void _MRB_ENV_SET_STACK_LEN(struct REnv *e, mrb_int len) { MRB_ENV_SET_STACK_LEN(e, len); }
-static mrb_int _MRB_ENV_STACK_LEN(struct REnv *e) { return MRB_ENV_STACK_LEN(e); }
+static void _set_last_stack_value(mrb_state *mrb, mrb_value v) { *(mrb->c->ci->stack + 1) = v; }
+static void _MRB_ENV_SET_LEN(struct REnv *e, mrb_int len) { MRB_ENV_SET_LEN(e, len); }
+static mrb_int _MRB_ENV_LEN(struct REnv *e) { return MRB_ENV_LEN(e); }
 static uint32_t _mrb_rproc_flags(struct RProc *p) { return (uint32_t)p->flags; }
 static void _mrb_rproc_set_flags(struct RProc *p, uint32_t flags) { p->flags = flags; }
 static struct REnv* _MRB_PROC_ENV(struct RProc *p) { return MRB_PROC_ENV(p); }
@@ -146,7 +146,7 @@ static struct RProc *_MRB_METHOD_PROC(mrb_method_t m) { return MRB_METHOD_PROC(m
 static mrb_bool _MRB_METHOD_UNDEF_P(mrb_method_t m) { return MRB_METHOD_UNDEF_P(m); }
 
 static uint16_t _mrb_rproc_nlocals(struct RProc *p)  { return p->body.irep->nlocals; }
-static mrb_irep *_rproc_body_irep(struct RProc *p)  { return p->body.irep; }
+static const mrb_irep *_rproc_body_irep(struct RProc *p)  { return p->body.irep; }
 
 typedef struct _irep_dump {
   int result;
@@ -225,9 +225,9 @@ _mrb_get_args_block(mrb_state *mrb) {
   mrb_value *block;
 
   if (mrb->c->ci->argc < 0) {
-    block = mrb->c->stack + 2;
+    block = mrb->c->ci->stack + 2;
   } else {
-    block = mrb->c->stack + mrb->c->ci->argc + 1;
+    block = mrb->c->ci->stack + mrb->c->ci->argc + 1;
   }
 
   return *block;
@@ -244,8 +244,8 @@ static int  _mrbc_keep_lv(mrbc_context *c )                       { return c->ke
 static void _mrbc_set_keep_lv(mrbc_context *c, mrb_bool v)        { c->keep_lv = v; }
 static int  _mrbc_no_optimize(mrbc_context *c )                   { return c->no_optimize;  }
 static void _mrbc_set_no_optimize(mrbc_context *c, mrb_bool v)    { c->no_optimize = v; }
-static int  _mrbc_on_eval(mrbc_context *c )                       { return c->on_eval;  }
-static void _mrbc_set_on_eval(mrbc_context *c, mrb_bool v)        { c->on_eval = v; }
+//static int  _mrbc_on_eval(mrbc_context *c )                       { return c->on_eval;  }
+//static void _mrbc_set_on_eval(mrbc_context *c, mrb_bool v)        { c->on_eval = v; }
 
 // GC
 static mrb_bool _gc_iterating(mrb_state *mrb) { return mrb->gc.iterating; }
@@ -301,12 +301,12 @@ _mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)
   e->stack = NULL;
   if (argc > 0) {
     e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * argc);
-    MRB_ENV_UNSHARE_STACK(e);
+    mrb_env_unshare(mrb, e);
     for (i = 0; i < argc; i++) {
       e->stack[i] = argv[i];
     }
   }
-  MRB_ENV_SET_STACK_LEN(e, argc);
+  MRB_ENV_SET_LEN(e, argc);
 
   p->e.env = e;
   p->flags |= MRB_PROC_ENVSET;
@@ -341,7 +341,7 @@ _mrb_proc_has_env(mrb_state *mrb, struct RProc *p)
   if (!e) {
     return 0; // Can't get cfunc env from cfunc Proc without REnv.
   }
-  if (MRB_ENV_STACK_LEN(e) < 1) {
+  if (MRB_ENV_LEN(e) < 1) {
     return 0; // Empty env
   }
 
@@ -359,9 +359,9 @@ _mrb_proc_env_get(mrb_state *mrb, struct RProc *p, mrb_int idx)
   if (!e) {
     mrb_raise(mrb, E_TYPE_ERROR, "Can't get cfunc env from cfunc Proc without REnv.");
   }
-  if (idx < 0 || MRB_ENV_STACK_LEN(e) <= idx) {
+  if (idx < 0 || MRB_ENV_LEN(e) <= idx) {
     mrb_raisef(mrb, E_INDEX_ERROR, "Env index out of range: %S (expected: 0 <= index < %S)",
-               mrb_fixnum_value(idx), mrb_fixnum_value(MRB_ENV_STACK_LEN(e)));
+               mrb_fixnum_value(idx), mrb_fixnum_value(MRB_ENV_LEN(e)));
   }
 
   return e->stack[idx];

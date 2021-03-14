@@ -13,12 +13,12 @@ import (
 const (
 	MrbTTFalse     = iota
 	MrbTTTrue      // 1
-	MrbTTFloat     // 2
-	MrbTTFixnum    // 3
-	MrbTTSymbol    // 4
-	MrbTTUndef     // 5
-	MrbTTCptr      // 6
-	MrbTTFree      // 7
+	MrbTTSymbol    // 2
+	MrbTTUndef     // 3
+	MrbTTFree      // 4
+	MrbTTFloat     // 5
+	MrbTTInteger   // 6
+	MrbTTCptr      // 7
 	MrbTTObject    // 8
 	MrbTTClass     // 9
 	MrbTTModule    // 10
@@ -30,7 +30,6 @@ const (
 	MrbTTString    // 16
 	MrbTTRange     // 17
 	MrbTTException // 18
-	MrbTTFile      // 19
 	MrbTTEnv       // 20
 	MrbTTData      // 21
 	MrbTTFiber     // 22
@@ -38,6 +37,8 @@ const (
 	MrbTTBreak     // 24
 	MrbTTMaxdefine // 25
 )
+
+const MrbTTFixnum = MrbTTInteger
 
 // MrbTTHasBasic is first type with object
 const MrbTTHasBasic = MrbTTFree

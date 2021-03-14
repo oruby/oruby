@@ -50,7 +50,3 @@ func (mrb *MrbState) FloatToStr(x MrbValue, fmt string) Value {
 	return Value{C.mrb_float_to_str(mrb.p, x.Value().v, cfmt)}
 }
 
-// IntValue float to int value
-func (mrb *MrbState) IntValue(f float64) Value {
-	return Value{C.mrb_int_value(mrb.p, C.mrb_float(f))}
-}

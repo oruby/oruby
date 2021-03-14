@@ -38,12 +38,11 @@ const (
 	MrbStrFShared       = 2
 	MrbStrNofree        = 4
 	MrbStrEmbed         = 8
-	MrbStrPool          = 16
-	MrbStrASCII         = 32
+	MrbStrASCII         = 16
 	MrbStrEmbedLenShift = 6
 	MrbStrEmbedLenBit   = 5
 	MrbStrEmbedLenMask  = ((1 << C.MRB_STR_EMBED_LEN_BIT) - 1) << C.MRB_STR_EMBED_LEN_SHIFT
-	MrbStrTypeMask      = C.MRB_STR_POOL - 1
+	MrbStrTypeMask      = 15
 )
 
 //func (mrb *MrbState) GCFreeStr(s RString) { C.mrb_gc_free_str(mrb.p, s.Ptr().p) }
@@ -113,11 +112,9 @@ func (mrb *MrbState) CheckStringType(str MrbValue) Value {
 }
 
 // StrBufNew string new with buffer
+// obsolete: user StrNewCapa
 func (mrb *MrbState) StrBufNew(capa int) RString {
-	return RString{RObject{
-		C.mrb_str_buf_new(mrb.p, C.size_t(capa)),
-		mrb,
-	}}
+	return mrb.StrNewCapa(capa)
 }
 
 // StrNewCapa string new with buffer
@@ -175,8 +172,10 @@ func (mrb *MrbState) CstrToDbl(s string, badcheck bool) float64 {
 }
 
 // StrToStr Returns a converted string type.
+// for type checking, non converting `mrb_to_str` is recommended.
+// obsolete: use `mrb_obj_as_string()` instead.
 func (mrb *MrbState) StrToStr(str MrbValue) Value {
-	return Value{C.mrb_str_to_str(mrb.p, str.Value().v)}
+	return Value{C.mrb_obj_as_string(mrb.p, str.Value().v) }
 }
 
 // StrEqual  Returns true if the strings match and false if the strings don't match
@@ -239,14 +238,6 @@ func (mrb *MrbState) Bytes(str MrbValue) []byte {
 	}
 	cstr := C.mrb_str_to_cstr(mrb.p, str.Value().v)
 	return C.GoBytes(unsafe.Pointer(cstr), C.int(RStringLen(str)))
-}
-
-// StrPool pool string
-func (mrb *MrbState) StrPool(str string) Value {
-	cs := C.CString(str)
-	defer C.free(unsafe.Pointer(cs))
-
-	return Value{C.mrb_str_pool(mrb.p, cs, C.mrb_int(len(str)), C.mrb_bool(0))}
 }
 
 // StrHash hash of string

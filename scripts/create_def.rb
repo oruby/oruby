@@ -1,5 +1,5 @@
 ctags_exe         = 'ctags'
-mruby_include_dir = 'vendor/mruby/include'
+mruby_include_dir = 'mruby/include'
 files             = Dir["#{mruby_include_dir}/*.h", "#{mruby_include_dir}/mruby/*.h"]
 
 if files.empty?

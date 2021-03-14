@@ -1,5 +1,5 @@
 ifeq ($(OS),Windows_NT)
-	export MRUBY_CONFIG:=..\..\scripts\build_config_win.rb
+	export MRUBY_CONFIG:=..\scripts\build_config_win.rb
 	DYN_LIB=mruby.dll
 	MAKE=mingw32-make
 	COPY=xcopy /Y
@@ -8,9 +8,9 @@ ifeq ($(OS),Windows_NT)
 else
 	UNAME_S := $(shell uname -s)
 	ifeq ($(UNAME_S),Darwin)
-		export MRUBY_CONFIG:=../../scripts/build_config_darwin.rb
+		export MRUBY_CONFIG:=../scripts/build_config_darwin.rb
 	else
-		export MRUBY_CONFIG:=../../scripts/build_config_unix.rb
+		export MRUBY_CONFIG:=../scripts/build_config_unix.rb
 	endif
 	MAKE=make
 	DYN_LIB=
@@ -44,7 +44,7 @@ test:
 	(cd gem/zlib && go test)
 
 libmruby.a :
-	(cd vendor/mruby && $(MAKE))
+	(cd mruby && $(MAKE))
 
 pull :
 	git submodule init
@@ -66,7 +66,7 @@ install: mruby.dll
 	$(COPY) $(DYN_LIB) $(GOBIN)
 
 clean :
-	(cd vendor/mruby && $(MAKE) clean)
+	(cd mruby && $(MAKE) clean)
 #	$(RM) mrubyver.o mruby.def mruby.dll
 	go clean .
 	go clean --cache

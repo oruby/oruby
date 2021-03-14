@@ -31,13 +31,13 @@ type MrbIrepDebugInfo struct {
 // DebugGetFilename get line from irep's debug info and program counter
 // @return returns NULL if not found
 func (mrb *MrbState) DebugGetFilename(irep MrbIrep, pc uint32) string {
-	return C.GoString(C.mrb_debug_get_filename(mrb.p, irep.p, C.ptrdiff_t(pc)))
+	return C.GoString(C.mrb_debug_get_filename(mrb.p, irep.p, C.uint32_t(pc)))
 }
 
 // DebugGetLine get line from irep's debug info and program counter
 // @return returns -1 if not found
 func (mrb *MrbState) DebugGetLine(irep MrbIrep, pc uint32) uint32 {
-	return uint32(C.mrb_debug_get_line(mrb.p, irep.p, C.ptrdiff_t(pc)))
+	return uint32(C.mrb_debug_get_line(mrb.p, irep.p, C.uint32_t(pc)))
 }
 
 // DebugInfoAlloc allocate debug info

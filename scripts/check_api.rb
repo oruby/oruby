@@ -1,4 +1,5 @@
-mruby_include_dir = 'vendor/mruby/include'
+oruby_root = File.join __dir__, '..'
+mruby_include_dir = File.join __dir__, '../mruby/include'
 files             = Dir["#{mruby_include_dir}/*.h", "#{mruby_include_dir}/mruby/*.h"]
 
 if files.empty?
@@ -6,24 +7,34 @@ if files.empty?
   exit 1
 end
 
-gos = IO.read('mruby.go')
-
-line_no = 0
 header_printed = false
 
-File.readlines('mruby.def').each do |line|
+files.each do |f|
+  next if FileTest.directory?(f)
+  next if ["boxing_nan.h", "boxing_no.h", "boxing_word.h"].include?(File.basename(f))
 
-  # Skip first two lines (cpmment and EXPORTS)
-  line_no += 1
-  next if line_no < 3
+  header_printed = false
 
-  l = line[/([A-Za-z_][\w]*)\b/]
-  next if gos.include? "C.#{l}("
+  gos = nil
 
-  unless header_printed
-    puts "\n\r--- API missing in oruby: ---\n\r"
-    header_printed = true
+  File.readlines(f).each do |line|
+    l = line.scan(/^MRB_API(?:.*?)\s*([A-Za-z_][\w]*)\(/)
+    next if l.nil? || l.empty?
+  
+    gofile = "#{oruby_root}/#{File.basename(f,'.*')}.go"
+    
+    if File.file?(gofile)
+      gos = IO.read(gofile) unless gos
+      next if gos.include? "C.#{l[0][0]}("
+    end
+
+    unless header_printed
+      puts "\n\r--- API missing in #{File.basename(f,'.*')}.go:#{' (DOES NOT EXIST)' unless gos} ---\n\r"
+      header_printed = true
+    end
+  
+    puts l
   end
-
-  puts line
 end
+
+

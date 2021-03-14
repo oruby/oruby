@@ -1,7 +1,7 @@
 package oruby
 
-// #cgo CFLAGS: -I${SRCDIR}/vendor/mruby/include
-// #cgo LDFLAGS: -L${SRCDIR}/vendor/mruby/build/host/lib
+// #cgo CFLAGS: -I${SRCDIR}/mruby/include
+// #cgo LDFLAGS: -L${SRCDIR}/mruby/build/host/lib
 // #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_METHOD_T_STRUCT
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
@@ -541,7 +541,7 @@ func (mrb *MrbState) String(v MrbValue) string {
 		return mrb.StrToCstr(mrb.AnyToS(v))
 	case C.MRB_TT_EXCEPTION:
 		return fmt.Sprintf("%v %v", mrb.StrToCstr(mrb.AnyToS(v)), mrb.IVGet(v, mrb.Intern("mesg")))
-	case C.MRB_TT_FILE, C.MRB_TT_FIBER:
+	case C.MRB_TT_FIBER:
 		return mrb.StrToCstr(mrb.AnyToS(v))
 	default:
 		return mrb.StrToCstr(mrb.AnyToS(v))
@@ -653,9 +653,8 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 			return complex(r.Value().Float64(), i.Value().Float64())
 		}
 
-		// MRB_TT_ICLASS,      /* 11 */  Internal mrb use
-		// MRB_TT_FILE,        /* 19 */  not supported
-		// MRB_TT_BREAK,       /* 24 */
+		// MRB_TT_ICLASS,      Internal mrb use
+		// MRB_TT_BREAK,
 	}
 	return nil
 }
@@ -712,7 +711,7 @@ func (mrb *MrbState) Eval(code string) (result RObject, err error) {
 		return RObject{nilValue.v, mrb}, mrb.Err()
 	}
 
-	result = RObject{C.mrb_run(mrb.p, proc, C.mrb_top_self(mrb.p)), mrb}
+	result = RObject{C.mrb_top_run(mrb.p, proc, C.mrb_top_self(mrb.p), 0), mrb}
 
 	return result, mrb.Err()
 }
@@ -779,7 +778,10 @@ func (mrb *MrbState) HashClass() RClass { return RClass{mrb.p.hash_class, mrb} }
 func (mrb *MrbState) FloatClass() RClass { return RClass{mrb.p.float_class, mrb} }
 
 // FixnumClass in state
-func (mrb *MrbState) FixnumClass() RClass { return RClass{mrb.p.fixnum_class, mrb} }
+func (mrb *MrbState) FixnumClass() RClass { return RClass{mrb.p.integer_class, mrb} }
+
+// IntegerClass in state
+func (mrb *MrbState) IntegerClass() RClass { return RClass{mrb.p.integer_class, mrb} }
 
 // TrueClass in state
 func (mrb *MrbState) TrueClass() RClass { return RClass{mrb.p.true_class, mrb} }
@@ -995,10 +997,13 @@ func (mrb *MrbState) ClassGet(name string) RClass {
 
 // ExcGet returns exception class by name
 func (mrb *MrbState) ExcGet(name string) RClass {
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
+	return mrb.ExcGetId(mrb.Intern(name))
+}
+
+// ExcGetId returns exception class by name
+func (mrb *MrbState) ExcGetId(excID MrbSym) RClass {
 	exc, _ := mrb.tryC(func() *C.struct_RClass {
-		return C.mrb_exc_get(mrb.p, cname)
+		return C.mrb_exc_get_id(mrb.p, C.mrb_sym(excID))
 	})
 	return exc
 }
@@ -1234,7 +1239,7 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
 		desc := mrb.Call(v, "to_s")
 		err = fmt.Errorf("%v.%v -> %v (%v)",
-			mrb.ClassOf(self).Name(),mrb.SymName(nameSym), // ->
+			mrb.ClassOf(self).Name(), mrb.SymName(nameSym), // ->
 			mrb.String(desc), mrb.ClassOf(v).Name(),
 		)
 	}
@@ -1411,23 +1416,18 @@ func (mrb *MrbState) TopSelf() Value { return Value{C.mrb_top_self(mrb.p)} }
 
 // TopAdjustStackLength of toplevel environment. Used in imrb
 func (mrb *MrbState) TopAdjustStackLength(nlocals int) {
-	e := REnv{mrb.p.c.cibase.env, mrb}
+	e := REnv{C.mrb_vm_ci_env(mrb.p.c.cibase), mrb}
 	e.AdjustStackLength(nlocals)
-}
-
-// Run proc with value
-func (mrb *MrbState) Run(proc RProc, val MrbValue) Value {
-	return Value{C.mrb_run(mrb.p, proc.p, val.Value().v)}
 }
 
 // TopRun execution
 func (mrb *MrbState) TopRun(proc RProc, self MrbValue, stackKeep int) Value {
-	return Value{C.mrb_top_run(mrb.p, proc.p, self.Value().v, C.uint(stackKeep))}
+	return Value{C.mrb_top_run(mrb.p, proc.p, self.Value().v, C.mrb_int(stackKeep))}
 }
 
 // VMRun run proc in VM
 func (mrb *MrbState) VMRun(proc RProc, self MrbValue, stackKeep int) Value {
-	return Value{C.mrb_vm_run(mrb.p, proc.p, self.Value().v, C.uint(stackKeep))}
+	return Value{C.mrb_vm_run(mrb.p, proc.p, self.Value().v, C.mrb_int(stackKeep))}
 }
 
 // VMExec executes ISeq bytecode in mruby VM
@@ -1567,15 +1567,14 @@ func (mrb *MrbState) FieldWriteBarrierValue(obj RBasic, val MrbValue) {
 // e.g. Set element on Array.
 func (mrb *MrbState) WriteBarrier(o RBasic) { C.mrb_write_barrier(mrb.p, o.p) }
 
-// CheckConvertType check type conversion
-func (mrb *MrbState) CheckConvertType(val MrbValue, mrbtype uint32, tname, method string) (Value, error) {
-	ctname := C.CString(tname)
-	defer C.free(unsafe.Pointer(ctname))
-	cmethod := C.CString(method)
-	defer C.free(unsafe.Pointer(cmethod))
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_check_convert_type(mrb.p, val.Value().v, mrbtype, ctname, cmethod)
-	})
+// TypeConvertCheck check type conversion, returns Nil if conversion is not possible
+func (mrb *MrbState) TypeConvertCheck(val MrbValue, mrbtype uint32, method MrbSym) Value {
+	return Value{C.mrb_type_convert_check(mrb.p, val.Value().v, mrbtype, C.mrb_sym(method))}
+}
+
+// CheckConvertType check type conversion, returns Nil if conversion is not possible
+func (mrb *MrbState) CheckConvertType(val MrbValue, mrbtype uint32, tname, method string) Value {
+	return mrb.TypeConvertCheck(val, mrbtype, mrb.Intern(method))
 }
 
 // AnyToS returns string value of obj
@@ -1599,15 +1598,16 @@ func (mrb *MrbState) ObjClass(obj MrbValue) RClass {
 // ClassPath returns class path
 func (mrb *MrbState) ClassPath(c RClass) Value { return Value{C.mrb_class_path(mrb.p, c.p)} }
 
+// TypeConvert using method
+func (mrb *MrbState) TypeConvert(val MrbValue, mrbtype uint32, method MrbSym) (Value, error) {
+	return mrb.try(func() C.mrb_value {
+		return C.mrb_type_convert(mrb.p, val.Value().v, mrbtype, C.mrb_sym(method))
+	})
+}
+
 // ConvertType using method
 func (mrb *MrbState) ConvertType(val MrbValue, mrbtype uint32, tname, method string) (Value, error) {
-	ctname := C.CString(tname)
-	defer C.free(unsafe.Pointer(ctname))
-	cmethod := C.CString(method)
-	defer C.free(unsafe.Pointer(cmethod))
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_convert_type(mrb.p, val.Value().v, mrbtype, ctname, cmethod)
-	})
+	return mrb.TypeConvert(val, mrbtype, mrb.Intern(method))
 }
 
 // ObjIsKindOf check kind of obj

@@ -212,8 +212,6 @@ func TypeName(v MrbValue) string {
 		return "Range"
 	case MrbTTException:
 		return "Exception"
-	case MrbTTFile:
-		return "File"
 	case MrbTTEnv:
 		return "Env"
 	case MrbTTData:

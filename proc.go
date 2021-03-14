@@ -24,7 +24,7 @@ func (e REnv) Type() int { return e.Value().Type() }
 func (e REnv) IsNil() bool { return e.p == nil }
 
 // Len returns number of items
-func (e REnv) Len() int { return int(C._MRB_ENV_STACK_LEN(e.p)) }
+func (e REnv) Len() int { return int(C._MRB_ENV_LEN(e.p)) }
 
 // Unshare stack unshares Env
 func (e REnv) Unshare() { C.mrb_env_unshare(e.mrb.p, e.p) }
@@ -57,8 +57,8 @@ func (p RProc) SetEnv(stackItems ...Value) {
 // AdjustStackLength of toplevel environment. Used in imrb
 func (e REnv) AdjustStackLength(nlocals int) {
 	if e.p != nil {
-		if int(C._MRB_ENV_STACK_LEN(e.p)) < nlocals {
-			C._MRB_ENV_SET_STACK_LEN(e.p, C.mrb_int(nlocals))
+		if int(C._MRB_ENV_LEN(e.p)) < nlocals {
+			C._MRB_ENV_SET_LEN(e.p, C.mrb_int(nlocals))
 		}
 	}
 }
