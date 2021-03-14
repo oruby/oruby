@@ -1,6 +1,3 @@
 [submodule "mruby"]
-	path = vendor/mruby
-	url = https://github.com/mruby/mruby.git
-[submodule "vendor/mruby"]
-	path = vendor/mruby
+	path = mruby
 	url = https://github.com/mruby/mruby.git
