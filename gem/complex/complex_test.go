@@ -61,7 +61,7 @@ func TestComplex3(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	assert.AssertFile(t, mrb,"complex_test.rb")
+ 	assert.AssertFile(t, mrb,"complex_test.rb")
 }
 
 func TestComplexRect(t *testing.T) {

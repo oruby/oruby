@@ -2,7 +2,7 @@ package oruby
 
 // #cgo CFLAGS: -I${SRCDIR}/mruby/include
 // #cgo LDFLAGS: -L${SRCDIR}/mruby/build/host/lib
-// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_METHOD_T_STRUCT
+// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_METHOD_T_STRUCT -DMRB_NO_BOXING
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -694,24 +694,25 @@ func (mrb *MrbState) Eval(code string) (result RObject, err error) {
 	if err != nil {
 		return RObject{nilValue.v, mrb}, err
 	}
-	defer p.Free()
+
+	result = RObject{C.mrb_load_exec(mrb.p, p.p, cxt.p), mrb}
 
 	// Check parse errors
-	if p.NErr() > 0 {
-		estr := ""
-		for i := 0; i < p.NErr(); i++ {
-			e := p.ErrorBuffer(i)
-			estr += fmt.Sprintf("%s:%d:%d: %s\n", mrb.SymString(p.Filename()), e.LineNo, e.Column, e.Message)
-		}
-		return RObject{nilValue.v, mrb}, errors.New(estr)
-	}
+	//if p.NErr() > 0 {
+	//	estr := ""
+	//	for i := 0; i < p.NErr(); i++ {
+	//		e := p.ErrorBuffer(i)
+	//		estr += fmt.Sprintf("%s:%d:%d: %s\n", mrb.SymString(p.Filename()), e.LineNo, e.Column, e.Message)
+	//	}
+	//	return RObject{nilValue.v, mrb}, errors.New(estr)
+	//}
+	//
+	//proc := C.mrb_generate_code(mrb.p, p.p)
+	//if proc == nil {
+	//	return RObject{nilValue.v, mrb}, mrb.Err()
+	//}
 
-	proc := C.mrb_generate_code(mrb.p, p.p)
-	if proc == nil {
-		return RObject{nilValue.v, mrb}, mrb.Err()
-	}
-
-	result = RObject{C.mrb_top_run(mrb.p, proc, C.mrb_top_self(mrb.p), 0), mrb}
+	//result = RObject{C.mrb_top_run(mrb.p, proc, C.mrb_top_self(mrb.p), 0), mrb}
 
 	return result, mrb.Err()
 }

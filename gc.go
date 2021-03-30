@@ -27,7 +27,8 @@ func MrbObjectDeadP(mrb *MrbState, o RBasic) bool {
 // IsDead checks if value is garbage collected. Values that are not inherited from
 // BasicObject, like fixnums, symbols, booleans, are not subject to GC and are always "alive"
 func (mrb *MrbState) IsDead(o MrbValue) bool {
-	return o.Value().HasBasic() && MrbObjectDeadP(mrb, RBASIC(o))
+	v := o.Value()
+	return v.HasBasic() && MrbObjectDeadP(mrb, v.RBasic())
 }
 
 // MrbEachObj constants

@@ -8,7 +8,8 @@ import (
 
 // TestMrbState_FullGC this test is adopted from mitchellh/go-mruby
 func TestMrbState_FullGC(t *testing.T) {
-	mrb := MrbOpen()
+	//mrb := MrbOpen()
+	mrb, _ := NewCore()
 	defer mrb.Close()
 
 	arenaIndex := mrb.GCArenaSave()

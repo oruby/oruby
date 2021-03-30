@@ -289,7 +289,7 @@ func (mrb *MrbState) StringValue(s string) RString {
 	}}
 }
 
-// BytesValue float to oruby value
+// BytesValue bytes to oruby string value
 func (mrb *MrbState) BytesValue(buf []byte) Value {
 	if len(buf) == 0 {
 		return Value{C.mrb_str_new(mrb.p, nil, C.size_t(0))}

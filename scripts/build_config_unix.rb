@@ -27,7 +27,7 @@ MRuby::Build.new do |conf|
      cc.flags = [%w(-g3 -ggdb -O0 -Wall -Werror-implicit-function-declaration -gstabs+)] #=[ENV['CFLAGS'] || %w()]
   #   cc.include_paths = ["#{root}/include"]
   #   cc.defines = %w(DISABLE_GEMS)
-     cc.defines << %w(MRB_HIGH_PROFILE MRB_METHOD_T_STRUCT)
+     cc.defines << %w(MRB_HIGH_PROFILE MRB_METHOD_T_STRUCT MRB_NO_BOXING)
   #   cc.option_include_path = '-I%s'
   #   cc.option_define = '-D%s'
   #   cc.compile_options = "%{flags} -MMD -o %{outfile} -c %{infile}"

@@ -23,7 +23,6 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	mrb.DefineModuleFunc(mProc, "setpgrp", syscall.Setgroups)
 	mrb.DefineModuleFunc(mProc, "getpgid", syscall.Getpgid)
 	mrb.DefineModuleFunc(mProc, "setpgid", syscall.Setpgid)
-	mrb.DefineModuleFunc(mProc, "getsid", syscall.Getsid)
 	mrb.DefineModuleFunc(mProc, "setsid", syscall.Setsid)
 	mrb.DefineModuleFunc(mProc, "getpriority", syscall.Getpriority)
 	mrb.DefineModuleFunc(mProc, "setpriority", syscall.Setpriority)
@@ -74,7 +73,6 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	mrb.DefineModuleFunc(mSys, "setregid", syscall.Setregid)
 	//mrb.DefineModuleFunc(mSys, "setresuid", syscall.Setresuid)
 	//mrb.DefineModuleFunc(mSys, "setresgid", syscall.Setresgid)
-	mrb.DefineModuleFunc(mSys, "issetugid", syscall.Issetugid)
 
 	initPlatformUnix(mrb, mProc, mSys)
 }

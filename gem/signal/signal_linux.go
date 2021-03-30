@@ -48,7 +48,6 @@ func platformReservedSignal(sig int) bool {
 	case int(syscall.SIGFPE):
 	case int(syscall.SIGVTALRM):
 		return true
-	default:
-		return false
 	}
+	return false
 }

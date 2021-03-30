@@ -167,6 +167,7 @@ func TestShouldHandleEnsure(t *testing.T) {
 	e.ensure = true
 	e.bufvar = "@a"
 
+
 	mrb, closer := checkOutputE(t, e,
 		`<table>
  <tbody>

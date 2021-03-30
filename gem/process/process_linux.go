@@ -1,6 +1,7 @@
 package process
 
 import (
+	"golang.org/x/sys/unix"
 	"syscall"
 	"unsafe"
 
@@ -8,7 +9,10 @@ import (
 )
 
 func initPlatformUnix(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
-
+	mrb.DefineModuleFunc(mProc, "getsid", unix.Getsid)
+	// mrb.DefineModuleFunc(mProc, "euid=", unix.Seteuid)
+	// mrb.DefineModuleFunc(mProc, "egid=", unix.Setegid)
+	// mrb.DefineModuleFunc(mSys, "issetugid", syscall.Issetugid)
 }
 
 func prLimit(pid int, limit uintptr, rlimit *syscall.Rlimit) (err error) {
