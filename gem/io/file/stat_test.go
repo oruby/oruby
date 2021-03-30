@@ -103,6 +103,10 @@ func Test_statAtime(t *testing.T) {
 }
 
 func Test_statBirthtime(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
@@ -363,7 +367,9 @@ func Test_statInspect(t *testing.T) {
 	assert.Expect(t, strings.Contains(s,"atime="), "")
 	assert.Expect(t, strings.Contains(s,"mtime="), "")
 	assert.Expect(t, strings.Contains(s,"ctime="), "")
-	assert.Expect(t, strings.Contains(s,"birthtime="), "")
+	if runtime.GOOS == "darwin" {
+		assert.Expect(t, strings.Contains(s,"birthtime="), "")
+	}
 	assert.Expect(t, strings.HasSuffix(s,">"), "")
 }
 

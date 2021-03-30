@@ -141,11 +141,11 @@ func Test_dirRead(t *testing.T) {
 
 	ret = dir.Call("read")
 	assert.NilError(t, mrb.Err())
-	assert.Include(t, mrb.Intf(ret), "test.txt", "zero.txt")
+	assert.Include(t, mrb.Intf(ret), "test.txt", "zero.txt", "glob")
 
 	ret = dir.Call("read")
 	assert.NilError(t, mrb.Err())
-	assert.Include(t, mrb.Intf(ret), "test.txt", "zero.txt")
+	assert.Include(t, mrb.Intf(ret), "test.txt", "zero.txt", "glob")
 }
 
 func Test_dirEach(t *testing.T) {

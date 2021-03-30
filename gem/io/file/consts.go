@@ -12,7 +12,6 @@ const (
 	fnmDotmatch   = 0x04
 	fnmCasefold   = 0x08
 	fnmExtglob    = 0x10
-	fnmSyscase    = 0x08
 	fnmShortname  = 0x20
 	fnmGlobNosort = 0x40
 )

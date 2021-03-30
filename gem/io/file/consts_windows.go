@@ -1,5 +1,7 @@
 package file
 
+var fnmSyscase = 0x08
+
 func initPlatformConsts(consts oruby.RClass) {
 	consts.Const("ALT_SEPARATOR", os.PathSeparator)
 
