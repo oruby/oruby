@@ -175,7 +175,7 @@ func statDevMajor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if ext.dev == 0 {
 		return mrb.NilValue()
 	}
-	return mrb.Value(uint64(ext.dev/256))
+	return mrb.Value(major(ext.dev))
 }
 
 func statDevMinor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -184,7 +184,7 @@ func statDevMinor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if ext.dev == 0 {
 		return mrb.NilValue()
 	}
-	return mrb.Value(uint64(ext.dev%256))
+	return mrb.Value(minor(ext.dev))
 }
 
 func statIsDirectory(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -298,20 +298,13 @@ func statRdev(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.Value(ext.rdev)
 }
 
-var (
-	minorbits = uint(20)
-	minormask = uint((uint(1) << minorbits) - 1)
-)
-
 func statIsRdevMajor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
 	ext := getExtendedStat(stat)
 	if ext.rdev == 0 {
 		return mrb.NilValue()
 	}
-
-	major := int(ext.rdev >> minorbits)
-	return mrb.Value(major)
+	return mrb.Value(major(ext.rdev))
 }
 
 func statIsRdevMinor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -320,9 +313,7 @@ func statIsRdevMinor(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if ext.rdev == 0 {
 		return mrb.NilValue()
 	}
-
-	minor := int(ext.rdev >> minorbits)
-	return mrb.Value(minor)
+	return mrb.Value(minor(ext.rdev))
 }
 
 func statIsReadable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

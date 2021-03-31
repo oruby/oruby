@@ -36,3 +36,11 @@ func statIsExecutableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue 
 func statIsGrpowned(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.False
 }
+
+func major(dev uint64) uint32 {
+	return 0
+}
+
+func minor(dev uint64) uint32 {
+	return 0
+}

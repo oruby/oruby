@@ -72,6 +72,8 @@ func Test_statComp(t *testing.T) {
 	f1, err := ioutil.TempFile("", "stt*.tmp")
 	assert.NilError(t, err)
 
+	<-time.After(1*time.Second)
+
 	f2, err := ioutil.TempFile("", "stt*.tmp")
 	assert.NilError(t, err)
 
@@ -85,7 +87,7 @@ func Test_statComp(t *testing.T) {
 	mrb.SetGV("$f1", f1)
 	mrb.SetGV("$f2", f2)
 
-	ret, err := mrb.Eval(`$f1.stat<=>$f2.stat`)
+	ret, err := mrb.Eval(`$f1.stat <=> $f2.stat`)
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
 	assert.Equal(t, ret.Int(), 1)
@@ -464,10 +466,13 @@ func Test_statIsRdevMajor(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	ret, err := mrb.Eval(`File.stat("testdata/test.txt").rdev_major`)
-	assert.NilError(t, err)
-	if runtime.GOOS == "linux" {
-		assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
+	if runtime.GOOS != "windows" {
+		ret, err := mrb.Eval(`File.stat("/dev/tty").rdev_major`) // => 5
+		assert.NilError(t, err)
+		if runtime.GOOS == "linux" {
+			assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
+			assert.Equal(t, ret.Int(), 5)
+		}
 	}
 }
 
@@ -475,10 +480,11 @@ func Test_statIsRdevMinor(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	ret, err := mrb.Eval(`File.stat("testdata/test.txt").rdev_minor`)
-	assert.NilError(t, err)
-	if runtime.GOOS == "linux" {
+	if runtime.GOOS != "windows" {
+		ret, err := mrb.Eval(`File.stat("/dev/tty").rdev_minor`) // => 0
+		assert.NilError(t, err)
 		assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
+		assert.Equal(t, ret.Int(), 0)
 	}
 }
 

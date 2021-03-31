@@ -2,6 +2,7 @@ package file
 
 import (
 	"github.com/oruby/oruby"
+	"golang.org/x/sys/unix"
 	"os"
 )
 
@@ -51,5 +52,13 @@ func statIsGrpowned(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
 	ext := getExtendedStat(stat)
 	return oruby.Bool(ext.gid == os.Getegid())
+}
+
+func major(dev uint64) uint32 {
+	return unix.Major(dev)
+}
+
+func minor(dev uint64) uint32 {
+	return unix.Minor(dev)
 }
 
