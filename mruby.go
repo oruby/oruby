@@ -672,13 +672,22 @@ func errorHandler(err *error) {
 	}
 }
 
-// RunCode executes oruby code string
+// RunCode executes oruby code string, returning error
 func (mrb *MrbState) RunCode(code string, args ...interface{}) error {
 	if len(args) > 0 {
 		mrb.DefineGlobalConst("ARGV", mrb.Value(args))
 	}
 	_, err := mrb.Eval(code)
 	return err
+}
+
+// Run executes oruby code string, returning result. Error is in mrb.Err()
+func (mrb *MrbState) Run(code string, args ...interface{}) RObject {
+	if len(args) > 0 {
+		mrb.DefineGlobalConst("ARGV", mrb.Value(args))
+	}
+	ret,_ := mrb.Eval(code)
+	return ret
 }
 
 // Eval evaluates code string and returns calculated result

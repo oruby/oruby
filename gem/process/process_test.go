@@ -134,6 +134,9 @@ func TestWait(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
+	// wait if any lingering children from other tests
+	mrb.Run("Process.wait")
+
 	pid1, _ := mrb.Eval("Process.spawn " + executable())
 	pid2, _ := mrb.Eval("Process.spawn " + executable())
 	pid3, _ := mrb.Eval("Process.spawn " + executable())
