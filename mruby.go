@@ -259,7 +259,7 @@ func (mrb *MrbState) Inject(proc RProc) {
 	}
 }
 
-// startInjector for code to be executed from gorputines in main mrb
+// startInjector for code to be executed from goroutines in main mrb
 func (mrb *MrbState) startInjector() {
 	mrb.Lock()
 	mrb.injectMainChan = make(chan RProc)

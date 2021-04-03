@@ -69,7 +69,7 @@ func (c RComplex) String() string {
 	return fmt.Sprintf("%v", c.v)
 }
 
-// ToS printscomplex number without parenthesis
+// ToS prints complex number without parenthesis
 func (c RComplex) ToS() string {
 	s := fmt.Sprintf("%v", c.v)
 	return s[1 : len(s)-1]
@@ -246,7 +246,7 @@ func (c RComplex) Rectangular() (float64, float64) {
 	return real(c.v), imag(c.v)
 }
 
-// ToR conver to Rational
+// ToR convert to Rational
 // TODO: Rational numbers
 //func (c RComplex) ToR (*Rational, error) {
 // if imag(c.v) != 0 {

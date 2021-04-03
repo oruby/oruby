@@ -3,7 +3,7 @@
 This oruby gem is not part of the ORuby fullcore.
 
 This is EXPERIMENTAL code. MRuby does not have any support for concurrent access, and
-Go singal handling is done via goroutines and channels. So things are prone to race conditions.
+Go signal handling is done via goroutines and channels. So things are prone to race conditions.
 
 If you are using ORuby scripting, signals should (probably) not be handled via script code.
 
@@ -26,8 +26,8 @@ Signal gem follows ORuby "core gems code" to be as close as possible to MRI Ruby
 so you can see consult docs for Ruby Signal module.
 
 Implementation is thin scripting over standard Go signal handling. Which means that
-everything about Go signal handling sholud be considered. Signal consts are added for Windows,
-Linux and macOS, plus SIGINT and SIGKILL which are supported on all Go platforms.
+everything about Go signal handling should be considered. Signal constants are added
+for Windows, Linux and macOS, plus SIGINT and SIGKILL which are supported on all Go platforms.
 
 ## Implementation
 
@@ -37,12 +37,12 @@ This is still EXPERIMENTAL, and can lead to unexpected behaviour.
 
 Things that work, but need more testing:
 
-  * Signals received while VM is executing - serialized using chans and VM C callback in mruby
-  * EXIT Signals - these procs get executed on oruby.MrbState ```Close()```
+  * Signals received while VM is executing - serialized using channels and VM C callback in mruby
+  * EXIT Signals - these rprocs get executed on oruby.MrbState ```Close()```
 
 Things that can bomb:
 
-  * Signals recevied while VM is not executing. This is "gray" area, since in MRI Ruby
+  * Signals received while VM is not executing. This is "gray" area, since in MRI Ruby
     VM is executing always. This is a situation where signal handler is set, for example
     via ```mrb.Eval()```, and signal is arriving after eval, when no oruby VM code is executing.
     At that moment, code is just executed. But since mruby does not have sync primitives

@@ -2,7 +2,7 @@
 #include "go-mrb.h"
 
 // Go-C-Go proxy callback functions
-// ret values are alocated on C side
+// ret values are allocated on C side
 
 mrb_value set_mrb_env_callback(mrb_state *mrb, mrb_value self) {
   mrb_value idx = mrb_proc_cfunc_env_get(mrb, 0);
