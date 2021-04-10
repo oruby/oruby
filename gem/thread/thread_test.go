@@ -15,6 +15,7 @@ func TestContext(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+
 	if v.String() != "yea" {
 		t.Errorf("expected 'yea' got '%v'", mrb.String(v))
 	}

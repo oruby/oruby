@@ -34,6 +34,7 @@ extern "C" {
 #include "mruby/error.h"
 #include "mruby/throw.h"
 #include "mruby/istruct.h"
+#include "mruby/presym.h"
 
 static void _mrb_set_idx(mrb_state *mrb, mrb_int idx) {
   struct RBasic *s = mrb_obj_alloc(mrb, MRB_TT_ISTRUCT, mrb->object_class);
@@ -57,15 +58,18 @@ static mrb_int _mrb_get_idx(mrb_state *mrb) {
 }
 
 static mrb_int _cmrb_get_idx(uintptr_t cmrb) {
-	mrb_state *mrb = (mrb_state *)cmrb;
+  mrb_state *mrb = (mrb_state *)cmrb;
   return mrb->ud ? *(mrb_int*)mrb->ud : 0;
 }
 
-extern void inject_run(mrb_int idx);
+extern struct RProc* inject_run(mrb_int idx);
 
 static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
-	inject_run(_mrb_get_idx(mrb));
-//	mrb_raise(mrb, E_TYPE_ERROR, "braek from vm_exec");
+  struct RProc *p = inject_run(_mrb_get_idx(mrb));
+  if (p) {
+    mrb_funcall_with_block(mrb, mrb_obj_value(p), MRB_SYM(call), 0, NULL, mrb_nil_value());
+  }
+//	mrb_raise(mrb, E_TYPE_ERROR, "break from vm_exec");
 }
 
 static void set_mrb_injector(mrb_state *mrb) {

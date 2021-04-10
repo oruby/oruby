@@ -1,8 +1,8 @@
 package oruby
 
-// #cgo CFLAGS: -I${SRCDIR}/mruby/include
+// #cgo CFLAGS: -I${SRCDIR}/mruby/include -I${SRCDIR}/mruby/build/host/include
 // #cgo LDFLAGS: -L${SRCDIR}/mruby/build/host/lib
-// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_ENABLE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_METHOD_T_STRUCT -DMRB_NO_BOXING
+// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_USE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_USE_METHOD_T_STRUCT -DMRB_NO_BOXING
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -228,15 +228,18 @@ func (mrb *MrbState) ExitChan() chan struct{} {
 }
 
 //export inject_run
-func inject_run(idx C.mrb_int) {
+func inject_run(idx C.mrb_int) *C.struct_RProc {
 	mrb := getMrbStateIndex(int(idx))
 
 	select {
 	case <-mrb.exitChan:
 	case proc := <-mrb.injectVMChan:
-		_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
+		return proc.p
+		// C.mrb_funcall_with_block(mrb.p,proc.p, C.mrb_sym(mrb.Intern("call")), 0, nil, nilValue.v	)
 	default:
 	}
+
+	return nil
 }
 
 // Inject code to be executed in mrb
@@ -244,6 +247,8 @@ func (mrb *MrbState) Inject(proc RProc) {
 	if atomic.LoadInt32(&mrb.stack) == 0 {
 		mrb.startInjector()
 	}
+
+	mrb.injectVMChan <- proc
 
 	select {
 	case mrb.injectVMChan <- proc:
@@ -255,7 +260,9 @@ func (mrb *MrbState) Inject(proc RProc) {
 
 	select {
 	case mrb.injectMainChan <- proc:
+		return
 	case <-mrb.exitChan:
+		return
 	}
 }
 
@@ -268,15 +275,14 @@ func (mrb *MrbState) startInjector() {
 	atomic.StoreInt32(&mrb.stack, 1)
 	mrb.Unlock()
 
-	var injectorLock sync.Mutex
-
-	go func() {
-		for proc := range mrb.injectMainChan {
-			injectorLock.Lock()
-			_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
-			injectorLock.Unlock()
-		}
-	}()
+	//go func() {
+	//  var injectorLock sync.Mutex
+	//	for proc := range mrb.injectMainChan {
+	//		injectorLock.Lock()
+	//		_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
+	//		injectorLock.Unlock()
+	//	}
+	//}()
 }
 
 // Close oruby state
