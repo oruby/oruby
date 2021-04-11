@@ -11,8 +11,17 @@ func initPrint(mrb *MrbState) interface{} {
 	kernel.DefineMethod("puts", printPuts, mrb.ArgsAny())
 	kernel.DefineMethod("p", printP, mrb.ArgsAny())
 	kernel.DefineMethod("printf", printPrintf, mrb.ArgsAny())
+	kernel.DefineMethod("defined?", mrubyDefined, mrb.ArgsAny())
 
 	return nil
+}
+
+func mrubyDefined(mrb *MrbState, self Value) MrbValue {
+	arg := mrb.GetArgsFirst()
+	if arg.IsNil() && mrb.GetArgsCount() == 0 {
+		return mrb.NilValue()
+	}
+	return arg
 }
 
 func printStr(mrb *MrbState, self Value) MrbValue {

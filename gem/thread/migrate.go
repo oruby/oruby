@@ -2,8 +2,9 @@ package thread
 
 import (
 	"bytes"
-	"github.com/oruby/oruby"
 	"strings"
+
+	"github.com/oruby/oruby"
 )
 
 func (c *Context) migrateState() error {
@@ -67,7 +68,7 @@ func (c *Context) migrateValue(v oruby.Value) (oruby.MrbValue, error) {
 		return v, nil
 	}
 
-	mrb  := c.mrbCaller
+	mrb := c.mrbCaller
 	mrb2 := c.mrb
 
 	switch v.Type() {
@@ -93,7 +94,7 @@ func (c *Context) migrateValue(v oruby.Value) (oruby.MrbValue, error) {
 		}
 
 		if v.Type() == oruby.MrbTTException {
-			msg, err := c.migrateValue(mrb.IVGet(v, mrb.Intern( "mesg")))
+			msg, err := c.migrateValue(mrb.IVGet(v, mrb.Intern("mesg")))
 			if err != nil {
 				return mrb.NilValue(), err
 			}
@@ -140,7 +141,7 @@ func (c *Context) migrateValue(v oruby.Value) (oruby.MrbValue, error) {
 	case oruby.MrbTTHash:
 		nv := mrb2.HashNew()
 		ka := mrb.HashKeys(v)
-		l  := ka.Len()
+		l := ka.Len()
 		for i := 0; i < l; i++ {
 			ai := mrb2.GCArenaSave()
 			k, err := c.migrateValue(mrb.AryEntry(ka, i))
@@ -171,12 +172,11 @@ func (c *Context) migrateValue(v oruby.Value) (oruby.MrbValue, error) {
 	return oruby.Nil, oruby.ETypeError("cannot migrateState object: %v (%v)", mrb.Inspect(v), mrb.TypeName(v))
 }
 
-
 func (c *Context) migrateSimpleIV(v, v2 oruby.Value) error {
 	a := c.mrbCaller.ObjInstanceVariables(v)
 
-	for i :=0; i < a.Len(); i++ {
-		sym  := c.mrbCaller.Symbol(a.Item(i))
+	for i := 0; i < a.Len(); i++ {
+		sym := c.mrbCaller.Symbol(a.Item(i))
 		sym2 := c.migrateSym(sym)
 		iv := c.mrbCaller.IVGet(v, sym)
 		v, err := c.migrateValue(iv)
@@ -197,7 +197,7 @@ func (c *Context) migrateSym(sym oruby.MrbSym) oruby.MrbSym {
 }
 
 func (c *Context) migrateAllSymbols() {
-	for i := 1; i < c.mrb.SymIdx() + 1; i++ {
+	for i := 1; i < c.mrb.SymIdx()+1; i++ {
 		c.migrateSym(oruby.MrbSym(i))
 	}
 }
@@ -219,7 +219,7 @@ func (c *Context) isSafeMigratableSimpleValue(v oruby.Value) bool {
 			return false
 		}
 	case oruby.MrbTTArray:
-		for i :=0; i < v.Len(); i++ {
+		for i := 0; i < v.Len(); i++ {
 			if !c.isSafeMigratableSimpleValue(mrb.AryEntry(v, i)) {
 				return false
 			}
@@ -228,7 +228,7 @@ func (c *Context) isSafeMigratableSimpleValue(v oruby.Value) bool {
 		ka := mrb.HashKeys(v)
 		for i := 0; i < ka.Len(); i++ {
 			k := mrb.AryEntry(ka, i)
-			if !c.isSafeMigratableSimpleValue(k) ||	!c.isSafeMigratableSimpleValue(mrb.HashGet(v, k)) {
+			if !c.isSafeMigratableSimpleValue(k) || !c.isSafeMigratableSimpleValue(mrb.HashGet(v, k)) {
 				return false
 			}
 		}
@@ -257,7 +257,7 @@ func (c *Context) migrateIRepChild(ret oruby.MrbIrep) {
 
 	// migrateState sub ireps
 	for i := 0; i < ret.RLen(); i++ {
-		c.migrateIRepChild(ret.Reps(i));
+		c.migrateIRepChild(ret.Reps(i))
 	}
 }
 
@@ -265,7 +265,7 @@ func (c *Context) migrateIRep(src oruby.MrbIrep) (oruby.MrbIrep, error) {
 	var err error
 	var irep bytes.Buffer
 
-	_,err = c.mrbCaller.DumpIrep(src, oruby.DumpEndianNat, &irep)
+	_, err = c.mrbCaller.DumpIrep(src, oruby.DumpEndianNat, &irep)
 	if err != nil {
 		return oruby.MrbIrep{}, err
 	}
@@ -290,7 +290,7 @@ func (c *Context) migrateRProc(proc oruby.RProc) (oruby.RProc, error) {
 
 	if proc.HasEnv() {
 		stack := make([]oruby.Value, proc.Env().Len())
-		for i,_ := range stack {
+		for i := range stack {
 			v := proc.Env().Stack(i)
 			if v.IsProc() && v == proc.Value() {
 				stack[i] = proc.Value()
@@ -315,4 +315,3 @@ func (c *Context) migrateRProc(proc oruby.RProc) (oruby.RProc, error) {
 
 	return newproc, nil
 }
-
