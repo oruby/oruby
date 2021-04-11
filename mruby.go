@@ -95,7 +95,7 @@ func NewCore() (*MrbState, error) {
 	mrb.matrix[0] = make([]interface{}, 500)
 	mrb.afterInitSym = mrb.Intern("after_init")
 
-	// Store *MrbState pointer so it can be retrieved it from C callbacks
+	// Store *MrbState pointer so it can be retrieved from C callbacks
 	registerState(mrb)
 
 	// SystemCallError exception
@@ -242,28 +242,21 @@ func inject_run(idx C.mrb_int) *C.struct_RProc {
 	return nil
 }
 
-// Inject code to be executed in mrb
+// Inject code from goroutine, thread or singnal handeler to be executed in mrb
 func (mrb *MrbState) Inject(proc RProc) {
 	if atomic.LoadInt32(&mrb.stack) == 0 {
 		mrb.startInjector()
 	}
 
+	// mrb->jmp == 0 if no vm code is executing
+	// This will be picked from main executing goroutine 
+	if mrb.p.jmp == nil {
+		mrb.injectMainChan <- proc
+		return
+	}
+
+	// Execute procedure via inject_run VM debug hook
 	mrb.injectVMChan <- proc
-
-	select {
-	case mrb.injectVMChan <- proc:
-		return
-	case <-mrb.exitChan:
-		return
-	default:
-	}
-
-	select {
-	case mrb.injectMainChan <- proc:
-		return
-	case <-mrb.exitChan:
-		return
-	}
 }
 
 // startInjector for code to be executed from goroutines in main mrb
@@ -275,14 +268,12 @@ func (mrb *MrbState) startInjector() {
 	atomic.StoreInt32(&mrb.stack, 1)
 	mrb.Unlock()
 
-	//go func() {
-	//  var injectorLock sync.Mutex
-	//	for proc := range mrb.injectMainChan {
-	//		injectorLock.Lock()
-	//		_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
-	//		injectorLock.Unlock()
-	//	}
-	//}()
+	// Main therad executor
+	go func() {
+		for proc := range mrb.injectMainChan {
+			_,_= mrb.FuncallWithBlock(proc, mrb.Intern("call"))
+		}
+	}()
 }
 
 // Close oruby state
