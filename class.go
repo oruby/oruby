@@ -34,7 +34,7 @@ func (c RClass) String() string { return c.Name() }
 // Ptr for MrbValue interface
 func (c RClass) Ptr() RClassPtr { return RClassPtr{c.p} }
 
-// Ptr for MrbValue interface
+// RObjectPtr for MrbValue interface
 func (c RClass) RObjectPtr() RObjectPtr { return RObjectPtr{(*C.struct_RObject)(unsafe.Pointer(c.p))} }
 
 // MrbClassPtr returns RClassPtr struct (without mrb reference) from MrbValue

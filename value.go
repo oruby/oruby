@@ -38,6 +38,7 @@ const (
 	MrbTTMaxdefine // 25
 )
 
+// MrbTTFixnum is deprecated. MrbTTInteger is preffered
 const MrbTTFixnum = MrbTTInteger
 
 // MrbTTHasBasic is first type with object

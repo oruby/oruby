@@ -125,4 +125,6 @@ func Error(t *testing.T, i error, eformat string, args ...interface{}) {
 }
 
 // Is64bit function returns true if go runtime is 64 bit
-func Is64bit() bool { return strings.Contains(runtime.GOARCH, "64") }
+func Is64bit() bool { 
+	return strings.Contains(runtime.GOARCH, "64") 
+}

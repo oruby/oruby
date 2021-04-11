@@ -266,7 +266,7 @@ func (mrb *MrbState) DefineGoClassUnder(outer RClass, name string, constructor i
 	return klass
 }
 
-// DefineGoModule defines ruby modeule with interface attached
+// DefineGoModuleUnder defines ruby modeule with interface attached
 // interface can be used to store and retreive additional data
 // no destructor is called on data, so it should contain only data
 // that can be safely GC-ed on MrbState close

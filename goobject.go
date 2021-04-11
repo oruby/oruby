@@ -6,6 +6,7 @@ import "fmt"
 
 func (obj RObject) p() *C.struct_RObject { return (*C.struct_RObject)(C._mrb_ptr(obj.v)) }
 
+// Class returns RClassPtr from object
 func (o RObjectPtr) Class() RClassPtr { return RClassPtr{o.p.c} }
 
 // Dup duplicates object

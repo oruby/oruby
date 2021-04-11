@@ -7,10 +7,10 @@ import "unsafe"
 // Ptr returns RHashPtr from oruby hash value
 func (h RHash) Ptr() RHashPtr { return MrbHashPtr(Value{h.v}) }
 
-// Set sets a keys and values to hashes
+// Set sets a key and value to hash
 func (h RHash) Set(key, val MrbValue) { C.mrb_hash_set(h.mrb.p, h.v, key.Value().v, val.Value().v) }
 
-// Set sets a keys and values to hashes
+// SetI sets a keys and value interfaces to hash
 func (h RHash) SetI(key, val interface{}) {
 	C.mrb_hash_set(h.mrb.p, h.v, h.mrb.Value(key).v, h.mrb.Value(val).v)
 }

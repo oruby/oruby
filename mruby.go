@@ -1013,11 +1013,11 @@ func (mrb *MrbState) ClassGet(name string) RClass {
 
 // ExcGet returns exception class by name
 func (mrb *MrbState) ExcGet(name string) RClass {
-	return mrb.ExcGetId(mrb.Intern(name))
+	return mrb.ExcGetID(mrb.Intern(name))
 }
 
-// ExcGetId returns exception class by name
-func (mrb *MrbState) ExcGetId(excID MrbSym) RClass {
+// ExcGetID returns exception class by name
+func (mrb *MrbState) ExcGetID(excID MrbSym) RClass {
 	exc, _ := mrb.tryC(func() *C.struct_RClass {
 		return C.mrb_exc_get_id(mrb.p, C.mrb_sym(excID))
 	})
@@ -1061,7 +1061,7 @@ func (mrb *MrbState) NotImplemented(*MrbState, Value) MrbValue {
 	return mrb.ENotImplementedError().Raise("not implemented")
 }
 
-// NotImplementM a function to be replacement of unimplemented method - Go version
+// NotImplementedM a function to be replacement of unimplemented method - Go version
 func NotImplementedM(mrb *MrbState, self Value) MrbValue {
 	return mrb.NotImplemented(mrb, self)
 }
@@ -1876,7 +1876,7 @@ func (mrb *MrbState) EFloatDomainError() RClass { return mrb.ExcGet("FloatDomain
 // EKeyError oruby error
 func (mrb *MrbState) EKeyError() RClass { return mrb.ExcGet("KeyError") }
 
-// EKeyError oruby error
+// ESystemCallError oruby error
 func (mrb *MrbState) ESystemCallError() RClass { return mrb.ExcGet("SystemCallError") }
 
 // Yield block with value

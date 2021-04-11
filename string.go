@@ -199,7 +199,7 @@ func (mrb *MrbState) StrCat(str MrbValue, s string) Value {
 	return Value{C.mrb_str_cat(mrb.p, str.Value().v, cs, C.size_t(len(s)))}
 }
 
-// StrCat Returns a concatenated string comprised of a Ruby string and a C string.
+// StrCatBytes Returns a concatenated string comprised of a Ruby string and []byte 
 func (mrb *MrbState) StrCatBytes(str MrbValue, b []byte) Value {
 	if len(b) == 0 {
 		return str.Value()

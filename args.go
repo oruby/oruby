@@ -153,7 +153,7 @@ func (mrb *MrbState) GetArgs3(defaults ...interface{}) (Value, Value, Value) {
 	return args.Item(0).Value(), args.Item(1).Value(), args.Item(2).Value()
 }
 
-// SelfArgs returns all arguments passed to function as Go slice, with arg0 as first argument
+// GetSelfArgs returns all arguments passed to function as Go slice, with arg0 as first argument
 func (mrb *MrbState) GetSelfArgs(self MrbValue) RArgs {
 	argc := int(C.mrb_get_argc(mrb.p))
 	args := C.mrb_get_argv(mrb.p)

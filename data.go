@@ -10,7 +10,7 @@ import (
 // RData struct
 type RData struct{ p *C.struct_RData }
 
-// Closer interface is called when Go value is GC-ed from mruby state
+// Freer interface is called when Go value is GC-ed from mruby state
 type Freer interface {
 	Free()
 }

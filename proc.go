@@ -334,6 +334,7 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 	return RProc{proc, mrb}, ArgsReq(v.Type().NumIn())
 }
 
+// LoadProc loads and executes proc 
 func (mrb *MrbState) LoadProc(proc RProc) Value {
 	return Value{ C.mrb_load_proc(mrb.p, proc.p) }
 }
