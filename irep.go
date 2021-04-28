@@ -10,13 +10,59 @@ import (
 
 // enum irep_pool_type
 const (
-	IrepTtString = iota
-	IrepTtFixnum
-	IrepTtFloat
+	IrepTtStr    = 0 /* string (need free) */
+	IrepTtSstr   = 2 /* string (static) */
+	IrepTtInt32  = 1 /* 32bit integer */
+	IrepTtInt64  = 3 /* 64bit integer */
+	IrepTtBigint = 7 /* big integer (not yet supported) */
+	IrepTtFloat  = 5 /* float (double/float) */
 )
 
-// MrbIseqNoFree constant
-const MrbIseqNoFree = 1
+const (
+	IrepTtNflag = 1 /* number (non string) flag */
+    IrepTtSflag = 2 /* static string flag */
+)
+
+type MrbPoolValue struct {
+	v *C.mrb_pool_value
+}
+
+func (pv MrbPoolValue) Type() uint32 {
+	return uint32(pv.v.tt)&7
+}
+
+func (pv MrbPoolValue) IsString() bool {
+	t := pv.Type()
+	return (t == IrepTtStr) || (t == IrepTtSstr)
+}
+
+func (pv MrbPoolValue) IsStr() bool {
+	return uint32(pv.v.tt)&3 == IrepTtStr
+}
+
+func (pv MrbPoolValue) IsSStr() bool {
+	return pv.Type() == IrepTtSstr
+}
+
+func (pv MrbPoolValue) Migrate() {
+	C._mrb_pool_value_migrate(pv.v)
+}
+
+// mrb_catch_type
+const (
+	MrbCatchRescue = 0
+	MrbCatchEnsure = 1
+)
+
+type MrbIrepCatchHandler struct {
+	p *C.struct_mrb_irep_catch_handler
+}
+
+const (
+	MrbIseqNoFree = 1
+	MrbIrepNoFree = 2
+	MrbIrepStatic = MrbIseqNoFree | MrbIrepNoFree
+)
 
 // MrbIrep irep struct
 type MrbIrep struct {
@@ -30,6 +76,15 @@ func (mrb *MrbState) AddIrep() MrbIrep {
 }
 
 // LoadIrep irep from buffer bytes array
+//
+// load mruby bytecode functions
+// Please note! Currently due to interactions with the GC calling these functions will
+// leak one RProc object per function call.
+// To prevent this save the current memory arena before calling and restore the arena
+// right after, like so:
+//     ai := mrb.GCArenaSave()
+//     status := mrb.LoadIrep(buffer)
+//     mrb.GCArenaRestore(ai)
 func (mrb *MrbState) LoadIrep(buffer []byte) (Value, error) {
 	return mrb.try(func() C.mrb_value {
 		bufLen := len(buffer)
@@ -127,6 +182,11 @@ func (irep MrbIrep) NRegs() int {
 	return int(irep.p.nregs)
 }
 
+// CLen returns number of catch handlers
+func (irep MrbIrep) CLen() int {
+	return int(irep.p.clen)
+}
+
 // Flags returns irep flags
 func (irep MrbIrep) Flags() int {
 	return int(irep.p.flags)
@@ -148,15 +208,15 @@ func (irep MrbIrep) PLen() int {
 }
 
 // Pool returns Value at index
-func (irep MrbIrep) Pool(index int) Value {
+func (irep MrbIrep) Pool(index int) MrbPoolValue {
 	if index < 0 || index >= irep.PLen() {
-		return nilValue
+		return MrbPoolValue{}
 	}
 
 	l := int(irep.p.plen)
-	slice := (*[1 << 28]C.mrb_value)(unsafe.Pointer(irep.p.pool))[:l:l]
+	slice := (*[1 << 28]C.mrb_pool_value)(unsafe.Pointer(irep.p.pool))[:l:l]
 
-	return Value{slice[index]}
+	return MrbPoolValue{&slice[index]}
 }
 
 // ILen returns number of ISeq MrbCode items

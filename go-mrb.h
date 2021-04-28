@@ -170,6 +170,20 @@ static _irep_dump _dump_irep(mrb_state *mrb, mrb_irep *irep, uint8_t flags) {
   return ret;
 }
 
+extern void p(char *c);
+
+static int print(const char *fmt, ...) {
+  char str[255];
+  int ret;
+
+  va_list myargs;
+  va_start(myargs, fmt);
+  ret = vsprintf(str, fmt, myargs);
+  va_end(myargs);
+  p(str);
+  return ret;
+}
+
 static mrb_method_t _MRB_METHOD_NOARG_SET(mrb_method_t m) {
   mrb_method_t ret = m;
   MRB_METHOD_NOARG_SET(ret);
@@ -369,6 +383,23 @@ _mrb_proc_env_get(mrb_state *mrb, struct RProc *p, mrb_int idx)
   }
 
   return e->stack[idx];
+}
+
+static void _mrb_pool_value_migrate(mrb_pool_value *v) {
+  if ((v->tt & 3) == IREP_TT_STR) {
+    uint32_t len = v->tt >> 2;
+    char *p = (char*)malloc(len+1);
+    memcpy(p, v->u.str, len+1);
+    v->u.str = (const char*)p;
+    return;
+  }
+
+  if (v->tt == IREP_TT_BIGINT) {
+    uint32_t len = strlen(v->u.str);
+    char *p = (char*)malloc(len+1);
+    memcpy(p, v->u.str, len);
+    v->u.str = (const char*)p;
+  }
 }
 
 // Callbacks

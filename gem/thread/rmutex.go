@@ -12,8 +12,8 @@ func newMutex() *rmutex {
 }
 
 func (rm *rmutex) Lock() *rmutex {
-	rm.IsLocked = true
 	rm.mutex.Lock()
+	rm.IsLocked = true
 	return rm
 }
 

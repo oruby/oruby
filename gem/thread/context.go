@@ -1,9 +1,10 @@
 package thread
 
 import (
-	"github.com/oruby/oruby"
 	"runtime"
 	"sync"
+
+	"github.com/oruby/oruby"
 )
 
 type ThreadFuncT = func(...interface{})interface{}
@@ -61,7 +62,7 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
-// goThread creates lightweit thread based go function executed via goroutine
+// goThread creates lightweight thread based go function executed via goroutine
 func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, proc := mrb.GetArgsWithBlock()
 
@@ -118,7 +119,7 @@ func (c *Context) Join() (interface{}, error) {
 	c.Lock()
 	defer c.Unlock()
 
-	v, err := c.migrateValue(c.result)
+	v, err := migrateValue(c.mrb, c.mrbCaller, c.result)
 	if err != nil {
 		return nil, err
 	}
