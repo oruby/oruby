@@ -242,6 +242,11 @@ func inject_run(idx C.mrb_int) *C.struct_RProc {
 	return nil
 }
 
+// InjectFunc of MrbFuncT code from goroutine, thread or singnal handeler to be executed in mrb
+func (mrb *MrbState) InjectFunc(f MrbFuncT) {
+	mrb.Inject(mrb.ProcNewCFunc(f))
+}
+
 // Inject code from goroutine, thread or singnal handeler to be executed in mrb
 func (mrb *MrbState) Inject(proc RProc) {
 	if atomic.LoadInt32(&mrb.stack) == 0 {

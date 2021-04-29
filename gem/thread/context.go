@@ -1,6 +1,7 @@
 package thread
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 
@@ -11,14 +12,18 @@ type ThreadFuncT = func(...interface{})interface{}
 
 type Context struct {
 	sync.Mutex
+	Name string
 	mrb *oruby.MrbState
 	mrbCaller *oruby.MrbState
 	args oruby.RArgs
 	proc oruby.RProc
 	f ThreadFuncT
 	result oruby.Value
+	err error
 	resultCaller oruby.Value
 	alive bool
+	sleeping bool
+	wakeupChan  chan struct{}
 }
 
 func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -34,14 +39,18 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	c := &Context{
 		sync.Mutex{},
+		"",
 		oruby.MrbOpen(),
 		mrb,
 		args,
 		proc,
 		nil,
 		mrb.NilValue(),
+		nil,
 		mrb.NilValue(),
 		false,
+		false,
+		make(chan struct{}),
 	}
 
 	err := c.migrateState()
@@ -50,16 +59,22 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		c.mrb.Close()
 		c.mrb = nil
 
-		return c.result
+		return mrb.ERuntimeError().RaiseError(err)
 	}
 
 	c.alive = true
+	c.mrb.ModCVSet(mrb.ClassGet("Thread"), mrb.Intern("@@current"), c.mrb.Value(c))
 	c.mrb.WaitGroup.Add(1)
 	go c.worker()
 
 	mrb.DataSetInterface(self, c)
 
 	return self
+}
+
+// threadCurrent returns current thread
+func threadCurrent(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.ModCVGet(mrb.ClassOf(self), mrb.Intern("@@current"))
 }
 
 // goThread creates lightweight thread based go function executed via goroutine
@@ -75,14 +90,18 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	c := &Context{
 		sync.Mutex{},
-		oruby.MrbOpen(),
+		"",
+		 oruby.MrbOpen(),
 		mrb,
 		args,
 		proc,
 		nil,
 		mrb.NilValue(),
+		nil,
 		mrb.NilValue(),
 		true,
+		false,
+		make(chan struct{}),
 	}
 
 	switch f := proc.Data().(type) {
@@ -102,7 +121,7 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func (c *Context) worker() {
-	c.result, _ = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
+	c.result, c.err = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
 	c.mrb.GCProtect(c.result)
 
 	c.mrb.WaitGroup.Done()
@@ -156,3 +175,81 @@ func (c *Context) IsAlive() bool {
 	return c.alive
 }
 
+func (c *Context) isSleeping() bool {
+	c.Lock()
+	defer c.Unlock()
+
+	return c.sleeping
+}
+
+func (c *Context) IsStop() bool {
+	c.Lock()
+	defer c.Unlock()
+
+	return c.sleeping || !c.alive
+}
+
+func (c *Context) Stop() {
+	if !c.IsAlive() || c.isSleeping() {
+		return
+	}
+
+	c.mrb.InjectFunc(func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c.Lock()
+		c.sleeping = true
+		c.Unlock()
+
+		select {
+		case <-mrb.ExitChan():
+			break
+		case <-c.wakeupChan:
+			break
+		}
+
+		c.Lock()
+		c.sleeping = false
+		c.Unlock()
+
+		return oruby.Nil
+	})
+}
+
+func (c *Context) Wakeup() *Context {
+	if c.isSleeping() {
+		c.wakeupChan <- struct{}{}
+	}
+	return c
+}
+
+func (c *Context) Paas() {
+	runtime.Gosched()
+}
+
+func (c *Context) Status() interface{} {
+	c.Lock()
+	defer c.Unlock()
+
+	// "aborting" If this thread is aborting
+
+	if !c.alive {
+		if c.err != nil {
+			return nil
+		}
+		return false
+	}
+
+	if c.sleeping {
+		return "sleep"
+	}
+
+	// 	When this thread is executing
+	return "run"
+}
+
+func (c *Context) Value() (interface{}, error) {
+	return c.Join()
+}
+
+func (c *Context) ToS() string {
+	return fmt.Sprintf("#<Thread:%p %v>", c, c.Status())
+}

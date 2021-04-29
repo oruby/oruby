@@ -1,9 +1,10 @@
 package thread
 
 import (
-	"github.com/oruby/oruby"
 	"math"
 	"time"
+
+	"github.com/oruby/oruby"
 )
 
 func init() {
@@ -17,6 +18,7 @@ func init() {
 		threadClass.DefineAlias("terminate", "kill")
 		threadClass.DefineModuleFunction("start", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
 		threadClass.DefineModuleFunction("go", goThread, mrb.ArgsAny()+mrb.ArgsBlock())
+		threadClass.DefineModuleFunction("current", threadCurrent, mrb.ArgsNone())
 
 		mutexClass := mrb.DefineGoClass( "Mutex", newMutex)
 		mutexClass.DefineMethod("sleep", mutexSleep,mrb.ArgsReq(1))
