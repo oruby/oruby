@@ -128,11 +128,12 @@ func (c *Context) worker() {
 	c.alive = false
 }
 
-func (c *Context) Join() (interface{}, error) {
-	if !c.alive {
-		return c.resultCaller, nil
+func (c *Context) Join(limit int) (interface{}, error) {
+	if !c.IsAlive() {
+		return c.resultCaller, c.err
 	}
 
+	c.Wakeup()
 	c.mrb.WaitGroup.Wait()
 
 	c.Lock()
@@ -146,7 +147,7 @@ func (c *Context) Join() (interface{}, error) {
 	c.mrb.Close()
 	c.mrb = nil
 
-	return c.resultCaller, nil
+	return c, nil
 }
 
 func (c *Context) Kill() interface{} {
@@ -247,7 +248,8 @@ func (c *Context) Status() interface{} {
 }
 
 func (c *Context) Value() (interface{}, error) {
-	return c.Join()
+	_,_=c.Join(0)
+	return c.resultCaller, c.err
 }
 
 func (c *Context) ToS() string {
