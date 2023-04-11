@@ -383,7 +383,7 @@ func TestMrbFuncT(t *testing.T) {
 			incr = args[0].Fixnum()
 		}
 
-		nv := mrb.NumPlus(v, mrb.Value(incr))
+		nv := mrb.NumAdd(v, mrb.Value(incr))
 		_ = mrb.IVSet(self, x, nv)
 
 		return nv
