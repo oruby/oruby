@@ -1,10 +1,11 @@
 package time
 
 import (
-	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/assert"
 	"testing"
 	"time"
+
+	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/assert"
 )
 
 func TestTimeStorage(t *testing.T) {
@@ -14,7 +15,7 @@ func TestTimeStorage(t *testing.T) {
 	// Structs - time.Time
 	tt := time.Now()
 	tv := mrb.Value(tt)
-	assert.Expect(t, tv.Type() == oruby.MrbTTData, "Expecting Time as DATA mrb value, got MRB_TT %v", mrb.TypeName(tv))
+	assert.Expect(t, tv.Type() == oruby.MrbTTCData, "Expecting Time as DATA mrb value, got MRB_TT %v", mrb.TypeName(tv))
 	assert.Expect(t, mrb.ObjClassname(tv) == "Time", "Expecting Time class name, got %v", mrb.ObjClassname(tv))
 
 	tvc := mrb.Intf(tv).(time.Time)
@@ -39,7 +40,7 @@ func TestTimeRb(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	assert.AssertFile(t, mrb,"time_test.rb")
+	assert.AssertFile(t, mrb, "time_test.rb")
 }
 
 func TestSpaceShip(t *testing.T) {
@@ -85,9 +86,9 @@ func TestToS(t *testing.T) {
 }
 
 func TestIsTimeDST(t *testing.T) {
-	dst := time.Date(2012, time.December, 23, 0,0,0,0,time.UTC)
+	dst := time.Date(2012, time.December, 23, 0, 0, 0, 0, time.UTC)
 	assert.Expect(t, !isDST(dst), "%v should not be dst", dst)
 
-	dst = time.Date(2012, time.July, 23, 0,0,0,0,time.Local)
+	dst = time.Date(2012, time.July, 23, 0, 0, 0, 0, time.Local)
 	assert.Expect(t, isDST(dst), "%v should be dst", dst)
 }

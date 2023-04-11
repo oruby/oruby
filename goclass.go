@@ -23,7 +23,7 @@ func (mrb *MrbState) RObject(v MrbValue) RObject {
 	return RObject{v.Value().v, mrb}
 }
 
-// Super returns super class
+// Super returns class
 func (c RClass) Super() RClass { return RClass{c.p.super, c.mrb} }
 
 // Mrb returns oruby state
@@ -93,7 +93,6 @@ func (mrb *MrbState) DataValue(obj interface{}) Value {
 		}
 	}
 	mrb.Unlock()
-
 
 	// no registered class - return data
 	if clsptr == nil {
@@ -263,8 +262,8 @@ func (c RClass) DefineClassUnder(name string, super RClass) RClass {
 }
 
 // Call shortcut for mrb.Call(klass, method, args)
-func (c RClass) Call(name string, args ...interface{}) Value {
-	return c.mrb.Call(c, name, args...)
+func (c RClass) Call(name string, args ...interface{}) RObject {
+	return RObject{v: c.mrb.Call(c, name, args...).v, mrb: c.mrb}
 }
 
 // AttrReader creates getter method for instance variable with same name.

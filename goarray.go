@@ -39,7 +39,7 @@ func (a RArray) Pop() Value { return Value{C.mrb_ary_pop(a.mrb.p, a.v)} }
 
 // Ref returns a reference to an element of the array on the given index
 func (a RArray) Ref(n int) Value {
-	return Value{C.mrb_ary_ref(a.mrb.p, a.v, C.mrb_int(n))}
+	return a.Entry(n)
 }
 
 // Get returns a reference to an element of the array on the given index

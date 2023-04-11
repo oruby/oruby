@@ -158,7 +158,7 @@ func (mrb *MrbState) AryPop(ary MrbValue) Value { return Value{C.mrb_ary_pop(mrb
 
 // AryRef returns a reference to an element of the array on the given index
 func (mrb *MrbState) AryRef(ary MrbValue, n int) Value {
-	return Value{C.mrb_ary_ref(mrb.p, ary.Value().v, C.mrb_int(n))}
+	return Value{C.mrb_ary_entry(ary.Value().v, C.mrb_int(n))}
 }
 
 // ArySet Sets a value on an array at the given index
@@ -200,10 +200,14 @@ func (mrb *MrbState) ArySplice(ary MrbValue, head, length int, rpl MrbValue) Val
 }
 
 // AryShift shifts the first element from the array
-func (mrb *MrbState) AryShift(ary MrbValue) Value { return Value{C.mrb_ary_shift(mrb.p, ary.Value().v)} }
+func (mrb *MrbState) AryShift(ary MrbValue) Value {
+	return Value{C.mrb_ary_shift(mrb.p, ary.Value().v)}
+}
 
 // AryClear removes all elements from the array
-func (mrb *MrbState) AryClear(ary MrbValue) Value { return Value{C.mrb_ary_clear(mrb.p, ary.Value().v)} }
+func (mrb *MrbState) AryClear(ary MrbValue) Value {
+	return Value{C.mrb_ary_clear(mrb.p, ary.Value().v)}
+}
 
 // AryJoin join array items to string using separator sep
 func (mrb *MrbState) AryJoin(ary, sep MrbValue) Value {

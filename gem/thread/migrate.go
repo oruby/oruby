@@ -159,7 +159,7 @@ func migrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValue, err
 		}
 		err := migrateSimpleIV(mrb, mrb2, v, nv.Value())
 		return nv, err
-	case oruby.MrbTTData:
+	case oruby.MrbTTCData:
 		path := mrb.ClassPtr(v).ClassPath()
 		c, err := path2class(mrb2, path.String())
 		if err != nil {
@@ -175,7 +175,7 @@ func migrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValue, err
 }
 
 func migrateSimpleIV(mrb, mrb2 *oruby.MrbState, v, v2 oruby.Value) error {
-	a := mrb.ObjInstanceVariables(v)
+	a := mrb.RObject(v).Call("instance_variables").RArray()
 
 	for i := 0; i < a.Len(); i++ {
 		sym := mrb.Symbol(a.Item(i))
@@ -233,7 +233,7 @@ func isSafeMigratableSimpleValue(mrb *oruby.MrbState, v oruby.Value) bool {
 				return false
 			}
 		}
-	case oruby.MrbTTData:
+	case oruby.MrbTTCData:
 		return true
 	}
 	return false
@@ -260,7 +260,7 @@ func migrateIRep(mrb, mrb2 *oruby.MrbState, src oruby.MrbIrep) (oruby.MrbIrep, e
 	var err error
 	var irep bytes.Buffer
 
-	_, err = mrb.DumpIrep(src, oruby.DumpEndianNat, &irep)
+	_, err = mrb.DumpIrep(src, 0, &irep)
 	if err != nil {
 		return oruby.MrbIrep{}, err
 	}

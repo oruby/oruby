@@ -110,8 +110,9 @@ func regexCompile(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 // regexAfterInit is called when precompiled *Regex is passed to oruby
-//    @source -  set from Regex.Source()
-//    @options - guessed from source string
+//
+//	@source -  set from Regex.Source()
+//	@options - guessed from source string
 func regexAfterInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	reg := mrb.Data(self).(*regexp.Regexp)
 	source := reg.String()
@@ -438,7 +439,7 @@ func regexTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	ret, err := mrb.Funcall(arg, toRegexp)
-	if (err != nil) || (ret.Type() != oruby.MrbTTData) {
+	if (err != nil) || (ret.Type() != oruby.MrbTTCData) {
 		return mrb.NilValue()
 	}
 	if _, ok := mrb.Data(ret).(*regexp.Regexp); !ok {
@@ -455,7 +456,7 @@ func regexUnion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		switch args.Item(i).Type() {
 		case oruby.MrbTTString:
 			ret = append(ret, regexp.QuoteMeta(mrb.String(args.Item(i))))
-		case oruby.MrbTTData:
+		case oruby.MrbTTCData:
 			re, ok := mrb.Data(args.Item(i)).(*regexp.Regexp)
 			if !ok {
 				mrb.Raise(mrb.ETypeError(), "regexp or string expected")

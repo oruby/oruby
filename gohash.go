@@ -37,17 +37,17 @@ func (h RHash) Keys() RArray {
 
 // KeyP Check if the hash has the key.
 func (h RHash) KeyP(key MrbValue) bool {
-	return C.mrb_hash_key_p(h.mrb.p, h.v, key.Value().v) != C.mrb_bool(0)
+	return C.mrb_hash_key_p(h.mrb.p, h.v, key.Value().v) != false
 }
 
 // EmptyP check if the hash is empty
 func (h RHash) EmptyP() bool {
-	return C.mrb_hash_empty_p(h.mrb.p, h.v) != C.mrb_bool(0)
+	return C.mrb_hash_empty_p(h.mrb.p, h.v) != false
 }
 
 // Values returns values as array
 func (h RHash) Values() RArray {
-	return RArray{ RObject{	C.mrb_hash_values(h.mrb.p, h.v) , h.mrb } }
+	return RArray{RObject{C.mrb_hash_values(h.mrb.p, h.v), h.mrb}}
 }
 
 // Clear clears the hash

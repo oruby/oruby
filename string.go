@@ -21,10 +21,13 @@ func (a RString) Ptr() RStringPtr { return RStringPtr{(*C.struct_RString)(C._mrb
 // extern const char mrb_digitmap[]
 
 // MrbStrPtr returns RString from MrbValue interface
-func MrbStrPtr(s MrbValue) RStringPtr { return RStringPtr{(*C.struct_RString)(C._mrb_ptr(s.Value().v))} }
+func MrbStrPtr(s MrbValue) RStringPtr {
+	return RStringPtr{(*C.struct_RString)(C._mrb_ptr(s.Value().v))}
+}
 
 // RStringLen Returns string len
 func RStringLen(s MrbValue) int { return int(C._RSTRING_LEN(s.Value().v)) }
+
 // C.mrb_str_strlen() never called - it raises on NULL in string, which is fine with Go strings
 
 // RStringCapa Returns string capcaity
@@ -129,7 +132,7 @@ func (mrb *MrbState) StrBufNew(capa int) RString {
 // StrNewCapa string new with buffer
 func (mrb *MrbState) StrNewCapa(capa int) RString {
 	return RString{RObject{
-		C.mrb_str_new_capa(mrb.p, C.size_t(capa)),
+		C.mrb_str_new_capa(mrb.p, C.mrb_int(capa)),
 		mrb,
 	}}
 }
@@ -156,16 +159,9 @@ func (mrb *MrbState) StrIntern(str MrbValue) Value {
 	return Value{C.mrb_str_intern(mrb.p, str.Value().v)}
 }
 
-// StrToInum str value to integer
-func (mrb *MrbState) StrToInum(str MrbValue, base int, badcheck bool) Value {
-	return Value{C.mrb_str_to_inum(mrb.p, str.Value().v, C.mrb_int(base), iifmb(badcheck))}
-}
-
-// CstrToInum string to integer value
-func (mrb *MrbState) CstrToInum(s string, base int, badcheck bool) Value {
-	cs := C.CString(s)
-	defer C.free(unsafe.Pointer(cs))
-	return Value{C.mrb_cstr_to_inum(mrb.p, cs, C.mrb_int(base), iifmb(badcheck))}
+// StrToInteger str value to integer value
+func (mrb *MrbState) StrToInteger(str MrbValue, base int, badcheck bool) Value {
+	return Value{C.mrb_str_to_integer(mrb.p, str.Value().v, C.mrb_int(base), iifmb(badcheck))}
 }
 
 // StrToDbl str value to float64
@@ -173,23 +169,16 @@ func (mrb *MrbState) StrToDbl(str MrbValue, badcheck bool) float64 {
 	return float64(C.mrb_str_to_dbl(mrb.p, str.Value().v, iifmb(badcheck)))
 }
 
-// CstrToDbl str to float64
-func (mrb *MrbState) CstrToDbl(s string, badcheck bool) float64 {
-	cs := C.CString(s)
-	defer C.free(unsafe.Pointer(cs))
-	return float64(C.mrb_cstr_to_dbl(mrb.p, cs, iifmb(badcheck)))
-}
-
 // StrToStr Returns a converted string type.
 // for type checking, non converting `mrb_to_str` is recommended.
 // obsolete: use `mrb_obj_as_string()` instead.
 func (mrb *MrbState) StrToStr(str MrbValue) Value {
-	return Value{C.mrb_obj_as_string(mrb.p, str.Value().v) }
+	return Value{C.mrb_obj_as_string(mrb.p, str.Value().v)}
 }
 
 // StrEqual  Returns true if the strings match and false if the strings don't match
 func (mrb *MrbState) StrEqual(str1, str2 MrbValue) bool {
-	return C.mrb_str_equal(mrb.p, str1.Value().v, str2.Value().v) != 0
+	return C.mrb_str_equal(mrb.p, str1.Value().v, str2.Value().v) != false
 }
 
 // StrCat Returns a concatenated string comprised of a Ruby string and a C string.
@@ -199,7 +188,7 @@ func (mrb *MrbState) StrCat(str MrbValue, s string) Value {
 	return Value{C.mrb_str_cat(mrb.p, str.Value().v, cs, C.size_t(len(s)))}
 }
 
-// StrCatBytes Returns a concatenated string comprised of a Ruby string and []byte 
+// StrCatBytes Returns a concatenated string comprised of a Ruby string and []byte
 func (mrb *MrbState) StrCatBytes(str MrbValue, b []byte) Value {
 	if len(b) == 0 {
 		return str.Value()
@@ -247,19 +236,6 @@ func (mrb *MrbState) Bytes(str MrbValue) []byte {
 	}
 	cstr := C.mrb_str_to_cstr(mrb.p, str.Value().v)
 	return C.GoBytes(unsafe.Pointer(cstr), C.int(RStringLen(str)))
-}
-
-// StrHash hash of string
-func (mrb *MrbState) StrHash(str MrbValue) int { return int(C.mrb_str_hash(mrb.p, str.Value().v)) }
-
-// StrDump dump string
-func (mrb *MrbState) StrDump(str MrbValue) Value {
-	return Value{C.mrb_str_dump(mrb.p, str.Value().v)}
-}
-
-// StrInspect returns a printable version of str, surrounded by quote marks, with special characters escaped
-func (mrb *MrbState) StrInspect(str MrbValue) Value {
-	return Value{C.mrb_str_inspect(mrb.p, str.Value().v)}
 }
 
 // StrCat2 For backward compatibility

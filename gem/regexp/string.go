@@ -328,7 +328,7 @@ func stringIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func getRegexp(mrb *oruby.MrbState, value oruby.Value) *regexp.Regexp {
 	switch value.Type() {
-	case oruby.MrbTTData:
+	case oruby.MrbTTCData:
 		if reg, ok := mrb.Data(value).(*regexp.Regexp); ok {
 			return reg
 		}

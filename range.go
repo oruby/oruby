@@ -32,16 +32,17 @@ func (r RRange) Begin() Value { return Value{C._RANGE_BEG(r.p)} }
 func (r RRange) End() Value { return Value{C._RANGE_END(r.p)} }
 
 // Exclusive is true if range excludes end value
-func (r RRange) Exclusive() bool { return C._RANGE_EXCL(r.p) != 0 }
+func (r RRange) Exclusive() bool { return C._RANGE_EXCL(r.p) != false }
 
 // RangeNew creates new range, n include or not end value
 func (mrb *MrbState) RangeNew(v1, v2 MrbValue, n bool) Value {
 	return Value{C.mrb_range_new(mrb.p, v1.Value().v, v2.Value().v, iifmb(n))}
 }
+
 // MrbRangePtr retreive RRange from Value. This method returns error if range is uninitialized
-func  (mrb *MrbState) MrbRangePtr(r MrbValue) (RRange, error ) {
+func (mrb *MrbState) MrbRangePtr(r MrbValue) (RRange, error) {
 	result, err := mrb.try(func() C.mrb_value {
-		return RRange{C.mrb_range_ptr(mrb.p, r.Value().v) }.Value().v
+		return RRange{C.mrb_range_ptr(mrb.p, r.Value().v)}.Value().v
 	})
 	return MrbRangePtr(result), err
 }
@@ -54,11 +55,14 @@ const (
 )
 
 // RangeBegLen convets rangeto starting index and length for given array length
-//   * r must be Range value
-//   * length of target array
-//   * trunc truncates to length if range is larger
 //
-//  returns error if r is not range value, or range is out of given length
+//   - r must be Range value
+//
+//   - length of target array
+//
+//   - trunc truncates to length if range is larger
+//
+//     returns error if r is not range value, or range is out of given length
 func (mrb *MrbState) RangeBegLen(r MrbValue, length int, trunc bool) (int, int, error) {
 	var err error
 	begp := C.mrb_int(0)
@@ -75,9 +79,9 @@ func (mrb *MrbState) RangeBegLen(r MrbValue, length int, trunc bool) (int, int, 
 
 	switch ret {
 	case MrbRangeTypeMismatch:
-		err = errors.New("Value is not RRange type")
+		err = errors.New("value is not RRange type")
 	case MrbRangeOut:
-		err = errors.New("Out of range")
+		err = errors.New("out of range")
 	default:
 		err = nil
 	}

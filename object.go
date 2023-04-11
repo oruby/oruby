@@ -26,7 +26,7 @@ func (obj RObject) Value() Value { return Value{obj.v} }
 func (obj RObject) Type() int { return int(C._mrb_type(obj.v)) }
 
 // IsNil check for MrbValue interface
-func (obj RObject) IsNil() bool { return C._mrb_is_nil(obj.v) != 0 }
+func (obj RObject) IsNil() bool { return C._mrb_is_nil(obj.v) != false }
 
 // Flags return object flags
 func (obj RObject) Flags() int { return int(C._mrb_value_flags(obj.v)) }
@@ -41,7 +41,7 @@ func (b RBasic) Type() int { return b.Value().Type() }
 func (b RBasic) IsNil() bool { return b.p == nil }
 
 // IsFrozen return true if object is frozen
-func (b RBasic) IsFrozen() bool { return C._mrb_basic_frozen(b.p) != 0 }
+func (b RBasic) IsFrozen() bool { return C._mrb_basic_frozen(b.p) != false }
 
 // Flags return object flags
 func (b RBasic) Flags() int { return int(C._mrb_basic_flags(b.p)) }
@@ -106,7 +106,7 @@ func MrbFrozenP(v MrbValue) bool {
 	if !v.Value().HasBasic() {
 		return true
 	}
-	return C._mrb_basic_frozen(RBASIC(v).p) != 0
+	return C._mrb_basic_frozen(RBASIC(v).p) != false
 }
 
 // MrbSetFrozenFlag check if object is frozen

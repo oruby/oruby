@@ -95,9 +95,14 @@ func (s RString) Intern() Value {
 	return Value{C.mrb_str_intern(s.mrb.p, s.v)}
 }
 
-// ToInum str value to integer
+// ToInteger str value to integer
+func (s RString) ToInteger(base int, badcheck bool) Value {
+	return Value{C.mrb_str_to_integer(s.mrb.p, s.v, C.mrb_int(base), iifmb(badcheck))}
+}
+
+// ToInum alias for ToInteger (deprecated)
 func (s RString) ToInum(base int, badcheck bool) Value {
-	return Value{C.mrb_str_to_inum(s.mrb.p, s.v, C.mrb_int(base), iifmb(badcheck))}
+	return s.ToInteger(base, badcheck)
 }
 
 // ToDbl str value to float64
@@ -107,7 +112,7 @@ func (s RString) ToDbl(badcheck bool) float64 {
 
 // Equal  Returns true if the strings match and false if the strings don't match
 func (s RString) Equal(str2 MrbValue) bool {
-	return C.mrb_str_equal(s.mrb.p, s.v, str2.Value().v) != 0
+	return C.mrb_str_equal(s.mrb.p, s.v, str2.Value().v) != false
 }
 
 // Cat Returns a concatenated string comprised of a Ruby string and a C string.
@@ -136,15 +141,4 @@ func (s RString) Cmp(str2 MrbValue) int {
 // String Returns a newly allocated string from a Ruby string.
 func (s RString) String() string {
 	return C.GoStringN(C.mrb_str_to_cstr(s.mrb.p, s.v), C.int(s.Len()))
-}
-
-// Hash of string object
-func (s RString) Hash() int { return int(C.mrb_str_hash(s.mrb.p, s.v)) }
-
-// Dump string
-func (s RString) Dump() Value { return Value{C.mrb_str_dump(s.mrb.p, s.v)} }
-
-// Inspect returns a printable version of str, surrounded by quote marks, with special characters escaped
-func (s RString) Inspect() RString {
-	return s.cloneV(C.mrb_str_inspect(s.mrb.p, s.v))
 }

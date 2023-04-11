@@ -2,14 +2,15 @@ package io
 
 import (
 	"bufio"
-	"github.com/oruby/oruby"
 	"io"
 	"os"
+
+	"github.com/oruby/oruby"
 )
 
 type IoData struct {
 	GetStream func(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}, error)
-	OpenIO func(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
+	OpenIO    func(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
 }
 
 func init() {
@@ -24,11 +25,11 @@ func init() {
 		initConsts(mrb, cIO)
 
 		// Not implemented: select and popen with fork command '-')
-		cIO.DefineClassMethod("copy_stream", ioCopyStream, mrb.ArgsArg(2,2))
-		cIO.DefineClassMethod("foreach", ioForeach, mrb.ArgsArg(2,3)|mrb.ArgsBlock())
+		cIO.DefineClassMethod("copy_stream", ioCopyStream, mrb.ArgsArg(2, 2))
+		cIO.DefineClassMethod("foreach", ioForeach, mrb.ArgsArg(2, 3)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("pipe", ioPipe, mrb.ArgsOpt(3)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("readlines", ioSReadlines, mrb.ArgsArg(2, 3))
- 		cIO.DefineClassMethod("select", mrb.NotImplemented, mrb.ArgsArg(1, 3))
+		cIO.DefineClassMethod("select", mrb.NotImplemented, mrb.ArgsArg(1, 3))
 		cIO.DefineClassMethod("try_convert", ioTryConvert, mrb.ArgsReq(1))
 		cIO.DefineClassMethod("open", ioOpen, mrb.ArgsArg(1, 2)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("for_fd", ioNew, mrb.ArgsArg(1, 2))
@@ -36,7 +37,7 @@ func init() {
 		cIO.DefineMethod("initialize", ioInit, mrb.ArgsArg(1, 2))
 		cIO.DefineMethod("initialize_copy", ioInitCopy, mrb.ArgsReq(1))
 		cIO.DefineMethod("<<", ioWriteString, mrb.ArgsReq(1))
-		cIO.DefineMethod("advise", mrb.NotImplemented, mrb.ArgsArg(1,2))
+		cIO.DefineMethod("advise", mrb.NotImplemented, mrb.ArgsArg(1, 2))
 		cIO.DefineMethod("autoclose=", ioSetAutosclose, mrb.ArgsReq(1))
 		cIO.DefineMethod("autoclose?", ioIsAutoclose, mrb.ArgsNone())
 		cIO.DefineMethod("binmode", ioBinmode, mrb.ArgsNone())
@@ -76,7 +77,7 @@ func init() {
 		cIO.DefineMethod("pid", ioPid, mrb.ArgsNone())
 		cIO.DefineMethod("pos", ioPos, mrb.ArgsNone())
 		cIO.DefineMethod("pos=", ioSetPos, mrb.ArgsReq(1))
-		cIO.DefineMethod("pread", ioPread, mrb.ArgsArg(2,1))
+		cIO.DefineMethod("pread", ioPread, mrb.ArgsArg(2, 1))
 		cIO.DefineMethod("print", ioPrint, mrb.ArgsAny())
 		cIO.DefineMethod("printf", ioPrintf, mrb.ArgsReq(1)|mrb.ArgsAny())
 		cIO.DefineMethod("putc", ioPutc, mrb.ArgsReq(1))
@@ -86,17 +87,17 @@ func init() {
 		cIO.DefineMethod("readbyte", ioReadbyte, mrb.ArgsNone())
 		cIO.DefineMethod("readchar", ioReadchar, mrb.ArgsNone())
 		cIO.DefineMethod("readline", ioReadline, mrb.ArgsOpt(3))
-		cIO.DefineMethod("readlines", ioReadlines, mrb.ArgsArg(1,2))
-		cIO.DefineMethod("readpartial", ioReadpartial, mrb.ArgsArg(1,1))
+		cIO.DefineMethod("readlines", ioReadlines, mrb.ArgsArg(1, 2))
+		cIO.DefineMethod("readpartial", ioReadpartial, mrb.ArgsArg(1, 1))
 		cIO.DefineMethod("rewind", ioRewind, mrb.ArgsNone())
-		cIO.DefineMethod("seek", ioSeek, mrb.ArgsArg(1,1))
+		cIO.DefineMethod("seek", ioSeek, mrb.ArgsArg(1, 1))
 		//cIO.DefineMethod("set_encoding", ioSet_encoding, mrb.ArgsArg(1,2))
 		//cIO.DefineMethod("set_encoding_by_bom", ioSetEncodingByBom, mrb.ArgsNone())
 		cIO.DefineMethod("stat", ioStat, mrb.ArgsNone())
 		cIO.DefineMethod("sync", ioSync, mrb.ArgsNone())
 		cIO.DefineMethod("sync=", ioSetSync, mrb.ArgsReq(1))
-		cIO.DefineMethod("sysread", ioReadpartial, mrb.ArgsArg(1,1))
-		cIO.DefineMethod("sysseek", ioSeek, mrb.ArgsArg(1,1))
+		cIO.DefineMethod("sysread", ioReadpartial, mrb.ArgsArg(1, 1))
+		cIO.DefineMethod("sysseek", ioSeek, mrb.ArgsArg(1, 1))
 		cIO.DefineMethod("syswrite", ioWrite, mrb.ArgsReq(1))
 		cIO.DefineMethod("tell", ioTell, mrb.ArgsNone())
 		cIO.DefineMethod("to_i", ioFileno, mrb.ArgsNone())
@@ -106,15 +107,15 @@ func init() {
 		cIO.DefineMethod("ungetc", ioUngetc, mrb.ArgsReq(1))
 		cIO.DefineMethod("write", ioWrite, mrb.ArgsAny())
 
-		cIO.DefineMethod("readNonblock",  mrb.NotImplemented, mrb.ArgsArg(1,2))
-		cIO.DefineMethod("writeNonblock", mrb.NotImplemented, mrb.ArgsArg(1,1))
+		cIO.DefineMethod("readNonblock", mrb.NotImplemented, mrb.ArgsArg(1, 2))
+		cIO.DefineMethod("writeNonblock", mrb.NotImplemented, mrb.ArgsArg(1, 1))
 
 		ioError := mrb.DefineClass("IOError", mrb.EStandardErrorClass())
 		mrb.DefineClass("EOFError", ioError)
 
 		initStringIO(mrb, cIO)
 
-		return &IoData{ getStream, openIO,	}
+		return &IoData{getStream, openIO}
 	})
 }
 
@@ -126,7 +127,7 @@ func RaiseIOError(mrb *oruby.MrbState, msg string) oruby.Value {
 	return mrb.Raise(mrb.ExcGet("IOError"), msg)
 }
 
-func RaiseIOErrorf(mrb *oruby.MrbState, format string, args... interface{}) oruby.Value {
+func RaiseIOErrorf(mrb *oruby.MrbState, format string, args ...interface{}) oruby.Value {
 	return mrb.Raisef(mrb.ExcGet("IOError"), format, args...)
 }
 
@@ -143,7 +144,7 @@ func closeStream(s interface{}, isFilePath bool) error {
 func ioCopyStream(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	from := args.Item(0)
-	to   := args.Item(1)
+	to := args.Item(1)
 
 	src, err := getStream(mrb, os.O_RDONLY, from)
 	if err != nil {
@@ -151,7 +152,7 @@ func ioCopyStream(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	defer closeStream(src, from.IsString())
 
-	dest, err := getStream(mrb, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, to)
+	dest, err := getStream(mrb, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, to)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -163,14 +164,14 @@ func ioCopyStream(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			if !from.IsString() {
 				oldPos, err := seeker.Seek(0, io.SeekCurrent)
 				if err != nil {
-					_= closeStream(dest, to.IsString())
+					_ = closeStream(dest, to.IsString())
 					return mrb.RaiseError(err)
 				}
-				defer func(){ _,_= seeker.Seek(oldPos, io.SeekStart) }()
+				defer func() { _, _ = seeker.Seek(oldPos, io.SeekStart) }()
 			}
 
 			if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
-				_= closeStream(dest, to.IsString())
+				_ = closeStream(dest, to.IsString())
 				return mrb.RaiseError(err)
 			}
 		} else {
@@ -187,7 +188,7 @@ func ioCopyStream(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ret, err = io.CopyN(dest.(io.Writer), src.(io.Reader), length)
 	}
 	if err != nil {
-		_= closeStream(dest, to.IsString())
+		_ = closeStream(dest, to.IsString())
 		return mrb.RaiseError(err)
 	}
 
@@ -268,7 +269,7 @@ func ioOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	obj, _ := mrb.Yield(block, ret)
 	if closer, ok := ioObject.(io.Closer); ok {
-		_= closer.Close()
+		_ = closer.Close()
 	}
 
 	return obj
@@ -299,7 +300,7 @@ func ioSReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ret.PushString(reader.Text())
 	}
 	if closer != nil {
-		_= closer.Close()
+		_ = closer.Close()
 	}
 
 	return ret
@@ -320,11 +321,11 @@ func ioForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 		_, err := mrb.YieldArgv(block, reader.Text())
 		if err != nil {
-				return mrb.RaiseError(err)
-			}
+			return mrb.RaiseError(err)
+		}
 	}
 	if closer != nil {
-		_= closer.Close()
+		_ = closer.Close()
 	}
 
 	if !block.IsNil() {
@@ -355,7 +356,7 @@ func ioTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func getStream(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}, error) {
 	switch item.Type() {
-	case oruby.MrbTTData:
+	case oruby.MrbTTCData:
 		return mrb.Data(item), nil
 	}
 	return nil, oruby.EArgumentError("IO Stream or name expected")
@@ -365,7 +366,7 @@ func openIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
 	var ioObject interface{}
 
 	switch fd.Type() {
-	case oruby.MrbTTData:
+	case oruby.MrbTTCData:
 		ioObject = mrb.Data(fd)
 		switch ioObject.(type) {
 		case io.Reader, io.Writer, *os.File, *io.PipeReader, *io.PipeWriter:
@@ -385,4 +386,3 @@ func openIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
 
 	return nil, oruby.EArgumentError("First argument must be fd or IO object")
 }
-

@@ -127,7 +127,7 @@ func (v Value) Value() Value { return v }
 func (v Value) Type() int { return int(C._mrb_type(v.v)) }
 
 // IsNil Checks if oruby value is nil value
-func (v Value) IsNil() bool { return C._mrb_is_nil(v.v) != 0 }
+func (v Value) IsNil() bool { return C._mrb_is_nil(v.v) != false }
 
 // IsHash Checks if oruby value is hash value
 func (v Value) IsHash() bool { return C._mrb_type(v.v) == MrbTTHash }
@@ -151,7 +151,7 @@ func (v Value) IsSymbol() bool { return C._mrb_type(v.v) == MrbTTSymbol }
 func (v Value) IsString() bool { return C._mrb_type(v.v) == MrbTTString }
 
 // IsData checks if oruby value is RData value
-func (v Value) IsData() bool { return C._mrb_type(v.v) == MrbTTData }
+func (v Value) IsData() bool { return C._mrb_type(v.v) == MrbTTCData }
 
 // IsProc checks if oruby value is oruby RProc value
 func (v Value) IsProc() bool { return C._mrb_type(v.v) == MrbTTProc }
@@ -168,7 +168,7 @@ func (v Value) IsModule() bool { return C._mrb_type(v.v) == MrbTTModule }
 // IsBool checks if oruby value is bool value
 func (v Value) IsBool() bool {
 	t := C._mrb_type(v.v)
-	return t == MrbTTTrue || (t == MrbTTFalse && C._mrb_nil_p(v.v) == 0)
+	return t == MrbTTTrue || (t == MrbTTFalse && C._mrb_nil_p(v.v) == false)
 }
 
 // Flags returns object flags or 0 for simple values
@@ -190,13 +190,15 @@ func (v Value) Convert(mrb *MrbState, obj MrbValue) (interface{}, error) {
 	return mrb.Intf(obj), nil
 }
 
-// Len returns length of oruby array, string, 0 for other types
+// Len returns length of oruby array, string, size of hash and 0 for other types
 func (v Value) Len() int {
 	switch v.Type() {
 	case MrbTTArray:
 		return RArrayLen(v)
 	case MrbTTString:
 		return RStringLen(v)
+	case MrbTTHash:
+		return int(C.mrb_hash_size(nil, v.v))
 	default:
 		return 0
 	}
@@ -242,19 +244,19 @@ func inject_run(idx C.mrb_int) *C.struct_RProc {
 	return nil
 }
 
-// InjectFunc of MrbFuncT code from goroutine, thread or singnal handeler to be executed in mrb
+// InjectFunc of MrbFuncT code from goroutine, thread or signal handler to be executed in mrb
 func (mrb *MrbState) InjectFunc(f MrbFuncT) {
 	mrb.Inject(mrb.ProcNewCFunc(f))
 }
 
-// Inject code from goroutine, thread or singnal handeler to be executed in mrb
+// Inject code from goroutine, thread or signal handler to be executed in mrb
 func (mrb *MrbState) Inject(proc RProc) {
 	if atomic.LoadInt32(&mrb.stack) == 0 {
 		mrb.startInjector()
 	}
 
 	// mrb->jmp == 0 if no vm code is executing
-	// This will be picked from main executing goroutine 
+	// This will be picked from main executing goroutine
 	if mrb.p.jmp == nil {
 		mrb.injectMainChan <- proc
 		return
@@ -276,7 +278,7 @@ func (mrb *MrbState) startInjector() {
 	// Main therad executor
 	go func() {
 		for proc := range mrb.injectMainChan {
-			_,_= mrb.FuncallWithBlock(proc, mrb.Intern("call"))
+			_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
 		}
 	}()
 }
@@ -574,7 +576,7 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 		return nil // is this ok? for MRB_TT_FREE
 	case C.MRB_TT_OBJECT:
 		// Generic oruby object : @ivar=value -> map[string]:interface{}
-		vars := mrb.ObjInstanceVariables(o)
+		vars := mrb.Call(o, "instance_variables")
 		kcnt := RArrayLen(vars)
 		hash := make(map[string]interface{}, kcnt)
 		for i := 0; i < kcnt; i++ {
@@ -586,7 +588,7 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 	case C.MRB_TT_CLASS, C.MRB_TT_MODULE, C.MRB_TT_SCLASS:
 		return RClass{MrbClassPtr(o).p, mrb}
 	case C.MRB_TT_PROC:
-		if C._mrb_proc_has_env(mrb.p, MrbProcPtr(o).p) != 0 {
+		if C._mrb_proc_has_env(mrb.p, MrbProcPtr(o).p) != false {
 			fv := C._mrb_proc_env_get(mrb.p, MrbProcPtr(o).p, C.mrb_int(0))
 			if f, _ := mrb.getFunc(uint(C._mrb_fixnum(fv))); f != nil {
 				return f
@@ -688,7 +690,7 @@ func (mrb *MrbState) Run(code string, args ...interface{}) RObject {
 	if len(args) > 0 {
 		mrb.DefineGlobalConst("ARGV", mrb.Value(args))
 	}
-	ret,_ := mrb.Eval(code)
+	ret, _ := mrb.Eval(code)
 	return ret
 }
 
@@ -760,7 +762,7 @@ func (mrb *MrbState) Err() error {
 	}
 
 	r := mrb.Inspect(exc)
-	v := mrb.String(mrb.ExcBacktrace(mrb.Exc()))
+	v := exc.Call("backtrace").String()
 	fmt.Println(v)
 	return errors.New(mrb.StrToCstr(r))
 }
@@ -992,7 +994,7 @@ func (mrb *MrbState) ModuleNew() RClass {
 func (mrb *MrbState) ClassDefined(name string) bool {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	return C.mrb_class_defined(mrb.p, cname) != 0
+	return C.mrb_class_defined(mrb.p, cname) != false
 }
 
 // ClassGet returns class by name
@@ -1000,7 +1002,7 @@ func (mrb *MrbState) ClassGet(name string) RClass {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
-	if C.mrb_class_defined(mrb.p, cname) == 0 {
+	if C.mrb_class_defined(mrb.p, cname) == false {
 		panic("Unknown class: " + name)
 	}
 
@@ -1024,7 +1026,7 @@ func (mrb *MrbState) ExcGetID(excID MrbSym) RClass {
 func (mrb *MrbState) ClassDefinedUnder(outer RClass, name string) bool {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
-	return C.mrb_class_defined_under(mrb.p, outer.p, cname) != 0
+	return C.mrb_class_defined_under(mrb.p, outer.p, cname) != false
 }
 
 // ClassGetUnder fiinds class by name under outer class
@@ -1069,7 +1071,7 @@ func (mrb *MrbState) ObjDup(obj MrbValue) Value {
 
 // ObjRespondTo checks if object responds to method
 func (mrb *MrbState) ObjRespondTo(c RClass, mid MrbSym) bool {
-	return C.mrb_obj_respond_to(mrb.p, c.p, C.mrb_sym(mid)) != 0
+	return C.mrb_obj_respond_to(mrb.p, c.p, C.mrb_sym(mid)) != false
 }
 
 // DefineClassUnder defines a class under the namespace of outer.
@@ -1077,17 +1079,24 @@ func (mrb *MrbState) ObjRespondTo(c RClass, mid MrbSym) bool {
 // param outer is a class which contains the new class.
 // param name  is a name of the new class
 // param super is a class from which the new class will derive.
-//               NULL means Object class.
+//
+//	NULL means Object class.
+//
 // return the created class
 //
 // throw TypeError if the constant name name is already taken but
-//                  the constant is not a Class.
+//
+//	the constant is not a Class.
+//
 // throw NameError if the class is already defined but the class can not
-//                  be reopened because its superclass is not super.
+//
+//	be reopened because its superclass is not super.
+//
 // post top-level constant named 'name' refers the returned class.
 //
 // note if class named 'name' is already defined and its superclass is
-//       super, the function just returns the defined class.
+//
+//	super, the function just returns the defined class.
 func (mrb *MrbState) DefineClassUnder(outer RClass, name string, super RClass) RClass {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -1181,7 +1190,7 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 	//print("funcall ", mrb.ClassOf(self).Name(), ":", mrb.String(name), "(")
 
 	if (self.Type() == C.MRB_TT_PROC) && mrb.RProc(self).IsCFunc() && (nameSym == mrb.Intern("call")) {
-		if C._mrb_proc_has_env(mrb.p, MrbProcPtr(self).p) != 0 {
+		if C._mrb_proc_has_env(mrb.p, MrbProcPtr(self).p) != false {
 			fv := C._mrb_proc_env_get(mrb.p, MrbProcPtr(self).p, C.mrb_int(0))
 			ff, _ := mrb.getFunc(uint(C._mrb_fixnum(fv)))
 			f = reflect.ValueOf(ff)
@@ -1260,12 +1269,17 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 	return v, err
 }
 
-// Intern converts string to oruby symbol
-func (mrb *MrbState) Intern(name string) MrbSym {
+// Sym converts string to oruby symbol
+func (mrb *MrbState) Sym(name string) MrbSym {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	sym := C.mrb_intern(mrb.p, cname, C.size_t(len(name)))
 	return MrbSym(sym)
+}
+
+// Intern converts string to oruby symbol. Alias for Sym(name)
+func (mrb *MrbState) Intern(name string) MrbSym {
+	return mrb.Sym(name)
 }
 
 // InternStr converts string oruby value to symbol
@@ -1383,7 +1397,7 @@ func (mrb *MrbState) StrNew(s string) Value {
 	cs := C.CString(s)
 	size := len(s)
 	defer C.free(unsafe.Pointer(cs))
-	return Value{C.mrb_str_new(mrb.p, cs, C.size_t(size))}
+	return Value{C.mrb_str_new(mrb.p, cs, C.mrb_int(size))}
 }
 
 // StrNewStatic is an alias for StrNew
@@ -1392,7 +1406,7 @@ func (mrb *MrbState) StrNewStatic(s string) Value {
 	size := len(s)
 	defer C.free(unsafe.Pointer(cs))
 
-	return Value{C.mrb_str_new(mrb.p, cs, C.size_t(size))}
+	return Value{C.mrb_str_new(mrb.p, cs, C.mrb_int(size))}
 	// C.mrb_str_new_static is unsupported in Go
 }
 
@@ -1445,14 +1459,14 @@ func (mrb *MrbState) VMRun(proc RProc, self MrbValue, stackKeep int) Value {
 // VMExec executes ISeq bytecode in mruby VM
 // NOTE: this does not pass slice pointer to C. As in
 //
-//    C.mrb_vm_exec(mrb.p, proc.p, (*C.mrb_code)(&iseq[0]))
+//	C.mrb_vm_exec(mrb.p, proc.p, (*C.mrb_code)(&iseq[0]))
 //
 // It probably can be that way since:
 //
-//    * mrb_vm_exec() does not change bytecode, iseq is readonly
-//    * iseq passed to mrb_vm_exec() is not stored on C side.
-//      ISeq bytcode is processed byte by byte, and executed
-//    * After exit from mrb_vm_exec(), iseq can be handled by Go GC
+//   - mrb_vm_exec() does not change bytecode, iseq is readonly
+//   - iseq passed to mrb_vm_exec() is not stored on C side.
+//     ISeq bytcode is processed byte by byte, and executed
+//   - After exit from mrb_vm_exec(), iseq can be handled by Go GC
 //
 // This should pass CGO checks, but mrb_vm_exec() can be a long running;
 // long as in days, months, years. It feels natural to
@@ -1485,38 +1499,61 @@ func (mrb *MrbState) ObjToSym(obj MrbValue) MrbSym {
 
 // ObjEq checks if objects are equal
 func (mrb *MrbState) ObjEq(v1, v2 MrbValue) bool {
-	return C.mrb_obj_eq(mrb.p, v1.Value().v, v2.Value().v) != 0
+	return C.mrb_obj_eq(mrb.p, v1.Value().v, v2.Value().v) != false
 }
 
 // ObjEqual checks if objects are equal
 func (mrb *MrbState) ObjEqual(v1, v2 MrbValue) bool {
-	return C.mrb_obj_equal(mrb.p, v1.Value().v, v2.Value().v) != 0
+	return C.mrb_obj_equal(mrb.p, v1.Value().v, v2.Value().v) != false
 }
 
 // Equal check if values are equal
 func (mrb *MrbState) Equal(v1, v2 MrbValue) bool {
-	return C.mrb_equal(mrb.p, v1.Value().v, v2.Value().v) != 0
+	return C.mrb_equal(mrb.p, v1.Value().v, v2.Value().v) != false
 }
 
-// ConvertToInteger using base
-func (mrb *MrbState) ConvertToInteger(val MrbValue, base int) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_convert_to_integer(mrb.p, val.Value().v, C.mrb_int(base))
-	})
+// EnsureIntegerType ensures returned Value is integer type, or error is returned
+func (mrb *MrbState) EnsureIntegerType(val MrbValue) (Value, error) {
+	switch val.Type() {
+	case MrbTTInteger:
+		return val.Value(), nil
+	case MrbTTFloat:
+		return mrb.FloatToInteger(val), nil
+	case MrbTTCData:
+		return mrb.Funcall(val, mrb.Sym("to_i"))
+	}
+	return nilValue, ETypeError("%v cannot be converted to Integer", mrb.TypeName(val))
+}
+
+// EnsureFloatType ensures returned Value is float type, or error is returned
+func (mrb *MrbState) EnsureFloatType(val MrbValue) (Value, error) {
+	switch val.Type() {
+	case MrbTTInteger:
+		return mrb.FloatValue(val.Value().Float64()), nil
+	case MrbTTFloat:
+		return val.Value(), nil
+	case MrbTTCData:
+		return mrb.Funcall(val, mrb.Sym("to_f"))
+	}
+	return nilValue, ETypeError("%v cannot be converted to Float", mrb.TypeName(val))
 }
 
 // Integer returns integer from value
 func (mrb *MrbState) Integer(val MrbValue) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_Integer(mrb.p, val.Value().v)
-	})
+	return mrb.EnsureIntegerType(val)
 }
 
 // Float returns float from value
 func (mrb *MrbState) Float(val MrbValue) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_Float(mrb.p, val.Value().v)
-	})
+	return mrb.EnsureFloatType(val)
+}
+
+func (mrb *MrbState) AsFloat(val MrbValue) (float64, error) {
+	v, err := mrb.EnsureFloatType(val)
+	if err != nil {
+		return 0, err
+	}
+	return v.Float64(), nil
 }
 
 // Inspect returns object info
@@ -1526,7 +1563,7 @@ func (mrb *MrbState) Inspect(obj MrbValue) Value {
 
 // Eql checks if values are equal
 func (mrb *MrbState) Eql(obj1, obj2 MrbValue) bool {
-	return C.mrb_eql(mrb.p, obj1.Value().v, obj2.Value().v) != 0
+	return C.mrb_eql(mrb.p, obj1.Value().v, obj2.Value().v) != false
 }
 
 // Cmp compares oruby object values
@@ -1591,8 +1628,9 @@ func (mrb *MrbState) CheckConvertType(val MrbValue, mrbtype uint32, tname, metho
 
 // AnyToS returns string value of obj
 // The default to_s prints the object's class and an encoding of the
-//  object id. As a special case, the top-level object that is the
-//  initial execution context of Ruby programs returns "main."
+//
+//	object id. As a special case, the top-level object that is the
+//	initial execution context of Ruby programs returns "main."
 func (mrb *MrbState) AnyToS(obj MrbValue) Value {
 	return Value{C.mrb_any_to_s(mrb.p, obj.Value().v)}
 }
@@ -1623,32 +1661,33 @@ func (mrb *MrbState) ConvertType(val MrbValue, mrbtype uint32, tname, method str
 }
 
 // ObjIsKindOf check kind of obj
-//     obj.is_a?(class)       => true or false
-//     obj.kind_of?(class)    => true or false
 //
-//  Returns <code>true</code> if <i>class</i> is the class of
-//  <i>obj</i>, or if <i>class</i> is one of the superclasses of
-//  <i>obj</i> or modules included in <i>obj</i>.
+//	   obj.is_a?(class)       => true or false
+//	   obj.kind_of?(class)    => true or false
 //
-//     module M;    end
-//     class A
-//       include M
-//     end
-//     class B < A; end
-//     class C < B; end
-//     b = B.new
-//     b.instance_of? A   #=> false
-//     b.instance_of? B   #=> true
-//     b.instance_of? C   #=> false
-//     b.instance_of? M   #=> false
-//     b.kind_of? A       #=> true
-//     b.kind_of? B       #=> true
-//     b.kind_of? C       #=> false
-//     b.kind_of? M       #=> true
+//	Returns <code>true</code> if <i>class</i> is the class of
+//	<i>obj</i>, or if <i>class</i> is one of the superclasses of
+//	<i>obj</i> or modules included in <i>obj</i>.
+//
+//	   module M;    end
+//	   class A
+//	     include M
+//	   end
+//	   class B < A; end
+//	   class C < B; end
+//	   b = B.new
+//	   b.instance_of? A   #=> false
+//	   b.instance_of? B   #=> true
+//	   b.instance_of? C   #=> false
+//	   b.instance_of? M   #=> false
+//	   b.kind_of? A       #=> true
+//	   b.kind_of? B       #=> true
+//	   b.kind_of? C       #=> false
+//	   b.kind_of? M       #=> true
 func (mrb *MrbState) ObjIsKindOf(obj MrbValue, c RClass) bool {
 	switch c.Type() {
 	case C.MRB_TT_MODULE, C.MRB_TT_CLASS, C.MRB_TT_ICLASS, C.MRB_TT_SCLASS:
-		return C.mrb_obj_is_kind_of(mrb.p, obj.Value().v, c.p) != 0
+		return C.mrb_obj_is_kind_of(mrb.p, obj.Value().v, c.p) != false
 	default:
 		panic(fmt.Sprintf("class or module required but got %v", c.Name()))
 	}
@@ -1656,7 +1695,8 @@ func (mrb *MrbState) ObjIsKindOf(obj MrbValue, c RClass) bool {
 
 // ObjInspect returns object info
 // call-seq:
-//    obj.inspect   -> string
+//
+//	obj.inspect   -> string
 //
 // Returns a string containing a human-readable representation of
 // <i>obj</i>. If not overridden and no instance variables, uses the
@@ -1664,30 +1704,31 @@ func (mrb *MrbState) ObjIsKindOf(obj MrbValue, c RClass) bool {
 // <i>obj</i>.  If not overridden, uses the <code>to_s</code> method to
 // generate the string.
 //
-//    [ 1, 2, 3..4, 'five' ].inspect   #=> "[1, 2, 3..4, \"five\"]"
-//    Time.new.inspect                 #=> "2008-03-08 19:43:39 +0900"
+//	[ 1, 2, 3..4, 'five' ].inspect   #=> "[1, 2, 3..4, \"five\"]"
+//	Time.new.inspect                 #=> "2008-03-08 19:43:39 +0900"
 func (mrb *MrbState) ObjInspect(oself MrbValue) Value {
 	return Value{C.mrb_obj_inspect(mrb.p, oself.Value().v)}
 }
 
 // ObjClone clones object
 // call-seq:
-//    obj.clone -> an_object
+//
+//	obj.clone -> an_object
 //
 // Produces a shallow copy of <i>obj</i>---the instance variables of
 // <i>obj</i> are copied, but not the objects they reference. Copies
 // the frozen state of <i>obj</i>. See also the discussion
 // under <code>Object#dup</code>.
 //
-//    class Klass
-//       attr_accessor :str
-//    end
-//    s1 = Klass.new      #=> #<Klass:0x401b3a38>
-//    s1.str = "Hello"    #=> "Hello"
-//    s2 = s1.clone       #=> #<Klass:0x401b3998 @str="Hello">
-//    s2.str[1,4] = "i"   #=> "i"
-//    s1.inspect          #=> "#<Klass:0x401b3a38 @str=\"Hi\">"
-//    s2.inspect          #=> "#<Klass:0x401b3998 @str=\"Hi\">"
+//	class Klass
+//	   attr_accessor :str
+//	end
+//	s1 = Klass.new      #=> #<Klass:0x401b3a38>
+//	s1.str = "Hello"    #=> "Hello"
+//	s2 = s1.clone       #=> #<Klass:0x401b3998 @str="Hello">
+//	s2.str[1,4] = "i"   #=> "i"
+//	s1.inspect          #=> "#<Klass:0x401b3a38 @str=\"Hi\">"
+//	s2.inspect          #=> "#<Klass:0x401b3998 @str=\"Hi\">"
 //
 // This method may have class-specific behavior.  If so, that
 // behavior will be documented under the #+initialize_copy+ method of
@@ -1719,22 +1760,22 @@ func (mrb *MrbState) ObjClone(oself MrbValue) Value {
 func (mrb *MrbState) ExcNew(c RClass, msg string) Value {
 	cmsg := C.CString(msg)
 	defer C.free(unsafe.Pointer(cmsg))
-	return Value{C.mrb_exc_new(mrb.p, c.p, cmsg, C.size_t(len(msg)))}
+	return Value{C.mrb_exc_new(mrb.p, c.p, cmsg, C.mrb_int(len(msg)))}
 }
 
 // ExcRaise raises Ruby exception. This function is likeley to cause
 // panic and program error exit, since Go neither supports exceptions,
 // nor C style longjmp across Go stack.
 //
-//  Instead, consider using this idiom in case of error:
+//	Instead, consider using this idiom in case of error:
 //
-//     return mrb.Raise(mrb.StandardError(), "Something went wrong")
+//	   return mrb.Raise(mrb.StandardError(), "Something went wrong")
 //
-//  or
+//	or
 //
-//     return mrb.StandardError().Raise("Something went wrong")
+//	   return mrb.StandardError().Raise("Something went wrong")
 //
-//  This will return Exception from Go, and raise it on C side
+//	This will return Exception from Go, and raise it on C side
 func (mrb *MrbState) ExcRaise(exc MrbValue) {
 	C.mrb_exc_raise(mrb.p, exc.Value().v)
 }
@@ -1777,9 +1818,8 @@ func (mrb *MrbState) Raisef(c RClass, format string, args ...interface{}) Value 
 // RaiseError returns exception from error. If error is one of predefined oruby
 // errors then coresponding ruby error is raised. For example:
 //
-//    err := oruby.EArgumentError("Unknovn argument %v", someArg)
-//    return mrb.RaiseError(err) -> oruby.Value <#ArgumentError>
-//
+//	err := oruby.EArgumentError("Unknovn argument %v", someArg)
+//	return mrb.RaiseError(err) -> oruby.Value <#ArgumentError>
 func (mrb *MrbState) RaiseError(err error) Value {
 	return mrb.Raise(mrb.getErrorKlass(err), err.Error())
 }
@@ -1924,7 +1964,7 @@ func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ..
 // YieldCont continue execution to the proc
 // this function should always be called as the last function of a method. e.g.:
 //
-//      return mrb,YieldCont(proc, self, args...)
+//	return mrb,YieldCont(proc, self, args...)
 func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) Value {
 	//mrb_yield_cont(mrb_state*mrb, mrb_value b, mrb_value self, mrb_int argc, const mrb_value *argv);
 	if b.IsNil() {
@@ -1970,17 +2010,6 @@ func (mrb *MrbState) GCRegister(obj MrbValue) {
 // GCUnregister removes the object from GC root. */
 func (mrb *MrbState) GCUnregister(obj MrbValue) {
 	C.mrb_gc_unregister(mrb.p, obj.Value().v)
-}
-
-// ToInt converts value to integer oruby value
-func (mrb *MrbState) ToInt(val MrbValue) Value {
-	return Value{C.mrb_to_int(mrb.p, val.Value().v)}
-}
-
-// ToStr converts value to string oruby value
-func (mrb *MrbState) ToStr(val MrbValue) RString {
-	s := mrb.Call(val, "to_s")
-	return RString{RObject{C.mrb_to_str(mrb.p, s.v), mrb}}
 }
 
 // CheckType check type and raise error on mismatch
@@ -2042,12 +2071,12 @@ func (mrb *MrbState) AttrGet(obj MrbValue, id MrbSym) Value {
 
 // RespondTo checks if object responds to method id
 func (mrb *MrbState) RespondTo(obj MrbValue, mid MrbSym) bool {
-	return C.mrb_respond_to(mrb.p, obj.Value().v, C.mrb_sym(mid)) != 0
+	return C.mrb_respond_to(mrb.p, obj.Value().v, C.mrb_sym(mid)) != false
 }
 
 // ObjIsInstanceOf checks if oruby object is direct instance of class
 func (mrb *MrbState) ObjIsInstanceOf(obj MrbValue, klass RClass) bool {
-	return C.mrb_obj_is_instance_of(mrb.p, obj.Value().v, klass.p) != 0
+	return C.mrb_obj_is_instance_of(mrb.p, obj.Value().v, klass.p) != false
 }
 
 // FuncBasicP returns true if function is basic method id
@@ -2140,7 +2169,7 @@ func (pool *MrbPool) Realloc(buffer Buff, oldlen, newlen uint) Buff {
 
 // CanRealloc check if memory can be reallocated
 func (pool *MrbPool) CanRealloc(buffer Buff, size uint) bool {
-	return C.mrb_pool_can_realloc(pool.p, buffer.p, C.size_t(size)) != 0
+	return C.mrb_pool_can_realloc(pool.p, buffer.p, C.size_t(size)) != false
 }
 
 // Alloca temporary memory allocation, only effective while GC arena is kept

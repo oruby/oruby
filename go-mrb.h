@@ -35,6 +35,7 @@ extern "C" {
 #include "mruby/throw.h"
 #include "mruby/istruct.h"
 #include "mruby/presym.h"
+#include "mruby/internal.h"
 
 static void _mrb_set_idx(mrb_state *mrb, mrb_int idx) {
   struct RBasic *s = mrb_obj_alloc(mrb, MRB_TT_ISTRUCT, mrb->object_class);
@@ -240,15 +241,8 @@ _mrb_get_arg(mrb_value *args, int index) {
 
 static mrb_value
 _mrb_get_args_block(mrb_state *mrb) {
-  mrb_value *block;
-
-  if (mrb->c->ci->argc < 0) {
-    block = mrb->c->ci->stack + 2;
-  } else {
-    block = mrb->c->ci->stack + mrb->c->ci->argc + 1;
-  }
-
-  return *block;
+  mrb_callinfo *ci = mrb->c->ci;
+  return ci->stack[mrb_ci_bidx(ci)];
 }
 
 // Bit packed options from struct
@@ -319,7 +313,7 @@ _mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)
   e->stack = NULL;
   if (argc > 0) {
     e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * argc);
-    mrb_env_unshare(mrb, e);
+    mrb_env_unshare(mrb, e, TRUE);
     for (i = 0; i < argc; i++) {
       e->stack[i] = argv[i];
     }

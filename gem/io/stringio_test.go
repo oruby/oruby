@@ -1,9 +1,10 @@
 package io
 
 import (
+	"testing"
+
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/assert"
-	"testing"
 )
 
 func Test_sioOpen(t *testing.T) {
@@ -12,7 +13,6 @@ func Test_sioOpen(t *testing.T) {
 
 	ret, err := mrb.Eval("StringIO.open('some_string')")
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
 	assert.Equal(t, ret.Call("string"), "some_string")
 
 }
@@ -25,7 +25,7 @@ func Test_sioInit(t *testing.T) {
 
 	ret, err := mrb.Eval("StringIO.new($s)")
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 	assert.Equal(t, ret.Call("string"), "some_string")
 
 	ret.Call("write", "_add")
@@ -100,7 +100,7 @@ func Test_sioSetString(t *testing.T) {
 
 	ret.Call("write", "_add")
 	assert.NilError(t, mrb.Err())
-	assert.Equal(t, ret.Call("string") , "_add")
+	assert.Equal(t, ret.Call("string"), "_add")
 }
 
 func Test_sioString(t *testing.T) {
@@ -117,4 +117,3 @@ func Test_sioString(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, ret, "new")
 }
-

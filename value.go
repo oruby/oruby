@@ -30,12 +30,16 @@ const (
 	MrbTTString    // 16
 	MrbTTRange     // 17
 	MrbTTException // 18
-	MrbTTEnv       // 20
-	MrbTTData      // 21
-	MrbTTFiber     // 22
+	MrbTTEnv       // 19
+	MrbTTCData     // 20
+	MrbTTFiber     // 21
+	MrbTTStruct    // 22
 	MrbTTIStruct   // 23
 	MrbTTBreak     // 24
-	MrbTTMaxdefine // 25
+	MrbTTComplex   // 25
+	MrbTTRational  // 26
+	MrbTTBigInt    // 27
+	MrbTTMaxdefine // 28
 )
 
 // MrbTTFixnum is deprecated. MrbTTInteger is preffered
@@ -129,14 +133,14 @@ func (v Value) Float64() float64 {
 	switch v.Type() {
 	case MrbTTFloat:
 		return float64(C._mrb_float(v.v))
-	case MrbTTFixnum:
+	case MrbTTInteger:
 		return float64(C._mrb_fixnum(v.v))
 	case MrbTTFalse:
 		return 0.0
 	case MrbTTTrue:
 		return 1.0
 	default:
-		panic("value can't be convertend directly to float, try using oruby state functions like to_f")
+		panic("value can't be converted directly to float, try using oruby state functions like to_f")
 	}
 }
 
@@ -285,7 +289,7 @@ func (mrb *MrbState) StringValue(s string) RString {
 	ptr := C.CString(s)
 	defer C.free(unsafe.Pointer(ptr))
 	return RString{RObject{
-		C.mrb_str_new(mrb.p, ptr, C.size_t(len(s))),
+		C.mrb_str_new(mrb.p, ptr, C.mrb_int(len(s))),
 		mrb,
 	}}
 }
@@ -293,9 +297,9 @@ func (mrb *MrbState) StringValue(s string) RString {
 // BytesValue bytes to oruby string value
 func (mrb *MrbState) BytesValue(buf []byte) Value {
 	if len(buf) == 0 {
-		return Value{C.mrb_str_new(mrb.p, nil, C.size_t(0))}
+		return Value{C.mrb_str_new(mrb.p, nil, C.mrb_int(0))}
 	}
-	v := Value{C.mrb_str_new(mrb.p, (*C.char)(unsafe.Pointer((&buf[0]))), C.size_t(len(buf)))}
+	v := Value{C.mrb_str_new(mrb.p, (*C.char)(unsafe.Pointer((&buf[0]))), C.mrb_int(len(buf)))}
 
 	runtime.KeepAlive(buf)
 	return v

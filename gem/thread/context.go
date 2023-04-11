@@ -2,28 +2,27 @@ package thread
 
 import (
 	"fmt"
-	"runtime"
 	"sync"
 
 	"github.com/oruby/oruby"
 )
 
-type ThreadFuncT = func(...interface{})interface{}
+type ThreadFuncT = func(...interface{}) interface{}
 
 type Context struct {
 	sync.Mutex
-	Name string
-	mrb *oruby.MrbState
-	mrbCaller *oruby.MrbState
-	args oruby.RArgs
-	proc oruby.RProc
-	f ThreadFuncT
-	result oruby.Value
-	err error
+	Name         string
+	mrb          *oruby.MrbState
+	mrbCaller    *oruby.MrbState
+	args         oruby.RArgs
+	proc         oruby.RProc
+	f            ThreadFuncT
+	result       oruby.Value
+	err          error
 	resultCaller oruby.Value
-	alive bool
-	sleeping bool
-	wakeupChan  chan struct{}
+	alive        bool
+	sleeping     bool
+	wakeupChan   chan struct{}
 }
 
 func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -63,7 +62,7 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	c.alive = true
-	c.mrb.ModCVSet(mrb.ClassGet("Thread"), mrb.Intern("@@current"), c.mrb.Value(c))
+	c.mrb.CVSet(mrb.ClassGet("Thread"), mrb.Intern("@@current"), c.mrb.Value(c))
 	c.mrb.WaitGroup.Add(1)
 	go c.worker()
 
@@ -91,7 +90,7 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	c := &Context{
 		sync.Mutex{},
 		"",
-		 oruby.MrbOpen(),
+		oruby.MrbOpen(),
 		mrb,
 		args,
 		proc,
@@ -165,10 +164,6 @@ func (c *Context) Kill() interface{} {
 	return c.result
 }
 
-func (c *Context) Pass() {
-	runtime.Gosched()
-}
-
 func (c *Context) IsAlive() bool {
 	c.Lock()
 	defer c.Unlock()
@@ -222,10 +217,6 @@ func (c *Context) Wakeup() *Context {
 	return c
 }
 
-func (c *Context) Paas() {
-	runtime.Gosched()
-}
-
 func (c *Context) Status() interface{} {
 	c.Lock()
 	defer c.Unlock()
@@ -248,7 +239,7 @@ func (c *Context) Status() interface{} {
 }
 
 func (c *Context) Value() (interface{}, error) {
-	_,_=c.Join(0)
+	_, _ = c.Join(0)
 	return c.resultCaller, c.err
 }
 

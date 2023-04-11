@@ -17,7 +17,7 @@ func (mrb *MrbState) ConstSet(v MrbValue, id MrbSym, v2 MrbValue) {
 
 // ConstDefined checks if const is defined
 func (mrb *MrbState) ConstDefined(v MrbValue, id MrbSym) bool {
-	return C.mrb_const_defined(mrb.p, v.Value().v, C.mrb_sym(id)) != 0
+	return C.mrb_const_defined(mrb.p, v.Value().v, C.mrb_sym(id)) != false
 }
 
 // ConstRemove removes const
@@ -27,7 +27,7 @@ func (mrb *MrbState) ConstRemove(v MrbValue, id MrbSym) {
 
 // IVNameSymP check
 func (mrb *MrbState) IVNameSymP(sym MrbSym) bool {
-	return C.mrb_iv_name_sym_p(mrb.p, C.mrb_sym(sym)) != C.mrb_bool(0)
+	return C.mrb_iv_name_sym_p(mrb.p, C.mrb_sym(sym)) != false
 }
 
 // IVNameSymCheck check
@@ -47,7 +47,7 @@ func (mrb *MrbState) ObjIVSet(obj RObject, sym MrbSym, v MrbValue) {
 
 // ObjIVDefined is object instance variable defined
 func (mrb *MrbState) ObjIVDefined(obj RObject, sym MrbSym) bool {
-	return C.mrb_obj_iv_defined(mrb.p, obj.p(), C.mrb_sym(sym)) != 0
+	return C.mrb_obj_iv_defined(mrb.p, obj.p(), C.mrb_sym(sym)) != false
 }
 
 // GetIV get instance variable
@@ -94,7 +94,7 @@ func (mrb *MrbState) IVSet(obj MrbValue, sym MrbSym, v MrbValue) error {
 
 // IVDefined instance variable defined
 func (mrb *MrbState) IVDefined(v MrbValue, sym MrbSym) bool {
-	return C.mrb_iv_defined(mrb.p, v.Value().v, C.mrb_sym(sym)) != 0
+	return C.mrb_iv_defined(mrb.p, v.Value().v, C.mrb_sym(sym)) != false
 }
 
 // IVRemove remove instance variable
@@ -107,17 +107,18 @@ func (mrb *MrbState) IVCopy(dst, src MrbValue) { C.mrb_iv_copy(mrb.p, dst.Value(
 
 // ConstDefinedAt checks const definition
 func (mrb *MrbState) ConstDefinedAt(mod MrbValue, id MrbSym) bool {
-	return C.mrb_const_defined_at(mrb.p, mod.Value().v, C.mrb_sym(id)) != 0
+	return C.mrb_const_defined_at(mrb.p, mod.Value().v, C.mrb_sym(id)) != false
 }
 
 // ModConstants get mod constants
 func (mrb *MrbState) ModConstants(mod MrbValue) RArray {
-	return ary(C.mrb_mod_constants(mrb.p, mod.Value().v), mrb)
+	m := mrb.ClassPtr(mod.Value())
+	return m.Call("constants").RArray()
 }
 
 // FGlobalVariables list
 func (mrb *MrbState) FGlobalVariables() RArray {
-	return ary(C.mrb_f_global_variables(mrb.p, nilValue.v), mrb)
+	return mrb.KernelModule().Call("global_variables").RArray()
 }
 
 // GVGet get global variable
@@ -153,24 +154,20 @@ func (mrb *MrbState) GetObjGV(name string) RObject {
 	return RObject{mrb.GVGet(mrb.Intern(name)).v, mrb}
 }
 
-// ObjInstanceVariables list
-func (mrb *MrbState) ObjInstanceVariables(v MrbValue) RArray {
-	return ary(C.mrb_obj_instance_variables(mrb.p, v.Value().v), mrb)
-}
-
 // ModClassVariables list module class variables
 func (mrb *MrbState) ModClassVariables(v MrbValue) RArray {
-	return ary(C.mrb_mod_class_variables(mrb.p, v.Value().v), mrb)
+	m := mrb.ClassPtr(v.Value())
+	return m.Call("class_variables").RArray()
 }
 
 // ModCVGet module get class variable
 func (mrb *MrbState) ModCVGet(c RClass, sym MrbSym) Value {
-	return Value{C.mrb_mod_cv_get(mrb.p, c.p, C.mrb_sym(sym))}
+	return c.Call("class_variable_get", sym).Value()
 }
 
 // CVGet get class variable
-func (mrb *MrbState) CVGet(mod MrbValue, sym MrbSym) Value {
-	return Value{C.mrb_cv_get(mrb.p, mod.Value().v, C.mrb_sym(sym))}
+func (mrb *MrbState) CVGet(c MrbValue, sym MrbSym) Value {
+	return Value{C.mrb_cv_get(mrb.p, c.Value().v, C.mrb_sym(sym))}
 }
 
 // ModCVSet set module class variable
@@ -185,14 +182,14 @@ func (mrb *MrbState) CVSet(mod MrbValue, sym MrbSym, v MrbValue) {
 
 // ModCVDefined module variable defined
 func (mrb *MrbState) ModCVDefined(c RClass, sym MrbSym) bool {
-	return C.mrb_mod_cv_defined(mrb.p, c.p, C.mrb_sym(sym)) != 0
+	return c.Call("class_variable_defined?", sym).Bool()
 }
 
 // CVDefined class variable defined
 func (mrb *MrbState) CVDefined(mod MrbValue, sym MrbSym) bool {
-	return C.mrb_cv_defined(mrb.p, mod.Value().v, C.mrb_sym(sym)) != 0
+	return C.mrb_cv_defined(mrb.p, mod.Value().v, C.mrb_sym(sym)) != false
 }
 
-/* return non zero to break the loop */
+/* return non-zero to break the loop */
 //typedef int (mrb_iv_foreach_func)(mrb_state*,mrb_sym,mrb_value,void*);
 //MRB_API void mrb_iv_foreach(mrb_state *mrb, mrb_value obj, mrb_iv_foreach_func *func, void *p);

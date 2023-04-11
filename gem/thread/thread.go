@@ -2,13 +2,14 @@ package thread
 
 import (
 	"math"
+	"runtime"
 	"time"
 
 	"github.com/oruby/oruby"
 )
 
 func init() {
-	oruby.Gem("thread", func(mrb *oruby.MrbState)interface{} {
+	oruby.Gem("thread", func(mrb *oruby.MrbState) interface{} {
 		threadClass := mrb.DefineClass("Thread", mrb.ObjectClass())
 		threadClass.RegisterGoClass(func() *Context { return &Context{} })
 		threadClass.Populate()
@@ -18,10 +19,14 @@ func init() {
 		threadClass.DefineAlias("terminate", "kill")
 		threadClass.DefineModuleFunction("start", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
 		threadClass.DefineModuleFunction("go", goThread, mrb.ArgsAny()+mrb.ArgsBlock())
-		threadClass.DefineModuleFunction("current", threadCurrent, mrb.ArgsNone())
+		threadClass.DefineClassMethod("current", threadCurrent, mrb.ArgsNone())
+		threadClass.DefineClassMethod("main", threadMain, mrb.ArgsNone())
+		threadClass.DefineClassMethod("kill", threadKill, mrb.ArgsReq(1))
+		threadClass.DefineClassMethod("pass", threadPass, mrb.ArgsNone())
+		threadClass.DefineClassMethod("stop", threadStop, mrb.ArgsNone())
 
-		mutexClass := mrb.DefineGoClass( "Mutex", newMutex)
-		mutexClass.DefineMethod("sleep", mutexSleep,mrb.ArgsReq(1))
+		mutexClass := mrb.DefineGoClass("Mutex", newMutex)
+		mutexClass.DefineMethod("sleep", mutexSleep, mrb.ArgsReq(1))
 		mutexClass.DefineMethod("synchronize", mutexSynchronize, mrb.ArgsReq(1))
 
 		queueClass := mrb.DefineGoClass("Queue", &queue{})
@@ -44,6 +49,34 @@ func init() {
 	})
 }
 
+func threadMain(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	runtime.Gosched()
+	return oruby.Nil
+}
+
+func threadPass(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.CVGet(mrb.ClassOf(self), mrb.Intern("@@main"))
+}
+
+func threadKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	ret := mrb.GetArgsFirst()
+	thr, ok := mrb.Intf(ret).(*Context)
+	if !ok {
+		return mrb.Raisef(mrb.ETypeError(), "wrong argument type %v (expected VM/thread)", mrb.TypeName(ret))
+	}
+	thr.Kill()
+	return ret
+}
+
+func threadStop(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	current := mrb.CVGet(mrb.ClassOf(self), mrb.Intern("@@current"))
+	thr, ok := mrb.Intf(current).(*Context)
+	if !ok {
+		return mrb.Raisef(mrb.ETypeError(), "wrong argument type %v (expected VM/thread)", mrb.TypeName(current))
+	}
+	thr.Stop()
+	return oruby.Nil
+}
 
 func mutexSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	mutex := mrb.Data(self).(*rmutex)
@@ -64,7 +97,7 @@ func mutexSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	case <-mrb.ExitChan():
 	}
 
-	return mrb.FixnumValue(int(time.Since(start)/time.Second))
+	return mrb.FixnumValue(int(time.Since(start) / time.Second))
 }
 
 func mutexSynchronize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -83,4 +116,3 @@ func mutexSynchronize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	return mrb.NilValue()
 }
-

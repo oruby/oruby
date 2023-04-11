@@ -79,12 +79,12 @@ func (mrb *MrbState) HashKeys(hash MrbValue) RArray {
 
 // HashKeyP Check if the hash has the key.
 func (mrb *MrbState) HashKeyP(hash, key MrbValue) bool {
-	return C.mrb_hash_key_p(mrb.p, hash.Value().v, key.Value().v) != C.mrb_bool(0)
+	return C.mrb_hash_key_p(mrb.p, hash.Value().v, key.Value().v) != false
 }
 
 // HashEmptyP check if the hash is empty
 func (mrb *MrbState) HashEmptyP(hash MrbValue) bool {
-	return C.mrb_hash_empty_p(mrb.p, hash.Value().v) != C.mrb_bool(0)
+	return C.mrb_hash_empty_p(mrb.p, hash.Value().v) != false
 }
 
 // HashValues returns an array of values, equivalent to hash.values
@@ -132,7 +132,7 @@ const (
 // MrbRHashProcDefaultP checks hash procdefault
 func MrbRHashProcDefaultP(h MrbValue) bool { return (C._MRB_RHASH_PROCDEFAULT_P(h.Value().v) != 0) }
 
-// MrbHashForeachFuncT is hash foreach callback func. Return non zero to break the loop
+// MrbHashForeachFuncT is hash foreach callback func. Return non-zero to break the loop
 type MrbHashForeachFuncT = func(key, val Value) int
 
 //export go_hash_callback

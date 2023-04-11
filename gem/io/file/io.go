@@ -2,21 +2,22 @@ package file
 
 import (
 	"errors"
-	"github.com/oruby/oruby"
-	gemIO "github.com/oruby/oruby/gem/io"
 	"io"
 	"io/ioutil"
 	"os"
+
+	"github.com/oruby/oruby"
+	gemIO "github.com/oruby/oruby/gem/io"
 )
 
 func initIOMethods(mrb *oruby.MrbState) oruby.RClass {
 	cIO := mrb.Class("IO")
 	cIO.DefineClassMethod("sysopen", ioSysopen, mrb.ArgsArg(1, 2))
-	cIO.DefineClassMethod("binread", ioBinread, mrb.ArgsArg(1,2))
-	cIO.DefineClassMethod("binwrite", ioBinwrite, mrb.ArgsArg(2,2))
+	cIO.DefineClassMethod("binread", ioBinread, mrb.ArgsArg(1, 2))
+	cIO.DefineClassMethod("binwrite", ioBinwrite, mrb.ArgsArg(2, 2))
 	cIO.DefineClassMethod("read", ioBinread, mrb.ArgsArg(1, 3))
 	cIO.DefineClassMethod("write", ioBinwrite, mrb.ArgsArg(2, 2))
-	cIO.DefineMethod("reopen", ioReopen, mrb.ArgsArg(1,2))
+	cIO.DefineMethod("reopen", ioReopen, mrb.ArgsArg(1, 2))
 
 	ioData := mrb.GemData("io").(*gemIO.IoData)
 	ioData.GetStream = fileGetStream
@@ -26,9 +27,10 @@ func initIOMethods(mrb *oruby.MrbState) oruby.RClass {
 }
 
 // TODO: this will leak file descriptors, if not properly closed
-//       this method returns int; MRI closes fd when returned variablee is GC-ed
-//       mruby Int/Fixnum is not in GC arena.
-//       mruby DATA structure does get free
+//
+//	this method returns int; MRI closes fd when returned variablee is GC-ed
+//	mruby Int/Fixnum is not in GC arena.
+//	mruby DATA structure does get free
 func ioSysopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	path := args.Item(0)
@@ -71,7 +73,7 @@ func rwNameLenOffset(name string, offset int64, length *int64) (*os.File, error)
 }
 
 func ioBinread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	name, lengthV, offsetV := mrb.GetArgs3("", -1,0)
+	name, lengthV, offsetV := mrb.GetArgs3("", -1, 0)
 	offset := offsetV.Int64()
 	length := lengthV.Int64()
 
@@ -90,7 +92,7 @@ func ioBinread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	defer f.Close()
 
 	buf := make([]byte, length)
-	_,err = f.ReadAt(buf, offset)
+	_, err = f.ReadAt(buf, offset)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return mrb.RaiseError(err)
 	}
@@ -101,13 +103,13 @@ func ioBinread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioBinwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name, str, offset := mrb.GetArgs3("", "", 0)
 
-	f, err := os.OpenFile(name.String(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY,0755)
+	f, err := os.OpenFile(name.String(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
 	n, err := f.WriteAt(str.Bytes(), offset.Int64())
-	if err != nil  {
+	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
@@ -123,7 +125,7 @@ func fileGetStream(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}
 	case oruby.MrbTTString:
 		ret, err := os.OpenFile(item.String(), mode, 0755)
 		return ret, err
-	case oruby.MrbTTData:
+	case oruby.MrbTTCData:
 		return mrb.Data(item), nil
 	}
 	return nil, oruby.EArgumentError("IO Stream or name expected")
@@ -160,7 +162,7 @@ func fileOpenIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, er
 			return nil, oruby.EArgumentError("invalid file descriptor")
 		}
 		return ioObject, nil
-	case oruby.MrbTTData:
+	case oruby.MrbTTCData:
 		ioObject = mrb.Data(fd)
 		switch ioObject.(type) {
 		case io.Reader, io.Writer, *os.File, *io.PipeReader, *io.PipeWriter:

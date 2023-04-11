@@ -3,24 +3,25 @@ package file
 import (
 	"errors"
 	"fmt"
-	"github.com/oruby/oruby"
 	"io"
 	"os"
 	"os/user"
+
+	"github.com/oruby/oruby"
 )
 
 func initDir(mrb *oruby.MrbState) {
 	dirClass := mrb.DefineClass("Dir", mrb.ObjectClass())
 	dirClass.Include(mrb.ModuleGet("Enumerable"))
-	oruby.MrbSetInstanceTT(dirClass, oruby.MrbTTData)
+	oruby.MrbSetInstanceTT(dirClass, oruby.MrbTTCData)
 
-	dirClass.DefineClassMethod("open", dirOpen, mrb.ArgsArg(1,1))
-	dirClass.DefineClassMethod("foreach", dirForeach, mrb.ArgsArg(1,1))
-	dirClass.DefineClassMethod("entries", dirEntries, mrb.ArgsArg(1,1))
-	dirClass.DefineClassMethod("each_child", dirSEachChild, mrb.ArgsArg(1,1))
+	dirClass.DefineClassMethod("open", dirOpen, mrb.ArgsArg(1, 1))
+	dirClass.DefineClassMethod("foreach", dirForeach, mrb.ArgsArg(1, 1))
+	dirClass.DefineClassMethod("entries", dirEntries, mrb.ArgsArg(1, 1))
+	dirClass.DefineClassMethod("each_child", dirSEachChild, mrb.ArgsArg(1, 1))
 	dirClass.DefineClassMethod("children", dirChildren, oruby.ArgsReq(1))
 
-	dirClass.DefineMethod("initialize", dirInitialize, mrb.ArgsArg(1,1))
+	dirClass.DefineMethod("initialize", dirInitialize, mrb.ArgsArg(1, 1))
 	dirClass.DefineMethod("fileno", dirFileno, mrb.ArgsNone())
 	dirClass.DefineMethod("path", dirPath, mrb.ArgsNone())
 	dirClass.DefineMethod("to_path", dirPath, mrb.ArgsNone())
@@ -63,7 +64,7 @@ func dirOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return ret
 	}
 	result, _ := mrb.Yield(block, ret)
-	_= ret.Data().(*os.File).Close()
+	_ = ret.Data().(*os.File).Close()
 	return result
 }
 
@@ -88,8 +89,8 @@ func dirEntries(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	files, err := f.Readdirnames(-1)
-	_= f.Close()
-	ret := mrb.AryNewCapa(len(files)+2)
+	_ = f.Close()
+	ret := mrb.AryNewCapa(len(files) + 2)
 	ret.PushString(".")
 	ret.PushString("..")
 	for _, f := range files {
@@ -104,9 +105,9 @@ func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, skipDots bo
 	if !block.IsNil() {
 		ret = mrb.AryNew().Value()
 	}
-	err := eachName(dir, skipDots, func(f string)error {
+	err := eachName(dir, skipDots, func(f string) error {
 		if !block.IsNil() {
-			_,err := mrb.Yield(block, mrb.StrNew(f))
+			_, err := mrb.Yield(block, mrb.StrNew(f))
 			if err != nil {
 				return err
 			}
@@ -141,7 +142,7 @@ func dirChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.EArgumentError().Raise("ENOENT empty directory not allowed")
 	}
 	ret := mrb.AryNew()
-	err := eachName(dir, true, func(f string)error {
+	err := eachName(dir, true, func(f string) error {
 		ret.PushString(f)
 		return nil
 	})
@@ -178,7 +179,7 @@ func dirChdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	wdir, err := os.Getwd()
 	if err != nil {
-		return  mrb.RaiseError(err)
+		return mrb.RaiseError(err)
 	}
 
 	err = os.Chdir(dir)
@@ -186,12 +187,12 @@ func dirChdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	ret,_ = mrb.YieldArgv(block, mrb.StrNew(dir))
+	ret, _ = mrb.YieldArgv(block, mrb.StrNew(dir))
 
 	if err := os.Chdir(wdir); err != nil {
-			return mrb.RaiseError(err)
-		}
-    return ret
+		return mrb.RaiseError(err)
+	}
+	return ret
 }
 
 func dirGetwd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -250,7 +251,7 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		patterns = []string{patt.String()}
 	case oruby.MrbTTArray:
 		patterns = make([]string, patt.Len())
-		for i := 0; i < patt.Len(); i ++ {
+		for i := 0; i < patt.Len(); i++ {
 			patterns[i] = mrb.AryEntry(patt, i).String()
 		}
 	default:
@@ -261,7 +262,7 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if args.Item(1).IsInt() {
 		flags = args.ItemDefInt(1, flags)
 	}
-	flags |= fnmExtglob|fnmPathname
+	flags |= fnmExtglob | fnmPathname
 
 	opt := args.GetLastHash()
 	if opt.IsHash() {
@@ -290,7 +291,7 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		basePath = ""
 	}
 
-	err = glob(patterns, flags, basePath, func(f string)error {
+	err = glob(patterns, flags, basePath, func(f string) error {
 		if block.IsNil() {
 			mrb.AryPush(ret, mrb.StrNew(f))
 		} else {
@@ -318,7 +319,7 @@ func dirAref(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	patterns := make([]string, 0, args.Len())
-	for i := 0; i < args.Len(); i ++ {
+	for i := 0; i < args.Len(); i++ {
 		if arg := args.Item(i); arg.IsString() {
 			patterns = append(patterns, arg.String())
 		}
@@ -341,7 +342,7 @@ func dirAref(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		basePath = ""
 	}
 
-	err := glob(patterns, fnmExtglob|fnmPathname, basePath, func(f string)error {
+	err := glob(patterns, fnmExtglob|fnmPathname, basePath, func(f string) error {
 		ret.PushString(f)
 		return nil
 	})
@@ -369,14 +370,14 @@ func dirIsEmpty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	files, err := f.Readdirnames(1)
-	_= f.Close()
+	_ = f.Close()
 
 	return oruby.Bool(err == io.EOF && len(files) == 0)
 }
 
 func dirClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	f := mrb.Data(self).(*os.File)
-	_= f.Close()
+	_ = f.Close()
 	return mrb.NilValue()
 }
 
@@ -434,7 +435,7 @@ func dirTell(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func dirRewind(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	f := mrb.Data(self).(*os.File)
-	_= f.Close()
+	_ = f.Close()
 	f, err := os.Open(mrb.GetIV(self, "@path").String())
 	if err != nil {
 		return mrb.RaiseError(err)
@@ -465,7 +466,7 @@ func dirRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ret = files[len(files)-1]
 	}
 
-	mrb.SetIV(self, "@pos", pos + 1)
+	mrb.SetIV(self, "@pos", pos+1)
 	return mrb.StrNew(ret)
 }
 
@@ -479,7 +480,7 @@ func dirEachChild(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return dirDoForeach(mrb, self, dir, true)
 }
 
-func eachName(dir string, skipDots bool, f func(s string)error) error {
+func eachName(dir string, skipDots bool, f func(s string) error) error {
 	fd, err := os.Open(dir)
 	if err != nil {
 		return err
@@ -506,4 +507,3 @@ func eachName(dir string, skipDots bool, f func(s string)error) error {
 	}
 	return nil
 }
-

@@ -10,13 +10,14 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/oruby/oruby"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/oruby/oruby"
 )
 
 const historyFileName = ".orbi_history"
@@ -45,7 +46,7 @@ func p(mrb *oruby.MrbState, obj oruby.MrbValue, prompt int) {
 	println(mrb.String(val))
 }
 
-//* Guess if the user might want to enter more
+// * Guess if the user might want to enter more
 // * or if he wants an evaluation of his code now */
 func isCodeBlockOpen(parser oruby.MrbParserState) bool {
 	codeBlockOpen := false
@@ -56,7 +57,7 @@ func isCodeBlockOpen(parser oruby.MrbParserState) bool {
 	}
 
 	// check for unterminated string
-	if parser.LexStrterm() != nil {
+	if parser.LexStrTerm() {
 		return true
 	}
 
@@ -82,7 +83,7 @@ func isCodeBlockOpen(parser oruby.MrbParserState) bool {
 	}
 
 	switch parser.LState() {
-		/* all states which need more code */
+	/* all states which need more code */
 
 	case oruby.ExprBeg:
 		/* beginning of a statement, */
@@ -141,11 +142,11 @@ func isCodeBlockOpen(parser oruby.MrbParserState) bool {
 }
 
 type Args struct {
-	rfp string
-	alib string
+	rfp     string
+	alib    string
 	verbose bool
-	debug bool
-	libs []string
+	debug   bool
+	libs    []string
 }
 
 func usage(name string) {
@@ -167,11 +168,11 @@ func usage(name string) {
 
 func parseArgs(mrb *oruby.MrbState, args *Args) error {
 	flag.BoolVar(&args.debug, "d", false, "set $DEBUG to true (same as `oruby -d`)")
-	flag.StringVar(&args.alib, "r",  "", "same as `oruby -r`")
+	flag.StringVar(&args.alib, "r", "", "same as `oruby -r`")
 	flag.BoolVar(&args.verbose, "verbose", false, "run in verbose mode")
 	v := flag.Bool("v", false, "print version number, then run in verbose mode")
-	version := flag.Bool( "version", false, "print the version")
-	copyright := flag.Bool( "copyright", false,"print the copyright")
+	version := flag.Bool("version", false, "print the version")
+	copyright := flag.Bool("copyright", false, "print the copyright")
 
 	flag.Parse()
 
@@ -212,8 +213,8 @@ func checkKeyword(buf, word string) bool {
 }
 
 func declLvUnderscore(mrb *oruby.MrbState, cxt *oruby.MrbcContext) {
-	parser, err := mrb.ParseString( "_=nil", cxt)
-	if err != nil  {
+	parser, err := mrb.ParseString("_=nil", cxt)
+	if err != nil {
 		mrb.Close()
 		log.Fatal(err)
 		return
@@ -221,7 +222,7 @@ func declLvUnderscore(mrb *oruby.MrbState, cxt *oruby.MrbcContext) {
 	defer parser.Free()
 
 	proc, err := mrb.GenerateCode(parser)
-	if err != nil  {
+	if err != nil {
 		mrb.Close()
 		log.Fatal(err)
 		return
@@ -262,7 +263,7 @@ func main() {
 	mrb.GVSet(mrb.Intern("$DEBUG"), mrb.BoolValue(args.debug))
 
 	historyPath, err = getHistoryPath()
-	if err != nil  {
+	if err != nil {
 		log.Fatal("failed to get history path")
 		return
 	}
@@ -277,7 +278,7 @@ func main() {
 	declLvUnderscore(mrb, cxt)
 
 	/* Load libraries */
-	for _, lib := range args.libs  {
+	for _, lib := range args.libs {
 		_, err = cxt.LoadFile(lib)
 		if err != nil {
 			log.Fatalf("Cannot open library file. (%v)\n", lib)
@@ -333,7 +334,7 @@ func main() {
 		MIRB_ADD_HISTORY(line)
 		MIRB_LINE_FREE(line)
 
-//done:
+		//done:
 		if codeBlockOpen {
 			if len(rubyCode)+len(lastCodeLine) > MaxCodeSize {
 				fmt.Print("concatenated input string too long\n")
@@ -405,7 +406,7 @@ func main() {
 			mrb.GCArenaRestore(ai)
 		}
 		parser.Free()
-		cxt.SetLineNo(cxt.LineNo()+1)
+		cxt.SetLineNo(cxt.LineNo() + 1)
 	}
 
 	MIRB_WRITE_HISTORY(historyPath)

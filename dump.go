@@ -15,11 +15,8 @@ import (
 
 // Dump
 const (
-	DumpDebugInfo  = uint8(1)
-	DumpEndianBig  = uint8(2)
-	DumpEndianLil  = uint8(4)
-	DumpEndianNat  = uint8(6)
-	DumpEndianMask = uint8(6)
+	DumpDebugInfo = uint8(1)
+	DumpStatic    = uint8(2)
 )
 
 // DumpIrep Go implementation
@@ -66,7 +63,7 @@ func (mrb *MrbState) ReadIrepBuf(buffer []byte) (MrbIrep, error) {
 
 // ReadIrepFile read irep from file
 func (mrb *MrbState) ReadIrepFile(fileName string) (MrbIrep, error) {
-	data, err := ioutil.ReadFile(fileName)
+	data, err := os.ReadFile(fileName)
 	if err != nil {
 		return MrbIrep{nil, mrb}, err
 	}
@@ -88,7 +85,7 @@ func (mrb *MrbState) LoadIrepFile(filename string) (Value, error) {
 
 // LoadIrepFileCxt irep load from file with mrbc context
 func (mrb *MrbState) LoadIrepFileCxt(filename string, context *MrbcContext) (Value, error) {
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return mrb.NilValue(), err
 	}
@@ -96,20 +93,18 @@ func (mrb *MrbState) LoadIrepFileCxt(filename string, context *MrbcContext) (Val
 	// C.mrb_load_irep_file_cxt() is never called
 }
 
-
 // dump/load error codes
 //
 // NOTE: MRB_DUMP_GENERAL_FAILURE is caused by
-//unspecified issues like malloc failed.
+// unspecified issues like malloc failed.
 const (
 	MrbDumpOK                = 0
 	MrbDumpGeneralFailure    = -1
 	MrbDumpWriteFault        = -2
 	MrbDumpReadFault         = -3
-	MrbDumpCRCError          = -4
-	MrbDumpInvalidFileHeader = -5
-	MrbDumpInvalidIrep       = -6
-	MrbDumpInvalidArgument   = -7
+	MrbDumpInvalidFileHeader = -4
+	MrbDumpInvalidArgument   = -6
+	MrbDumpDebugInfo         = 1
 )
 
 // MrbDumpNullSymLen is null symbol length
@@ -118,12 +113,13 @@ const MrbDumpNullSymLen = 0xFFFF
 // Rite Binary File header
 const (
 	RiteBinaryIdent     = "RITE"
-	RiteBinaryIdentLil  = "ETIR"
-	RiteBinaryFormatVer = "0006"
+	RiteBinaryMajorVer  = "03"
+	RiteBinaryMinorVer  = "00"
+	RiteBinaryFormatVer = RiteBinaryMajorVer + RiteBinaryMinorVer
 	RiteCompilerName    = "MATZ"
 	RiteCompilerVersion = "0000"
 
-	RiteVMVer = "0002"
+	RiteVMVer = "0300"
 
 	RiteBinaryEOF         = "END\x00"
 	RiteSectionIrepIdent  = "IREP"
@@ -140,8 +136,8 @@ const MrbDumpAlignment = 4 //sizeof(uint32_t)
 // RiteBinaryHeader RITE format binary header
 type RiteBinaryHeader struct {
 	BinaryIdent     [4]byte /* Binary Identifier */
-	BinaryVersion   [4]byte /* Binary Format Version */
-	BinaryCrc       [2]byte /* Binary CRC */
+	MajorVersion    [2]byte /* Binary Format Major Version */
+	MinorVersion    [2]byte /* Binary Format Minor Version */
 	BinarySize      [4]byte /* Binary Size */
 	CompilerName    [4]byte /* Compiler name */
 	CompilerVersion [4]byte
@@ -177,114 +173,36 @@ type RiteBinaryFooter struct {
 	RiteSectionHeader
 }
 
-// BigEndianP endian check, GO version borrowed from Go Tensorflow idea
-func BigEndianP() bool {
-	buf := [2]byte{}
-	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
-
-	switch buf {
-	case [2]byte{0xCD, 0xAB}:
-		return false
-	case [2]byte{0xAB, 0xCD}:
-		return true
-	default:
-		panic("Could not determine endianness")
-	}
-}
-
-func dumpBigendianP(flags uint8) bool {
-	switch flags & DumpEndianNat {
-	case DumpEndianBig:
-		return true
-	case DumpEndianLil:
-		return false
-	case DumpEndianNat:
-		return BigEndianP()
-	default:
-		return BigEndianP()
-	}
-}
-
-// Byte order enum
-const (
-	FlagByteOrderNative   = 2
-	FlagByteOrderNoNative = 0
-)
-
-func dumpFlags(flags, native uint8) uint8 {
-	if native == FlagByteOrderNative {
-		if (flags & DumpEndianNat) == 0 {
-			return (flags & DumpDebugInfo) | DumpEndianNat
-		}
-		return flags
-	}
-	if (flags & FlagByteOrderNative) == 0 {
-		return (flags & DumpDebugInfo) | DumpEndianBig
-	}
-	return flags
-}
-
 // DumpIrepBinary dumps IREP to IO writer
 func (mrb *MrbState) DumpIrepBinary(irep MrbIrep, flags uint8, f io.Writer) (int, error) {
-	return mrb.DumpIrep(irep, dumpFlags(flags, FlagByteOrderNoNative), f)
-	// C.mrb_dump_irep_binary() is neve called
+	return mrb.DumpIrep(irep, flags, f)
+	// C.mrb_dump_irep_binary() is never called
 }
 
 // DumpIrepCFunc dumps IREP as C function
-func (mrb *MrbState) DumpIrepCFunc(irep MrbIrep, flags uint8, f *os.File, initname string) (int, error) {
-	cmode := C.CString("wb")
-	defer C.free(unsafe.Pointer(cmode))
-	init := C.CString(initname)
-	defer C.free(unsafe.Pointer(init))
-	file := C.fdopen(C.int(f.Fd()), cmode)
-	defer C.fclose(file)
-
-	ret := int(C.mrb_dump_irep_cfunc(mrb.p, irep.p, C.uchar(flags), file, init))
-	if ret != MrbDumpOK {
-		return ret, fmt.Errorf("dumping MrbIrep error. Code %v", ret)
-	}
-
-	return ret, nil
-}
-
-// DumpIrepCFunc2 dumps IREP as C function
-func (mrb *MrbState) DumpIrepCFunc2(irep MrbIrep, flags uint8, f io.Writer, initname string) (int, error) {
-	if initname == "" {
+func (mrb *MrbState) DumpIrepCFunc(irep MrbIrep, flags uint8, f io.Writer, initName string) (int, error) {
+	if initName == "" {
 		return MrbDumpInvalidArgument, fmt.Errorf("invalid argument, missing init name")
 	}
 
 	data := make([]byte, 0, 512)
 	buf := bytes.NewBuffer(data)
 
-	result, err := mrb.DumpIrep(irep, dumpFlags(flags, FlagByteOrderNative), buf)
+	result, err := mrb.DumpIrep(irep, flags, buf)
 	if err != nil {
 		return result, err
 	}
 
-	var warning string
-
-	if !dumpBigendianP(flags) {
-		warning = "/* dumped in little endian order.\n" +
-			"   use `mrbc -E` option for big endian CPU. */\n"
-	} else {
-		warning = "/* dumped in big endian order.\n" +
-			"   use `mrbc -e` option for better performance on little endian CPU. */\n"
+	staticExtern := "#ifdef __cplusplus\nextern\n#endif"
+	if (flags & DumpStatic) != 0 {
+		staticExtern = "static"
 	}
 
 	_, err = fmt.Fprintf(f,
-		"%v"+
-			"#include <stdint.h>\n"+
-			"#ifdef __cplusplus\n"+
-			"extern const uint8_t %v[];\n"+
-			"#endif\n"+
-			"const uint8_t\n"+
-			"#if defined __GNUC__\n"+
-			"__attribute__((aligned(%v)))\n"+
-			"#elif defined _MSC_VER\n"+
-			"__declspec(align(%v))\n"+
-			"#endif\n"+
-			"%v[] = {",
-		warning, initname, MrbDumpAlignment, MrbDumpAlignment, initname)
+		"#include <stdint.h>\n"+
+			"%v\n"+
+			"const uint8_t %v[] = {",
+		staticExtern, initName)
 
 	if err != nil {
 		return MrbDumpWriteFault, err

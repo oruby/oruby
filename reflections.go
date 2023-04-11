@@ -102,7 +102,7 @@ func initGoValue(classType reflect.Type) MrbFuncT {
 	return func(mrb *MrbState, self Value) MrbValue {
 		argValue := mrb.GetArgsFirst()
 
-		if argValue.Type() == MrbTTData {
+		if argValue.Type() == MrbTTCData {
 			in := mrb.DataGetInterface(argValue)
 			argType := reflect.TypeOf(in)
 			if (argType != nil) && (argType == classType) {
@@ -124,7 +124,7 @@ func initGo(classType reflect.Type, fn reflect.Value) MrbFuncT {
 		// Special constructor - from go pointer
 		if argc == 1 {
 			argValue := args.Item(0)
-			if argValue.Type() == MrbTTData {
+			if argValue.Type() == MrbTTCData {
 				in := mrb.DataGetInterface(argValue)
 				argType := reflect.TypeOf(in)
 				if (argType != nil) && (argType == classType) {
@@ -149,7 +149,7 @@ func initGo(classType reflect.Type, fn reflect.Value) MrbFuncT {
 			return mrb.Raise(mrb.ERuntimeError(), "constructor failed to return Go value")
 		}
 
-		// Set object as MrbTTData, with Data reference to Go object interface
+		// Set object as MrbTTCData, with Data reference to Go object interface
 		mrb.DataSetInterface(self, result[0].Interface())
 		return afterInit(mrb, self)
 	}
@@ -188,7 +188,7 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 	}
 
 	// Set klass type as RData
-	MrbSetInstanceTT(c, MrbTTData)
+	MrbSetInstanceTT(c, MrbTTCData)
 
 	// Connect with Go world
 	c.mrb.Lock()
@@ -221,7 +221,7 @@ func (c RClass) AttachType(zeroType interface{}) {
 		}
 	}
 
-	MrbSetInstanceTT(c, MrbTTData)
+	MrbSetInstanceTT(c, MrbTTCData)
 
 	// Connect with Go world
 	c.mrb.Lock()
@@ -234,7 +234,8 @@ func (c RClass) AttachType(zeroType interface{}) {
 // interface returned from constructor.
 //
 // Underlying Go type can be retreived from custom methods with
-//     goSelf := mrb.DataGetInterface(self)
+//
+//	goSelf := mrb.DataGetInterface(self)
 //
 // Constuctor must be a function returning pointer to Go type,
 // or pointer to Go type.
@@ -416,7 +417,7 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 			_, err = mrb.Funcall(o, unmarshalSym, vel.Interface())
 			return err
 		}
-	case MrbTTData:
+	case MrbTTCData:
 		{
 			data := reflect.ValueOf(mrb.Data(o))
 			if velType == data.Type() {

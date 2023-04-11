@@ -27,7 +27,7 @@ func (e REnv) IsNil() bool { return e.p == nil }
 func (e REnv) Len() int { return int(C._MRB_ENV_LEN(e.p)) }
 
 // Unshare stack unshares Env
-func (e REnv) Unshare() { C.mrb_env_unshare(e.mrb.p, e.p) }
+func (e REnv) Unshare() { C.mrb_env_unshare(e.mrb.p, e.p, true) }
 
 // Stack stack unshares Env
 func (e REnv) Stack(index int) Value {
@@ -41,7 +41,7 @@ func (e REnv) Stack(index int) Value {
 
 // EnvUnshare unshares Env
 func (mrb *MrbState) EnvUnshare(env REnv) {
-	C.mrb_env_unshare(mrb.p, env.p)
+	C.mrb_env_unshare(mrb.p, env.p, true)
 }
 
 // SetEnv creates and sets new Env object with stack Values
@@ -165,7 +165,7 @@ func (p RProc) SetTargetClass(c RClass) {
 
 // Load procedure
 func (p RProc) Load() Value {
-	return Value{ C.mrb_load_proc(p.mrb.p, p.p) }
+	return Value{C.mrb_load_proc(p.mrb.p, p.p)}
 }
 
 // MrbAspecReq required
@@ -259,11 +259,6 @@ func (mrb *MrbState) ProcNewGofunc(f interface{}) RProc {
 	return proc
 }
 
-// ClosureNew creates new closure from irep
-func (mrb *MrbState) ClosureNew(irep MrbIrep) RProc {
-	return RProc{C.mrb_closure_new(mrb.p, irep.p), mrb}
-}
-
 // ClosureNewCfunc creates new closure from Go function
 func (mrb *MrbState) ClosureNewCfunc(f MrbFuncT, nlocals int32) RProc {
 	p := C.mrb_closure_new_cfunc(mrb.p, (*[0]byte)(C.set_mrb_proc_callback), C.int(nlocals))
@@ -271,17 +266,6 @@ func (mrb *MrbState) ClosureNewCfunc(f MrbFuncT, nlocals int32) RProc {
 	mrb.mrbProcs[unsafe.Pointer(p)] = f
 	mrb.Unlock()
 	return RProc{p, mrb}
-}
-
-// ProcCopy copies RProc value in oruby state
-func (mrb *MrbState) ProcCopy(a, b RProc) {
-	C.mrb_proc_copy(a.p, b.p)
-
-	if C._MRB_PROC_CFUNC_P(a.p) != 0 {
-		mrb.Lock()
-		mrb.mrbProcs[unsafe.Pointer(b.p)] = mrb.mrbProcs[unsafe.Pointer(a.p)]
-		mrb.Unlock()
-	}
 }
 
 // ProcNewCFuncWithEnv creates function with attached env
@@ -334,7 +318,7 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 	return RProc{proc, mrb}, ArgsReq(v.Type().NumIn())
 }
 
-// LoadProc loads and executes proc 
+// LoadProc loads and executes proc
 func (mrb *MrbState) LoadProc(proc RProc) Value {
-	return Value{ C.mrb_load_proc(mrb.p, proc.p) }
+	return Value{C.mrb_load_proc(mrb.p, proc.p)}
 }

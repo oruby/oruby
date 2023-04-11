@@ -1,8 +1,6 @@
 package file
 
 import (
-	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/assert"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -11,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/assert"
 )
 
 func statTest(t *testing.T, mrb *oruby.MrbState, f string) oruby.Value {
@@ -41,8 +42,8 @@ func statTemp(t *testing.T) (*oruby.MrbState, os.FileInfo, func()) {
 	mrb.SetGV("$tmp_name", f.Name())
 
 	return mrb, stat, func() {
-		_= f.Close()
-		_= os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		mrb.Close()
 	}
 }
@@ -53,7 +54,7 @@ func Test_statInit(t *testing.T) {
 
 	ret, err := mrb.Eval(`File::Stat.new("testdata/test.txt")`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 
 	f, err := ioutil.TempFile("", "st*.tmp")
 	assert.NilError(t, err)
@@ -62,7 +63,7 @@ func Test_statInit(t *testing.T) {
 
 	ret, err = mrb.Eval("File::Stat.new($f)")
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 }
 
 func Test_statComp(t *testing.T) {
@@ -72,16 +73,16 @@ func Test_statComp(t *testing.T) {
 	f1, err := ioutil.TempFile("", "stt*.tmp")
 	assert.NilError(t, err)
 
-	<-time.After(1*time.Second)
+	<-time.After(1 * time.Second)
 
 	f2, err := ioutil.TempFile("", "stt*.tmp")
 	assert.NilError(t, err)
 
 	defer func() {
-		_= f1.Close()
-		_= f2.Close()
-		_= os.Remove(f1.Name())
-		_= os.Remove(f1.Name())
+		_ = f1.Close()
+		_ = f2.Close()
+		_ = os.Remove(f1.Name())
+		_ = os.Remove(f1.Name())
 	}()
 
 	mrb.SetGV("$f1", f1)
@@ -99,7 +100,7 @@ func Test_statAtime(t *testing.T) {
 
 	ret, err := mrb.Eval(`File.stat("testdata/test.txt").atime`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 	_, ok := mrb.Data(ret).(time.Time)
 	assert.Equal(t, ok, true)
 }
@@ -114,7 +115,7 @@ func Test_statBirthtime(t *testing.T) {
 
 	ret, err := mrb.Eval(`File.stat("testdata/test.txt").birthtime`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 	_, ok := mrb.Data(ret).(time.Time)
 	assert.Equal(t, ok, true)
 }
@@ -179,7 +180,7 @@ func Test_statCtime(t *testing.T) {
 
 	ret, err := mrb.Eval(`File.stat("testdata/test.txt").ctime`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 	_, ok := mrb.Data(ret).(time.Time)
 	assert.Equal(t, ok, true)
 }
@@ -282,15 +283,15 @@ func Test_statFtype(t *testing.T) {
 		assert.Equal(t, ftype("/dev/tty"), "characterSpecial")
 
 		file := mrb.ClassGet("File")
-		fifo := filepath.Join(os.TempDir(), "fifo_test_" + strconv.Itoa(time.Now().Nanosecond()))
+		fifo := filepath.Join(os.TempDir(), "fifo_test_"+strconv.Itoa(time.Now().Nanosecond()))
 
-		ret := file.Call("mkfifo",  fifo)
+		ret := file.Call("mkfifo", fifo)
 		assert.NilError(t, mrb.Err())
 		assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
 		assert.Equal(t, ret.Int(), 0)
 		assert.Equal(t, ftype(fifo), "fifo")
 
-		_= os.Remove("fifo")
+		_ = os.Remove("fifo")
 
 		if runtime.GOOS == "darwin" {
 			assert.Equal(t, ftype("/dev/disk0"), "blockSpecial")
@@ -301,13 +302,13 @@ func Test_statFtype(t *testing.T) {
 	tmp, err := ioutil.TempFile("", "ft*.tmp")
 	assert.NilError(t, err)
 	name := tmp.Name()
-	_= tmp.Close()
+	_ = tmp.Close()
 	err = os.Symlink(name, name+"2")
 	assert.NilError(t, err)
-	assert.Equal(t,ftype(name+"2"),"link")
+	assert.Equal(t, ftype(name+"2"), "link")
 
-	_= os.Remove(name+"2")
-	_= os.Remove(name)
+	_ = os.Remove(name + "2")
+	_ = os.Remove(name)
 }
 
 func Test_statGid(t *testing.T) {
@@ -356,23 +357,23 @@ func Test_statInspect(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTString)
 	s := ret.String()
-	assert.Expect(t, strings.HasPrefix(s,"#<File::Stat dev="), "prefix")
-	assert.Expect(t, strings.Contains(s,"ino="), "")
-	assert.Expect(t, strings.Contains(s,"mode="), "")
-	assert.Expect(t, strings.Contains(s,"nlink="), "")
-	assert.Expect(t, strings.Contains(s,"uid="), "")
-	assert.Expect(t, strings.Contains(s,"gid="), "")
-	assert.Expect(t, strings.Contains(s,"rdev="), "")
-	assert.Expect(t, strings.Contains(s,"size="), "")
-	assert.Expect(t, strings.Contains(s,"blksize="), "")
-	assert.Expect(t, strings.Contains(s,"blocks="), "")
-	assert.Expect(t, strings.Contains(s,"atime="), "")
-	assert.Expect(t, strings.Contains(s,"mtime="), "")
-	assert.Expect(t, strings.Contains(s,"ctime="), "")
+	assert.Expect(t, strings.HasPrefix(s, "#<File::Stat dev="), "prefix")
+	assert.Expect(t, strings.Contains(s, "ino="), "")
+	assert.Expect(t, strings.Contains(s, "mode="), "")
+	assert.Expect(t, strings.Contains(s, "nlink="), "")
+	assert.Expect(t, strings.Contains(s, "uid="), "")
+	assert.Expect(t, strings.Contains(s, "gid="), "")
+	assert.Expect(t, strings.Contains(s, "rdev="), "")
+	assert.Expect(t, strings.Contains(s, "size="), "")
+	assert.Expect(t, strings.Contains(s, "blksize="), "")
+	assert.Expect(t, strings.Contains(s, "blocks="), "")
+	assert.Expect(t, strings.Contains(s, "atime="), "")
+	assert.Expect(t, strings.Contains(s, "mtime="), "")
+	assert.Expect(t, strings.Contains(s, "ctime="), "")
 	if runtime.GOOS == "darwin" {
-		assert.Expect(t, strings.Contains(s,"birthtime="), "")
+		assert.Expect(t, strings.Contains(s, "birthtime="), "")
 	}
-	assert.Expect(t, strings.HasSuffix(s,">"), "")
+	assert.Expect(t, strings.HasSuffix(s, ">"), "")
 }
 
 func Test_statMode(t *testing.T) {
@@ -402,7 +403,7 @@ func Test_statMtime(t *testing.T) {
 
 	ret, err := mrb.Eval(`File.stat("testdata/test.txt").mtime`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 	_, ok := mrb.Data(ret).(time.Time)
 	assert.Equal(t, ok, true)
 
@@ -413,7 +414,7 @@ func Test_statMtime(t *testing.T) {
 	mrb.SetGV("$f", f)
 	ret, err = mrb.Eval(`$f.stat.mtime`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 	ct, ok := mrb.Data(ret).(time.Time)
 	assert.Equal(t, ok, true)
 
@@ -532,7 +533,7 @@ func Test_statSize(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
 
-	s,err := ioutil.ReadFile("testdata/test.txt")
+	s, err := ioutil.ReadFile("testdata/test.txt")
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Int(), len(s))
 }
@@ -637,5 +638,3 @@ func Test_statIsWritableReal(t *testing.T) {
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Type(), oruby.MrbTTTrue)
 }
-
-

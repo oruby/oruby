@@ -1,12 +1,13 @@
 package file
 
 import (
-	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/assert"
 	"io/ioutil"
 	"os"
 	"runtime"
 	"testing"
+
+	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/assert"
 )
 
 func Test_dirOpen(t *testing.T) {
@@ -15,7 +16,7 @@ func Test_dirOpen(t *testing.T) {
 
 	ret, err := mrb.Eval("Dir.open 'testdata'")
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 
 	ret, err = mrb.Eval("Dir.open('testdata') {|dir| dir.path }")
 	assert.NilError(t, err)
@@ -86,7 +87,7 @@ func Test_dirInitialize(t *testing.T) {
 
 	ret, err := mrb.Eval("Dir.open 'testdata'")
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 }
 
 func Test_dirFileno(t *testing.T) {
@@ -261,7 +262,7 @@ func Test_dirSeek(t *testing.T) {
 
 	ret := dir.Call("seek", 0)
 	assert.NilError(t, mrb.Err())
-	assert.Equal(t, ret.Type(), oruby.MrbTTData)
+	assert.Equal(t, ret.Type(), oruby.MrbTTCData)
 
 	ret = dir.Call("tell")
 	assert.NilError(t, mrb.Err())
@@ -387,7 +388,7 @@ func Test_dirMkdir(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	dir, err := ioutil.TempDir("","")
+	dir, err := ioutil.TempDir("", "")
 	assert.NilError(t, err)
 	defer os.RemoveAll(dir)
 	mrb.SetGV("$dir", dir)
@@ -409,7 +410,7 @@ func Test_dirRmdir(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	dir, err := ioutil.TempDir("","")
+	dir, err := ioutil.TempDir("", "")
 	assert.NilError(t, err)
 	defer os.RemoveAll(dir)
 	mrb.SetGV("$dir", dir)
@@ -439,7 +440,6 @@ func Test_dirHome(t *testing.T) {
 	assert.Equal(t, ret.String(), home)
 }
 
-
 func Test_dirExist(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -461,7 +461,7 @@ func Test_dirIsEmpty(t *testing.T) {
 	assert.NilError(t, err)
 	assert.False(t, ret.Bool())
 
-	dir, err := ioutil.TempDir("","")
+	dir, err := ioutil.TempDir("", "")
 	assert.NilError(t, err)
 	defer os.RemoveAll(dir)
 	mrb.SetGV("$dir", dir)
@@ -494,10 +494,10 @@ func Test_dirGlob(t *testing.T) {
 
 	doGlob("testdata/test.tx?", "testdata/test.txt")
 	doGlob("testdata/*", "testdata/test.txt", "testdata/zero.txt")
-	doGlob("testdata/*.[a-z][a-z][a-z]","testdata/test.txt", "testdata/zero.txt")
-	doGlob("testdata/{test,zero}.txt","testdata/test.txt", "testdata/zero.txt")
-	doGlob("**","testdata")
-	doGlob("**/testdata","testdata")
+	doGlob("testdata/*.[a-z][a-z][a-z]", "testdata/test.txt", "testdata/zero.txt")
+	doGlob("testdata/{test,zero}.txt", "testdata/test.txt", "testdata/zero.txt")
+	doGlob("**", "testdata")
+	doGlob("**/testdata", "testdata")
 	doGlob("**/testdata/**/*.txt",
 		"testdata/zero.txt",
 		"testdata/test.txt",

@@ -21,7 +21,7 @@ func MrbFreeContext(mrb *MrbState, c *MrbContext) {
 
 // MrbObjectDeadP checks if object is dead
 func MrbObjectDeadP(mrb *MrbState, o RBasic) bool {
-	return C.mrb_object_dead_p(mrb.p, o.p) != 0
+	return C.mrb_object_dead_p(mrb.p, o.p) == true
 }
 
 // IsDead checks if value is garbage collected. Values that are not inherited from
@@ -66,16 +66,16 @@ func (mrb *MrbState) ObjspaceEachObjects(f MrbEachObjectCallbackT) {
 }
 
 // GCIterating flag signals if GC is iterating
-func (mrb *MrbState) GCIterating() bool { return C._gc_iterating(mrb.p) != 0 }
+func (mrb *MrbState) GCIterating() bool { return C._gc_iterating(mrb.p) != false }
 
 // GCFull flag is set when performing full GC
-func (mrb *MrbState) GCFull() bool { return C._gc_full(mrb.p) != 0 }
+func (mrb *MrbState) GCFull() bool { return C._gc_full(mrb.p) != false }
 
 // GCGenerational flag is set when GC is generational mode
-func (mrb *MrbState) GCGenerational() bool { return C._gc_generational(mrb.p) != 0 }
+func (mrb *MrbState) GCGenerational() bool { return C._gc_generational(mrb.p) != false }
 
 // GCOutOfMemory is set when GC encounters OutOfMemory error
-func (mrb *MrbState) GCOutOfMemory() bool { return C._gc_out_of_memory(mrb.p) != 0 }
+func (mrb *MrbState) GCOutOfMemory() bool { return C._gc_out_of_memory(mrb.p) != false }
 
 // GCState returns current GC state
 func (mrb *MrbState) GCState() int { return int(mrb.p.gc.state) }
@@ -84,7 +84,7 @@ func (mrb *MrbState) GCState() int { return int(mrb.p.gc.state) }
 func (mrb *MrbState) GCLiveObjectCount() uint { return uint(mrb.p.gc.live) }
 
 // GCDisabled is set when GC is disabled
-func (mrb *MrbState) GCDisabled() bool { return C._gc_disabled(mrb.p) != 0 }
+func (mrb *MrbState) GCDisabled() bool { return C._gc_disabled(mrb.p) != false }
 
 // GCEnable enables GC
 func (mrb *MrbState) GCEnable() { C._gc_set_disabled(mrb.p, iifmb(false)) }

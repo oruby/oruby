@@ -11,7 +11,7 @@ import (
 type RClassPtr struct{ p *C.struct_RClass }
 
 // MrbMethodT oruby method pointer
-//type MrbMethodT = uintptr
+// type MrbMethodT = uintptr
 type MrbMethodT = struct{ m C.mrb_method_t }
 
 // RClass struct for oruby class
@@ -89,16 +89,6 @@ func (mrb *MrbState) DefineModuleID(id MrbSym) RClass {
 	return RClass{C.mrb_define_module_id(mrb.p, C.mrb_sym(id)), mrb}
 }
 
-// VMDefineClass define VM class
-func (mrb *MrbState) VMDefineClass(v1, v2 MrbValue, id MrbSym) RClass {
-	return RClass{C.mrb_vm_define_class(mrb.p, v1.Value().v, v2.Value().v, C.mrb_sym(id)), mrb}
-}
-
-// VMDefineModule define VM module
-func (mrb *MrbState) VMDefineModule(v MrbValue, id MrbSym) RClass {
-	return RClass{C.mrb_vm_define_module(mrb.p, v.Value().v, C.mrb_sym(id)), mrb}
-}
-
 // DefineMethodRaw define method via symbol and RProc
 func (mrb *MrbState) DefineMethodRaw(c RClass, id MrbSym, methodID MrbMethodT) {
 	C.mrb_define_method_raw(mrb.p, c.p, C.mrb_sym(id), methodID.m)
@@ -138,7 +128,7 @@ func (mrb *MrbState) DefineMethodFuncID(c RClass, mid MrbSym, f interface{}) {
 
 // DefineClassFuncID define class func
 func (mrb *MrbState) DefineClassFuncID(klass RClass, mid MrbAspec, f interface{}) {
-// TODO: DefineClassFuncID
+	// TODO: DefineClassFuncID
 }
 
 // AliasMethod creates method alias
@@ -168,10 +158,10 @@ func (mrb *MrbState) MethodSearch(cl RClass, id MrbSym) (MrbMethodT, error) {
 // MethodExists find method using symbol, and error if not found
 func (mrb *MrbState) MethodExists(cl RClass, id MrbSym) bool {
 	m := mrb.MethodSearchVM(cl, id)
-	return C._MRB_METHOD_UNDEF_P(C.mrb_method_t(m.m)) == 0
+	return C._MRB_METHOD_UNDEF_P(C.mrb_method_t(m.m)) == false
 }
 
 // ClassReal returns real class
 func (mrb *MrbState) ClassReal(cl RClass) RClass {
-	return RClass{C.mrb_class_real(cl.p), mrb }
+	return RClass{C.mrb_class_real(cl.p), mrb}
 }

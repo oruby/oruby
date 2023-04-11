@@ -55,12 +55,12 @@ func (obj RObject) Clone() RObject {
 
 // RespondTo checks if object responds to method id
 func (obj RObject) RespondTo(mid MrbSym) bool {
-	return C.mrb_respond_to(obj.mrb.p, obj.v, C.mrb_sym(mid)) != 0
+	return C.mrb_respond_to(obj.mrb.p, obj.v, C.mrb_sym(mid)) != false
 }
 
 // IsInstanceOf checks if oruby object is direct instance of class
 func (obj RObject) IsInstanceOf(klass RClass) bool {
-	return C.mrb_obj_is_instance_of(obj.mrb.p, obj.v, klass.p) != 0
+	return C.mrb_obj_is_instance_of(obj.mrb.p, obj.v, klass.p) != false
 }
 
 // Call oruby function, return Go interface,
@@ -80,7 +80,7 @@ func (obj RObject) Funcall(name string, args ...interface{}) (RObject, error) {
 
 // InstanceVariables list
 func (obj RObject) InstanceVariables() RArray {
-	return ary(C.mrb_obj_instance_variables(obj.mrb.p, obj.v), obj.mrb)
+	return obj.Call("instance_variables").RArray()
 }
 
 // IVGet get instance variable
@@ -107,7 +107,7 @@ func (obj RObject) GetIV(name string) RObject {
 
 // IVDefined instance variable defined
 func (obj RObject) IVDefined(sym MrbSym) bool {
-	return C.mrb_iv_defined(obj.mrb.p, obj.v, C.mrb_sym(sym)) != 0
+	return C.mrb_iv_defined(obj.mrb.p, obj.v, C.mrb_sym(sym)) != false
 }
 
 // IVRemove remove instance variable
@@ -215,14 +215,22 @@ func TypeName(v MrbValue) string {
 		return "Exception"
 	case MrbTTEnv:
 		return "Env"
-	case MrbTTData:
-		return "Data"
+	case MrbTTCData:
+		return "CData"
 	case MrbTTFiber:
 		return "Fiber"
+	case MrbTTStruct:
+		return "Struct"
 	case MrbTTIStruct:
 		return "IStruct"
 	case MrbTTBreak:
 		return "Break"
+	case MrbTTComplex:
+		return "Complex"
+	case MrbTTRational:
+		return "Rational"
+	case MrbTTBigInt:
+		return "Bigint"
 	default:
 		return fmt.Sprintf("(unknown type %v)", v.Type())
 	}

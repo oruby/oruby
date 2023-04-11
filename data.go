@@ -84,7 +84,7 @@ func (mrb *MrbState) DataCheckType(obj MrbValue, dtype MrbDataType) {
 
 // DataGetPtr retreives pointer from RData
 func (mrb *MrbState) DataGetPtr(obj MrbValue, dtype MrbDataType) (uintptr, error) {
-	if obj.Type() != MrbTTData {
+	if obj.Type() != MrbTTCData {
 		return uintptr(0), fmt.Errorf("")
 	}
 

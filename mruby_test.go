@@ -18,7 +18,7 @@ type TestStruct struct {
 
 var testStruct = TestStruct{&sand, 1}
 
-//func NewInnerTestStruct() *TestStruct { return &TestStruct{&sand, Inner{}} }
+// func NewInnerTestStruct() *TestStruct { return &TestStruct{&sand, Inner{}} }
 func NewTestStruct() *TestStruct                 { return &TestStruct{&sand, 2} }
 func (m *TestStruct) PublicMethod() uint         { return *m.PublicValue }
 func (m *TestStruct) PublicWriterMethod(s uint)  { *m.PublicValue += s }
@@ -131,7 +131,7 @@ func TestValue(t *testing.T) {
 
 	// Structs - other
 	mv := mrb.Value(testStruct)
-	Expect(t, MrbType(mv) == MrbTTData, "Expecting Data mrb value, got MRB_TT %d", MrbType(mv))
+	Expect(t, MrbType(mv) == MrbTTCData, "Expecting Data mrb value, got MRB_TT %d", MrbType(mv))
 	Expect(t, mrb.ObjIsKindOf(mv, mrb.ObjectClass()), "Expecting Object class, got %v", mrb.ClassName(mrb.ClassOf(mv)))
 	ExpectEql(t, mrb.String(mrb.Call(mrb.ClassOf(mv), "to_s")), "Object")
 }
@@ -161,7 +161,7 @@ func TestTime(t *testing.T) {
 	// Structs - time.Time
 	tt := time.Now()
 	tv := mrb.Value(tt)
-	Expect(t, MrbType(tv) == MrbTTData, "Expecting Time as DATA mrb value, got MRB_TT %d", MrbType(tv))
+	Expect(t, MrbType(tv) == MrbTTCData, "Expecting Time as DATA mrb value, got MRB_TT %d", MrbType(tv))
 	tvc := mrb.Intf(tv).(time.Time)
 
 	ExpectEql(t, tvc.Day(), tt.Day())

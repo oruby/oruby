@@ -4,7 +4,7 @@ package oruby
 import "C"
 import (
 	"errors"
-	"io/ioutil"
+	"os"
 	"runtime"
 	"unsafe"
 )
@@ -18,9 +18,9 @@ type MrbcContext struct {
 // set option helper
 func iifmb(v bool) C.mrb_bool {
 	if v {
-		return C.mrb_bool(1)
+		return C.mrb_bool(true)
 	}
-	return C.mrb_bool(0)
+	return C.mrb_bool(false)
 }
 
 // CaptureErrors returns if errors are captured
@@ -64,7 +64,12 @@ func (c *MrbcContext) Filename(filename string) string {
 
 // PartialHook set parser hook
 func (c *MrbcContext) PartialHook(partialHook PartialHookF) {
-	c.mrb.setHook(unsafe.Pointer(c.p), partialHook)
+	C.mrbc_context_free(c.mrb.p, c.p)
+}
+
+// CleanupLocalVariables clears local variables
+func (c *MrbcContext) CleanupLocalVariables() {
+	C.mrbc_cleanup_local_variables(c.mrb.p, c.p)
 }
 
 // LoadFile loads file into oruby context
@@ -111,6 +116,11 @@ func go_partial_hook_callback(p *C.struct_mrb_parser_state) C.int {
 // MrbcContextPartialHook set parser hook
 func (mrb *MrbState) MrbcContextPartialHook(cxt *MrbcContext, partialHook PartialHookF) {
 	mrb.setHook(unsafe.Pointer(cxt.p), partialHook)
+}
+
+// MrbcContextCleanupLocalVariables clear local variables
+func (mrb *MrbState) MrbcContextCleanupLocalVariables(cxt *MrbcContext) {
+	C.mrbc_cleanup_local_variables(mrb.p, cxt.p)
 }
 
 // MrbAstNode AST node structure
@@ -237,22 +247,18 @@ func (p MrbParserState) WarnBuffer(i int) MrbParserMessage {
 		C.GoString(p.p.warn_buffer[i].message)}
 }
 
-// LexStrterm node
-func (p MrbParserState) LexStrterm() *MrbAstNode { return astNode(p.p.lex_strterm) }
-
-// AllHeredocs list of mrb_parser_heredoc_info
-func (p MrbParserState) AllHeredocs() *MrbAstNode { return astNode(p.p.all_heredocs) }
+// LexStrTerm check for unterminated string
+func (p MrbParserState) LexStrTerm() bool {
+	return p.p.lex_strterm != nil
+}
 
 // HeredocsFromNextline node
-func (p MrbParserState) HeredocsFromNextline() *MrbAstNode { return astNode(p.p.heredocs_from_nextline) }
+func (p MrbParserState) HeredocsFromNextline() *MrbAstNode {
+	return astNode(p.p.heredocs_from_nextline)
+}
 
 // ParsingHeredoc node
 func (p MrbParserState) ParsingHeredoc() *MrbAstNode { return astNode(p.p.parsing_heredoc) }
-
-// LexStrtermBeforeHeredoc node
-func (p MrbParserState) LexStrtermBeforeHeredoc() *MrbAstNode {
-	return astNode(p.p.lex_strterm_before_heredoc)
-}
 
 // Locals node from paser state
 func (p MrbParserState) Locals() *MrbAstNode { return astNode(p.p.locals) }
@@ -323,7 +329,7 @@ func (p MrbParserState) GetFilename(idx uint16) MrbSym {
 }
 
 func loadFile(fileName string) (string, error) {
-	data, err := ioutil.ReadFile(fileName)
+	data, err := os.ReadFile(fileName)
 	if err != nil {
 		return "", err
 	}
@@ -365,6 +371,11 @@ func (mrb *MrbState) GenerateCode(parser MrbParserState) (RProc, error) {
 	return RProc{p, mrb}, nil
 }
 
+// LoadExec loads and executes parser context, returning Value
+func (mrb *MrbState) LoadExec(parser MrbParserState, context *MrbcContext) Value {
+	return Value{C.mrb_load_exec(mrb.p, parser.p, context.p)}
+}
+
 // LoadFile loads file to oruby value
 func (mrb *MrbState) LoadFile(fileName string) (Value, error) {
 	s, err := loadFile(fileName)
@@ -389,7 +400,7 @@ func (mrb *MrbState) LoadString(s string) (Value, error) {
 
 // LoadFileCxt loads file into oruby context
 func (mrb *MrbState) LoadFileCxt(fileName string, context *MrbcContext) (Value, error) {
-	data, err := ioutil.ReadFile(fileName)
+	data, err := os.ReadFile(fileName)
 	if err != nil {
 		return mrb.NilValue(), err
 	}

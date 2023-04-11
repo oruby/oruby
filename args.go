@@ -207,27 +207,27 @@ func (mrb *MrbState) GetArgsBlock() RProc {
 // ScanArgs returns arguments passed to MrbFuncT function
 // via Go interface scan patern. Values must be a pointer to:
 //
-//   bool
-//   string
-//   int  [8,16,32,64]
-//   uint [8,16,32,64]
-//   float [32,64]
-//   map[string]interface{}
-//   map[interfaec{}]interface{}
-//   []string
-//   []interface
-//   []int
-//   []float64
-//   oruby.Value, MrbSym, RObject, RArray, RHash, RProc
+//	bool
+//	string
+//	int  [8,16,32,64]
+//	uint [8,16,32,64]
+//	float [32,64]
+//	map[string]interface{}
+//	map[interfaec{}]interface{}
+//	[]string
+//	[]interface
+//	[]int
+//	[]float64
+//	oruby.Value, MrbSym, RObject, RArray, RHash, RProc
 //
 // Function returns number of arguments passed to function.
 //
 // Example:
 //
-//   v1 := mrb.NilValue()    // oruby.Value
-//   v2 := "default string"  // string
-//   v3 := 3                 // int
-//   argc := mrb.ScanArgs(&v1, &v2, &v3)
+//	v1 := mrb.NilValue()    // oruby.Value
+//	v2 := "default string"  // string
+//	v3 := 3                 // int
+//	argc := mrb.ScanArgs(&v1, &v2, &v3)
 func (mrb *MrbState) ScanArgs(args ...interface{}) (int, Value) {
 	if len(args) == 0 {
 		return 0, Value{C._mrb_get_args_block(mrb.p)}
