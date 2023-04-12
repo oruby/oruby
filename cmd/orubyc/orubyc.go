@@ -203,12 +203,12 @@ func dumpFile(mrb *oruby.MrbState, wfp *os.File, outfile string, proc oruby.RPro
 	}
 
 	if args.initname != "" {
-		n, _ = mrb.DumpIrepCFunc(irep, uint8(args.flags), wfp, args.initname)
+		n, _ = mrb.DumpIrepCFunc(irep, args.flags, wfp, args.initname)
 		if n == oruby.MrbDumpInvalidArgument {
 			fmt.Printf("%v: invalid C language symbol name\n", args.initname)
 		}
 	} else {
-		n, _ = mrb.DumpIrepBinary(irep, uint8(args.flags), wfp)
+		n, _ = mrb.DumpIrepBinary(irep, args.flags, wfp)
 	}
 	if n != oruby.MrbDumpOK {
 		fmt.Printf("%v: error in mrb dump (%v) %d\n", args.prog, outfile, n)
