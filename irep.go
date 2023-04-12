@@ -151,8 +151,14 @@ func (mrb *MrbState) IrepDecref(irep MrbIrep) { C.mrb_irep_decref(mrb.p, irep.p)
 // IrepCutref cut reference form irep
 func (mrb *MrbState) IrepCutref(irep MrbIrep) { C.mrb_irep_cutref(mrb.p, irep.p) }
 
+// IrepRemoveLV removes local variables from irep
+func (mrb *MrbState) IrepRemoveLV(irep MrbIrep) { C.mrb_irep_remove_lv(mrb.p, irep.p) }
+
 // IsNil returns true if irep is empty
 func (irep MrbIrep) IsNil() bool { return irep.p == nil }
+
+// Free irep
+func (irep MrbIrep) Free() { C.mrb_irep_free(irep.mrb.p, irep.p) }
 
 // Incref increase reference to irep
 func (irep MrbIrep) Incref() { C.mrb_irep_incref(irep.mrb.p, irep.p) }
@@ -162,6 +168,9 @@ func (irep MrbIrep) Decref() { C.mrb_irep_decref(irep.mrb.p, irep.p) }
 
 // Cutref cut reference form irep
 func (irep MrbIrep) Cutref() { C.mrb_irep_cutref(irep.mrb.p, irep.p) }
+
+// RemoveLV removes local variables from irep
+func (irep MrbIrep) RemoveLV() { C.mrb_irep_remove_lv(irep.mrb.p, irep.p) }
 
 // NLocals returns number of local variables
 func (irep MrbIrep) NLocals() int {

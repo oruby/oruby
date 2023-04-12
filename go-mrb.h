@@ -256,8 +256,8 @@ static int  _mrbc_keep_lv(mrbc_context *c )                       { return c->ke
 static void _mrbc_set_keep_lv(mrbc_context *c, mrb_bool v)        { c->keep_lv = v; }
 static int  _mrbc_no_optimize(mrbc_context *c )                   { return c->no_optimize;  }
 static void _mrbc_set_no_optimize(mrbc_context *c, mrb_bool v)    { c->no_optimize = v; }
-//static int  _mrbc_on_eval(mrbc_context *c )                       { return c->on_eval;  }
-//static void _mrbc_set_on_eval(mrbc_context *c, mrb_bool v)        { c->on_eval = v; }
+static int  _mrbc_no_ext_ops(mrbc_context *c)                     { return c->no_ext_ops }
+static void _mrbc_set_no_ext_ops(mrbc_context *c, mrb_bool v)     { c->no_ext_ops = v  }
 
 // GC
 static mrb_bool _gc_iterating(mrb_state *mrb) { return mrb->gc.iterating; }

@@ -41,6 +41,9 @@ func (c *MrbcContext) NoExec() bool { return C._mrbc_no_exec(c.p) != 0 }
 // SetNoExec returns if NoExec is turned on or off
 func (c *MrbcContext) SetNoExec(b bool) { C._mrbc_set_no_exec(c.p, iifmb(b)) }
 
+func (c *MrbcContext) SetNoExtOps(b bool)   { C._mrbc_set_no_ext_ops(c.p, iifmb(b)) }
+func (c *MrbcContext) SetNoOptimize(b bool) { C._mrbc_set_no_optimize(c.p, iifmb(b)) }
+
 // MrbcContextNew create new context
 func (mrb *MrbState) MrbcContextNew() *MrbcContext {
 	return &MrbcContext{C.mrbc_context_new(mrb.p), mrb}

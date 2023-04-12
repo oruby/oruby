@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,21 +14,25 @@ import (
 // Extensions
 const (
 	RitebinExt = ".mrb"
-	CExt = ".c"
-	GoExt = ".go"
+	CExt       = ".c"
+	GoExt      = ".go"
 )
 
 type mrbcArgs struct {
-	idx         int
-	argv        []string
 	prog        string
 	outfile     string
 	initname    string
+	argv        []string
+	idx         int
+	dumpStruct  bool
 	checkSyntax bool
 	verbose     bool
 	removeLv    bool
+	noExtOps    bool
+	noOptimize  bool
 	flags       uint8
-	closer      func()
+
+	closer func()
 }
 
 func usage(name string) {
@@ -39,9 +43,11 @@ func usage(name string) {
 		"-v           print version number, then turn on verbose mode",
 		"-g           produce debugging information",
 		"-B<symbol>   binary <symbol> output in C language format",
-		"-e           generate little endian iseq data",
-		"-E           generate big endian iseq data",
+		"-S           dump C struct (requires -B)",
+		"-s           define <symbol> as static variable",
 		"--remove-lv  remove local variables",
+		"--no-ext-ops prohibit using OP_EXTs",
+		"--no-optimize disable peephole optimization",
 		"--verbose    run at verbose mode",
 		"--version    print the version",
 		"--copyright  print the copyright",
@@ -66,39 +72,32 @@ func getOutfilename(infile, ext string) string {
 	return infile[:len(infile)-2] + ext
 }
 
-func endianString() string {
-	if oruby.BigEndianP() {
-		return "big"
-	}
-	return "little"
-}
-
-func parseArgs(mrb *oruby.MrbState, args *mrbcArgs) bool {
+func parseArgs(mrb *oruby.MrbState, args *mrbcArgs) (bool, error) {
 	args.prog = os.Args[0]
-	flag.StringVar(&args.outfile, "o", "", "place the output into <outfile>")
-	flag.StringVar(&args.initname, "B", "", "binary <symbol> output in C language format")
 	flag.BoolVar(&args.checkSyntax, "c", false, "check syntax only")
-	flag.BoolVar(&args.removeLv, "remove-lv", false, "remove local variables")
+	flag.StringVar(&args.outfile, "o", "", "place the output into <outfile>")
 	v := flag.Bool("v", false, "print version number, then run in verbose mode")
+	debugInfo := flag.Bool("g", false, "produce debugging information")
+	flag.StringVar(&args.initname, "B", "", "binary <symbol> output in C language format")
+	flag.BoolVar(&args.dumpStruct, "S", false, "dump C struct (requires -B)")
+	dumpStatic := flag.Bool("s", false, " define <symbol> as static variable")
+	flag.BoolVar(&args.removeLv, "-remove-lv", false, "remove local variables")
+	flag.BoolVar(&args.noExtOps, "-no-ext-ops", false, "prohibit using OP_EXTs")
+	flag.BoolVar(&args.noOptimize, "-no-optimize", false, "disable peephole optimization")
 	flag.BoolVar(&args.verbose, "verbose", false, "run in verbose mode")
 	version := flag.Bool("version", false, "print the version")
 	copyright := flag.Bool("copyright", false, "print the copyright")
-	debugInfo := flag.Bool("g", false, "produce debugging information")
-	bigEndian := flag.Bool("E", false, "generate big endian iseq data")
-	lilEndian := flag.Bool("e", false, "generate little endian iseq data")
 
 	flag.Parse()
 	args.argv = flag.Args()
 
 	if *version {
 		mrb.ShowVersion()
-		os.Exit(0)
-		return false
+		return false, nil
 	}
 	if *copyright {
 		mrb.ShowCopyright()
-		os.Exit(0)
-		return false
+		return false, nil
 	}
 
 	if *v {
@@ -109,18 +108,22 @@ func parseArgs(mrb *oruby.MrbState, args *mrbcArgs) bool {
 	if *debugInfo {
 		args.flags |= oruby.DumpDebugInfo
 	}
-	if *bigEndian {
-		args.flags = oruby.DumpEndianBig | (args.flags & ^oruby.DumpEndianMask)
-	}
-	if *lilEndian {
-		args.flags = oruby.DumpEndianLil | (args.flags & ^oruby.DumpEndianMask)
+	if *dumpStatic {
+		args.flags |= oruby.DumpStatic
 	}
 
-	if args.verbose && args.initname != "" && (args.flags&oruby.DumpEndianMask) == 0 {
-		fmt.Printf("%v: generating %v endian C file. specify -e/-E for cross compiling.\n",
-			args.prog, endianString())
+	if args.initname == "" {
+
 	}
-	return true
+
+	if args.outfile == "" && !args.checkSyntax {
+		if len(args.argv) == 1 {
+			args.outfile = getOutfilename(args.argv[0], filepath.Ext(args.initname))
+		} else {
+			return false, fmt.Errorf("%v: output file should be specified to compile multiple files\n", args.prog)
+		}
+	}
+	return true, nil
 }
 
 func setPartialHook(args *mrbcArgs) func(p oruby.MrbParserState) int {
@@ -137,7 +140,7 @@ func setPartialHook(args *mrbcArgs) func(p oruby.MrbParserState) int {
 		args.idx++
 		fn := args.argv[args.idx]
 
-		result, err := ioutil.ReadFile(fn)
+		result, err := os.ReadFile(fn)
 		if err != nil {
 			fmt.Printf("%s: cannot open program file. (%s)\n", args.prog, fn)
 			return -1
@@ -149,22 +152,23 @@ func setPartialHook(args *mrbcArgs) func(p oruby.MrbParserState) int {
 }
 
 func loadFile(mrb *oruby.MrbState, args *mrbcArgs) oruby.Value {
-	var result oruby.Value
 	var err error
 	var data []byte
+	var result oruby.Value
+	input := args.argv[args.idx]
 
 	c := mrb.MrbcContextNew()
 	defer c.Free()
 
 	c.SetDumpResult(args.verbose)
 	c.SetNoExec(true)
-
-	input := args.argv[args.idx]
+	c.SetNoExtOps(args.noExtOps)
+	c.SetNoOptimize(args.noOptimize)
 
 	if input == "-" {
-		data, err = ioutil.ReadAll(os.Stdin)
+		data, err = io.ReadAll(os.Stdin)
 	} else {
-		data, err = ioutil.ReadFile(input)
+		data, err = os.ReadFile(input)
 	}
 	if err != nil {
 		fmt.Printf("%s: cannot open program file %v: %v)\n", args.prog, input, err)
@@ -212,73 +216,67 @@ func dumpFile(mrb *oruby.MrbState, wfp *os.File, outfile string, proc oruby.RPro
 	return n
 }
 
+func exitFailure(format string, v ...any) int {
+	log.Printf(format, v...)
+	return 1
+}
+
 func main() {
-	var wfp *os.File
 	var err error
 	var result int
+	exitCode := 0
+	defer func() { os.Exit(exitCode) }()
+
 	args := mrbcArgs{}
 
 	mrb := oruby.MrbOpen()
 	if mrb == nil {
-		log.Fatal("Invalid mrb_state, exiting mrbc\n")
+		exitCode = exitFailure("Invalid mrb_state, exiting mrbc\n")
 		return
 	}
 	defer mrb.Close()
 
-	ok := parseArgs(mrb, &args)
-	if !ok {
-		usage(os.Args[0])
-		os.Exit(1)
+	resume, err := parseArgs(mrb, &args)
+	if !resume {
+		if err != nil {
+			exitCode = exitFailure(err.Error())
+			usage(os.Args[0])
+		}
 		return
 	}
 
 	if len(args.argv) == 0 {
-		mrb.Close()
-		log.Fatalf("%v: no program file given\n", args.prog)
+		exitCode = exitFailure("%v: no program file given\n", args.prog)
 		return
-	}
-
-	if args.outfile == "" && !args.checkSyntax {
-		if len(args.argv) == 1 {
-			args.outfile = getOutfilename(args.argv[0], filepath.Ext(args.initname))
-		} else {
-			mrb.Close()
-			log.Fatalf("%v: output file should be specified to compile multiple files\n", args.prog)
-			return
-		}
 	}
 
 	args.idx = 0
 	load := loadFile(mrb, &args)
 	if load.IsNil() {
-		mrb.Close()
-		os.Exit(1)
+		exitCode = 1
 		return
 	}
 
 	if args.checkSyntax {
-		mrb.Close()
-		log.Fatalf("%s:%s:Syntax OK\n", args.prog, args.argv[0])
+		log.Printf("%s:%s:Syntax OK\n", args.prog, args.argv[0])
 		return
 	}
 
+	var wfp *os.File
+
 	if args.outfile == "" {
-		mrb.Close()
-		log.Fatalf("Output file is required\n")
+		exitCode = exitFailure("Output file is required\n")
 		return
 	} else if args.outfile == "-" {
 		wfp = os.Stdout
 	} else if wfp, err = os.Create(args.outfile); err != nil {
-		mrb.Close()
-		log.Fatalf("%v: cannot open output file %v: %v\n", args.prog, args.outfile, err)
+		exitCode = exitFailure("%v: cannot open output file %v: %v\n", args.prog, args.outfile, err)
 		return
 	}
 
 	result = dumpFile(mrb, wfp, args.outfile, mrb.RProc(load), &args)
-	_ = wfp.Close()
 
 	if result != oruby.MrbDumpOK {
-		mrb.Close()
-		os.Exit(1)
+		exitCode = 1
 	}
 }

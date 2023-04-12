@@ -1,3 +1,4 @@
+//go:build gc
 // +build gc
 
 package oruby
@@ -33,7 +34,7 @@ func TestMrbState_GCDisable(t *testing.T) {
 	mrb.GCDisable()
 
 	// String should create three a objects, two of them will be overwritten and ready for GC
-	_, err := mrb.LoadString("b = []; a = []; a = []")
+	_, err := mrb.LoadString("a = []; a = []; a = []")
 	if err != nil {
 		t.Fatal(err)
 	}

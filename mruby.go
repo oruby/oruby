@@ -95,7 +95,7 @@ func NewCore() (*MrbState, error) {
 	mrb.matrix[0] = make([]interface{}, 500)
 	mrb.afterInitSym = mrb.Intern("after_init")
 
-	// Store *MrbState pointer so it can be retrieved from C callbacks
+	// Store *MrbState pointer, so it can be retrieved from C callbacks
 	registerState(mrb)
 
 	// SystemCallError exception
