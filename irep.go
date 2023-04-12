@@ -3,7 +3,8 @@ package oruby
 // #include "go-mrb.h"
 import "C"
 import (
-	"io/ioutil"
+	"bytes"
+	"os"
 	"runtime"
 	"unsafe"
 )
@@ -128,13 +129,51 @@ func (c *MrbcContext) LoadIrepBuf(buffer []byte) (Value, error) {
 
 // LoadIrepFile for context
 func (c *MrbcContext) LoadIrepFile(filename string) (Value, error) {
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return c.mrb.NilValue(), err
 	}
 
 	return c.mrb.LoadIrepCxt(data, c)
 	// C.mrb_load_irep_file_cxt() is never called
+}
+
+// LoadDetectFile loads file, detecting if data is precompiled or if it contains script that needs to be compiled
+// In order to be recognized as a `.mrb` file, the following three points must be satisfied:
+// - File starts with "RITE"
+// - At least `sizeof(struct rite_binary_header)` bytes can be read
+// - `NUL` is included in the first 64 bytes of the file
+func (c *MrbcContext) LoadDetectFile(filename string) (Value, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return c.mrb.NilValue(), err
+	}
+
+	return c.mrb.LoadDetectBufCxt(data, c)
+	// C.mrb_load_detect_file_cxt() is never called
+}
+
+func (c *MrbcContext) LoadDetectBuf(data []byte) (Value, error) {
+	return c.mrb.LoadDetectBufCxt(data, c)
+}
+
+// LoadDetectBufCxt load buffer with context, detecting if data is precompiled
+// or if it contains script that needs to be compiled
+// In order to be recognized as a `.mrb` file, the following three points must be satisfied:
+// - File starts with "RITE"
+// - At least `sizeof(struct rite_binary_header)` bytes can be read
+// - `NUL` is included in the first 64 bytes of the file
+func (mrb *MrbState) LoadDetectBufCxt(data []byte, c *MrbcContext) (Value, error) {
+	if bytes.HasPrefix(data, []byte(RiteBinaryIdent)) && len(data) >= 64 && bytes.Contains(data[:63], []byte{'\x00'}) {
+		return mrb.LoadIrepCxt(data, c)
+	}
+
+	// Parse as script, then load and execute
+	p, err := mrb.ParseString(string(data), c)
+	if err != nil {
+		return nilValue, err
+	}
+	return mrb.LoadExec(p, c), nil
 }
 
 // LoadIrepBufCxt irep load form buffer with context, same as LoadIrepCxt

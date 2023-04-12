@@ -3,25 +3,29 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/oruby/oruby"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/oruby/oruby"
 )
 
-
 type Args struct {
-	rfp string
-	cmdline string
+	rfp         string
+	cmdline     string
+	fname       bool
+	mrbfile     bool
+	checkSyntax bool
+	verbose     bool
+	debug       bool
+	libs        []string
+	// args      []string // os.Args used instead
 	eline string
-	mrbfile bool
-	check_syntax bool
-	verbose bool
-	debug bool
-	libs []string
 }
 
 func usage(name string) {
-	usage_msg := []string{
+	usageMsg := []string{
 		"switches:",
 		"-b           load and execute RiteBinary (mrb) file",
 		"-c           check syntax only",
@@ -34,24 +38,20 @@ func usage(name string) {
 		"--copyright  print the copyright",
 	}
 
-	fmt.Printf("Usage: %v [switches] [programfile] [arguments]\n", name);
-	for _, line := range usage_msg {
-		fmt.Printf("  %v\n", line);
+	fmt.Printf("Usage: %v [switches] [programfile] [arguments]\n", name)
+	for _, line := range usageMsg {
+		fmt.Printf("  %v\n", line)
 	}
 }
 
-func dup_arg_item(mrb *oruby.MrbState, item string) string {
-	return item;
-}
-
-func parse_args(mrb *oruby.MrbState, args *Args) error {
-	flag.BoolVar(&args.mrbfile,"b", false, "load and execute RiteBinary (mrb) file")
-	flag.BoolVar(&args.check_syntax,"c", false, "check syntax only")
-	flag.BoolVar(&args.debug,"d", false, "set debugging flags (set $DEBUG to true)")
-	flag.StringVar(&args.eline,"e", "", "one line of script")
+func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
+	flag.BoolVar(&args.mrbfile, "b", false, "load and execute RiteBinary (mrb) file")
+	flag.BoolVar(&args.checkSyntax, "c", false, "check syntax only")
+	flag.BoolVar(&args.debug, "d", false, "set debugging flags (set $DEBUG to true)")
+	flag.StringVar(&args.eline, "e", "", "one line of script")
 	rlib := flag.String("r", "", "load the library before executing your script")
-	v    := flag.Bool("v", false, "print version number, then run in verbose mode")
-	flag.BoolVar(&args.verbose,"verbose", false, "run in verbose mode")
+	v := flag.Bool("v", false, "print version number, then run in verbose mode")
+	flag.BoolVar(&args.verbose, "verbose", false, "run in verbose mode")
 	version := flag.Bool("version", false, "print the version")
 	copyright := flag.Bool("copyright", false, "print the copyright")
 
@@ -59,13 +59,11 @@ func parse_args(mrb *oruby.MrbState, args *Args) error {
 
 	if *version {
 		mrb.ShowVersion()
-		os.Exit(0)
-		return nil
+		return false, nil
 	}
 	if *copyright {
 		mrb.ShowCopyright()
-		os.Exit(0)
-		return nil
+		return false, nil
 	}
 
 	if *v {
@@ -79,7 +77,7 @@ func parse_args(mrb *oruby.MrbState, args *Args) error {
 
 	if rlib != nil {
 		if *rlib == "" {
-			return fmt.Errorf("%v: No library specified for -r\n", os.Args[0]);
+			return false, fmt.Errorf("%v: No library specified for -r\n", os.Args[0])
 		}
 	}
 
@@ -88,69 +86,86 @@ func parse_args(mrb *oruby.MrbState, args *Args) error {
 		args.cmdline = args.rfp
 	} // else if stdin {}
 
-	return nil
+	if args.cmdline == "" && args.rfp == "" {
+		return false, nil
+	}
+
+	return true, nil
 }
 
+func exitFailure(format string, v ...any) int {
+	log.Printf(format, v...)
+	return 1
+}
 
 func main() {
 	args := Args{}
+	var v oruby.MrbValue
+	exitCode := 0
+	defer func() { os.Exit(exitCode) }()
 
 	mrb, err := oruby.New()
 	if err != nil {
-		log.Fatalf("%v: Invalid mrb_state, exiting oruby\n", os.Args[0]);
-		return;
+		exitCode = exitFailure("%v: Invalid mrb_state, exiting oruby\n", os.Args[0])
+		return
 	}
 	defer mrb.Close()
 
-	err = parse_args(mrb, &args);
-	if err != nil || (args.cmdline == "" && args.rfp == "") {
-		os.Exit(1)
-		return;
+	if okToContinue, err := parseArgs(mrb, &args); !okToContinue {
+		if err != nil {
+			exitCode = exitFailure(err.Error())
+		}
+		return
 	}
 
 	ai := mrb.GCArenaSave()
-	mrb.DefineGlobalConst("ARGV", mrb.Value(os.Args));
-	mrb.GVSet(mrb.Intern("$DEBUG"), mrb.BoolValue(args.debug));
+	mrb.DefineGlobalConst("ARGV", mrb.Value(os.Args))
+	mrb.GVSet(mrb.Intern("$DEBUG"), mrb.BoolValue(args.debug))
 
 	c := mrb.MrbcContextNew()
 	defer c.Free()
 
 	c.SetDumpResult(args.verbose)
-	c.SetNoExec(args.check_syntax)
+	c.SetNoExec(args.checkSyntax)
 
 	/* Set $0 */
-	zeroSym := mrb.Intern("$0");
+	cmdline := args.cmdline
 	if args.rfp != "" {
-		cmdline := args.cmdline
 		if cmdline == "" {
-			cmdline = "-";
+			cmdline = "-"
 		}
-		c.Filename(cmdline)
-		mrb.GVSet(zeroSym, mrb.StringValue(cmdline))
 	} else {
-		c.Filename("-e")
-		mrb.GVSet(zeroSym, mrb.StringValue("-e"))
+		cmdline = "-e"
 	}
+	mrb.SetGV("$0", cmdline)
 
 	/* Load libraries */
 	for _, lib := range args.libs {
 		var err error
-		if args.mrbfile {
-			_, err = c.LoadIrepFile(lib)// mrb_load_irep_file_cxt(mrb, lfp, c);
+		c.Filename(lib)
+		if strings.EqualFold(filepath.Ext(lib), ".mrb") {
+			v, err = c.LoadIrepFile(lib) // mrb_load_irep_file_cxt(mrb, lfp, c);
 		} else {
-			_, err = c.LoadFile(lib)
+			v, err = c.LoadDetectFile(lib)
 		}
 
 		if err != nil {
-			log.Fatalf( "%v: Cannot open library file: %s\n", os.Args[0], lib);
+			exitCode = exitFailure("%v: Cannot open library file: %s\n", os.Args[0], lib)
 			return
 		}
+
+		ciBase := mrb.Context().CiBase()
+		e := ciBase.Env()
+		ciBase.EnvSet(oruby.REnv{})
+		mrb.EnvUnshare(e, false)
+		c.CleanupLocalVariables()
 	}
 
-	/* Load program */
-	var v oruby.MrbValue
+	/* set program file name */
+	c.Filename(cmdline)
 
-	if args.mrbfile {
+	/* Load program */
+	if args.mrbfile || strings.EqualFold(filepath.Ext(cmdline), ".mrb") {
 		v, err = c.LoadIrepFile(args.rfp)
 	} else if args.rfp != "" {
 		v, err = c.LoadFile(args.rfp)
@@ -159,7 +174,7 @@ func main() {
 	}
 
 	if err != nil {
-		log.Fatalf( "%v: %v\n", os.Args[0], err);
+		exitCode = exitFailure("%v: %v\n", os.Args[0], err)
 		return
 	}
 
@@ -169,13 +184,11 @@ func main() {
 		if !mrb.UndefP(v) {
 			mrb.PrintError()
 		}
+		exitCode = 1
 		return
 	}
 
-	if args.check_syntax {
-		fmt.Println("Syntax OK");
+	if args.checkSyntax {
+		fmt.Println("Syntax OK")
 	}
-
-	return;
 }
-

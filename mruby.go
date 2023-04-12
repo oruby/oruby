@@ -221,7 +221,10 @@ type MrbSym uint
 type MrbCallInfo struct{ p *C.struct_mrb_call_info }
 
 // MrbContext call
-type MrbContext struct{ p *C.struct_mrb_context }
+type MrbContext struct {
+	p   *C.struct_mrb_context
+	mrb *MrbState
+}
 
 // ExitChan is signaled on MrbState close
 // goroutines that depend on mrb should return on ExitChan closing
@@ -1440,6 +1443,10 @@ func MrbOpen() *MrbState {
 // TopSelf value
 func (mrb *MrbState) TopSelf() Value { return Value{C.mrb_top_self(mrb.p)} }
 
+func (mrb *MrbState) CiBase() REnv {
+	return REnv{C.mrb_vm_ci_env(mrb.p.c.cibase), mrb}
+}
+
 // TopAdjustStackLength of toplevel environment. Used in imrb
 func (mrb *MrbState) TopAdjustStackLength(nlocals int) {
 	e := REnv{C.mrb_vm_ci_env(mrb.p.c.cibase), mrb}
@@ -2215,6 +2222,12 @@ func (mrb *MrbState) ShowCopyright() {
 //type each_object_callback = func(mrb mrb_state, obj RBasic)
 //func mrb_objspace_each_objects(mrb mrb_state, callback each_object_callback)
 
+func (c MrbContext) Ci() MrbCallInfo { return MrbCallInfo{c.p.ci} }
+
+func (c MrbContext) CiBase() MrbCallInfo { return MrbCallInfo{c.p.cibase} }
+
+func (c MrbContext) Free() { C.mrb_free_context(c.mrb.p, c.p) }
+
 // FreeContext free context
 func (mrb *MrbState) FreeContext(c MrbContext) { C.mrb_free_context(mrb.p, c.p) }
 
@@ -2363,7 +2376,7 @@ func (mrb *MrbState) DefineSingletonFunc(obj RObject, name string, f interface{}
 func (mrb *MrbState) State() uintptr { return uintptr(unsafe.Pointer(mrb.p)) }
 
 // Context returns context
-func (mrb *MrbState) Context() MrbContext { return MrbContext{mrb.p.c} }
+func (mrb *MrbState) Context() MrbContext { return MrbContext{mrb.p.c, mrb} }
 
 // NilValue helper
 func (mrb *MrbState) NilValue() Value { return mrb.nilValue }

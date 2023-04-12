@@ -40,8 +40,8 @@ func (e REnv) Stack(index int) Value {
 }
 
 // EnvUnshare unshares Env
-func (mrb *MrbState) EnvUnshare(env REnv) {
-	C.mrb_env_unshare(mrb.p, env.p, true)
+func (mrb *MrbState) EnvUnshare(env REnv, noraise bool) {
+	C.mrb_env_unshare(mrb.p, env.p, noraise)
 }
 
 // SetEnv creates and sets new Env object with stack Values
@@ -321,4 +321,29 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 // LoadProc loads and executes proc
 func (mrb *MrbState) LoadProc(proc RProc) Value {
 	return Value{C.mrb_load_proc(mrb.p, proc.p)}
+}
+
+// ProcSet sets proc on call info
+func (ci MrbCallInfo) ProcSet(p RProc) {
+	C.mrb_vm_ci_proc_set(ci.p, p.p)
+}
+
+// TargetClass returnc target class pointer from call info
+func (ci MrbCallInfo) TargetClass() RClassPtr {
+	return RClassPtr{C.mrb_vm_ci_target_class(ci.p)}
+}
+
+// TargetClassSet sets target class in call info
+func (ci MrbCallInfo) TargetClassSet(tc RClass) {
+	C.mrb_vm_ci_target_class_set(ci.p, tc.p)
+}
+
+// Env retreives env from call info
+func (ci MrbCallInfo) Env() REnv {
+	return REnv{C.mrb_vm_ci_env(ci.p), nil}
+}
+
+// EnvSet sets env on call info
+func (ci MrbCallInfo) EnvSet(e REnv) {
+	C.mrb_vm_ci_env_set(ci.p, e.p)
 }

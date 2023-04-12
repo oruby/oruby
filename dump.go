@@ -149,7 +149,7 @@ type RiteSectionHeader struct {
 	SectionSize  [4]byte
 }
 
-// RiteSectionIrepHeader stucture of IREP section header
+// RiteSectionIrepHeader structure of IREP section header
 type RiteSectionIrepHeader struct {
 	RiteSectionHeader
 	RiteVersion [4]byte /* Rite Instruction Specification Version */
