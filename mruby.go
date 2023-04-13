@@ -1443,10 +1443,6 @@ func MrbOpen() *MrbState {
 // TopSelf value
 func (mrb *MrbState) TopSelf() Value { return Value{C.mrb_top_self(mrb.p)} }
 
-func (mrb *MrbState) CiBase() REnv {
-	return REnv{C.mrb_vm_ci_env(mrb.p.c.cibase), mrb}
-}
-
 // TopAdjustStackLength of toplevel environment. Used in imrb
 func (mrb *MrbState) TopAdjustStackLength(nlocals int) {
 	e := REnv{C.mrb_vm_ci_env(mrb.p.c.cibase), mrb}

@@ -166,7 +166,7 @@ func usage(name string) {
 	}
 }
 
-func parseArgs(mrb *oruby.MrbState, args *Args) error {
+func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
 	flag.BoolVar(&args.debug, "d", false, "set $DEBUG to true (same as `oruby -d`)")
 	flag.StringVar(&args.alib, "r", "", "same as `oruby -r`")
 	flag.BoolVar(&args.verbose, "verbose", false, "run in verbose mode")
@@ -181,17 +181,16 @@ func parseArgs(mrb *oruby.MrbState, args *Args) error {
 			mrb.ShowVersion()
 		}
 		args.verbose = true
-		return nil
 	}
 
 	if *version {
 		mrb.ShowVersion()
-		return nil
+		return false, nil
 	}
 
 	if *copyright {
 		mrb.ShowCopyright()
-		return nil
+		return false, nil
 	}
 
 	if args.alib != "" {
@@ -200,71 +199,89 @@ func parseArgs(mrb *oruby.MrbState, args *Args) error {
 
 	args.rfp = "" // flag.Args()[0]
 
-	return nil
+	return false, nil
 }
 
 // Print a short remark for the user
 func printHint() {
-	print("mirb - Embeddable Interactive Ruby Shell\n\n")
+	print("orbi - Embeddable Interactive ORuby Shell\n\n")
+}
+
+func printCmdLine(codeBlockOpen bool) string {
+	if codeBlockOpen {
+		return "* "
+	}
+	return "> "
 }
 
 func checkKeyword(buf, word string) bool {
-	return strings.TrimSpace(buf) == word
+	b := strings.TrimSpace(buf)
+	s := strings.TrimPrefix(b, word)
+	ok := s != b
+	if !ok {
+		return false
+	}
+	return (s == "") || (s[0] == ' ') || (s[0] == '\t') || (s[0] == '\x0A') || (s[0] == '\x0D')
 }
 
-func declLvUnderscore(mrb *oruby.MrbState, cxt *oruby.MrbcContext) {
+func declLvUnderscore(mrb *oruby.MrbState, cxt *oruby.MrbcContext) error {
 	parser, err := mrb.ParseString("_=nil", cxt)
 	if err != nil {
-		mrb.Close()
-		log.Fatal(err)
-		return
+		return err
 	}
 	defer parser.Free()
 
 	proc, err := mrb.GenerateCode(parser)
 	if err != nil {
-		mrb.Close()
-		log.Fatal(err)
-		return
+		return err
 	}
 
 	mrb.VMRun(proc, mrb.TopSelf(), 0)
+	return nil
 }
 
 const MaxCodeSize = 4096
 const MaxLineSize = 1024
 
+func exitFailure(format string, v ...any) int {
+	log.Printf(format, v...)
+	return 1 // = EXIT_FAILURE
+}
+
 func main() {
 	rubyCode := ""     // max 4096
 	lastCodeLine := "" // max 1024
-	var historyPath string
 	var line string
 	var result oruby.Value
 	args := Args{}
 	codeBlockOpen := false
 	stackKeep := 0
+	exitCode := 0
+	defer func() { os.Exit(exitCode) }()
 
 	/* new interpreter instance */
 	mrb := oruby.MrbOpen()
 	if mrb == nil {
-		log.Fatal("Invalid mrb interpreter, exiting mirb\n")
+		exitCode = exitFailure("Invalid mrb interpreter, exiting mirb\n")
 		return
 	}
 	defer mrb.Close()
 
-	err := parseArgs(mrb, &args)
-	if err != nil {
-		usage(os.Args[0])
+	if ok, err := parseArgs(mrb, &args); !ok {
+		if err != nil {
+			usage(os.Args[0])
+			exitCode = exitFailure(err.Error())
+		}
 		return
 	}
 
 	ARGV := mrb.Value(os.Args)
 	mrb.DefineGlobalConst("ARGV", ARGV)
-	mrb.GVSet(mrb.Intern("$DEBUG"), mrb.BoolValue(args.debug))
+	mrb.SetGV("$DEBUG", args.debug)
 
-	historyPath, err = getHistoryPath()
+	historyPath, err := getHistoryPath()
 	if err != nil {
-		log.Fatal("failed to get history path")
+		exitCode = exitFailure("failed to get history path: %v", err)
 		return
 	}
 	MIRB_USING_HISTORY()
@@ -274,21 +291,31 @@ func main() {
 
 	cxt := mrb.MrbcContextNew()
 	defer cxt.Free()
-	// MIRB_UNDERSCORE
-	declLvUnderscore(mrb, cxt)
 
 	/* Load libraries */
 	for _, lib := range args.libs {
 		_, err = cxt.LoadFile(lib)
 		if err != nil {
-			log.Fatalf("Cannot open library file. (%v)\n", lib)
+			exitCode = exitFailure("Cannot open library file. (%v)\n", lib)
 			return
 		}
+		ciBase := mrb.Context().CiBase()
+		e := ciBase.Env()
+		ciBase.EnvSet(nil)
+		mrb.EnvUnshare(e, false)
+		cxt.CleanupLocalVariables()
+	}
+
+	/* MIRB_UNDERSCORE */
+	err = declLvUnderscore(mrb, cxt)
+	if err != nil {
+		exitCode = exitFailure(err.Error())
+		return
 	}
 
 	cxt.SetCaptureErrors(true)
 	cxt.SetLineNo(1)
-	cxt.Filename("(imrb)")
+	cxt.Filename("(orbi)")
 	cxt.SetDumpResult(args.verbose)
 
 	ai := mrb.GCArenaSave()
@@ -374,7 +401,7 @@ func main() {
 				if err != nil {
 					fmt.Print(err)
 					parser.Free()
-					break
+					continue
 				}
 
 				if args.verbose {
@@ -390,6 +417,11 @@ func main() {
 				/* did an exception occur? */
 				if mrb.Exc() != nil {
 					p(mrb, mrb.Exc(), 0)
+					if mrb.Exc().Flags()|oruby.MrbExcExit != 0 {
+						exitCode = mrb.Exc().Call("status").Int()
+						parser.Free()
+						return
+					}
 					mrb.ExcClear()
 				} else {
 					/* no */

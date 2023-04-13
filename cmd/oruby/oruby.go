@@ -156,7 +156,7 @@ func main() {
 
 		ciBase := mrb.Context().CiBase()
 		e := ciBase.Env()
-		ciBase.EnvSet(oruby.REnv{})
+		ciBase.EnvSet(nil)
 		mrb.EnvUnshare(e, false)
 		c.CleanupLocalVariables()
 	}

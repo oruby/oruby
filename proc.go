@@ -344,6 +344,10 @@ func (ci MrbCallInfo) Env() REnv {
 }
 
 // EnvSet sets env on call info
-func (ci MrbCallInfo) EnvSet(e REnv) {
+func (ci MrbCallInfo) EnvSet(e *REnv) {
+	if e == nil {
+		C.mrb_vm_ci_env_set(ci.p, nil)
+		return
+	}
 	C.mrb_vm_ci_env_set(ci.p, e.p)
 }

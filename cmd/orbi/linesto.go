@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"io/ioutil"
 	"os"
 	"strings"
 )
@@ -14,7 +13,7 @@ type Linesto struct {
 var ln = &Linesto{}
 
 func MIRB_ADD_HISTORY(line string) {
-  ln.History = append(ln.History, line)
+	ln.History = append(ln.History, line)
 }
 
 func MIRB_LINE_FREE(line string) {
@@ -22,11 +21,11 @@ func MIRB_LINE_FREE(line string) {
 
 func MIRB_WRITE_HISTORY(path string) {
 	buf := strings.Join(ln.History, "\n")
-	_=ioutil.WriteFile(path, []byte(buf), 0640)
+	_ = os.WriteFile(path, []byte(buf), 0640)
 }
 
 func MIRB_READ_HISTORY(path string) {
-	buf, err := ioutil.ReadFile(path)
+	buf, err := os.ReadFile(path)
 	if err != nil {
 		ln.History = []string{}
 		return
