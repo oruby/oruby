@@ -106,6 +106,15 @@ func (a RArray) SliceIntf() []interface{} {
 // MrbAryShared const
 const MrbAryShared = 256
 
+// Shared returnes true if internal RArray is shared
+func (a RArray) Shared() bool { return a.Flags()|MrbAryShared != 0 }
+
+// SetShared sets internal RArray as shared
+func (a RArray) SetShared() { C._RARRAY_SET_SHARED(a.p()) }
+
+// UnsetShared unsets internal RArray as shared
+func (a RArray) UnsetShared() { C._RARRAY_UNSET_SHARED(a.p()) }
+
 // AryModify modify array
 func (mrb *MrbState) AryModify(a RArray) { C.mrb_ary_modify(mrb.p, a.p()) }
 

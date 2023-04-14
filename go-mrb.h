@@ -85,6 +85,8 @@ static mrb_int _RARRAY_LEN(struct RArray *a)    { return ARY_LEN(a); }
 static void*   _RARRAY_PTR(struct RArray *a)    { return ARY_PTR(a); }
 static mrb_int _RARRAY_CAPA(struct RArray *a)   { return ARY_CAPA(a); }
 static mrb_value _ARY_ITEM(struct RArray *a, mrb_int n) { return ARY_PTR(a)[n]; }
+static void _RARRAY_SET_SHARED(struct RArray *a)   { ARY_SET_SHARED_FLAG(a); }
+static void _RARRAY_UNSET_SHARED(struct RArray *a)   { ARY_UNSET_SHARED_FLAG(a); }
 
 static char*   _RSTRING_PTR(mrb_value a)  { return RSTRING_PTR(a); }
 static mrb_int _RSTRING_LEN(mrb_value a)  { return RSTRING_LEN(a); }
