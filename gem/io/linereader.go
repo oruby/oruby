@@ -3,9 +3,10 @@ package io
 import (
 	"bufio"
 	"bytes"
-	"github.com/oruby/oruby"
 	"io"
 	"runtime"
+
+	"github.com/oruby/oruby"
 )
 
 func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index int) (*bufio.Scanner, io.Closer, error) {
@@ -37,7 +38,7 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index
 		limit = arg1.Int()
 	}
 
-	if arg2.IsFixnum() {
+	if arg2.IsInteger() {
 		limit = arg2.Int()
 	}
 
@@ -109,7 +110,7 @@ func getSpliter(sep *string, chomp bool, limit int) bufio.SplitFunc {
 			}
 
 			// Return line with separator, as Ruby does
-			return i + 1, data[0:i+sepLen], nil
+			return i + 1, data[0 : i+sepLen], nil
 		}
 
 		if limit > 0 && len(data) > limit {
@@ -124,4 +125,3 @@ func getSpliter(sep *string, chomp bool, limit int) bufio.SplitFunc {
 		return
 	}
 }
-

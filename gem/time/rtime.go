@@ -2,9 +2,10 @@ package time
 
 import (
 	"fmt"
-	"github.com/oruby/oruby"
 	"math"
 	"time"
+
+	"github.com/oruby/oruby"
 )
 
 func getTime(mrb *oruby.MrbState, self oruby.Value) time.Time {
@@ -86,12 +87,12 @@ func timePlus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	v := mrb.GetArgsFirst()
 
 	if v.IsNil() {
-		return mrb.Raise(mrb.ETypeError(),"can't convert nil into an exact number")
-	} else if v.IsFixnum() {
+		return mrb.Raise(mrb.ETypeError(), "can't convert nil into an exact number")
+	} else if v.IsInteger() {
 		return timeValue(mrb, self, t.Add(time.Duration(v.Int())*time.Second))
 	} else if v.IsFloat() {
 		f := v.Float64()
-		if math.IsNaN(f) || math.IsInf(f,0) {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return mrb.Raise(mrb.EFloatDomainError(), "value out of range")
 		}
 
@@ -112,7 +113,7 @@ func timePlus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return timeValue(mrb, self, t.Add(*t2))
 	}
 
-	return mrb.Raisef(mrb.EArgumentError(),"invalid argument %v", mrb.Data(v))
+	return mrb.Raisef(mrb.EArgumentError(), "invalid argument %v", mrb.Data(v))
 }
 
 func timeMinus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -120,12 +121,12 @@ func timeMinus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	v := mrb.GetArgsFirst()
 
 	if v.IsNil() {
-		return mrb.Raise(mrb.ETypeError(),"can't convert nil into an exact number")
-	} else if v.IsFixnum() {
+		return mrb.Raise(mrb.ETypeError(), "can't convert nil into an exact number")
+	} else if v.IsInteger() {
 		return timeValue(mrb, self, t.Add(time.Duration(-v.Int())*time.Second))
 	} else if v.IsFloat() {
 		f := v.Float64()
-		if math.IsNaN(f) || math.IsInf(f,0) {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return mrb.Raise(mrb.EFloatDomainError(), "value out of range")
 		}
 
@@ -146,7 +147,7 @@ func timeMinus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return timeValue(mrb, self, t.Add(-*t2))
 	}
 
-	return mrb.Raisef(mrb.EArgumentError(),"invalid argument %v", mrb.Data(v))
+	return mrb.Raisef(mrb.EArgumentError(), "invalid argument %v", mrb.Data(v))
 }
 
 func timeInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -220,12 +221,12 @@ func timeToI(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func timeToF(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
-	return mrb.FloatValue(float64(t.UnixNano()/1.e09))
+	return mrb.FloatValue(float64(t.UnixNano() / 1.e09))
 }
 
 func timeUsec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
-	return oruby.Int64((t.UnixNano() - t.Unix()*1.e09)/1000)
+	return oruby.Int64((t.UnixNano() - t.Unix()*1.e09) / 1000)
 }
 
 func timeNsec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

@@ -143,9 +143,9 @@ func timeCreate(mrb *oruby.MrbState, args oruby.RArgs, loc *time.Location) (time
 		ssV = args.ItemDef(5, mrb.FixnumValue(0))
 		msV = args.ItemDef(6, mrb.FloatValue(0))
 
-		if ssV.IsFixnum() {
+		if ssV.IsInteger() {
 			ss = ssV.Int()
-			if msV.IsFixnum() {
+			if msV.IsInteger() {
 				ns = msV.Int64() * 1000
 			} else {
 				ms := msV.Float64()

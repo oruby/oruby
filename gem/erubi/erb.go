@@ -1,8 +1,9 @@
 package erubi
 
 import (
-	"github.com/oruby/oruby"
 	"regexp"
+
+	"github.com/oruby/oruby"
 )
 
 func init() {
@@ -28,7 +29,7 @@ func erbVersion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func erbInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	erb := mrb.RObject(self)
+	erb := mrb.RValue(self)
 	erb.SetIV("@safe_level", mrb.FixnumValue(0)) //safeLevel
 	erb.SetIV("@filename", mrb.NilValue())
 	erb.SetIV("@lineno", mrb.FixnumValue(0))

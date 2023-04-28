@@ -36,6 +36,28 @@ extern "C" {
 #include "mruby/istruct.h"
 #include "mruby/presym.h"
 #include "mruby/internal.h"
+#include "mruby/version.h"
+
+extern void execE(void *f);
+
+static void tryE(mrb_state *mrb, void *f) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+
+  MRB_TRY(&c_jmp)
+    mrb->jmp = &c_jmp;
+    execE(f);
+  MRB_CATCH(&c_jmp)
+    mrb_print_error(mrb);
+  MRB_END_EXC(&c_jmp)
+  mrb->jmp = prev_jmp;
+}
+
+static char* _MRUBY_COPYRIGHT()  { return MRUBY_COPYRIGHT; }
+static char* _MRUBY_DESCRIPTION()  { return MRUBY_DESCRIPTION; }
+static mrb_int _MRUBY_RELEASE_MAJOR()  { return (mrb_int)MRUBY_RELEASE_MAJOR; }
+static mrb_int _MRUBY_RELEASE_MINOR()  { return (mrb_int)MRUBY_RELEASE_MINOR; }
+static mrb_int _MRUBY_RELEASE_TEENY()  { return (mrb_int)MRUBY_RELEASE_TEENY; }
 
 static void _mrb_set_idx(mrb_state *mrb, mrb_int idx) {
   struct RBasic *s = mrb_obj_alloc(mrb, MRB_TT_ISTRUCT, mrb->object_class);
@@ -63,6 +85,8 @@ static mrb_int _cmrb_get_idx(uintptr_t cmrb) {
   return mrb->ud ? *(mrb_int*)mrb->ud : 0;
 }
 
+/* Inject and run code */
+
 extern struct RProc* inject_run(mrb_int idx);
 
 static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
@@ -79,6 +103,14 @@ static void set_mrb_injector(mrb_state *mrb) {
 	}
 }
 
+// RBasic macro proxy calls
+static void _MRB_SET_FROZEN_FLAG(struct RBasic *o)   { MRB_SET_FROZEN_FLAG(o); }
+static void _MRB_UNSET_FROZEN_FLAG(struct RBasic *o) { MRB_UNSET_FROZEN_FLAG(o); }
+static mrb_bool  _mrb_basic_frozen(struct RBasic *o) { return MRB_FROZEN_P(o) != 0; }
+static uint32_t  _mrb_basic_flags(struct RBasic *o)   { return o->flags; }
+static enum mrb_vtype  _mrb_basic_type(struct RBasic *o)   { return o->tt; }
+static void      _mrb_basic_set_color(struct RBasic *o, int c) { o->color = c; }
+static int       _mrb_basic_color(struct RBasic *o)  { return o->color; }
 
 // defines as functions making them visible on the Go side
 static mrb_int _RARRAY_LEN(struct RArray *a)    { return ARY_LEN(a); }
@@ -92,11 +124,6 @@ static char*   _RSTRING_PTR(mrb_value a)  { return RSTRING_PTR(a); }
 static mrb_int _RSTRING_LEN(mrb_value a)  { return RSTRING_LEN(a); }
 static mrb_int _RSTRING_CAPA(mrb_value a) { return RSTRING_CAPA(a); }
 static char*   _RSTRING_END(mrb_value a)  { return RSTRING_END(a); }
-
-static uint32_t  _mrb_basic_flags(struct RBasic *o)   { return o->flags; }
-static mrb_bool  _mrb_basic_frozen(struct RBasic *o) { return MRB_FROZEN_P(o) != 0; }
-static void      _mrb_basic_set_color(struct RBasic *o, int c) { o->color = c; }
-static int       _mrb_basic_color(struct RBasic *o)  { return o->color; }
 
 static uint32_t _mrb_value_flags(mrb_value o) {
   return mrb_immediate_p(o) ? mrb_basic_ptr(o)->flags : 0; 
@@ -142,7 +169,8 @@ static uint32_t _mrb_rproc_flags(struct RProc *p) { return (uint32_t)p->flags; }
 static void _mrb_rproc_set_flags(struct RProc *p, uint32_t flags) { p->flags = flags; }
 static struct REnv* _MRB_PROC_ENV(struct RProc *p) { return MRB_PROC_ENV(p); }
 
-static void _MRB_PROC_SET_TARGET_CLASS(mrb_state *mrb, struct RProc *p, struct RClass *c)  { 
+static struct RClass * _MRB_PROC_TARGET_CLASS(struct RProc *p)  { return MRB_PROC_TARGET_CLASS(p); }
+static void _MRB_PROC_SET_TARGET_CLASS(mrb_state *mrb, struct RProc *p, struct RClass *c)  {
    MRB_PROC_SET_TARGET_CLASS(p,c);
 }
 static int  _MRB_PROC_CFUNC_P(struct RProc *p)    { return (int)(MRB_PROC_CFUNC_P(p));  }
@@ -202,6 +230,10 @@ static mrb_method_t _MRB_METHOD_FROM_PROC(struct RProc *p) {
 // Instance macro helpers
 static void _MRB_SET_INSTANCE_TT(struct RClass *c, uint32_t tt) { MRB_SET_INSTANCE_TT(c, tt); }
 static uint32_t _MRB_INSTANCE_TT(struct RClass *c) { return (uint32_t)MRB_INSTANCE_TT(c); }
+static struct RClass* _mrb_class_origin(struct RClass *c) {
+    MRB_CLASS_ORIGIN(c);
+    return c;
+}
 
 // RData value
 static struct RData* _RDATA(mrb_value a)      { return RDATA(a);     };
@@ -217,10 +249,6 @@ static mrb_data_type* mrb_interface_data_type(void) { return &interface_data_typ
 static mrb_value _RANGE_BEG(struct RRange *r) { return RANGE_BEG(r); }
 static mrb_value _RANGE_END(struct RRange *r) { return RANGE_END(r); }
 static mrb_bool _RANGE_EXCL(struct RRange *r) { return RANGE_EXCL(r); }
-
-// Frozen macro proxy calls
-static void _MRB_SET_FROZEN_FLAG(mrb_value o)   { MRB_SET_FROZEN_FLAG(mrb_basic_ptr(o)); }
-static void _MRB_UNSET_FROZEN_FLAG(mrb_value o) { MRB_UNSET_FROZEN_FLAG(mrb_basic_ptr(o)); }
 
 // vararg proxy calls, formated using Go fmt
 static void _mrb_warn(mrb_state *mrb, const char *msg) { mrb_warn(mrb, msg); }
@@ -284,7 +312,7 @@ static int _MRB_FUNCALL_ARGC_MAX() {
 #endif
 }
 
-// Error formating using go fmt
+// Error formatting using go fmt
 static void _mrb_name_error(mrb_state *mrb, mrb_sym id, const char *msg) { mrb_name_error(mrb, id, msg); }
 
 static mrb_value
@@ -337,7 +365,7 @@ _mrb_proc_set_env(mrb_state *mrb, struct RProc *p, mrb_value v)
   }
 
   if (MRB_PROC_ENV_P(p)) {
-    mrb_raise(mrb, E_TYPE_ERROR, "Expected emty RProc enviroment.");
+    mrb_raise(mrb, E_TYPE_ERROR, "Expected empty RProc environment.");
     return;
   }
 

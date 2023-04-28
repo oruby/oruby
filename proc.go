@@ -18,7 +18,7 @@ type REnv struct {
 func (e REnv) Value() Value { return mrbObjValue(unsafe.Pointer(e.p)) }
 
 // Type for MrbValue interface
-func (e REnv) Type() int { return e.Value().Type() }
+func (e REnv) Type() Type { return e.Value().Type() }
 
 // IsNil check for MrbValue interface
 func (e REnv) IsNil() bool { return e.p == nil }
@@ -41,7 +41,7 @@ func (e REnv) Stack(index int) Value {
 
 // EnvUnshare unshares Env
 func (mrb *MrbState) EnvUnshare(env REnv, noraise bool) {
-	C.mrb_env_unshare(mrb.p, env.p, noraise)
+	C.mrb_env_unshare(mrb.p, env.p, C.mrb_bool(noraise))
 }
 
 // SetEnv creates and sets new Env object with stack Values
@@ -76,7 +76,7 @@ type RProcPtr struct{ p *C.struct_RProc }
 func (p RProc) Value() Value { return mrbObjValue(unsafe.Pointer(p.p)) }
 
 // Type for MrbValue interface
-func (p RProc) Type() int { return p.Value().Type() }
+func (p RProc) Type() Type { return p.Value().Type() }
 
 // IsNil check for MrbValue interface
 func (p RProc) IsNil() bool { return p.p == nil }
@@ -95,6 +95,9 @@ func (p RProc) HasEnv() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_ENVS
 
 // IsScope is scope
 func (p RProc) IsScope() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_SCOPE) != 0 }
+
+// IsNoArg is no arg flag set
+func (p RProc) IsNoArg() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_NOARG) != 0 }
 
 // Flags returns rproc flags
 func (p RProc) Flags() int { return int(C._mrb_rproc_flags(p.p)) }
@@ -136,7 +139,7 @@ func (p RProc) Env() REnv {
 // EnvGet returns REnv Value at index i
 func (p RProc) EnvGet(i int) Value {
 	if !p.HasEnv() {
-		return p.mrb.nilValue
+		return nilValue
 	}
 	return p.mrb.ProcCFuncEnvGet(i)
 }
@@ -152,7 +155,7 @@ func (p RProc) Data() interface{} {
 	}
 
 	i := p.mrb.ProcCFuncEnvGet(0)
-	if !i.IsFixnum() {
+	if !i.IsInteger() {
 		return p.mrb.mrbProcs[unsafe.Pointer(p.p)]
 	}
 	return p.mrb.funcs[i.Int()]
@@ -161,6 +164,11 @@ func (p RProc) Data() interface{} {
 // SetTargetClass sets target class for proc
 func (p RProc) SetTargetClass(c RClass) {
 	C._MRB_PROC_SET_TARGET_CLASS(c.mrb.p, p.p, c.p)
+}
+
+// TargetClass sets target class for proc
+func (p RProc) TargetClass() RClass {
+	return RClass{C._MRB_PROC_TARGET_CLASS(p.p), p.mrb}
 }
 
 // Load procedure
@@ -196,22 +204,26 @@ const (
 	MrbProcOrphan = 512
 	MrbProcEnvSet = 1024
 	MrbProcScope  = 2048
+	MrbProcNoArg  = 4096
 )
 
-// MrbProcCFuncP is cfunc
+// MrbProcCFuncP is cfunc flag set
 func MrbProcCFuncP(p RProc) bool { return int(C._MRB_PROC_CFUNC_P(p.p)) != 0 }
 
-// MrbProcStrictP is strict
+// MrbProcStrictP is strict flag set
 func MrbProcStrictP(p RProc) bool { return int(C._MRB_PROC_STRICT_P(p.p)) != 0 }
 
-// MrbProcOrphanP is orphan
+// MrbProcOrphanP is orphan flag set
 func MrbProcOrphanP(p RProc) bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_ORPHAN) != 0 }
 
 // MrbProcEnvP has env
 func MrbProcEnvP(p RProc) bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_ENVSET) != 0 }
 
-// MrbProcScopeP is scope
+// MrbProcScopeP is scope flag set
 func MrbProcScopeP(p RProc) bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_SCOPE) != 0 }
+
+// MrbProcNoargP is scope
+func MrbProcNoargP(p RProc) bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_NOARG) != 0 }
 
 // MrbProcPtr returns RProc from oruby value
 func MrbProcPtr(v MrbValue) RProcPtr { return RProcPtr{(*C.struct_RProc)(C._mrb_ptr(v.Value().v))} }
@@ -338,7 +350,7 @@ func (ci MrbCallInfo) TargetClassSet(tc RClass) {
 	C.mrb_vm_ci_target_class_set(ci.p, tc.p)
 }
 
-// Env retreives env from call info
+// Env returns env from call info
 func (ci MrbCallInfo) Env() REnv {
 	return REnv{C.mrb_vm_ci_env(ci.p), nil}
 }

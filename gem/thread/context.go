@@ -120,7 +120,8 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func (c *Context) worker() {
-	c.result, c.err = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
+	c.result = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
+	c.err = c.mrb.Err()
 	c.mrb.GCProtect(c.result)
 
 	c.mrb.WaitGroup.Done()

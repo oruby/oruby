@@ -23,37 +23,40 @@ func iifmb(v bool) C.mrb_bool {
 	return C.mrb_bool(false)
 }
 
-// CaptureErrors returns if errors are captured
-func (c *MrbcContext) CaptureErrors() bool { return C._mrbc_capture_errors(c.p) != 0 }
-
-// SetCaptureErrors turns error capturing on or off
-func (c *MrbcContext) SetCaptureErrors(b bool) { C._mrbc_set_capture_errors(c.p, iifmb(b)) }
-
-// DumpResult returns if result is dumped
-func (c *MrbcContext) DumpResult() bool { return C._mrbc_dump_result(c.p) != 0 }
-
-// SetDumpResult turns  result dump on or off
-func (c *MrbcContext) SetDumpResult(b bool) { C._mrbc_set_dump_result(c.p, iifmb(b)) }
-
-// NoExec returns if NoExec is turend on
-func (c *MrbcContext) NoExec() bool { return C._mrbc_no_exec(c.p) != 0 }
-
-// SetNoExec returns if NoExec is turned on or off
-func (c *MrbcContext) SetNoExec(b bool) { C._mrbc_set_no_exec(c.p, iifmb(b)) }
-
-func (c *MrbcContext) SetNoExtOps(b bool)   { C._mrbc_set_no_ext_ops(c.p, iifmb(b)) }
-func (c *MrbcContext) SetNoOptimize(b bool) { C._mrbc_set_no_optimize(c.p, iifmb(b)) }
-
-// MrbcContextNew create new context
-func (mrb *MrbState) MrbcContextNew() *MrbcContext {
-	return &MrbcContext{C.mrbc_context_new(mrb.p), mrb}
-}
-
 // LineNo from context
 func (c *MrbcContext) LineNo() int { return int(c.p.lineno) }
 
 // SetLineNo sets lineno in context
 func (c *MrbcContext) SetLineNo(lineno int) { c.p.lineno = C.uint16_t(lineno) }
+
+// CaptureErrors returns if errors are captured
+func (c *MrbcContext) CaptureErrors() bool { return C._mrbc_capture_errors(c.p) != 0 }
+
+// SetCaptureErrors sets error capturing on or off
+func (c *MrbcContext) SetCaptureErrors(b bool) { C._mrbc_set_capture_errors(c.p, iifmb(b)) }
+
+// DumpResult returns if result is dumped
+func (c *MrbcContext) DumpResult() bool { return C._mrbc_dump_result(c.p) != 0 }
+
+// SetDumpResult sets result dump on or off
+func (c *MrbcContext) SetDumpResult(b bool) { C._mrbc_set_dump_result(c.p, iifmb(b)) }
+
+// NoExec returns if NoExec is turend on
+func (c *MrbcContext) NoExec() bool { return C._mrbc_no_exec(c.p) != 0 }
+
+// SetNoExec sets NoExec on or off
+func (c *MrbcContext) SetNoExec(b bool) { C._mrbc_set_no_exec(c.p, iifmb(b)) }
+
+// SetNoOptimize sets NoOptimize on or off
+func (c *MrbcContext) SetNoOptimize(b bool) { C._mrbc_set_no_optimize(c.p, iifmb(b)) }
+
+// SetNoExtOps sets NoExtOps on or off
+func (c *MrbcContext) SetNoExtOps(b bool) { C._mrbc_set_no_ext_ops(c.p, iifmb(b)) }
+
+// MrbcContextNew create new context
+func (mrb *MrbState) MrbcContextNew() *MrbcContext {
+	return &MrbcContext{C.mrbc_context_new(mrb.p), mrb}
+}
 
 // Free MrbcContext
 func (c *MrbcContext) Free() { C.mrbc_context_free(c.mrb.p, c.p) }
@@ -67,7 +70,7 @@ func (c *MrbcContext) Filename(filename string) string {
 
 // PartialHook set parser hook
 func (c *MrbcContext) PartialHook(partialHook PartialHookF) {
-	C.mrbc_context_free(c.mrb.p, c.p)
+	c.mrb.setHook(unsafe.Pointer(c.p), partialHook)
 }
 
 // CleanupLocalVariables clears local variables
@@ -275,7 +278,8 @@ func (p MrbParserState) LState() int { return int(p.p.lstate) }
 // IsNil checks if parser state exists
 func (p MrbParserState) IsNil() bool { return p.p == nil }
 
-// SetS sets parser->s, and parser->send, as used in orbi
+// SetS fills both parser->s, and parser->send, as used in orbi
+// Caller must free string after use, returns closure which frees buffer
 func (p MrbParserState) SetS(s string) func() {
 	if s == "" {
 		C._set_parser_s(p.p, nil)
@@ -306,7 +310,7 @@ func (p MrbParserState) SetB(buf []byte) func() {
 	}
 }
 
-// ParserNew creates new oruby parser state
+// ParserNew creates new parser state
 func (mrb *MrbState) ParserNew() MrbParserState {
 	return MrbParserState{C.mrb_parser_new(mrb.p)}
 }
@@ -348,7 +352,7 @@ func (mrb *MrbState) ParseFile(fileName string, context *MrbcContext) (MrbParser
 	}
 
 	return mrb.ParseString(s, context)
-	// C.mrb_parse_file is never called
+	// C.mrb_parse_file() is never called
 }
 
 // ParseString to oruby parser state
@@ -394,9 +398,9 @@ func (mrb *MrbState) LoadString(s string) (Value, error) {
 	cs := C.CString(s)
 	defer C.free(unsafe.Pointer(cs))
 
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_load_nstring(mrb.p, cs, C.size_t(len(s)))
-	})
+	// Will not throw, sets mrb->exc exception
+	ret := Value{C.mrb_load_nstring(mrb.p, cs, C.size_t(len(s)))}
+	return ret, mrb.Err()
 
 	// pure C.mrb_load_string() is never called
 }
@@ -420,23 +424,18 @@ func (mrb *MrbState) LoadStringCxt(s string, context *MrbcContext) (Value, error
 // LoadBytesCxt loads bytes into oruby context
 func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbcContext) (Value, error) {
 	if len(buf) == 0 {
-		return mrb.nilValue, errors.New("empty buffer")
+		return nilValue, errors.New("empty buffer")
 	}
+	var ret Value
 
-	v, err := mrb.try(func() C.mrb_value {
-		if len(buf) == 0 {
-			return C.mrb_load_string_cxt(mrb.p, nil, context.p)
-		}
-		ret := C.mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p)
+	if len(buf) == 0 {
+		ret = Value{C.mrb_load_string_cxt(mrb.p, nil, context.p)}
+	} else {
+		ret = Value{C.mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p)}
 		runtime.KeepAlive(buf)
-
-		return ret
-	})
-
-	if err != nil {
-		return v, err
 	}
-	return v, mrb.Err()
+
+	return ret, mrb.Err()
 }
 
 // CodedumpAll helper for oruby cmd

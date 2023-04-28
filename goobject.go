@@ -2,127 +2,143 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
-import "fmt"
+import (
+	"fmt"
+)
 
-func (obj RObject) p() *C.struct_RObject { return (*C.struct_RObject)(C._mrb_ptr(obj.v)) }
+func (obj RValue) HasIV() bool {
+	switch obj.Type() {
+	case MrbTTObject, MrbTTClass, MrbTTModule, MrbTTSClass, MrbTTHash, MrbTTCData, MrbTTException:
+		return true
+	default:
+		return false
+	}
+}
+
+func (obj RValue) RObject() RObject {
+	return RObject{(*C.struct_RObject)(C._mrb_ptr(obj.v))}
+}
 
 // Class returns RClassPtr from object
-func (o RObjectPtr) Class() RClassPtr { return RClassPtr{o.p.c} }
+func (o RObject) Class() RClassPtr { return RClassPtr{o.p.c} }
 
 // Dup duplicates object
-func (obj RObject) Dup() RObject {
-	return RObject{C.mrb_obj_dup(obj.mrb.p, obj.v), obj.mrb}
+func (obj RValue) Dup() RValue {
+	return RValue{C.mrb_obj_dup(obj.mrb.p, obj.v), obj.mrb}
 }
 
 // Freeze freeze value
-func (obj RObject) Freeze() RObject {
-	return RObject{C.mrb_obj_freeze(obj.mrb.p, obj.v), obj.mrb}
+func (obj RValue) Freeze() RValue {
+	return RValue{C.mrb_obj_freeze(obj.mrb.p, obj.v), obj.mrb}
 }
 
 // ID returns ruby object id
-func (obj RObject) ID() int { return int(C.mrb_obj_id(obj.v)) }
+func (obj RValue) ID() int { return int(C.mrb_obj_id(obj.v)) }
 
 // Classname returns class name of object
-func (obj RObject) Classname() string {
+func (obj RValue) Classname() string {
 	return C.GoString(C.mrb_obj_classname(obj.mrb.p, obj.v))
 }
 
 // Class returns class of object
-func (obj RObject) Class() RClass {
+func (obj RValue) Class() RClass {
 	return RClass{C.mrb_obj_class(obj.mrb.p, obj.v), obj.mrb}
 }
 
 // IsKindOf checks if object is descendant of c class
-func (obj RObject) IsKindOf(c RClass) bool {
-	result, err := obj.mrb.try(func() C.mrb_value {
-		return C.mrb_bool_value(C.mrb_obj_is_kind_of(obj.mrb.p, obj.v, c.p))
-	})
-	return (err == nil) && (result.Type() != C.MRB_TT_FALSE)
+func (obj RValue) IsKindOf(c RClass) bool {
+	cl := obj.mrb.ClassOf(obj.Value())
+	switch cl.Type() {
+	case MrbTTModule, MrbTTClass, MrbTTIClass, MrbTTSClass:
+		return C.mrb_obj_is_kind_of(obj.mrb.p, obj.v, c.p) != false
+	default:
+		return false
+	}
 }
 
 // Inspect object
-func (obj RObject) Inspect() RString {
-	return RString{RObject{
+func (obj RValue) Inspect() RString {
+	return RString{RValue{
 		C.mrb_obj_inspect(obj.mrb.p, obj.v),
 		obj.mrb,
 	}}
 }
 
 // Clone shallow object
-func (obj RObject) Clone() RObject {
-	return RObject{C.mrb_obj_clone(obj.mrb.p, obj.v), obj.mrb}
+func (obj RValue) Clone() RValue {
+	return RValue{C.mrb_obj_clone(obj.mrb.p, obj.v), obj.mrb}
 }
 
 // RespondTo checks if object responds to method id
-func (obj RObject) RespondTo(mid MrbSym) bool {
+func (obj RValue) RespondTo(mid MrbSym) bool {
 	return C.mrb_respond_to(obj.mrb.p, obj.v, C.mrb_sym(mid)) != false
 }
 
 // IsInstanceOf checks if oruby object is direct instance of class
-func (obj RObject) IsInstanceOf(klass RClass) bool {
+func (obj RValue) IsInstanceOf(klass RClass) bool {
 	return C.mrb_obj_is_instance_of(obj.mrb.p, obj.v, klass.p) != false
 }
 
 // Call oruby function, return Go interface,
 // in case of error, Call returns NilValue and the error is in mrb.Err()
-func (obj RObject) Call(name string, args ...interface{}) RObject {
-	return RObject{obj.mrb.Call(obj, name, args...).v, obj.mrb}
+func (obj RValue) Call(name string, args ...interface{}) RValue {
+	return RValue{obj.mrb.Call(obj, name, args...).v, obj.mrb}
 }
 
 // Funcall oruby function, return Go interface,
-func (obj RObject) Funcall(name string, args ...interface{}) (RObject, error) {
+func (obj RValue) Funcall(name string, args ...interface{}) (RValue, error) {
 	result, err := obj.mrb.Funcall(obj, obj.mrb.Intern(name), args...)
 	if err != nil {
-		return RObject{C.mrb_nil_value(), obj.mrb}, err
+		return RValue{C.mrb_nil_value(), obj.mrb}, err
 	}
-	return RObject{result.v, obj.mrb}, err
+	return RValue{result.v, obj.mrb}, err
 }
 
 // InstanceVariables list
-func (obj RObject) InstanceVariables() RArray {
+func (obj RValue) InstanceVariables() RArray {
 	return obj.Call("instance_variables").RArray()
 }
 
 // IVGet get instance variable
-func (obj RObject) IVGet(sym MrbSym) Value {
+func (obj RValue) IVGet(sym MrbSym) Value {
 	return Value{C.mrb_iv_get(obj.mrb.p, obj.v, C.mrb_sym(sym))}
 }
 
 // IVSet set instance variable
-func (obj RObject) IVSet(sym MrbSym, v MrbValue) error {
+func (obj RValue) IVSet(sym MrbSym, v MrbValue) error {
 	return obj.mrb.tryE(func() {
 		C.mrb_iv_set(obj.mrb.p, obj.Value().v, C.mrb_sym(sym), v.Value().v)
 	})
 }
 
 // SetIV set instance variable as string
-func (obj RObject) SetIV(name string, v interface{}) {
+func (obj RValue) SetIV(name string, v interface{}) {
 	_ = obj.IVSet(obj.mrb.Intern(name), obj.mrb.Value(v))
 }
 
 // GetIV gets instance variable by string name
-func (obj RObject) GetIV(name string) RObject {
-	return RObject{obj.IVGet(obj.mrb.Intern(name)).v, obj.mrb}
+func (obj RValue) GetIV(name string) RValue {
+	return RValue{obj.IVGet(obj.mrb.Intern(name)).v, obj.mrb}
 }
 
 // IVDefined instance variable defined
-func (obj RObject) IVDefined(sym MrbSym) bool {
+func (obj RValue) IVDefined(sym MrbSym) bool {
 	return C.mrb_iv_defined(obj.mrb.p, obj.v, C.mrb_sym(sym)) != false
 }
 
 // IVRemove remove instance variable
-func (obj RObject) IVRemove(sym MrbSym) Value {
+func (obj RValue) IVRemove(sym MrbSym) Value {
 	return Value{C.mrb_iv_remove(obj.mrb.p, obj.v, C.mrb_sym(sym))}
 }
 
 // Data returns object interface as Go interface
-func (obj RObject) Data() interface{} {
+func (obj RValue) Data() interface{} {
 	return obj.mrb.Data(obj)
 }
 
 // RArray returns Array object
 // it panics if object is not RArray type
-func (obj RObject) RArray() RArray {
+func (obj RValue) RArray() RArray {
 	if obj.Type() != MrbTTArray {
 		panic(fmt.Sprintf("array expected, but object of type %v", obj.mrb.TypeName(obj)))
 	}
@@ -131,7 +147,7 @@ func (obj RObject) RArray() RArray {
 
 // RHash returns Hash object
 // it panics if object is not RArray type
-func (obj RObject) RHash() RHash {
+func (obj RValue) RHash() RHash {
 	if obj.Type() != MrbTTHash {
 		panic(fmt.Sprintf("hash expected, but object of type %v", obj.mrb.TypeName(obj)))
 	}
@@ -139,12 +155,12 @@ func (obj RObject) RHash() RHash {
 }
 
 // String return object value as string
-func (obj RObject) String() string {
+func (obj RValue) String() string {
 	return obj.mrb.String(obj.Value())
 }
 
 // Int return value as int
-func (obj RObject) Int() int {
+func (obj RValue) Int() int {
 	result, err := obj.mrb.Integer(obj.Value())
 	if err != nil {
 		panic(err)
@@ -153,10 +169,10 @@ func (obj RObject) Int() int {
 }
 
 // Bool return value as false for nil and false, and true otherwise
-func (obj RObject) Bool() bool { return obj.Value().Bool() }
+func (obj RValue) Bool() bool { return obj.Value().Bool() }
 
 // Float64 return value as float64
-func (obj RObject) Float64() float64 {
+func (obj RValue) Float64() float64 {
 	result, err := obj.mrb.Float(obj.Value())
 	if err != nil {
 		panic(err)
@@ -166,16 +182,18 @@ func (obj RObject) Float64() float64 {
 
 // TypeName return value ruby type as string
 func (mrb *MrbState) TypeName(v MrbValue) string {
-	return TypeName(v)
+	t := v.Type()
+
+	if t == MrbTTFalse && v.IsNil() {
+		return "Nil"
+	}
+	return TypeName(t)
 }
 
 // TypeName return value ruby type as string
-func TypeName(v MrbValue) string {
-	switch v.Type() {
+func TypeName(v Type) string {
+	switch v {
 	case MrbTTFalse:
-		if v.IsNil() {
-			return "Nil"
-		}
 		return "False"
 	case MrbTTTrue:
 		return "True"
@@ -232,6 +250,6 @@ func TypeName(v MrbValue) string {
 	case MrbTTBigInt:
 		return "Bigint"
 	default:
-		return fmt.Sprintf("(unknown type %v)", v.Type())
+		return fmt.Sprintf("(unknown type %v)", v)
 	}
 }

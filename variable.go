@@ -36,28 +36,28 @@ func (mrb *MrbState) IVNameSymCheck(sym MrbSym) {
 }
 
 // ObjIVGet returns instance vaiable
-func (mrb *MrbState) ObjIVGet(obj RObject, sym MrbSym) Value {
-	return Value{C.mrb_obj_iv_get(mrb.p, obj.p(), C.mrb_sym(sym))}
+func (mrb *MrbState) ObjIVGet(obj RValue, sym MrbSym) Value {
+	return Value{C.mrb_obj_iv_get(mrb.p, obj.RObject().p, C.mrb_sym(sym))}
 }
 
 // ObjIVSet set object instance variable
-func (mrb *MrbState) ObjIVSet(obj RObject, sym MrbSym, v MrbValue) {
-	C.mrb_obj_iv_set(mrb.p, obj.p(), C.mrb_sym(sym), v.Value().v)
+func (mrb *MrbState) ObjIVSet(obj RValue, sym MrbSym, v MrbValue) {
+	C.mrb_obj_iv_set(mrb.p, obj.RObject().p, C.mrb_sym(sym), v.Value().v)
 }
 
 // ObjIVDefined is object instance variable defined
-func (mrb *MrbState) ObjIVDefined(obj RObject, sym MrbSym) bool {
-	return C.mrb_obj_iv_defined(mrb.p, obj.p(), C.mrb_sym(sym)) != false
+func (mrb *MrbState) ObjIVDefined(obj RValue, sym MrbSym) bool {
+	return C.mrb_obj_iv_defined(mrb.p, obj.RObject().p, C.mrb_sym(sym)) != false
 }
 
 // GetIV get instance variable
 func (mrb *MrbState) GetIV(obj MrbValue, name string) Value {
-	return Value{C.mrb_iv_get(mrb.p, obj.Value().v, C.mrb_sym(mrb.Intern(name)))}
+	return Value{C.mrb_iv_get(mrb.p, obj.Value().v, C.mrb_sym(mrb.Sym(name)))}
 }
 
 // SetIV get instance variable
 func (mrb *MrbState) SetIV(obj MrbValue, name string, v interface{}) {
-	err := mrb.IVSet(obj, mrb.Intern(name), mrb.Value(v))
+	err := mrb.IVSet(obj, mrb.Sym(name), mrb.Value(v))
 	if err != nil {
 		panic(err)
 	}
@@ -68,17 +68,25 @@ func (mrb *MrbState) IVGet(obj MrbValue, sym MrbSym) Value {
 	return Value{C.mrb_iv_get(mrb.p, obj.Value().v, C.mrb_sym(sym))}
 }
 
+func (mrb *MrbState) HasIV(obj MrbValue) bool {
+	switch obj.Type() {
+	case MrbTTObject,
+		MrbTTClass,
+		MrbTTModule,
+		MrbTTSClass,
+		MrbTTHash,
+		MrbTTCData,
+		MrbTTException:
+		return true
+	default:
+		return false
+	}
+	// C.obj_iv_p() ported
+}
+
 // IVSet set instance variable
 func (mrb *MrbState) IVSet(obj MrbValue, sym MrbSym, v MrbValue) error {
-	switch obj.Type() {
-	case C.MRB_TT_OBJECT:
-	case C.MRB_TT_CLASS:
-	case C.MRB_TT_MODULE:
-	case C.MRB_TT_SCLASS:
-	case C.MRB_TT_HASH:
-	case C.MRB_TT_DATA:
-	case C.MRB_TT_EXCEPTION:
-	default:
+	if !mrb.HasIV(obj) {
 		return EArgumentError("cannot set instance variable")
 	}
 
@@ -112,13 +120,12 @@ func (mrb *MrbState) ConstDefinedAt(mod MrbValue, id MrbSym) bool {
 
 // ModConstants get mod constants
 func (mrb *MrbState) ModConstants(mod MrbValue) RArray {
-	m := mrb.ClassPtr(mod.Value())
-	return m.Call("constants").RArray()
+	return ary(C.mrb_mod_constants(mrb.p, mod.Value().v), mrb)
 }
 
 // FGlobalVariables list
 func (mrb *MrbState) FGlobalVariables() RArray {
-	return mrb.KernelModule().Call("global_variables").RArray()
+	return ary(C.mrb_f_global_variables(mrb.p, nilValue.v), mrb)
 }
 
 // GVGet get global variable
@@ -127,8 +134,8 @@ func (mrb *MrbState) GVGet(sym MrbSym) Value {
 }
 
 // GVGetObj get global variable as RArray
-func (mrb *MrbState) GVGetObj(sym MrbSym) RObject {
-	return RObject{C.mrb_gv_get(mrb.p, C.mrb_sym(sym)), mrb}
+func (mrb *MrbState) GVGetObj(sym MrbSym) RValue {
+	return RValue{C.mrb_gv_get(mrb.p, C.mrb_sym(sym)), mrb}
 }
 
 // GVSet set global variable
@@ -141,28 +148,27 @@ func (mrb *MrbState) GVRemove(sym MrbSym) { C.mrb_gv_remove(mrb.p, C.mrb_sym(sym
 
 // SetGV set global variable with name string
 func (mrb *MrbState) SetGV(name string, val interface{}) {
-	mrb.GVSet(mrb.Intern(name), mrb.Value(val))
+	mrb.GVSet(mrb.Sym(name), mrb.Value(val))
 }
 
 // GetGV get global variable with name
 func (mrb *MrbState) GetGV(name string) Value {
-	return mrb.GVGet(mrb.Intern(name))
+	return mrb.GVGet(mrb.Sym(name))
 }
 
-// GetObjGV get global variable with name, as RObject
-func (mrb *MrbState) GetObjGV(name string) RObject {
-	return RObject{mrb.GVGet(mrb.Intern(name)).v, mrb}
+// GetObjGV get global variable with name, as RValue
+func (mrb *MrbState) GetObjGV(name string) RValue {
+	return RValue{mrb.GVGet(mrb.Sym(name)).v, mrb}
 }
 
 // ModClassVariables list module class variables
 func (mrb *MrbState) ModClassVariables(v MrbValue) RArray {
-	m := mrb.ClassPtr(v.Value())
-	return m.Call("class_variables").RArray()
+	return ary(C.mrb_mod_class_variables(mrb.p, v.Value().v), mrb)
 }
 
 // ModCVGet module get class variable
 func (mrb *MrbState) ModCVGet(c RClass, sym MrbSym) Value {
-	return c.Call("class_variable_get", sym).Value()
+	return Value{C.mrb_mod_cv_get(mrb.p, c.p, C.mrb_sym(sym))}
 }
 
 // CVGet get class variable
@@ -182,7 +188,7 @@ func (mrb *MrbState) CVSet(mod MrbValue, sym MrbSym, v MrbValue) {
 
 // ModCVDefined module variable defined
 func (mrb *MrbState) ModCVDefined(c RClass, sym MrbSym) bool {
-	return c.Call("class_variable_defined?", sym).Bool()
+	return C.mrb_mod_cv_defined(mrb.p, c.p, C.mrb_sym(sym)) != false
 }
 
 // CVDefined class variable defined

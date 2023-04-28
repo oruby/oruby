@@ -1,14 +1,15 @@
 package env
 
 import (
-	"github.com/oruby/oruby"
 	"os"
 	"strings"
+
+	"github.com/oruby/oruby"
 )
 
 func init() {
 	oruby.Gem("env", func(mrb *oruby.MrbState) interface{} {
-		env := mrb.HashNew().RObject
+		env := mrb.HashNew().RValue
 		mrb.DefineSingletonMethod(env, "values", envValues, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "value?", envHasValue, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "has_value?", envHasValue, mrb.ArgsReq(1))
@@ -130,5 +131,3 @@ func envDelete(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	return mrb.StrNew(v)
 }
-
-

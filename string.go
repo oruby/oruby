@@ -5,7 +5,7 @@ import "C"
 import "unsafe"
 
 // RString struct
-type RString struct{ RObject }
+type RString struct{ RValue }
 
 // RStringPtr struct holds pointer to C API RString struct
 type RStringPtr struct{ p *C.struct_RString }
@@ -15,10 +15,6 @@ type RStringEmbed struct{ p *C.struct_RStringEmbed }
 
 // Ptr embeds raw mruby C API RString pointer
 func (a RString) Ptr() RStringPtr { return RStringPtr{(*C.struct_RString)(C._mrb_ptr(a.v))} }
-
-// string
-// func IS_EVSTR(p, e string) bool
-// extern const char mrb_digitmap[]
 
 // MrbStrPtr returns RString from MrbValue interface
 func MrbStrPtr(s MrbValue) RStringPtr {
@@ -64,7 +60,7 @@ func (mrb *MrbState) MrbStrIndex(str MrbValue, s string, offset int) int {
 	return int(C.mrb_str_index(mrb.p, str.Value().v, cstr, C.mrb_int(len(s)), C.mrb_int(offset)))
 }
 
-// StrConcat appends self to other. Returns self as a concatenated string
+// StrConcat appends self to other string. Returns self as a concatenated string
 func (mrb *MrbState) StrConcat(s1, s2 MrbValue) { C.mrb_str_concat(mrb.p, s1.Value().v, s2.Value().v) }
 
 // StrPlus Adds two strings together.
@@ -74,7 +70,7 @@ func (mrb *MrbState) StrPlus(s1, s2 MrbValue) Value {
 
 // PtrToStr represents pointer as a string
 func (mrb *MrbState) PtrToStr(p uintptr) RString {
-	return RString{RObject{
+	return RString{RValue{
 		C._mrb_ptr_to_str(mrb.p, C.uintptr_t(p)),
 		mrb,
 	}}
@@ -83,7 +79,7 @@ func (mrb *MrbState) PtrToStr(p uintptr) RString {
 
 // ObjAsString Returns an object as a Ruby string
 func (mrb *MrbState) ObjAsString(obj MrbValue) RString {
-	return RString{RObject{
+	return RString{RValue{
 		C.mrb_obj_as_string(mrb.p, obj.Value().v),
 		mrb,
 	}}
@@ -105,7 +101,7 @@ func (mrb *MrbState) EnsureStringType(str MrbValue) RString {
 		panic(mrb.TypeName(str) + " cannot be converted to String")
 	}
 
-	return RString{RObject{
+	return RString{RValue{
 		str.Value().v,
 		mrb,
 	}}
@@ -118,11 +114,6 @@ func (mrb *MrbState) StringType(str MrbValue) RString {
 	// C.mrb_string_type() is never called
 }
 
-// CheckStringType checks string type
-func (mrb *MrbState) CheckStringType(str MrbValue) Value {
-	return Value{C.mrb_check_string_type(mrb.p, str.Value().v)}
-}
-
 // StrBufNew string new with buffer
 // obsolete: user StrNewCapa
 func (mrb *MrbState) StrBufNew(capa int) RString {
@@ -131,7 +122,7 @@ func (mrb *MrbState) StrBufNew(capa int) RString {
 
 // StrNewCapa string new with buffer
 func (mrb *MrbState) StrNewCapa(capa int) RString {
-	return RString{RObject{
+	return RString{RValue{
 		C.mrb_str_new_capa(mrb.p, C.mrb_int(capa)),
 		mrb,
 	}}
@@ -228,7 +219,7 @@ func (mrb *MrbState) StrToCstr(str MrbValue) string {
 	return C.GoStringN(C.mrb_str_to_cstr(mrb.p, str.Value().v), C.int(RStringLen(str)))
 }
 
-// Bytes returns a bytes from ruby MRbValue interface
+// Bytes returns a bytes from ruby MrbValue interface
 // MrbValue must be of string type, or function panics
 func (mrb *MrbState) Bytes(str MrbValue) []byte {
 	if !MrbStringP(str) {

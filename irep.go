@@ -10,13 +10,15 @@ import (
 )
 
 // enum irep_pool_type
+type IrepPoolType uint32
+
 const (
-	IrepTtStr    = 0 /* string (need free) */
-	IrepTtSstr   = 2 /* string (static) */
-	IrepTtInt32  = 1 /* 32bit integer */
-	IrepTtInt64  = 3 /* 64bit integer */
-	IrepTtBigint = 7 /* big integer (not yet supported) */
-	IrepTtFloat  = 5 /* float (double/float) */
+	IrepTtStr    IrepPoolType = 0 /* string (need free) */
+	IrepTtSstr   IrepPoolType = 2 /* string (static) */
+	IrepTtInt32  IrepPoolType = 1 /* 32bit integer */
+	IrepTtInt64  IrepPoolType = 3 /* 64bit integer */
+	IrepTtBigint IrepPoolType = 7 /* big integer (not yet supported) */
+	IrepTtFloat  IrepPoolType = 5 /* float (double/float) */
 )
 
 const (
@@ -28,8 +30,8 @@ type MrbPoolValue struct {
 	v *C.mrb_pool_value
 }
 
-func (pv MrbPoolValue) Type() uint32 {
-	return uint32(pv.v.tt) & 7
+func (pv MrbPoolValue) Type() IrepPoolType {
+	return IrepPoolType(uint32(pv.v.tt) & 7)
 }
 
 func (pv MrbPoolValue) IsString() bool {
@@ -38,7 +40,7 @@ func (pv MrbPoolValue) IsString() bool {
 }
 
 func (pv MrbPoolValue) IsStr() bool {
-	return uint32(pv.v.tt)&3 == IrepTtStr
+	return IrepPoolType(uint32(pv.v.tt)&3) == IrepTtStr
 }
 
 func (pv MrbPoolValue) IsSStr() bool {
@@ -90,16 +92,15 @@ func (mrb *MrbState) AddIrep() MrbIrep {
 //
 // @param buffer []byte - irep code, expected as a literal
 func (mrb *MrbState) LoadIrep(buffer []byte) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		bufLen := len(buffer)
-		if bufLen == 0 {
-			return C.mrb_load_irep(mrb.p, nil)
-		}
-		ret := C.mrb_load_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen))
+	var ret Value
+	bufLen := len(buffer)
+	if bufLen == 0 {
+		ret = Value{C.mrb_load_irep(mrb.p, nil)}
+	} else {
+		ret = Value{C.mrb_load_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen))}
 		runtime.KeepAlive(buffer)
-
-		return ret
-	})
+	}
+	return ret, mrb.Err()
 }
 
 // LoadIrepBuf irep load from buffer, same as LoadIrep()
@@ -109,17 +110,17 @@ func (mrb *MrbState) LoadIrepBuf(buffer []byte) (Value, error) {
 
 // LoadIrepCxt irep api
 func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbcContext) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		bufLen := len(buffer)
-		if bufLen == 0 {
-			return C.mrb_load_irep_cxt(mrb.p, nil, context.p)
-		}
+	var ret Value
+	bufLen := len(buffer)
 
-		ret := C.mrb_load_irep_buf_cxt(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), context.p)
+	if bufLen == 0 {
+		ret = Value{C.mrb_load_irep_cxt(mrb.p, nil, context.p)}
+	} else {
+		ret = Value{C.mrb_load_irep_buf_cxt(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), context.p)}
 		runtime.KeepAlive(buffer)
+	}
 
-		return ret
-	})
+	return ret, mrb.Err()
 }
 
 // LoadIrepBuf for context

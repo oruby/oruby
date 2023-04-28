@@ -138,7 +138,7 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	source := args.Item(0)
 	options := args.Item(1)
-	obj := mrb.RObject(self)
+	obj := mrb.RValue(self)
 
 	if reg, ok := mrb.Data(source).(*regexp.Regexp); ok {
 		// Source is Go regex, with prepared source
@@ -228,7 +228,7 @@ func matchGoValuesAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	obj := mrb.RObject(self)
+	obj := mrb.RValue(self)
 	source := obj.GetIV("@source").String()
 	options := obj.GetIV("@options").Int()
 
@@ -264,7 +264,7 @@ func regexToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	obj := mrb.RObject(self)
+	obj := mrb.RValue(self)
 	source := obj.GetIV("@source").String()
 	options := obj.GetIV("@options").Int()
 
@@ -348,8 +348,7 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	// Yield if block given
 	if !block.IsNil() && !matchData.IsNil() {
-		ret, _ := mrb.Yield(block, matchData)
-		return ret
+		return mrb.Yield(block, matchData)
 	}
 
 	return matchData

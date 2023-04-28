@@ -1,10 +1,11 @@
 package signal
 
 import (
-	"github.com/oruby/oruby"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/oruby/oruby"
 )
 
 func TestTrap(t *testing.T) {
@@ -22,7 +23,7 @@ func TestTrap(t *testing.T) {
 
 	v := mrb.GetGV("$testv")
 
-	if !v.IsFixnum() || v.Int() != 0 {
+	if !v.IsInteger() || v.Int() != 0 {
 		t.Fatalf("expected 0 got %v", mrb.Inspect(v))
 	}
 
@@ -136,7 +137,7 @@ func TestSignalExceptions(t *testing.T) {
 	}
 
 	eInterrupt := mrb.ClassGet("Interrupt")
-	e, err = eInterrupt.New( "Message2")
+	e, err = eInterrupt.New("Message2")
 	if err != nil {
 		t.Fatal(err)
 	}

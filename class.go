@@ -24,7 +24,7 @@ type RClass struct {
 func (c RClass) Value() Value { return mrbObjValue(unsafe.Pointer(c.p)) }
 
 // Type for MrbValue interface
-func (c RClass) Type() int { return c.Value().Type() }
+func (c RClass) Type() Type { return c.Value().Type() }
 
 // IsNil for MrbValue interface
 func (c RClass) IsNil() bool { return c.p == nil }
@@ -33,9 +33,6 @@ func (c RClass) String() string { return c.Name() }
 
 // Ptr for MrbValue interface
 func (c RClass) Ptr() RClassPtr { return RClassPtr{c.p} }
-
-// RObjectPtr for MrbValue interface
-func (c RClass) RObjectPtr() RObjectPtr { return RObjectPtr{(*C.struct_RObject)(unsafe.Pointer(c.p))} }
 
 // MrbClassPtr returns RClassPtr struct (without mrb reference) from MrbValue
 func MrbClassPtr(v MrbValue) RClassPtr { return RClassPtr{(*C.struct_RClass)(C._mrb_ptr(v.Value().v))} }
@@ -50,6 +47,7 @@ func MrbClassValue(c RClass) Value { return c.Value() }
 func RClassSuper(c RClass) RClass { return RClass{c.p.super, c.mrb} }
 
 // ClassOf returns class of value as RClass
+// Note: this function calls mrb_class API
 func (mrb *MrbState) ClassOf(v MrbValue) RClass {
 	return RClass{C.mrb_class(mrb.p, v.Value().v), mrb}
 }
@@ -73,11 +71,22 @@ func (mrb *MrbState) Class(name string, outer ...RClass) RClass {
 // State returns MrbState from class
 func (c RClass) State() *MrbState { return c.mrb }
 
+const (
+	MrbFlClassIsPrepended = 1 << 19
+	MrbFlClassIsOrigin    = 1 << 18
+	MrbFlClassIsInherited = 1 << 17
+	MrbTTINstanceMask     = 0xFF
+)
+
+func (c RClass) Origin() RClass {
+	return RClass{C._mrb_class_origin(c.p), c.mrb}
+}
+
 // MrbSetInstanceTT sets instance type
-func MrbSetInstanceTT(c RClass, tt uint32) { C._MRB_SET_INSTANCE_TT(c.p, C.uint32_t(tt)) }
+func MrbSetInstanceTT(c RClass, tt Type) { C._MRB_SET_INSTANCE_TT(c.p, C.uint32_t(tt)) }
 
 // MrbInstanceTT returns class instance type
-func MrbInstanceTT(c RClass) uint32 { return uint32(C._MRB_INSTANCE_TT(c.p)) }
+func MrbInstanceTT(c RClass) Type { return Type(C._MRB_INSTANCE_TT(c.p)) }
 
 // DefineClassID define class by symbol
 func (mrb *MrbState) DefineClassID(id MrbSym, c RClass) RClass {
@@ -124,6 +133,7 @@ func (mrb *MrbState) DefineMethodFuncID(c RClass, mid MrbSym, f interface{}) {
 	}
 
 	C._mrb_proc_new_cfunc(mrb.p, c.p, C.mrb_sym(mid), C.int(env), C.mrb_aspec(aspec))
+	// C.mrb_define_method_id() never called
 }
 
 // DefineClassFuncID define class func
@@ -148,11 +158,12 @@ func (mrb *MrbState) MethodSearchVM(cl RClass, id MrbSym) MrbMethodT {
 
 // MethodSearch find method using symbol, and error if not found
 func (mrb *MrbState) MethodSearch(cl RClass, id MrbSym) (MrbMethodT, error) {
-	var m MrbMethodT
-	err := mrb.tryE(func() {
-		m = MrbMethodT{C.mrb_method_search(mrb.p, cl.p, C.mrb_sym(id))}
-	})
-	return m, err
+	m := mrb.MethodSearchVM(cl, id)
+	if C._MRB_METHOD_UNDEF_P(C.mrb_method_t(m.m)) != false {
+		return m, ENameError("undefined method '%v' for class %v", id, cl.Name())
+	}
+	return m, nil
+	// C.mrb_method_search() never called as it raises C side exception
 }
 
 // MethodExists find method using symbol, and error if not found

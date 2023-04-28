@@ -4,7 +4,7 @@ package oruby
 import "C"
 
 // RArray struct
-type RArray struct{ RObject }
+type RArray struct{ RValue }
 
 // RArrayPtr contains pointer to internal RArray C API struct
 type RArrayPtr struct{ p *C.struct_RArray }
@@ -120,7 +120,7 @@ func (mrb *MrbState) AryModify(a RArray) { C.mrb_ary_modify(mrb.p, a.p()) }
 
 // AryNewCapa Set new array with capacity capa
 func (mrb *MrbState) AryNewCapa(capa int) RArray {
-	return RArray{RObject{
+	return RArray{RValue{
 		C.mrb_ary_new_capa(mrb.p, C.mrb_int(capa)),
 		mrb,
 	}}

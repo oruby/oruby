@@ -1,11 +1,12 @@
 package assert
 
 import (
-	"github.com/oruby/oruby"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/oruby/oruby"
 )
 
 // Expect is simple testing function which raises error if condition is not met
@@ -17,7 +18,7 @@ func Expect(t *testing.T, to bool, eformat string, args ...interface{}) {
 }
 
 func isIncluded(v1 interface{}, in ...interface{}) bool {
-	for _,v2 := range in {
+	for _, v2 := range in {
 		if reflect.DeepEqual(toInterface(v1), toInterface(v2)) {
 			return true
 		}
@@ -54,7 +55,7 @@ func NotInclude(t *testing.T, v1 interface{}, in ...interface{}) {
 
 func toInterface(v interface{}) interface{} {
 	switch t := v.(type) {
-	case oruby.RObject:
+	case oruby.RValue:
 		return t.Interface()
 	case oruby.Value:
 		switch t.Type() {
@@ -84,7 +85,7 @@ func toInterface(v interface{}) interface{} {
 func Equal(t *testing.T, v1, v2 interface{}) {
 	t.Helper()
 
-	if tmp, ok := v2.(oruby.RObject); ok {
+	if tmp, ok := v2.(oruby.RValue); ok {
 		v2 = tmp.Interface()
 	}
 
@@ -125,6 +126,6 @@ func Error(t *testing.T, i error, eformat string, args ...interface{}) {
 }
 
 // Is64bit function returns true if go runtime is 64 bit
-func Is64bit() bool { 
-	return strings.Contains(runtime.GOARCH, "64") 
+func Is64bit() bool {
+	return strings.Contains(runtime.GOARCH, "64")
 }

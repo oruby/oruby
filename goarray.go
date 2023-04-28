@@ -4,7 +4,7 @@ package oruby
 import "C"
 
 func ary(v C.mrb_value, mrb *MrbState) RArray {
-	return RArray{RObject{v, mrb}}
+	return RArray{RValue{v, mrb}}
 }
 
 // Ptr returns RArrayPtr from RArray
@@ -65,7 +65,7 @@ func (a RArray) Entry(offset int) Value {
 
 // Splice replace subsequence of an array
 func (a RArray) Splice(head, length int, rpl MrbValue) RArray {
-	return RArray{RObject{
+	return RArray{RValue{
 		C.mrb_ary_splice(a.mrb.p, a.v, C.mrb_int(head), C.mrb_int(length), rpl.Value().v),
 		a.mrb,
 	}}
@@ -82,12 +82,12 @@ func (a RArray) Clear() RArray {
 	return a
 }
 
-// Join join array items to string using separator sep
+// Join array items to string using provided separator
 func (a RArray) Join(separator string) string {
 	return a.mrb.String(Value{C.mrb_ary_join(a.mrb.p, a.v, a.mrb.StringValue(separator).v)})
 }
 
-// Resize update the capacity of the array
+// Resize updates the capacity of the array
 func (a RArray) Resize(newLen int) RArray {
 	a.v = C.mrb_ary_resize(a.mrb.p, a.v, C.mrb_int(newLen))
 	return a

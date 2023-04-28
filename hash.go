@@ -10,7 +10,7 @@ import (
 type RHashPtr struct{ p *C.struct_RHash }
 
 // RHash is oruby object representing ruby hash
-type RHash struct{ RObject }
+type RHash struct{ RValue }
 
 // MrbHashPtr returns RHash from oruby value
 func MrbHashPtr(v Value) RHashPtr { return RHashPtr{(*C.struct_RHash)(C._mrb_ptr(v.v))} }
@@ -20,7 +20,7 @@ func MrbHashValue(hash RHash) Value { return hash.Value() }
 
 // HashNewCapa new hash with capacity capa
 func (mrb *MrbState) HashNewCapa(capa int) RHash {
-	return RHash{RObject{
+	return RHash{RValue{
 		C.mrb_hash_new_capa(mrb.p, C.mrb_int(capa)),
 		mrb,
 	}}
@@ -32,7 +32,7 @@ func (mrb *MrbState) EnsureHashType(hash MrbValue) RHash {
 		panic(mrb.TypeName(hash) + " cannot be converted to Hash")
 	}
 
-	return RHash{RObject{
+	return RHash{RValue{
 		hash.Value().v,
 		mrb,
 	}}
@@ -46,7 +46,7 @@ func (mrb *MrbState) CheckHashType(hash MrbValue) Value {
 
 // HashNew initializes a new hash
 func (mrb *MrbState) HashNew() RHash {
-	return RHash{RObject{
+	return RHash{RValue{
 		C.mrb_hash_new(mrb.p),
 		mrb,
 	}}
@@ -118,8 +118,8 @@ func (mrb *MrbState) RHashIfNone(h MrbValue) Value {
 	return mrb.IVGet(h, mrb.Intern("ifnone"))
 }
 
-// RhashProcDefault alias for RHashIfNone
-func (mrb *MrbState) RhashProcDefault(h MrbValue) Value {
+// RHashProcDefault alias for RHashIfNone
+func (mrb *MrbState) RHashProcDefault(h MrbValue) Value {
 	return mrb.RHashIfNone(h)
 }
 
@@ -153,7 +153,7 @@ func (mrb *MrbState) HashValueForEach(hash MrbValue, f MrbHashForeachFuncT) {
 	if !hash.Value().IsHash() {
 		return
 	}
-	mrb.HashForEach(RHash{RObject{hash.Value().v, mrb}}, f)
+	mrb.HashForEach(RHash{RValue{hash.Value().v, mrb}}, f)
 }
 
 // HashForEach wakls the hash item pairs

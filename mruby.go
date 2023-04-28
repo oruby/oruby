@@ -61,9 +61,8 @@ type MrbState struct {
 	injectVMChan   chan RProc
 	injectMainChan chan RProc
 	features       map[string]interface{} // features stash
-	nilValue       Value                  // cached nil Value
+	callSym        MrbSym                 // cached mrb.Intern("call")
 	afterInitSym   MrbSym                 // cached mrb.Intern("after_init")
-
 }
 
 // NewCore create state is MrbState without gems,
@@ -88,12 +87,13 @@ func NewCore() (*MrbState, error) {
 		nil,
 		nil,
 		make(map[string]interface{}),
-		Value{C.mrb_nil_value()},
+		0,
 		0,
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
-	mrb.afterInitSym = mrb.Intern("after_init")
+	mrb.afterInitSym = mrb.Sym("after_init")
+	mrb.callSym = mrb.Sym("call")
 
 	// Store *MrbState pointer, so it can be retrieved from C callbacks
 	registerState(mrb)
@@ -113,7 +113,7 @@ func mrbFinalizer(mrb *MrbState) {
 // MrbValue is interface type which can return oruby value
 type MrbValue interface {
 	Value() Value
-	Type() int
+	Type() Type
 	IsNil() bool
 }
 
@@ -124,50 +124,50 @@ type Value struct{ v C.mrb_value }
 func (v Value) Value() Value { return v }
 
 // Type returns oruby TT type of value
-func (v Value) Type() int { return int(C._mrb_type(v.v)) }
+func (v Value) Type() Type { return Type(v.v.tt) }
 
 // IsNil Checks if oruby value is nil value
 func (v Value) IsNil() bool { return C._mrb_is_nil(v.v) != false }
 
 // IsHash Checks if oruby value is hash value
-func (v Value) IsHash() bool { return C._mrb_type(v.v) == MrbTTHash }
+func (v Value) IsHash() bool { return Type(v.v.tt) == MrbTTHash }
 
 // IsArray Checks if oruby value is array value
-func (v Value) IsArray() bool { return C._mrb_type(v.v) == MrbTTArray }
+func (v Value) IsArray() bool { return Type(v.v.tt) == MrbTTArray }
 
-// IsFixnum Checks if oruby value is Fixnum / int value
-func (v Value) IsFixnum() bool { return C._mrb_type(v.v) == MrbTTFixnum }
+// IsInteger checks if oruby value is integer value
+func (v Value) IsInteger() bool { return Type(v.v.tt) == MrbTTInteger }
 
 // IsInt Checks if oruby value is Int (Fixnum) value
-func (v Value) IsInt() bool { return C._mrb_type(v.v) == MrbTTFixnum }
+func (v Value) IsInt() bool { return Type(v.v.tt) == MrbTTInteger }
 
 // IsFloat Checks if oruby value is float value
-func (v Value) IsFloat() bool { return C._mrb_type(v.v) == MrbTTFloat }
+func (v Value) IsFloat() bool { return Type(v.v.tt) == MrbTTFloat }
 
 // IsSymbol checks if oruby value is Symbol value
-func (v Value) IsSymbol() bool { return C._mrb_type(v.v) == MrbTTSymbol }
+func (v Value) IsSymbol() bool { return Type(v.v.tt) == MrbTTSymbol }
 
 // IsString checks if oruby value is Symbol value
-func (v Value) IsString() bool { return C._mrb_type(v.v) == MrbTTString }
+func (v Value) IsString() bool { return Type(v.v.tt) == MrbTTString }
 
 // IsData checks if oruby value is RData value
-func (v Value) IsData() bool { return C._mrb_type(v.v) == MrbTTCData }
+func (v Value) IsData() bool { return Type(v.v.tt) == MrbTTCData }
 
 // IsProc checks if oruby value is oruby RProc value
-func (v Value) IsProc() bool { return C._mrb_type(v.v) == MrbTTProc }
+func (v Value) IsProc() bool { return Type(v.v.tt) == MrbTTProc }
 
 // IsClass Checks if oruby value is class value
-func (v Value) IsClass() bool { return C._mrb_type(v.v) == MrbTTClass }
+func (v Value) IsClass() bool { return Type(v.v.tt) == MrbTTClass }
 
 // IsSingletonClass checks if oruby value is singleton class
-func (v Value) IsSingletonClass() bool { return C._mrb_type(v.v) == MrbTTSClass }
+func (v Value) IsSingletonClass() bool { return Type(v.v.tt) == MrbTTSClass }
 
 // IsModule Checks if oruby value is module value
-func (v Value) IsModule() bool { return C._mrb_type(v.v) == MrbTTModule }
+func (v Value) IsModule() bool { return Type(v.v.tt) == MrbTTModule }
 
 // IsBool checks if oruby value is bool value
 func (v Value) IsBool() bool {
-	t := C._mrb_type(v.v)
+	t := v.Type()
 	return t == MrbTTTrue || (t == MrbTTFalse && C._mrb_nil_p(v.v) == false)
 }
 
@@ -218,7 +218,7 @@ type Converter interface {
 type MrbSym uint
 
 // MrbCallInfo call information
-type MrbCallInfo struct{ p *C.struct_mrb_call_info }
+type MrbCallInfo struct{ p *C.mrb_callinfo }
 
 // MrbContext call
 type MrbContext struct {
@@ -240,7 +240,7 @@ func inject_run(idx C.mrb_int) *C.struct_RProc {
 	case <-mrb.exitChan:
 	case proc := <-mrb.injectVMChan:
 		return proc.p
-		// C.mrb_funcall_with_block(mrb.p,proc.p, C.mrb_sym(mrb.Intern("call")), 0, nil, nilValue.v	)
+		// C.mrb_funcall_with_block(mrb.p,proc.p, C.mrb_sym(mrb.callSym), 0, nil, nilValue.v	)
 	default:
 	}
 
@@ -278,10 +278,15 @@ func (mrb *MrbState) startInjector() {
 	atomic.StoreInt32(&mrb.stack, 1)
 	mrb.Unlock()
 
-	// Main therad executor
+	// Main thread executor
 	go func() {
-		for proc := range mrb.injectMainChan {
-			_, _ = mrb.FuncallWithBlock(proc, mrb.Intern("call"))
+		for {
+			select {
+			case proc := <-mrb.injectMainChan:
+				_, _ = mrb.FuncallWithBlock(proc, mrb.callSym)
+			case <-mrb.exitChan:
+				return
+			}
 		}
 	}()
 }
@@ -348,6 +353,11 @@ func New() (*MrbState, error) {
 	return mrb, nil
 }
 
+//export p
+func p(str *C.char) {
+	print(C.GoString(str))
+}
+
 // Value converts Go interface to oruby value
 func (mrb *MrbState) Value(o interface{}) Value {
 	switch v := o.(type) {
@@ -408,6 +418,12 @@ func (mrb *MrbState) Value(o interface{}) Value {
 		ary := mrb.AryNewCapa(len(v))
 		for i := 0; i < len(v); i++ {
 			ary.Push(mrb.StrNew(v[i]))
+		}
+		return ary.Value()
+	case []interface{}:
+		ary := mrb.AryNewCapa(len(v))
+		for i := 0; i < len(v); i++ {
+			ary.Push(mrb.Value(v[i]))
 		}
 		return ary.Value()
 	case []int:
@@ -599,7 +615,7 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 		}
 
 		return func(args ...interface{}) (interface{}, error) {
-			ret, err := mrb.Funcall(o, mrb.Intern("call"), args...)
+			ret, err := mrb.Funcall(o, mrb.callSym, args...)
 			return mrb.Intf(ret), err
 		}
 	case C.MRB_TT_ARRAY:
@@ -649,7 +665,7 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 	case C.MRB_TT_ENV:
 		return REnv{(*C.struct_REnv)(C._mrb_ptr(o.Value().v)), mrb}
 	case C.MRB_TT_FIBER:
-		return RFiber{(*C.struct_RFiber)(C._mrb_ptr(o.Value().v))}
+		return RFiber{o.Value().RBasic()}
 	case C.MRB_TT_DATA:
 		return mrb.DataCheckGetInterface(o)
 	case C.MRB_TT_ISTRUCT:
@@ -689,7 +705,7 @@ func (mrb *MrbState) RunCode(code string, args ...interface{}) error {
 }
 
 // Run executes oruby code string, returning result. Error is in mrb.Err()
-func (mrb *MrbState) Run(code string, args ...interface{}) RObject {
+func (mrb *MrbState) Run(code string, args ...interface{}) RValue {
 	if len(args) > 0 {
 		mrb.DefineGlobalConst("ARGV", mrb.Value(args))
 	}
@@ -698,7 +714,7 @@ func (mrb *MrbState) Run(code string, args ...interface{}) RObject {
 }
 
 // Eval evaluates code string and returns calculated result
-func (mrb *MrbState) Eval(code string) (result RObject, err error) {
+func (mrb *MrbState) Eval(code string) (result RValue, err error) {
 	//	defer errorHandler(&err)
 	mrb.ExcClear()
 
@@ -708,10 +724,10 @@ func (mrb *MrbState) Eval(code string) (result RObject, err error) {
 
 	p, err := mrb.ParseString(code, cxt)
 	if err != nil {
-		return RObject{nilValue.v, mrb}, err
+		return RValue{nilValue.v, mrb}, err
 	}
 
-	result = RObject{C.mrb_load_exec(mrb.p, p.p, cxt.p), mrb}
+	result = RValue{C.mrb_load_exec(mrb.p, p.p, cxt.p), mrb}
 
 	// Check parse errors
 	//if p.NErr() > 0 {
@@ -720,15 +736,15 @@ func (mrb *MrbState) Eval(code string) (result RObject, err error) {
 	//		e := p.ErrorBuffer(i)
 	//		estr += fmt.Sprintf("%s:%d:%d: %s\n", mrb.SymString(p.Filename()), e.LineNo, e.Column, e.Message)
 	//	}
-	//	return RObject{nilValue.v, mrb}, errors.New(estr)
+	//	return RValue{nilValue.v, mrb}, errors.New(estr)
 	//}
 	//
 	//proc := C.mrb_generate_code(mrb.p, p.p)
 	//if proc == nil {
-	//	return RObject{nilValue.v, mrb}, mrb.Err()
+	//	return RValue{nilValue.v, mrb}, mrb.Err()
 	//}
 
-	//result = RObject{C.mrb_top_run(mrb.p, proc, C.mrb_top_self(mrb.p), 0), mrb}
+	//result = RValue{C.mrb_top_run(mrb.p, proc, C.mrb_top_self(mrb.p), 0), mrb}
 
 	return result, mrb.Err()
 }
@@ -739,12 +755,12 @@ func (mrb *MrbState) Eval(code string) (result RObject, err error) {
 //mrb_allocf = function(mrb *mrb_state, Buffer unsafe.Pointer, size size_t, ud unsafe.Pointer) Pointer
 
 // Exc returns oruby error
-func (mrb *MrbState) Exc() *RObject {
+func (mrb *MrbState) Exc() *RValue {
 	if mrb.p.exc == nil {
 		return nil
 	}
 
-	return &RObject{C.mrb_obj_value(unsafe.Pointer(mrb.p.exc)), mrb}
+	return &RValue{C.mrb_obj_value(unsafe.Pointer(mrb.p.exc)), mrb}
 }
 
 // ExcClear clear last exception
@@ -840,10 +856,17 @@ func (mrb *MrbState) DefineModule(name string) RClass {
 	return RClass{C.mrb_define_module(mrb.p, cname), mrb}
 }
 
-// SingletonClass creation in oruby state
+// SingletonClass returns the singleton class of an object
+// Returns `NULL` for immediate values,
 func (mrb *MrbState) SingletonClass(obj MrbValue) RClass {
-	v := C.mrb_singleton_class(mrb.p, obj.Value().v)
-	return RClass{(*C.struct_RClass)(C._mrb_ptr(v)), mrb}
+	return RClass{C.mrb_singleton_class_ptr(mrb.p, obj.Value().v), mrb}
+	// C.mrb_singleton_class() never called
+}
+
+// SingletonClassPtr returns the singleton class of an object
+// Returns `NULL` for immediate values,
+func (mrb *MrbState) SingletonClassPtr(obj MrbValue) RClass {
+	return mrb.SingletonClassPtr(obj)
 }
 
 // IncludeModule Include a module in another class or module.
@@ -890,22 +913,43 @@ func (mrb *MrbState) DefineMethod(klass RClass, name string, f MrbFuncT, aspec M
 	// function reference is set as oruby function env
 	idx := mrb.registerFuncIndex(f)
 	C._mrb_method_new_cfunc(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
+	// C.mrb_define_method() called through helper
 }
 
 // DefineClassMethod creates new oruby class method
 func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
 	idx := mrb.registerFuncIndex(f)
 	C._define_class_method(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
+	// C.mrb_define_class_method() called through helper
+}
+
+// DefineClassMethodID creates new oruby class method
+func (mrb *MrbState) DefineClassMethodID(klass RClass, name MrbSym, f MrbFuncT, aspec MrbAspec) {
+	idx := mrb.registerFuncIndex(f)
+	C._define_class_method(mrb.p, klass.p, C.mrb_sym(name), C.int(idx), C.mrb_aspec(aspec))
+	// C.mrb_define_class_method_id() called through helper
 }
 
 // DefineSingletonMethod creates new  method for oruby singleton object
-func (mrb *MrbState) DefineSingletonMethod(obj RObject, name string, f MrbFuncT, aspec MrbAspec) {
+func (mrb *MrbState) DefineSingletonMethod(obj RValue, name string, f MrbFuncT, aspec MrbAspec) {
 	if !obj.Value().HasBasic() {
 		panic("value does not have RBasic object structure")
 	}
 	klass := MrbClassPtr(obj)
 	idx := mrb.registerFuncIndex(f)
 	C._define_class_method(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
+	// C.mrb_define_singleton_method() called through helper
+}
+
+// DefineSingletonMethodID creates new  method for oruby singleton object
+func (mrb *MrbState) DefineSingletonMethodID(obj RValue, name MrbSym, f MrbFuncT, aspec MrbAspec) {
+	if !obj.Value().HasBasic() {
+		panic("value does not have RBasic object structure")
+	}
+	klass := MrbClassPtr(obj)
+	idx := mrb.registerFuncIndex(f)
+	C._define_class_method(mrb.p, klass.p, C.mrb_sym(name), C.int(idx), C.mrb_aspec(aspec))
+	// C.mrb_define_singleton_method_id() called through helper
 }
 
 // DefineModuleFunction creates new oruby module function
@@ -914,11 +958,23 @@ func (mrb *MrbState) DefineModuleFunction(klass RClass, name string, f MrbFuncT,
 	mrb.DefineMethod(klass, name, f, aspec)
 }
 
+// DefineModuleFunctionID creates new oruby module function
+func (mrb *MrbState) DefineModuleFunctionID(klass RClass, name MrbSym, f MrbFuncT, aspec MrbAspec) {
+	mrb.DefineClassMethodID(klass, name, f, aspec)
+	mrb.DefineMethodID(klass, name, f, aspec)
+	// C.mrb_define_module_function_id() never called
+}
+
 // DefineConst creates new oruby class const
 func (mrb *MrbState) DefineConst(klass RClass, name string, value MrbValue) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	C.mrb_define_const(mrb.p, klass.p, cname, value.Value().v)
+}
+
+// DefineConstID creates new oruby class const
+func (mrb *MrbState) DefineConstID(klass RClass, name MrbSym, value MrbValue) {
+	C.mrb_define_const_id(mrb.p, klass.p, C.mrb_sym(name), value.Value().v)
 }
 
 // UndefMethod removes method from oruby class
@@ -930,6 +986,12 @@ func (mrb *MrbState) UndefMethod(klass RClass, name string) {
 	C.mrb_undef_method(mrb.p, klass.p, cname)
 }
 
+// UndefMethodID removes method from oruby class
+// note: function reference stays in matrix
+func (mrb *MrbState) UndefMethodID(klass RClass, name MrbSym) {
+	C.mrb_undef_method_id(mrb.p, klass.p, C.mrb_sym(name))
+}
+
 // UndefClassMethod removes method from oruby class
 // note: function reference stays in matrix
 func (mrb *MrbState) UndefClassMethod(klass RClass, name string) {
@@ -939,8 +1001,14 @@ func (mrb *MrbState) UndefClassMethod(klass RClass, name string) {
 	C.mrb_undef_class_method(mrb.p, klass.p, cname)
 }
 
+// UndefClassMethodID removes method from oruby class
+// note: function reference stays in matrix
+func (mrb *MrbState) UndefClassMethodID(klass RClass, name MrbSym) {
+	C.mrb_undef_class_method_id(mrb.p, klass.p, C.mrb_sym(name))
+}
+
 // ObjNew creates new oruby object
-func (mrb *MrbState) ObjNew(c RClass, args ...interface{}) (RObject, error) {
+func (mrb *MrbState) ObjNew(c RClass, args ...interface{}) (RValue, error) {
 	argv := make([]C.mrb_value, len(args)+1)
 	for i := range args {
 		argv[i] = mrb.Value(args[i]).v
@@ -955,16 +1023,17 @@ func (mrb *MrbState) ObjNew(c RClass, args ...interface{}) (RObject, error) {
 		)
 	})
 
+	runtime.KeepAlive(argv)
+
 	if err != nil {
-		return RObject{}, err
+		return RValue{}, err
 	}
 
-	runtime.KeepAlive(argv)
-	return RObject{v.v, mrb}, err
+	return RValue{v.v, mrb}, err
 }
 
 // ClassNewInstance creates new oruby object, alias for ObjNew
-func (mrb *MrbState) ClassNewInstance(c RClass, args ...interface{}) RObject {
+func (mrb *MrbState) ClassNewInstance(c RClass, args ...interface{}) RValue {
 	result, err := mrb.ObjNew(c, args...)
 	if err != nil {
 		panic(err)
@@ -973,7 +1042,7 @@ func (mrb *MrbState) ClassNewInstance(c RClass, args ...interface{}) RObject {
 }
 
 // NewInstance creates new oruby object, alias for ObjNew
-func (mrb *MrbState) NewInstance(className string, args ...interface{}) RObject {
+func (mrb *MrbState) NewInstance(className string, args ...interface{}) RValue {
 	result, err := mrb.ObjNew(mrb.ClassGet(className), args...)
 	if err != nil {
 		panic(err)
@@ -1000,6 +1069,11 @@ func (mrb *MrbState) ClassDefined(name string) bool {
 	return C.mrb_class_defined(mrb.p, cname) != false
 }
 
+// ClassDefinedID checks if oruby class is defined
+func (mrb *MrbState) ClassDefinedID(name MrbSym) bool {
+	return C.mrb_class_defined_id(mrb.p, C.mrb_sym(name)) != false
+}
+
 // ClassGet returns class by name
 func (mrb *MrbState) ClassGet(name string) RClass {
 	cname := C.CString(name)
@@ -1010,6 +1084,15 @@ func (mrb *MrbState) ClassGet(name string) RClass {
 	}
 
 	return RClass{C.mrb_class_get(mrb.p, cname), mrb}
+}
+
+// ClassGetID returns class by name
+func (mrb *MrbState) ClassGetID(name MrbSym) RClass {
+	if C.mrb_class_defined_id(mrb.p, C.mrb_sym(name)) == false {
+		panic("Unknown class: " + mrb.SymString(name))
+	}
+
+	return RClass{C.mrb_class_get_id(mrb.p, C.mrb_sym(name)), mrb}
 }
 
 // ExcGet returns exception class by name
@@ -1032,7 +1115,12 @@ func (mrb *MrbState) ClassDefinedUnder(outer RClass, name string) bool {
 	return C.mrb_class_defined_under(mrb.p, outer.p, cname) != false
 }
 
-// ClassGetUnder fiinds class by name under outer class
+// ClassDefinedUnderID  Returns true if inner class was defined, and false if the inner class was not defined
+func (mrb *MrbState) ClassDefinedUnderID(outer RClass, name MrbSym) bool {
+	return C.mrb_class_defined_under_id(mrb.p, outer.p, C.mrb_sym(name)) != false
+}
+
+// ClassGetUnder finds class by name under outer class
 func (mrb *MrbState) ClassGetUnder(outer RClass, name string) RClass {
 	if !mrb.ClassDefinedUnder(outer, name) {
 		panic("Unknown class: " + name)
@@ -1043,11 +1131,24 @@ func (mrb *MrbState) ClassGetUnder(outer RClass, name string) RClass {
 	return RClass{C.mrb_class_get_under(mrb.p, outer.p, cname), mrb}
 }
 
+// ClassGetUnderID finds class by name under outer class
+func (mrb *MrbState) ClassGetUnderID(outer RClass, name MrbSym) RClass {
+	if !mrb.ClassDefinedUnderID(outer, name) {
+		panic("Unknown class: " + mrb.SymString(name))
+	}
+	return RClass{C.mrb_class_get_under_id(mrb.p, outer.p, C.mrb_sym(name)), mrb}
+}
+
 // ModuleGet returns module by name
 func (mrb *MrbState) ModuleGet(name string) RClass {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	return RClass{C.mrb_module_get(mrb.p, cname), mrb}
+}
+
+// ModuleGetID returns module by name
+func (mrb *MrbState) ModuleGetID(name MrbSym) RClass {
+	return RClass{C.mrb_module_get_id(mrb.p, C.mrb_sym(name)), mrb}
 }
 
 // ModuleGetUnder returns module by name under outer class
@@ -1057,14 +1158,19 @@ func (mrb *MrbState) ModuleGetUnder(outer RClass, name string) RClass {
 	return RClass{C.mrb_module_get_under(mrb.p, outer.p, cname), mrb}
 }
 
-// NotImplemented function to raise NotImplementedError with current method name
-func (mrb *MrbState) NotImplemented(*MrbState, Value) MrbValue {
-	return mrb.ENotImplementedError().Raise("not implemented")
+// ModuleGetUnderID returns module by name under outer class
+func (mrb *MrbState) ModuleGetUnderID(outer RClass, name MrbSym) RClass {
+	return RClass{C.mrb_module_get_under_id(mrb.p, outer.p, C.mrb_sym(name)), mrb}
 }
 
-// NotImplementedM a function to be replacement of unimplemented method - Go version
-func NotImplementedM(mrb *MrbState, self Value) MrbValue {
-	return mrb.NotImplemented(mrb, self)
+// NotImplemented function to raise NotImplementedError with current method name
+// this func can be used as a placeholder for unimplemented methods in class def
+func (mrb *MrbState) NotImplemented(*MrbState, Value) MrbValue {
+	err := mrb.tryE(func() {
+		C.mrb_notimplement(mrb.p)
+	})
+	return mrb.ENotImplementedError().RaiseError(err)
+	// C.mrb_notimplement_m() never called
 }
 
 // ObjDup duplicates MrbValue object
@@ -1106,11 +1212,21 @@ func (mrb *MrbState) DefineClassUnder(outer RClass, name string, super RClass) R
 	return RClass{C.mrb_define_class_under(mrb.p, outer.p, cname, super.p), mrb}
 }
 
+// DefineClassUnderID defines a class under the namespace of outer.
+func (mrb *MrbState) DefineClassUnderID(outer RClass, name MrbSym, super RClass) RClass {
+	return RClass{C.mrb_define_class_under_id(mrb.p, outer.p, C.mrb_sym(name), super.p), mrb}
+}
+
 // DefineModuleUnder defines module under class
 func (mrb *MrbState) DefineModuleUnder(outer RClass, name string) RClass {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 	return RClass{C.mrb_define_module_under(mrb.p, outer.p, cname), mrb}
+}
+
+// DefineModuleUnderID defines module under class
+func (mrb *MrbState) DefineModuleUnderID(outer RClass, name MrbSym) RClass {
+	return RClass{C.mrb_define_module_under_id(mrb.p, outer.p, C.mrb_sym(name)), mrb}
 }
 
 // ArgsReq required arguments
@@ -1192,7 +1308,7 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 
 	//print("funcall ", mrb.ClassOf(self).Name(), ":", mrb.String(name), "(")
 
-	if (self.Type() == C.MRB_TT_PROC) && mrb.RProc(self).IsCFunc() && (nameSym == mrb.Intern("call")) {
+	if (self.Type() == C.MRB_TT_PROC) && mrb.RProc(self).IsCFunc() && (nameSym == mrb.callSym) {
 		if C._mrb_proc_has_env(mrb.p, MrbProcPtr(self).p) != false {
 			fv := C._mrb_proc_env_get(mrb.p, MrbProcPtr(self).p, C.mrb_int(0))
 			ff, _ := mrb.getFunc(uint(C._mrb_fixnum(fv)))
@@ -1227,7 +1343,7 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 	runtime.KeepAlive(a)
 	return v, err
 	// Do not delete comment - function names are used for static API check
-	// pure C.mrb_funcall() and C.mrb_funcall_argv() are never called
+	// C.mrb_funcall(), C.mrb_funcall_id(), C.mrb_funcall_argv() are never called
 }
 
 // FuncallWithBlock call function with arguments. Last argument passed should be block
@@ -1278,6 +1394,7 @@ func (mrb *MrbState) Sym(name string) MrbSym {
 	defer C.free(unsafe.Pointer(cname))
 	sym := C.mrb_intern(mrb.p, cname, C.size_t(len(name)))
 	return MrbSym(sym)
+	// C.mrb_intern_cstr() is never called
 }
 
 // Intern converts string to oruby symbol. Alias for Sym(name)
@@ -1290,21 +1407,34 @@ func (mrb *MrbState) InternStr(val MrbValue) MrbSym {
 	return MrbSym(C.mrb_intern_str(mrb.p, val.Value().v))
 }
 
-// CheckIntern go string as oruby value
-func (mrb *MrbState) CheckIntern(name string) (Value, error) {
+// InternCheck returns 0 if the symbol is not defined
+func (mrb *MrbState) InternCheck(name string) MrbSym {
 	cname := C.CString(name)
 	size := len(name)
 	defer C.free(unsafe.Pointer(cname))
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_check_intern(mrb.p, cname, C.size_t(size))
-	})
+
+	return MrbSym(C.mrb_intern_check(mrb.p, cname, C.size_t(size)))
+	// C.mrb_intern_check_cstr() is never called
 }
 
-// CheckInternStr oruby string to oruby symbol
-func (mrb *MrbState) CheckInternStr(val MrbValue) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_check_intern_str(mrb.p, val.Value().v)
-	})
+// InternCheckStr returns symbol if string val exists, or 0 value if symbol val is not defined
+func (mrb *MrbState) InternCheckStr(val MrbValue) MrbSym {
+	return MrbSym(C.mrb_intern_check_str(mrb.p, val.Value().v))
+}
+
+// CheckIntern returns nil value if the symbol is not defined, or symbol value of name
+func (mrb *MrbState) CheckIntern(name string) Value {
+	cname := C.CString(name)
+	size := len(name)
+	defer C.free(unsafe.Pointer(cname))
+
+	return Value{C.mrb_check_intern(mrb.p, cname, C.size_t(size))}
+	// C.mrb_check_intern_cstr() is never called
+}
+
+// CheckInternStr returns symbol value if string val exists, or nil value if symbol of val does not exist
+func (mrb *MrbState) CheckInternStr(val MrbValue) Value {
+	return Value{C.mrb_check_intern_str(mrb.p, val.Value().v)}
 }
 
 // SymName returns name of oruby symbol
@@ -1317,6 +1447,12 @@ func (mrb *MrbState) SymNameLen(sym MrbSym, size uint) string {
 	var s C.mrb_int = C.mrb_int(size)
 	cs := C.mrb_sym_name_len(mrb.p, C.mrb_sym(sym), (*C.mrb_int)(&s))
 	return C.GoStringN(cs, C.int(s))
+}
+
+// SymDump symbol to string dump
+func (mrb *MrbState) SymDump(sym MrbSym) string {
+	cs := C.mrb_sym_dump(mrb.p, C.mrb_sym(sym))
+	return C.GoString(cs)
 }
 
 // SymString symbol to string
@@ -1350,7 +1486,7 @@ func (mrb *MrbState) SymIdx() int {
 	return int(mrb.p.symidx)
 }
 
-// Buff represents memory alocated by mruby C API
+// Buff represents memory allocated by mruby C API
 type Buff struct {
 	p unsafe.Pointer
 }
@@ -1384,7 +1520,7 @@ func (mrb *MrbState) MallocSimple(size uint) Buff {
 }
 
 // ObjAlloc allocate memory for oruby basic object
-func (mrb *MrbState) ObjAlloc(vtype int, klass RClass) RBasic {
+func (mrb *MrbState) ObjAlloc(vtype Type, klass RClass) RBasic {
 	return RBasic{C.mrb_obj_alloc(mrb.p, uint32(vtype), klass.p)}
 }
 
@@ -1401,6 +1537,7 @@ func (mrb *MrbState) StrNew(s string) Value {
 	size := len(s)
 	defer C.free(unsafe.Pointer(cs))
 	return Value{C.mrb_str_new(mrb.p, cs, C.mrb_int(size))}
+	// C.mrb_str_new_cstr() is never called
 }
 
 // StrNewStatic is an alias for StrNew
@@ -1410,7 +1547,7 @@ func (mrb *MrbState) StrNewStatic(s string) Value {
 	defer C.free(unsafe.Pointer(cs))
 
 	return Value{C.mrb_str_new(mrb.p, cs, C.mrb_int(size))}
-	// C.mrb_str_new_static is unsupported in Go
+	// C.mrb_str_new_static() is unsupported in Go
 }
 
 // ObjFreeze freeze value
@@ -1420,13 +1557,13 @@ func (mrb *MrbState) ObjFreeze(v MrbValue) Value {
 
 // StrNewFrozen create frozen string value
 func (mrb *MrbState) StrNewFrozen(s string) RString {
-	return RString{RObject{
+	return RString{RValue{
 		mrb.ObjFreeze(mrb.StrNew(s)).v,
 		mrb,
 	}}
 }
 
-// MrbOpen opens new oruby state, internaly it calls New,
+// MrbOpen opens new oruby state, internally it calls New,
 // in case of error - nil state is returned
 func MrbOpen() *MrbState {
 	mrb, err := New()
@@ -1526,6 +1663,7 @@ func (mrb *MrbState) EnsureIntegerType(val MrbValue) (Value, error) {
 		return mrb.Funcall(val, mrb.Sym("to_i"))
 	}
 	return nilValue, ETypeError("%v cannot be converted to Integer", mrb.TypeName(val))
+	// C.mrb_ensure_integer_type() not called
 }
 
 // EnsureFloatType ensures returned Value is float type, or error is returned
@@ -1539,6 +1677,12 @@ func (mrb *MrbState) EnsureFloatType(val MrbValue) (Value, error) {
 		return mrb.Funcall(val, mrb.Sym("to_f"))
 	}
 	return nilValue, ETypeError("%v cannot be converted to Float", mrb.TypeName(val))
+	// C.mrb_ensure_float_type() not called
+}
+
+// CheckStringType checks string type
+func (mrb *MrbState) CheckStringType(str MrbValue) Value {
+	return Value{C.mrb_check_string_type(mrb.p, str.Value().v)}
 }
 
 // Integer returns integer from value
@@ -1596,8 +1740,9 @@ func (mrb *MrbState) GCMark(o RBasic) { C.mrb_gc_mark(mrb.p, o.p) }
 
 // GCMarkValue marks GC ov values
 func (mrb *MrbState) GCMarkValue(val MrbValue) {
-	if val.Value().HasBasic() {
-		C.mrb_gc_mark(mrb.p, RBASIC(val).p)
+	v := val.Value()
+	if v.HasBasic() {
+		C.mrb_gc_mark(mrb.p, v.RBasic().p)
 	}
 }
 
@@ -1652,14 +1797,17 @@ func (mrb *MrbState) ObjClass(obj MrbValue) RClass {
 func (mrb *MrbState) ClassPath(c RClass) Value { return Value{C.mrb_class_path(mrb.p, c.p)} }
 
 // TypeConvert using method
-func (mrb *MrbState) TypeConvert(val MrbValue, mrbtype uint32, method MrbSym) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_type_convert(mrb.p, val.Value().v, mrbtype, C.mrb_sym(method))
-	})
+func (mrb *MrbState) TypeConvert(val MrbValue, mrbtype Type, method MrbSym) (Value, error) {
+	ret := Value{C.mrb_type_convert_check(mrb.p, val.Value().v, uint32(mrbtype), C.mrb_sym(method))}
+	if ret.IsNil() && ret.Type() != mrbtype {
+		return ret, ETypeError("%v cannot be converted to %v by #%v", mrb.Intf(val), TypeName(mrbtype), mrb.SymName(method))
+	}
+	return ret, nil
+	// C.mrb_type_convert() is not called, as it raises C side error
 }
 
 // ConvertType using method
-func (mrb *MrbState) ConvertType(val MrbValue, mrbtype uint32, tname, method string) (Value, error) {
+func (mrb *MrbState) ConvertType(val MrbValue, mrbtype Type, tname, method string) (Value, error) {
 	return mrb.TypeConvert(val, mrbtype, mrb.Intern(method))
 }
 
@@ -1840,6 +1988,14 @@ func (mrb *MrbState) FrozenError(obj MrbValue) Value {
 	// C.mrb_frozen_error not called
 }
 
+// ArgnumError error
+func (mrb *MrbState) ArgnumError(argc, min, max int) Value {
+	err := mrb.tryE(func() {
+		C.mrb_argnum_error(mrb.p, C.mrb_int(argc), C.int(min), C.int(max))
+	})
+	return mrb.EArgumentError().RaiseError(err)
+}
+
 // Warn error
 func (mrb *MrbState) Warn(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
@@ -1919,20 +2075,16 @@ func (mrb *MrbState) EKeyError() RClass { return mrb.ExcGet("KeyError") }
 func (mrb *MrbState) ESystemCallError() RClass { return mrb.ExcGet("SystemCallError") }
 
 // Yield block with value
-func (mrb *MrbState) Yield(b, arg MrbValue) (Value, error) {
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_yield(mrb.p, b.Value().v, arg.Value().v)
-	})
+func (mrb *MrbState) Yield(b, arg MrbValue) Value {
+	return Value{C.mrb_yield(mrb.p, b.Value().v, arg.Value().v)}
 }
 
 // YieldArgv mrb_value mrb_yield_argv(mrb_state *mrb, mrb_value b, int argc, mrb_value *argv);
-func (mrb *MrbState) YieldArgv(b MrbValue, argv ...interface{}) (Value, error) {
+func (mrb *MrbState) YieldArgv(b MrbValue, argv ...interface{}) Value {
 	argc := len(argv)
 
 	if argc == 0 {
-		return mrb.try(func() C.mrb_value {
-			return C.mrb_yield_argv(mrb.p, b.Value().v, 0, nil)
-		})
+		return Value{C.mrb_yield_argv(mrb.p, b.Value().v, 0, nil)}
 	}
 
 	args := make([]C.mrb_value, argc)
@@ -1940,18 +2092,14 @@ func (mrb *MrbState) YieldArgv(b MrbValue, argv ...interface{}) (Value, error) {
 		args[i] = mrb.Value(argv[i]).v
 	}
 
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_yield_argv(mrb.p, b.Value().v, C.mrb_int(argc), (*C.mrb_value)(&args[0]))
-	})
+	return Value{C.mrb_yield_argv(mrb.p, b.Value().v, C.mrb_int(argc), (*C.mrb_value)(&args[0]))}
 }
 
 // YieldWithClass yields with class
-func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ...interface{}) (Value, error) {
+func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ...interface{}) Value {
 	argc := len(args)
 	if argc == 0 {
-		return mrb.try(func() C.mrb_value {
-			return C.mrb_yield_with_class(mrb.p, b.Value().v, 0, nil, self.Value().v, c.p)
-		})
+		return Value{C.mrb_yield_with_class(mrb.p, b.Value().v, 0, nil, self.Value().v, c.p)}
 	}
 
 	argv := make([]C.mrb_value, argc)
@@ -1959,9 +2107,7 @@ func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ..
 		argv[i] = mrb.Value(args[i]).v
 	}
 
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_yield_with_class(mrb.p, b.Value().v, C.mrb_int(argc), &argv[0], self.Value().v, c.p)
-	})
+	return Value{C.mrb_yield_with_class(mrb.p, b.Value().v, C.mrb_int(argc), &argv[0], self.Value().v, c.p)}
 }
 
 // YieldCont continue execution to the proc
@@ -1976,11 +2122,9 @@ func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) Valu
 
 	argc := len(args)
 	if argc == 0 {
-		ret, err := mrb.try(func() C.mrb_value {
-			return C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, 0, nil)
-		})
-		if err != nil {
-			return mrb.RaiseError(err)
+		ret := Value{C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, 0, nil)}
+		if mrb.Exc() != nil {
+			return mrb.Exc().Value()
 		}
 
 		return ret
@@ -1991,12 +2135,10 @@ func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) Valu
 		argv[i] = mrb.Value(args[i]).v
 	}
 
-	ret, err := mrb.try(func() C.mrb_value {
-		return C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, C.mrb_int(argc), &argv[0])
-	})
+	ret := Value{C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, C.mrb_int(argc), &argv[0])}
 
-	if err != nil {
-		return mrb.RaiseError(err)
+	if mrb.Exc() != nil {
+		return mrb.Exc().Value()
 	}
 
 	return ret
@@ -2016,18 +2158,20 @@ func (mrb *MrbState) GCUnregister(obj MrbValue) {
 }
 
 // CheckType check type and raise error on mismatch
-func (mrb *MrbState) CheckType(x MrbValue, ttype int) error {
-	return mrb.tryE(func() {
-		C.mrb_check_type(mrb.p, x.Value().v, uint32(ttype))
-	})
+func (mrb *MrbState) CheckType(x MrbValue, ttype Type) error {
+	if x.Type() == ttype {
+		return nil
+	}
+	return ETypeError("wrong argument type %s (expected %s)", mrb.TypeName(x), TypeName(ttype))
+	// C.mrb_check_type() never called
 }
 
 // CheckFrozen raise exception if object is frozen
 func (mrb *MrbState) CheckFrozen(o MrbValue) error {
-	if o.Value().HasBasic() && MrbFrozenP(o) {
-		return mrb.tryE(func() {
-			C.mrb_frozen_error(mrb.p, unsafe.Pointer(RBASIC(o).p))
-		})
+	v := o.Value()
+
+	if v.HasBasic() && v.RBasic().IsFrozen() {
+		return EFrozenError("can't modify frozen %v", mrb.TypeName(v))
 	}
 	return nil
 }
@@ -2041,18 +2185,24 @@ const (
 )
 
 // DefineAlias defines an alias of a method.
-// \param mrb    the oruby state
-// \param klass  the class which the original method belongs to
-// \param name1  a new name for the method
-// \param name2  the original name of the method
+//
+//	\param mrb    the oruby state
+//	\param klass  the class which the original method belongs to
+//	\param name1  a new name for the method
+//	\param name2  the original name of the method
+//
+// Exception is raised if name1 does not exist
 func (mrb *MrbState) DefineAlias(klass RClass, name1, name2 string) {
 	cname1 := C.CString(name1)
 	defer C.free(unsafe.Pointer(cname1))
 	cname2 := C.CString(name2)
 	defer C.free(unsafe.Pointer(cname2))
-	_ = mrb.tryE(func() {
-		C.mrb_define_alias(mrb.p, klass.p, cname1, cname2)
-	})
+	C.mrb_define_alias(mrb.p, klass.p, cname1, cname2)
+}
+
+// DefineAliasID defines alias for method name1. Exception is raised if name1 does not exist
+func (mrb *MrbState) DefineAliasID(klass RClass, name1, name2 MrbSym) {
+	C.mrb_define_alias_id(mrb.p, klass.p, C.mrb_sym(name1), C.mrb_sym(name2))
 }
 
 // ClassName returns name of oruby class
@@ -2116,14 +2266,12 @@ func (mrb *MrbState) FiberResume(fib MrbValue, args ...interface{}) Value {
 }
 
 // FiberYield yields fiber
-func (mrb *MrbState) FiberYield(args ...interface{}) (Value, error) {
+func (mrb *MrbState) FiberYield(args ...interface{}) Value {
 
 	l := len(args)
 
 	if l == 0 {
-		return mrb.try(func() C.mrb_value {
-			return C.mrb_fiber_yield(mrb.p, 0, nil)
-		})
+		return Value{C.mrb_fiber_yield(mrb.p, 0, nil)}
 	}
 
 	a := make([]C.mrb_value, l)
@@ -2131,9 +2279,7 @@ func (mrb *MrbState) FiberYield(args ...interface{}) (Value, error) {
 		a[i] = mrb.Value(args[i]).v
 	}
 
-	return mrb.try(func() C.mrb_value {
-		return C.mrb_fiber_yield(mrb.p, C.mrb_int(l), (*C.mrb_value)(&a[0]))
-	})
+	return Value{C.mrb_fiber_yield(mrb.p, C.mrb_int(l), (*C.mrb_value)(&a[0]))}
 }
 
 // FiberAliveP check if fiber is alive
@@ -2144,7 +2290,7 @@ func (mrb *MrbState) FiberAliveP(fib MrbValue) Value {
 // EFiberError reference. Implemented in oruby-fiber
 func (mrb *MrbState) EFiberError() RClass { return mrb.ExcGet("FiberError") }
 
-// StackExtend extend stack
+// StackExtend extend stack. Error is raised if new stack size > C.MRB_STACK_MAX
 func (mrb *MrbState) StackExtend(size int) error {
 	return mrb.tryE(func() {
 		C.mrb_stack_extend(mrb.p, C.mrb_int(size))
@@ -2218,9 +2364,13 @@ func (mrb *MrbState) ShowCopyright() {
 //type each_object_callback = func(mrb mrb_state, obj RBasic)
 //func mrb_objspace_each_objects(mrb mrb_state, callback each_object_callback)
 
-func (c MrbContext) Ci() MrbCallInfo { return MrbCallInfo{c.p.ci} }
+func (c MrbContext) Ci() MrbCallInfo {
+	return MrbCallInfo{c.p.ci}
+}
 
-func (c MrbContext) CiBase() MrbCallInfo { return MrbCallInfo{c.p.cibase} }
+func (c MrbContext) CiBase() MrbCallInfo {
+	return MrbCallInfo{c.p.cibase}
+}
 
 func (c MrbContext) Free() { C.mrb_free_context(c.mrb.p, c.p) }
 
@@ -2350,7 +2500,7 @@ func (mrb *MrbState) DefineClassFunc(klass RClass, name string, f interface{}) {
 }
 
 // DefineSingletonFunc gefine golang singleton func
-func (mrb *MrbState) DefineSingletonFunc(obj RObject, name string, f interface{}) {
+func (mrb *MrbState) DefineSingletonFunc(obj RValue, name string, f interface{}) {
 	v := reflect.ValueOf(f)
 
 	if v.Kind() != reflect.Func {
@@ -2365,7 +2515,7 @@ func (mrb *MrbState) DefineSingletonFunc(obj RObject, name string, f interface{}
 
 	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(1), &env)
 	m := C._MRB_PROC_CFUNC(proc)
-	C.mrb_define_singleton_method(mrb.p, obj.p(), cname, (*[0]byte)(m), C.mrb_aspec(ArgsReq(argc)))
+	C.mrb_define_singleton_method(mrb.p, obj.RObject().p, cname, (*[0]byte)(m), C.mrb_aspec(ArgsReq(argc)))
 }
 
 // State returns uintptr of C.mrb_state pointer
@@ -2375,7 +2525,7 @@ func (mrb *MrbState) State() uintptr { return uintptr(unsafe.Pointer(mrb.p)) }
 func (mrb *MrbState) Context() MrbContext { return MrbContext{mrb.p.c, mrb} }
 
 // NilValue helper
-func (mrb *MrbState) NilValue() Value { return mrb.nilValue }
+func (mrb *MrbState) NilValue() Value { return nilValue }
 
 // FalseValue helper
 func (mrb *MrbState) FalseValue() Value { return Value{C.mrb_false_value()} }
@@ -2395,55 +2545,8 @@ func (v MrbSym) Interface(*MrbState) interface{} { return int(v) }
 // Value implements MrbValue interface for MrbSym
 func (v MrbSym) Value() Value { return MrbSymbolValue(v) }
 
-// Type implenets MrbValue interface
-func (v MrbSym) Type() int { return MrbTTSymbol }
+// Type implements MrbValue interface
+func (v MrbSym) Type() Type { return MrbTTSymbol }
 
-// IsNil implementes MrbValue interface
+// IsNil implements MrbValue interface
 func (v MrbSym) IsNil() bool { return false }
-
-func mrbErrorHandler(mrb *MrbState, old *C.struct_mrb_jmpbuf, err *error) {
-	mrb.p.jmp = old
-	if r := recover(); r != nil {
-		switch x := r.(type) {
-		case string:
-			*err = errors.New(x)
-		case error:
-			*err = x
-		default:
-			*err = errors.New("unknown error")
-		}
-	}
-
-	if *err == nil {
-		*err = mrb.Err()
-	}
-}
-
-func (mrb *MrbState) tryC(f func() *C.struct_RClass) (result RClass, err error) {
-	old := mrb.p.jmp
-	mrb.p.jmp = nil
-	defer mrbErrorHandler(mrb, old, &err)
-
-	result = RClass{f(), mrb}
-
-	return result, err
-}
-
-func (mrb *MrbState) try(f func() C.mrb_value) (result Value, err error) {
-	old := mrb.p.jmp
-	mrb.p.jmp = nil
-	defer mrbErrorHandler(mrb, old, &err)
-
-	result = Value{f()}
-
-	return result, err
-}
-
-func (mrb *MrbState) tryE(f func()) (err error) {
-	old := mrb.p.jmp
-	mrb.p.jmp = nil
-	defer mrbErrorHandler(mrb, old, &err)
-
-	f()
-	return err
-}

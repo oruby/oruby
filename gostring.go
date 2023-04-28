@@ -17,7 +17,7 @@ func (s RString) Len() int { return int(C._RSTRING_LEN(s.v)) }
 // Capa Returns string capacity
 func (s RString) Capa() int { return int(C._RSTRING_CAPA(s.v)) }
 
-// Modify modify string
+// Modify string
 func (s RString) Modify() { C.mrb_str_modify(s.mrb.p, s.Ptr().p) }
 
 // Flags return string object flags
@@ -40,18 +40,18 @@ func (s RString) ModifyKeepASCII() { C.mrb_str_modify_keep_ascii(s.mrb.p, s.Ptr(
 
 // Clone returns copy of string
 func (s RString) Clone() RString {
-	return RString{RObject{
+	return RString{RValue{
 		C.mrb_str_dup(s.mrb.p, s.v),
 		s.mrb,
 	}}
 }
 
-// Concat appends self to other. self as a concatenated string
+// Concat appends str. self as a concatenated string
 func (s RString) Concat(str MrbValue) { C.mrb_str_concat(s.mrb.p, s.v, str.Value().v) }
 
 // cloneV clone string with new C mrb_value
 func (s RString) cloneV(v C.mrb_value) RString {
-	return RString{RObject{v, s.mrb}}
+	return RString{RValue{v, s.mrb}}
 }
 
 // Plus Adds two strings together.
@@ -69,29 +69,23 @@ func (s RString) Substr(beg, len int) RString {
 	return s.cloneV(C.mrb_str_substr(s.mrb.p, s.v, C.mrb_int(beg), C.mrb_int(len)))
 }
 
-// CheckStringType checks string type
-func (s RString) CheckStringType(str MrbValue) (RString, error) {
-	var err error
-	v, err := s.mrb.try(func() C.mrb_value {
-		return C.mrb_check_string_type(s.mrb.p, str.Value().v)
-	})
-	if err != nil {
-		return s, err
-	}
-
-	return s.cloneV(v.v), err
+// CheckStringType checks string type, returns nil value is not of string type
+func (s RString) CheckStringType(str MrbValue) Value {
+	return Value{C.mrb_check_string_type(s.mrb.p, str.Value().v)}
 }
 
 // Dup Duplicates a string object.
 func (s RString) Dup() RString {
-	return RString{RObject{
-		C.mrb_str_dup(s.mrb.p, s.v),
-		s.mrb,
-	}}
+	return s.cloneV(C.mrb_str_dup(s.mrb.p, s.v))
 }
 
 // Intern Returns a symbol from a passed in Ruby string.
 func (s RString) Intern() Value {
+	return Value{C.mrb_str_intern(s.mrb.p, s.v)}
+}
+
+// ToSym Returns a symbol from a passed in Ruby string.
+func (s RString) ToSym() Value {
 	return Value{C.mrb_str_intern(s.mrb.p, s.v)}
 }
 

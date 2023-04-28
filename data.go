@@ -10,7 +10,7 @@ import (
 // RData struct
 type RData struct{ p *C.struct_RData }
 
-// Freer interface is called when Go value is GC-ed from mruby state
+// Freer interface is called when Go value is GC-ed from mrb state
 type Freer interface {
 	Free()
 }
@@ -19,10 +19,16 @@ type Freer interface {
 func (d RData) Value() Value { return mrbObjValue(unsafe.Pointer(d.p)) }
 
 // Type for MrbValue interface
-func (d RData) Type() int { return d.Value().Type() }
+func (d RData) Type() Type { return d.Value().Type() }
 
 // IsNil check for MrbValue interface
 func (d RData) IsNil() bool { return d.p == nil }
+
+// RBasic returns pointer to mruby basic object
+func (d RData) RBasic() RBasic { return RBasic{(*C.struct_RBasic)(unsafe.Pointer(d.p))} }
+
+// RObject returns pointer to mruby object which has instance variables (iv table)
+func (d RData) RObject() RObject { return RObject{(*C.struct_RObject)(unsafe.Pointer(d.p))} }
 
 // MrbDataType struct
 type MrbDataType struct{ p *C.mrb_data_type }
@@ -82,7 +88,7 @@ func (mrb *MrbState) DataCheckType(obj MrbValue, dtype MrbDataType) {
 	C.mrb_data_check_type(mrb.p, obj.Value().v, dtype.p)
 }
 
-// DataGetPtr retreives pointer from RData
+// DataGetPtr retrieves pointer from RData
 func (mrb *MrbState) DataGetPtr(obj MrbValue, dtype MrbDataType) (uintptr, error) {
 	if obj.Type() != MrbTTCData {
 		return uintptr(0), fmt.Errorf("")
@@ -129,12 +135,12 @@ func (mrb *MrbState) DataCheckInterface(obj MrbValue) {
 	C.mrb_data_check_type(mrb.p, obj.Value().v, C.mrb_interface_data_type())
 }
 
-// DataGetInterface retreives interface from RData value without check
+// DataGetInterface retrieves interface from RData value without check
 func (mrb *MrbState) DataGetInterface(obj MrbValue) interface{} {
 	return mrb.getHook(unsafe.Pointer(RDATA(obj).p))
 }
 
-// DataCheckGetInterface retreives interface value from RData value
+// DataCheckGetInterface retrieves interface value from RData value
 func (mrb *MrbState) DataCheckGetInterface(obj MrbValue) interface{} {
 	ret := C.mrb_data_check_get_ptr(mrb.p, obj.Value().v, C.mrb_interface_data_type())
 
@@ -146,6 +152,7 @@ func (mrb *MrbState) DataCheckGetInterface(obj MrbValue) interface{} {
 }
 
 // DataSetInterface sets interface value to RData value
+// init data with any Go value
 func (mrb *MrbState) DataSetInterface(obj Value, datap interface{}) {
 	// Check type
 	if !MrbDataP(obj) {

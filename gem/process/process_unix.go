@@ -1,9 +1,10 @@
 package process
 
 import (
-	"github.com/oruby/oruby"
 	"os"
 	"syscall"
+
+	"github.com/oruby/oruby"
 )
 
 // RLimit pseudo constants
@@ -37,7 +38,7 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	mrb.DefineModuleFunc(mProc, "uid=", syscall.Setuid)
 	mrb.DefineModuleFunc(mProc, "gid=", syscall.Setgid)
 	mrb.DefineModuleFunc(mProc, "euid=", syscall.Seteuid)
-	mrb.DefineModuleFunc(mProc, "egid=",  syscall.Setegid)
+	mrb.DefineModuleFunc(mProc, "egid=", syscall.Setegid)
 	mrb.DefineModuleFunc(mProc, "groups=", syscall.Setgroups)
 
 	//mrb.DefineModuleFunc(mProc, "maxgroups", proc_getmaxgroups, 0)
@@ -58,8 +59,8 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	//mrb.DefineModuleFunction(mProcGID, "re_exchange", p_gid_exchange, 0)
 	mrb.DefineModuleFunction(mProcUID, "re_exchangeable?", trueFunc, mrb.ArgsNone())
 	mrb.DefineModuleFunction(mProcGID, "re_exchangeable?", trueFunc, mrb.ArgsNone())
-	mrb.DefineModuleFunction(mProcUID, "sid_available?",  trueFunc, mrb.ArgsNone())
-	mrb.DefineModuleFunction(mProcGID, "sid_available?",  trueFunc, mrb.ArgsNone())
+	mrb.DefineModuleFunction(mProcUID, "sid_available?", trueFunc, mrb.ArgsNone())
+	mrb.DefineModuleFunction(mProcGID, "sid_available?", trueFunc, mrb.ArgsNone())
 	mrb.DefineModuleFunction(mProcUID, "switch", puidSwitch, mrb.ArgsNone())
 	//mrb.DefineModuleFunction(mProcGID, "switch", p_gid_switch, 0)
 
@@ -93,8 +94,8 @@ func procTimes(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.SysFail(err)
 	}
 
-	utime  := float64(usageSelf.Utime.Sec) + float64(usageSelf.Utime.Usec)/1e6
-	stime  := float64(usageSelf.Stime.Sec) + float64(usageSelf.Stime.Usec)/1e6
+	utime := float64(usageSelf.Utime.Sec) + float64(usageSelf.Utime.Usec)/1e6
+	stime := float64(usageSelf.Stime.Sec) + float64(usageSelf.Stime.Usec)/1e6
 	cutime := float64(usageChidren.Utime.Sec) + float64(usageChidren.Utime.Usec)/1e6
 	cstime := float64(usageChidren.Stime.Sec) + float64(usageChidren.Stime.Usec)/1e6
 
@@ -107,10 +108,10 @@ func puidExchange(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	uid := syscall.Getuid()
 	euid := syscall.Geteuid()
 
-	err := syscall.Setreuid(euid,uid)
+	err := syscall.Setreuid(euid, uid)
 	if err != nil {
 		return mrb.SysFail(err)
-	};
+	}
 
 	procData := mrb.GetModuleData(self).(*processData)
 	procData.savedUserID = uid
@@ -131,7 +132,7 @@ func puidSwitch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 
 		if !block.IsNil() {
-			ret, _:= mrb.YieldArgv(block)
+			ret := mrb.YieldArgv(block)
 			if err := syscall.Seteuid(procData.savedUserID); err != nil {
 				return mrb.SysFail(err)
 			}
@@ -144,7 +145,7 @@ func puidSwitch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.SysFail(err)
 		}
 		if !block.IsNil() {
-			ret, _:= mrb.YieldArgv(block)
+			ret := mrb.YieldArgv(block)
 			if err := syscall.Seteuid(euid); err != nil {
 				return mrb.SysFail(err)
 			}
@@ -249,7 +250,7 @@ func platformWait(pid, flags int, lastState *status) (int, error) {
 	return ret, err
 }
 
-func  platformUpdateState(lastState *status, sysState interface{}) {
+func platformUpdateState(lastState *status, sysState interface{}) {
 	waitStatus, ok := sysState.(syscall.WaitStatus)
 	if !ok {
 		return

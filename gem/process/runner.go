@@ -1,11 +1,12 @@
 package process
 
 import (
-	"github.com/oruby/oruby"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/oruby/oruby"
 )
 
 type cmdRunner struct {
@@ -27,10 +28,10 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 
 	// Create command
 	runner := &cmdRunner{
-		mrb:         mrb,
-		cmd:         &exec.Cmd{
-			Path: command,
-			Args: params,
+		mrb: mrb,
+		cmd: &exec.Cmd{
+			Path:   command,
+			Args:   params,
 			Stdout: os.Stdout,
 			Stdin:  os.Stdin,
 			Stderr: os.Stderr,
@@ -39,7 +40,7 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 	}
 
 	mrb.HashValueForEach(options, func(key, val oruby.Value) int {
-		if key.IsFixnum() || key.IsArray() || key.HasBasic() {
+		if key.IsInteger() || key.IsArray() || key.HasBasic() {
 			runner.parseFd(key, val)
 			return 0
 		}
@@ -177,7 +178,7 @@ func (runner *cmdRunner) parseRLimit(key, val oruby.Value) {
 func (runner *cmdRunner) parseFd(key, val oruby.Value) {
 	mrb := runner.mrb
 
-	if key.IsFixnum() {
+	if key.IsInteger() {
 		switch key.Int() {
 		case 0:
 			runner.cmd.Stdin = runner.getReader(val)

@@ -7,10 +7,11 @@ import (
 	"unsafe"
 )
 
-//enum mrb_debug_line_type
+// enum mrb_debug_line_type
 const (
 	MrbDebugLineAry = iota
 	MrbDebugLineFlatMap
+	MrbDebugLinePackedMap
 )
 
 // MrbIrepDebugInfoLine line

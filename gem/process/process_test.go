@@ -1,13 +1,14 @@
 package process
 
 import (
-	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/assert"
 	"os"
 	"os/exec"
 	"runtime"
 	"syscall"
 	"testing"
+
+	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/assert"
 )
 
 func executable() string {
@@ -25,14 +26,14 @@ func oneLiner(eval string) error {
 	return err
 }
 
-func TestDaemon(t *testing.T){
+func TestDaemon(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 	_, err := mrb.Eval("Process.daemon")
 	assert.Error(t, err, "Process.daemon should raise NotImplemented error")
 }
 
-func TestGlobals(t *testing.T){
+func TestGlobals(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
@@ -68,7 +69,7 @@ func TestLastStatus(t *testing.T) {
 	assert.Expect(t, last.IsSucess, "Should be sucess")
 }
 
-func TestSystem(t *testing.T){
+func TestSystem(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
@@ -100,12 +101,12 @@ func TestSpawn(t *testing.T) {
 	// Spawn process
 	pid, err := mrb.Eval("$pid = Process.spawn '/bin/echo'")
 	assert.NilError(t, err)
-	assert.Expect(t, pid.Value().IsFixnum(), "expeted pid, got %v", pid.String())
+	assert.Expect(t, pid.Value().IsInteger(), "expeted pid, got %v", pid.String())
 
 	// Wait for it to finish
 	ret, err := mrb.Eval("Process.wait $pid")
 	assert.NilError(t, err)
-	assert.Expect(t, ret.Value().IsFixnum(), "expeted pid, got %v", ret.String())
+	assert.Expect(t, ret.Value().IsInteger(), "expeted pid, got %v", ret.String())
 
 	// Check LastStatus
 	v := mrb.GetGV("$?")
@@ -122,12 +123,12 @@ func TestSpawnWithParams(t *testing.T) {
 
 	pid, err := mrb.Eval("$pid = Process.spawn('/bin/echo test')")
 	assert.NilError(t, err)
-	assert.Expect(t, pid.Value().IsFixnum(), "expected pid, got %v", pid.String())
+	assert.Expect(t, pid.Value().IsInteger(), "expected pid, got %v", pid.String())
 
 	// Wait for it to finish
 	ret, err := mrb.Eval("Process.wait $pid")
 	assert.NilError(t, err)
-	assert.Expect(t, ret.Value().IsFixnum(), "expeted pid, got %v", ret.String())
+	assert.Expect(t, ret.Value().IsInteger(), "expeted pid, got %v", ret.String())
 }
 
 func TestWait(t *testing.T) {
@@ -147,7 +148,7 @@ func TestWait(t *testing.T) {
 
 	// 0 (wait any child ni group) - this will fallback to platform specific Wait
 	wpid3, err := mrb.Eval("Process.wait(0)")
-	assert.NilError(t,err)
+	assert.NilError(t, err)
 
 	assert.Include(t, p1, wpid1.Int(), wpid2.Int(), wpid3.Int())
 	assert.Include(t, p2, wpid1.Int(), wpid2.Int(), wpid3.Int())
@@ -216,23 +217,22 @@ func TestKill(t *testing.T) {
 
 	_, err := mrb.Eval("$pid = Process.spawn " + executable())
 	assert.NilError(t, err)
-	_,err = mrb.Eval("Process.kill :KILL, $pid")
+	_, err = mrb.Eval("Process.kill :KILL, $pid")
 	assert.NilError(t, err)
-	_,err = mrb.Eval("Process.detach $pid")
+	_, err = mrb.Eval("Process.detach $pid")
 	assert.NilError(t, err)
-	_,err = mrb.Eval("Process.wait $pid")
+	_, err = mrb.Eval("Process.wait $pid")
 	assert.NilError(t, err)
 
 	v := mrb.GetGV("$?")
 	last := mrb.Data(v).(*status)
 	assert.Equal(t, last.IsSignaled, true)
-	assert.Expect(t,last.Termsig != nil, "Should be terminated with signal")
+	assert.Expect(t, last.Termsig != nil, "Should be terminated with signal")
 	assert.Expect(t, syscall.Signal(*last.Termsig) == os.Kill, "killled with SIGKILL")
 
-	_,err = mrb.Eval("Process.kill :KILL, $pid")
+	_, err = mrb.Eval("Process.kill :KILL, $pid")
 	assert.Error(t, err, "process should be unknown")
 }
-
 
 func TestDetach(t *testing.T) {
 	mrb := oruby.MrbOpen()
@@ -240,7 +240,7 @@ func TestDetach(t *testing.T) {
 
 	pid, err := mrb.Eval("$pid = Process.spawn " + executable())
 	assert.NilError(t, err)
-	_,err = mrb.Eval("Process.detach $pid")
+	_, err = mrb.Eval("Process.detach $pid")
 	assert.NilError(t, err)
 
 	state := getProcData(mrb, mrb.NilValue())
@@ -261,7 +261,7 @@ func TestWait2(t *testing.T) {
 	pid1, _ := mrb.Eval("Process.spawn " + executable())
 
 	ret, err := mrb.Eval("Process.wait2 " + pid1.String())
-	assert.NilError(t,err)
+	assert.NilError(t, err)
 	assert.Expect(t, ret.Value().IsArray(), "Array expected")
 	assert.Expect(t, ret.RArray().Len() == 2, "Array size 2 expected")
 

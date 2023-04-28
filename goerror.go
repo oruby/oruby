@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unsafe"
 )
 
 var errRuntimeError = errors.New("RuntimeError")
@@ -236,4 +237,66 @@ func (c RClass) Raisef(format string, args ...interface{}) Value {
 // If class is not Exception descendant - Exception class is raised
 func (c RClass) RaiseError(err error) Value {
 	return c.Raise(err.Error())
+}
+
+func mrbErrorHandler(mrb *MrbState, old *C.struct_mrb_jmpbuf, err *error) {
+	mrb.p.jmp = old
+	if r := recover(); r != nil {
+		switch x := r.(type) {
+		case string:
+			*err = errors.New(x)
+		case error:
+			*err = x
+		default:
+			*err = errors.New("unknown error")
+		}
+	}
+
+	if *err == nil {
+		*err = mrb.Err()
+	}
+}
+
+func (mrb *MrbState) tryC(f func() *C.struct_RClass) (result RClass, err error) {
+	old := mrb.p.jmp
+	mrb.p.jmp = nil
+	defer mrbErrorHandler(mrb, old, &err)
+
+	result = RClass{f(), mrb}
+
+	return result, err
+}
+
+func (mrb *MrbState) try(f func() C.mrb_value) (result Value, err error) {
+	old := mrb.p.jmp
+	mrb.p.jmp = nil
+	defer mrbErrorHandler(mrb, old, &err)
+
+	result = Value{f()}
+
+	return result, err
+}
+
+//export execE
+func execE(p unsafe.Pointer) {
+	//	h := (*errHandler)(p)
+	f := (*func())(p)
+	(*f)()
+}
+
+type errHandler struct {
+	idx uint8
+	f   uintptr
+}
+
+func (mrb *MrbState) tryE(f func()) (err error) {
+	old := mrb.p.jmp
+	mrb.p.jmp = nil
+	defer mrbErrorHandler(mrb, old, &err)
+
+	//h := errHandler{idx: 0, f: uintptr(unsafe.Pointer(&f))}
+
+	C.tryE(mrb.p, unsafe.Pointer(&f))
+
+	return err
 }

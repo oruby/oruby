@@ -160,7 +160,7 @@ func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	s, _ := doReplace(mrb, r, mrb.String(self), 0, func(v string) (string, bool) {
 		if !block.IsNil() {
-			ret, _ := mrb.Yield(block, mrb.StringValue(v))
+			ret := mrb.Yield(block, mrb.StringValue(v))
 			return mrb.String(ret), true
 		} else if replace.Type() == oruby.MrbTTHash {
 			if mrb.HashKeyP(replace, mrb.StringValue(v)) {
@@ -250,7 +250,7 @@ func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	for pos < len(s) {
 		s, pos = doReplace(mrb, r, s, pos, func(v string) (string, bool) {
 			if !block.IsNil() {
-				ret, _ := mrb.Yield(block, mrb.StringValue(v))
+				ret := mrb.Yield(block, mrb.StringValue(v))
 				return mrb.String(ret), true
 			} else if replace.Type() == oruby.MrbTTHash {
 				if mrb.HashKeyP(replace, mrb.StringValue(v)) {

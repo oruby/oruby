@@ -1,14 +1,15 @@
 package io
 
 import (
-	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/assert"
-	_ "github.com/oruby/oruby/gem/process"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/assert"
+	_ "github.com/oruby/oruby/gem/process"
 )
 
 func Test_raiseEOF(t *testing.T) {
@@ -18,8 +19,8 @@ func Test_raiseEOF(t *testing.T) {
 	v := RaiseEOF(mrb)
 	assert.Expect(t, mrb.ObjIsKindOf(v, mrb.EExceptionClass()), "exception excepted")
 	assert.Expect(t, mrb.Exc() != nil, "Should be raised")
-	assert.Expect(t, *mrb.Exc() == mrb.RObject(v), "Should be raised")
-	assert.Expect(t, *mrb.Exc() == mrb.RObject(v), "Should be raised")
+	assert.Expect(t, *mrb.Exc() == mrb.RValue(v), "Should be raised")
+	assert.Expect(t, *mrb.Exc() == mrb.RValue(v), "Should be raised")
 }
 
 func Test_raiseIOError(t *testing.T) {
@@ -29,7 +30,7 @@ func Test_raiseIOError(t *testing.T) {
 	v := RaiseIOError(mrb, "IO error")
 	assert.Expect(t, mrb.ObjIsKindOf(v, mrb.EExceptionClass()), "Should be exception")
 	assert.Expect(t, mrb.Exc() != nil, "Should be raised")
-	assert.Expect(t, *mrb.Exc() == mrb.RObject(v), "Should be raised")
+	assert.Expect(t, *mrb.Exc() == mrb.RValue(v), "Should be raised")
 }
 
 func Test_getStream(t *testing.T) {
@@ -41,7 +42,7 @@ func Test_getStream(t *testing.T) {
 	assert.Equal(t, f, os.Stdout)
 
 	tmpName := filepath.Join(os.TempDir(), "test.tmp")
-	_, err = getStream(mrb, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, mrb.StrNew(tmpName))
+	_, err = getStream(mrb, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mrb.StrNew(tmpName))
 	assert.Error(t, err, "string file name is not supported on IO stream without 'file' gem")
 
 	_, err = getStream(mrb, os.O_WRONLY, oruby.Int(12345))
@@ -58,15 +59,15 @@ func Test_ioCopyStream(t *testing.T) {
 	mrb.SetGV("$source", mrb.Value(f))
 
 	tmp2Name := filepath.Join(os.TempDir(), "test2.tmp")
-	f2,_ := os.OpenFile(tmp2Name, os.O_CREATE|os.O_WRONLY, os.ModePerm)
+	f2, _ := os.OpenFile(tmp2Name, os.O_CREATE|os.O_WRONLY, os.ModePerm)
 	mrb.SetGV("$dest2", f2)
 
-	_,err= f.Seek(0, io.SeekStart)
+	_, err = f.Seek(0, io.SeekStart)
 	assert.NilError(t, err)
 
 	v, err := mrb.Eval(`IO.copy_stream $source, $dest2`)
 	assert.NilError(t, err)
-	assert.Expect(t, v.Value().IsFixnum(), "shoud return length")
+	assert.Expect(t, v.Value().IsInteger(), "shoud return length")
 
 	stat, err := f2.Stat()
 	assert.NilError(t, err)
@@ -121,15 +122,15 @@ func Test_ioPipe(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	_,err := mrb.Eval(`$r, $w = IO.pipe`)
+	_, err := mrb.Eval(`$r, $w = IO.pipe`)
 	assert.NilError(t, err)
 
 	w, ok := mrb.Data(mrb.GetGV("$w")).(io.WriteCloser)
 	assert.Expect(t, ok, "io.WriteCloser expected")
-	go func(){
+	go func() {
 		_, err := io.WriteString(w, "test")
 		assert.NilError(t, err)
-		_=w.Close()
+		_ = w.Close()
 	}()
 
 	ret, err := mrb.Eval(`$r.read`)
@@ -151,19 +152,19 @@ func Test_ioSReadlines(t *testing.T) {
 
 	ret, err := mrb.Eval(`IO.readlines($pid)`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Interface(), []interface{}{"line 1\n","line 2"})
+	assert.Equal(t, ret.Interface(), []interface{}{"line 1\n", "line 2"})
 
-	_,err= f.Seek(0, io.SeekStart)
+	_, err = f.Seek(0, io.SeekStart)
 	assert.NilError(t, err)
 
 	ret, err = mrb.Eval(`IO.readlines($pid, chomp: true)`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Interface(), []interface{}{"line 1","line 2"})
+	assert.Equal(t, ret.Interface(), []interface{}{"line 1", "line 2"})
 
 	mrb.SetGV("$s", strings.NewReader("line 1\nline 2"))
 	ret, err = mrb.Eval(`IO.readlines($s, "ne", 2, chomp: true)`)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Interface(), []interface{}{"li",""," 1","\nl","in","e ","2"})
+	assert.Equal(t, ret.Interface(), []interface{}{"li", "", " 1", "\nl", "in", "e ", "2"})
 }
 
 func Test_ioForeach(t *testing.T) {
@@ -182,33 +183,33 @@ func Test_ioForeach(t *testing.T) {
 	ret, err := mrb.Eval(`IO.foreach($pid) {|x| $a << x }`)
 	assert.NilError(t, err)
 	assert.Expect(t, ret.IsNil(), "nil expected")
-	assert.Equal(t, a.Interface(), []interface{}{"line 1\n","line 2"})
+	assert.Equal(t, a.Interface(), []interface{}{"line 1\n", "line 2"})
 
-	_,err= f.Seek(0, io.SeekStart)
+	_, err = f.Seek(0, io.SeekStart)
 	assert.NilError(t, err)
 	a.Clear()
 
 	ret, err = mrb.Eval(`IO.foreach($pid, chomp: true) {|x| $a << x }`)
 	assert.NilError(t, err)
 	assert.Expect(t, ret.IsNil(), "nil expected")
-	assert.Equal(t, a.Interface(), []interface{}{"line 1","line 2"})
+	assert.Equal(t, a.Interface(), []interface{}{"line 1", "line 2"})
 
-	_,err= f.Seek(0, io.SeekStart)
+	_, err = f.Seek(0, io.SeekStart)
 	assert.NilError(t, err)
 	a.Clear()
 
 	ret, err = mrb.Eval(`IO.foreach($pid, "ne", 2, chomp: true) {|x| $a << x }`)
 	assert.NilError(t, err)
 	assert.Expect(t, ret.IsNil(), "nil expected")
-	assert.Equal(t, a.Interface(), []interface{}{"li",""," 1","\nl","in","e ","2"})
+	assert.Equal(t, a.Interface(), []interface{}{"li", "", " 1", "\nl", "in", "e ", "2"})
 
-	_,err= f.Seek(0, io.SeekStart)
+	_, err = f.Seek(0, io.SeekStart)
 	assert.NilError(t, err)
 
 	ret, err = mrb.Eval(`IO.foreach($pid, chomp: true).to_a`)
 	assert.NilError(t, err)
 	assert.Expect(t, ret.Value().IsArray(), "array expected")
-	assert.Equal(t, ret.Interface(), []interface{}{"line 1","line 2"})
+	assert.Equal(t, ret.Interface(), []interface{}{"line 1", "line 2"})
 }
 
 func Test_ioTryConvert(t *testing.T) {
@@ -239,4 +240,3 @@ func Test_ioTryConvert(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Expect(t, ret.IsNil(), "nil expected")
 }
-

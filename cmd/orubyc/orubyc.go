@@ -106,10 +106,10 @@ func parseArgs(mrb *oruby.MrbState, args *mrbcArgs) (bool, error) {
 	}
 
 	if *debugInfo {
-		args.flags |= oruby.DumpDebugInfo
+		args.flags |= oruby.MrbDumpDebugInfo
 	}
 	if *dumpStatic {
-		args.flags |= oruby.DumpStatic
+		args.flags |= oruby.MrbDumpStatic
 	}
 
 	if args.initname == "" {

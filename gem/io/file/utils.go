@@ -1,8 +1,9 @@
 package file
 
 import (
-	"github.com/oruby/oruby"
 	"os"
+
+	"github.com/oruby/oruby"
 )
 
 func modestrToFlags(mode string) (int, error) {
@@ -60,7 +61,7 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 		// mode string: 'rw+'
 		return modestrToFlags(mode.String())
 
-	} else if mode.IsFixnum() {
+	} else if mode.IsInteger() {
 		// mode integer: File::RDONLY|File::EXCL
 		return mode.Int(), nil
 
@@ -73,24 +74,23 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 		}
 
 		fFlags := mrb.HashFetch(mode, mrb.Intern("flags"), oruby.Int(0)).Int()
-		return mFlags|fFlags, nil
+		return mFlags | fFlags, nil
 
-	} else  {
+	} else {
 		return 0, oruby.EArgumentError("illegal access mode %v", mrb.Inspect(mode))
 	}
 }
 
 func parseFlags(mrb *oruby.MrbState, mode, optHash oruby.Value) (int, error) {
-	flags,err := modeToFlags(mrb, mode)
+	flags, err := modeToFlags(mrb, mode)
 	if err != nil {
 		return 0, err
 	}
 
-	flagsOpt,err := modeToFlags(mrb, optHash)
+	flagsOpt, err := modeToFlags(mrb, optHash)
 	if err != nil {
 		return 0, err
 	}
 
-	return flags|flagsOpt, nil
+	return flags | flagsOpt, nil
 }
-

@@ -106,10 +106,10 @@ func mutexSynchronize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	if !proc.IsNil() {
 		mutex.Lock()
-		ret, err := mrb.YieldArgv(proc)
+		ret := mrb.YieldArgv(proc)
 		mutex.Unlock()
-		if err != nil {
-			return mrb.RaiseError(err)
+		if mrb.Exc() != nil {
+			return mrb.RaiseError(mrb.Err())
 		}
 
 		return ret

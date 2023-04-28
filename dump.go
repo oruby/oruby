@@ -4,6 +4,7 @@ package oruby
 import "C"
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -15,8 +16,9 @@ import (
 
 // Dump
 const (
-	DumpDebugInfo = uint8(1)
-	DumpStatic    = uint8(2)
+	MrbDumpDebugInfo = uint8(1)
+	MrbDumpStatic    = uint8(2)
+	DumpDebugInfo    = MrbDumpDebugInfo
 )
 
 // DumpIrep Go implementation
@@ -44,16 +46,20 @@ func (mrb *MrbState) DumpIrep(irep MrbIrep, flags uint8, writer io.Writer) (int,
 
 // ReadIrep read irep
 func (mrb *MrbState) ReadIrep(buffer []byte) (irep MrbIrep, err error) {
-	err = mrb.tryE(func() {
-		bufLen := len(buffer)
-		if bufLen == 0 {
-			irep = MrbIrep{C.mrb_read_irep(mrb.p, nil), mrb}
-			return
-		}
+	bufLen := len(buffer)
+
+	if bufLen == 0 {
+		irep = MrbIrep{C.mrb_read_irep(mrb.p, nil), mrb}
+	} else {
 		irep = MrbIrep{C.mrb_read_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen)), mrb}
-	})
+	}
+
 	runtime.KeepAlive(buffer)
-	return irep, err
+
+	if irep.IsNil() {
+		return irep, errors.New("read irep error")
+	}
+	return irep, nil
 }
 
 // ReadIrepBuf reads irep from buffer, same as ReadIrep
@@ -103,8 +109,8 @@ const (
 	MrbDumpWriteFault        = -2
 	MrbDumpReadFault         = -3
 	MrbDumpInvalidFileHeader = -4
+	MrbDumpInvalidIrep       = -5
 	MrbDumpInvalidArgument   = -6
-	MrbDumpDebugInfo         = 1
 )
 
 // MrbDumpNullSymLen is null symbol length
@@ -112,15 +118,13 @@ const MrbDumpNullSymLen = 0xFFFF
 
 // Rite Binary File header
 const (
-	RiteBinaryIdent     = "RITE"
-	RiteBinaryMajorVer  = "03"
-	RiteBinaryMinorVer  = "00"
-	RiteBinaryFormatVer = RiteBinaryMajorVer + RiteBinaryMinorVer
-	RiteCompilerName    = "MATZ"
-	RiteCompilerVersion = "0000"
-
-	RiteVMVer = "0300"
-
+	RiteBinaryIdent       = "RITE"
+	RiteBinaryMajorVer    = "03"
+	RiteBinaryMinorVer    = "00"
+	RiteBinaryFormatVer   = RiteBinaryMajorVer + RiteBinaryMinorVer
+	RiteCompilerName      = "MATZ"
+	RiteCompilerVersion   = "0000"
+	RiteVMVer             = "0300"
 	RiteBinaryEOF         = "END\x00"
 	RiteSectionIrepIdent  = "IREP"
 	RiteSectionDebugIdent = "DBG\x00"
@@ -194,7 +198,7 @@ func (mrb *MrbState) DumpIrepCFunc(irep MrbIrep, flags uint8, f io.Writer, initN
 	}
 
 	staticExtern := "#ifdef __cplusplus\nextern\n#endif"
-	if (flags & DumpStatic) != 0 {
+	if (flags & MrbDumpStatic) != 0 {
 		staticExtern = "static"
 	}
 

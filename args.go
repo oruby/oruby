@@ -218,7 +218,7 @@ func (mrb *MrbState) GetArgsBlock() RProc {
 //	[]interface
 //	[]int
 //	[]float64
-//	oruby.Value, MrbSym, RObject, RArray, RHash, RProc
+//	oruby.Value, MrbSym, RValue, RArray, RHash, RProc
 //
 // Function returns number of arguments passed to function.
 //
@@ -337,8 +337,8 @@ func (mrb *MrbState) ScanArgs(args ...interface{}) (int, Value) {
 			*v = ret.Symbol()
 		case *Value:
 			*v = ret
-		case *RObject:
-			*v = RObject{ret.v, mrb}
+		case *RValue:
+			*v = RValue{ret.v, mrb}
 		case *RArray:
 			if !ret.IsArray() {
 				panic("array expected, got " + mrb.TypeName(ret))
@@ -348,7 +348,7 @@ func (mrb *MrbState) ScanArgs(args ...interface{}) (int, Value) {
 			if !ret.IsHash() {
 				panic("hash expected, got " + mrb.TypeName(ret))
 			}
-			*v = RHash{RObject{ret.v, mrb}}
+			*v = RHash{RValue{ret.v, mrb}}
 		case *RProc:
 			if ret.IsNil() {
 				*v = RProc{}
@@ -364,7 +364,7 @@ func (mrb *MrbState) ScanArgs(args ...interface{}) (int, Value) {
 					"Unsupported '%v'. Must be pointer to one of: bool, string, "+
 						"int[8,16,32,64], uint[8,16,32,64], float[32,64], "+
 						" map[string]interface{}, []string, []interface, "+
-						"oruby MrbSym, Value, RObject, RArray, RHash, RProc.\n%v", v, err),
+						"oruby MrbSym, Value, RValue, RArray, RHash, RProc.\n%v", v, err),
 				)
 			}
 

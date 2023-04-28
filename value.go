@@ -9,40 +9,42 @@ import (
 	"unsafe"
 )
 
+type Type uint32
+
 // ORuby value types
 const (
-	MrbTTFalse     = iota
-	MrbTTTrue      // 1
-	MrbTTSymbol    // 2
-	MrbTTUndef     // 3
-	MrbTTFree      // 4
-	MrbTTFloat     // 5
-	MrbTTInteger   // 6
-	MrbTTCptr      // 7
-	MrbTTObject    // 8
-	MrbTTClass     // 9
-	MrbTTModule    // 10
-	MrbTTIClass    // 11
-	MrbTTSClass    // 12
-	MrbTTProc      // 13
-	MrbTTArray     // 14
-	MrbTTHash      // 15
-	MrbTTString    // 16
-	MrbTTRange     // 17
-	MrbTTException // 18
-	MrbTTEnv       // 19
-	MrbTTCData     // 20
-	MrbTTFiber     // 21
-	MrbTTStruct    // 22
-	MrbTTIStruct   // 23
-	MrbTTBreak     // 24
-	MrbTTComplex   // 25
-	MrbTTRational  // 26
-	MrbTTBigInt    // 27
-	MrbTTMaxdefine // 28
+	MrbTTFalse     Type = iota
+	MrbTTTrue           // 1
+	MrbTTSymbol         // 2
+	MrbTTUndef          // 3
+	MrbTTFree           // 4
+	MrbTTFloat          // 5
+	MrbTTInteger        // 6
+	MrbTTCptr           // 7
+	MrbTTObject         // 8
+	MrbTTClass          // 9
+	MrbTTModule         // 10
+	MrbTTIClass         // 11
+	MrbTTSClass         // 12
+	MrbTTProc           // 13
+	MrbTTArray          // 14
+	MrbTTHash           // 15
+	MrbTTString         // 16
+	MrbTTRange          // 17
+	MrbTTException      // 18
+	MrbTTEnv            // 19
+	MrbTTCData          // 20
+	MrbTTFiber          // 21
+	MrbTTStruct         // 22
+	MrbTTIStruct        // 23
+	MrbTTBreak          // 24
+	MrbTTComplex        // 25
+	MrbTTRational       // 26
+	MrbTTBigInt         // 27
+	MrbTTMaxdefine      // 28
 )
 
-// MrbTTFixnum is deprecated. MrbTTInteger is preffered
+// MrbTTFixnum is deprecated. MrbTTInteger is preferred
 const MrbTTFixnum = MrbTTInteger
 
 // MrbTTHasBasic is first type with object
@@ -53,7 +55,7 @@ func (v Value) HasBasic() bool {
 	return !MrbImmediateP(v)
 }
 
-func checkType(valueType, mustBeType int) {
+func checkType(valueType, mustBeType Type) {
 	if valueType != mustBeType {
 		panic("wrong type")
 	}
@@ -63,7 +65,7 @@ func checkType(valueType, mustBeType int) {
 // Suported types are Fixnum, Symbol, Bool as 0 or 1 and Float truncated
 func (v Value) Int() int {
 	switch v.Type() {
-	case MrbTTFixnum:
+	case MrbTTInteger:
 		return int(C._mrb_fixnum(v.v))
 	case MrbTTSymbol:
 		return int(v.Symbol())
@@ -152,26 +154,34 @@ func (v Value) Symbol() MrbSym {
 
 // Freeze sets value as frozen
 func (v Value) Freeze() Value {
-	C._MRB_SET_FROZEN_FLAG(v.v)
+	if v.HasBasic() {
+		v.RBasic().SetFrozen(true)
+	}
 	return v
+}
+
+func (v Value) Frozen() bool {
+	return !v.HasBasic() || v.RBasic().IsFrozen()
 }
 
 // Unfreeze removes frozen flag from value
 func (v Value) Unfreeze() Value {
-	C._MRB_UNSET_FROZEN_FLAG(v.v)
+	if v.HasBasic() {
+		v.RBasic().SetFrozen(false)
+	}
 	return v
 }
 
 // TestFlag check if flag is set on object
-func (v Value) TestFlag(flag int) bool {
+func (v Value) TestFlag(flag uint32) bool {
 	if !v.HasBasic() {
 		return false
 	}
-	return (uint(v.RBasic().Flags()) & uint(flag)) != 0
+	return (uint32(v.RBasic().Flags()) & uint32(flag)) != 0
 }
 
 // MrbType returns type of oruby value
-func MrbType(v MrbValue) uint32 { return uint32(v.Type()) }
+func MrbType(v MrbValue) Type { return v.Type() }
 
 // MrbPtr return pointer in oruby value
 func MrbPtr(v MrbValue) uintptr { return uintptr(C._mrb_ptr(v.Value().v)) }
@@ -288,7 +298,7 @@ func (mrb *MrbState) FloatValue(f float64) Value {
 func (mrb *MrbState) StringValue(s string) RString {
 	ptr := C.CString(s)
 	defer C.free(unsafe.Pointer(ptr))
-	return RString{RObject{
+	return RString{RValue{
 		C.mrb_str_new(mrb.p, ptr, C.mrb_int(len(s))),
 		mrb,
 	}}
@@ -389,8 +399,8 @@ func (mrb *MrbState) BoolValue(b bool) Value {
 // Predefined helper values
 var (
 	False    = Value{C.mrb_false_value()}
-	Nil      = Value{C.mrb_nil_value()}
-	nilValue = Value{C.mrb_nil_value()}
+	Nil      = Value{}
+	nilValue = Value{}
 	True     = Value{C.mrb_true_value()}
 	Undef    = Value{C.mrb_undef_value()}
 )

@@ -57,7 +57,7 @@ func TestValueSimple(t *testing.T) {
 	Expect(t, MrbNilP(Value{}), "Value{} should be Nil")
 	n := Value{}
 	Expect(t, n.IsNil(), "Value{} should be Nil")
-	Expect(t, !n.IsFixnum(), "Value{} should not be Fixnum")
+	Expect(t, !n.IsInteger(), "Value{} should not be Integer")
 
 	// Fixed numeric
 	ExpectEql(t, MrbFixnum(mrb.Value(1)), 1)

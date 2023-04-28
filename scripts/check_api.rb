@@ -11,7 +11,7 @@ header_printed = false
 
 files.each do |f|
   next if FileTest.directory?(f)
-  next if ["boxing_nan.h,", "boxing_no.h", "boxing_word.h"].include?(File.basename(f))
+  next if ["boxing_nan.h", "boxing_no.h", "boxing_word.h"].include?(File.basename(f))
 
   header_printed = false
 
@@ -26,10 +26,15 @@ files.each do |f|
     if File.file?(gofile)
       gos = IO.read(gofile) unless gos
       next if gos.include? "C.#{l[0][0]}("
+
+      if File.basename(f,'.*') == 'mruby'
+        alt = IO.read("#{oruby_root}/class.go")
+        next if alt.include? "C.#{l[0][0]}("
+      end
     end
 
     unless header_printed
-      puts "\n\r--- API missing in #{File.basename(f,'.*')}.go:#{' (DOES NOT EXIST)' unless gos} ---\n\r"
+      puts "\n\r--- API missing in #{File.basename(f,'.*')}.go:#{' (FILE DOES NOT EXIST)' unless gos} ---\n\r"
       header_printed = true
     end
   

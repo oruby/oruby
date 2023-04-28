@@ -47,7 +47,7 @@ func (h RHash) EmptyP() bool {
 
 // Values returns values as array
 func (h RHash) Values() RArray {
-	return RArray{RObject{C.mrb_hash_values(h.mrb.p, h.v), h.mrb}}
+	return RArray{RValue{C.mrb_hash_values(h.mrb.p, h.v), h.mrb}}
 }
 
 // Clear clears the hash

@@ -8,43 +8,43 @@ import (
 )
 
 // RRange struct
-type RRange struct{ p *C.struct_RRange }
+type RRange struct {
+	RBasic
+}
 
-// Value implements MrbValue interface
-func (r RRange) Value() Value { return mrbObjValue(unsafe.Pointer(r.p)) }
+func (r RRange) ptr() *C.struct_RRange { return (*C.struct_RRange)(unsafe.Pointer(r.p)) }
 
-// Type for MrbValue interface
-func (r RRange) Type() int { return MrbTTRange }
-
-// IsNil check for MrbValue interface
-func (r RRange) IsNil() bool { return r.p == nil }
-
-// MrbRangePtr retreive RRange from oruby value
-func MrbRangePtr(r MrbValue) RRange { return RRange{(*C.struct_RRange)(C._mrb_ptr(r.Value().v))} }
-
-// RangeValue returns oruby value from RRange
-func RangeValue(r RRange) MrbValue { return r.Value() }
+// MrbRangePtr retrieve RRange from oruby value
+func MrbRangePtr(r MrbValue) RRange {
+	return RRange{RBasic{(*C.struct_RBasic)(C._mrb_ptr(r.Value().v))}}
+}
 
 // Begin value of range
-func (r RRange) Begin() Value { return Value{C._RANGE_BEG(r.p)} }
+func (r RRange) Begin() Value { return Value{C._RANGE_BEG(r.ptr())} }
 
 // End value of range
-func (r RRange) End() Value { return Value{C._RANGE_END(r.p)} }
+func (r RRange) End() Value { return Value{C._RANGE_END(r.ptr())} }
 
 // Exclusive is true if range excludes end value
-func (r RRange) Exclusive() bool { return C._RANGE_EXCL(r.p) != false }
+func (r RRange) Exclusive() bool { return C._RANGE_EXCL(r.ptr()) != false }
 
 // RangeNew creates new range, n include or not end value
 func (mrb *MrbState) RangeNew(v1, v2 MrbValue, n bool) Value {
 	return Value{C.mrb_range_new(mrb.p, v1.Value().v, v2.Value().v, iifmb(n))}
 }
 
-// MrbRangePtr retreive RRange from Value. This method returns error if range is uninitialized
+// MrbRangePtr retrieve RRange from Value. This method returns error if range is uninitialized
 func (mrb *MrbState) MrbRangePtr(r MrbValue) (RRange, error) {
-	result, err := mrb.try(func() C.mrb_value {
-		return RRange{C.mrb_range_ptr(mrb.p, r.Value().v)}.Value().v
-	})
-	return MrbRangePtr(result), err
+	const RangeInitializedFlag = uint32(1)
+	b := mrb.RBasicPtr(r)
+	ret := RRange{}
+
+	if b.IsNil() || !b.TestFlag(RangeInitializedFlag) {
+		return ret, EArgumentError("uninitialized range")
+	}
+
+	ret.RBasic = *b
+	return ret, nil
 }
 
 // RangeBegLen return values

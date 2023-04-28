@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"github.com/oruby/oruby"
 	"io"
 	"io/ioutil"
 	"os"
-)
 
+	"github.com/oruby/oruby"
+)
 
 func ioInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if f, ok := mrb.Data(self).(*os.File); ok {
@@ -40,11 +40,11 @@ func ioWriteString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	str := mrb.GetArgsFirst()
 	w, ok := mrb.Data(self).(io.Writer)
 	if !ok || w == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport writing")
+		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 
 	s, err := valueToS(mrb, str)
-	if err !=nil {
+	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
@@ -56,11 +56,11 @@ func ioWriteString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StrNew(fmt.Sprintf("%v%v", s, ioInspect(mrb, self).Value()))
 }
 
-func  ioSetAutosclose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.NotImplemented(mrb,self)
+func ioSetAutosclose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.NotImplemented(mrb, self)
 }
 
-func  ioIsAutoclose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func ioIsAutoclose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.True
 }
 
@@ -73,17 +73,16 @@ func ioIsBinbode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	f  := mrb.Data(self)
+	f := mrb.Data(self)
 	if closer, ok := f.(io.Closer); ok {
-		_=closer.Close()
+		_ = closer.Close()
 	}
 	return mrb.NilValue()
 }
 
-func  ioIsCloseOnExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func ioIsCloseOnExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.True
 }
-
 
 func ioCloseRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return RaiseIOError(mrb, "IO stream is not duplexed")
@@ -111,8 +110,8 @@ func ioIsClosed(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok {
 		return mrb.FalseValue()
 	}
-	_,err1 := r.Read(zeroBuf)
-	_,err2 := w.Write(zeroBuf)
+	_, err1 := r.Read(zeroBuf)
+	_, err2 := w.Write(zeroBuf)
 
 	return oruby.Bool(err1 == err2) //&& (err1 == poll.ErrFileClosing || err1 == poll.ErrNetClosing))
 }
@@ -127,16 +126,16 @@ func ioEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	lines := mrb.AryNewCapa(15)
 	for reader.Scan() {
 		if !block.IsNil() {
-			_, err := mrb.YieldArgv(block, reader.Text())
-			if err != nil {
-				return mrb.RaiseError(err)
+			_ = mrb.YieldArgv(block, reader.Text())
+			if mrb.Exc() != nil {
+				return mrb.RaiseError(mrb.Err())
 			}
 			continue
 		}
 		lines.PushString(reader.Text())
 	}
 	if closer != nil {
-		_= closer.Close()
+		_ = closer.Close()
 	}
 
 	if !block.IsNil() {
@@ -155,7 +154,7 @@ func ioEachByte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	block := mrb.GetArgsBlock()
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok {
-		return RaiseIOError(mrb,"stream not open for reading")
+		return RaiseIOError(mrb, "stream not open for reading")
 	}
 
 	if !block.IsNil() {
@@ -168,9 +167,9 @@ func ioEachByte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
-			_, err = mrb.Yield(block, oruby.Int(int(b[0])))
-			if err != nil {
-				return mrb.RaiseError(err)
+			_ = mrb.Yield(block, oruby.Int(int(b[0])))
+			if mrb.Exc() != nil {
+				return mrb.RaiseError(mrb.Err())
 			}
 		}
 		return self
@@ -184,7 +183,7 @@ func ioEachChar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	block := mrb.GetArgsBlock()
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok {
-		return RaiseIOError(mrb,"stream not open for reading")
+		return RaiseIOError(mrb, "stream not open for reading")
 	}
 
 	rb := bufio.NewReader(r)
@@ -198,9 +197,9 @@ func ioEachChar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
-			_, err = mrb.Yield(block, mrb.StrNew(string(c)))
-			if err != nil {
-				return mrb.RaiseError(err)
+			_ = mrb.Yield(block, mrb.StrNew(string(c)))
+			if mrb.Exc() != nil {
+				return mrb.RaiseError(mrb.Err())
 			}
 		}
 		return self
@@ -214,7 +213,7 @@ func ioEachCodepoint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	block := mrb.GetArgsBlock()
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok {
-		return RaiseIOError(mrb,"stream not open for reading")
+		return RaiseIOError(mrb, "stream not open for reading")
 	}
 
 	rb := bufio.NewReader(r)
@@ -228,9 +227,9 @@ func ioEachCodepoint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
-			_, err = mrb.Yield(block, oruby.Int(int(c)))
-			if err != nil {
-				return mrb.RaiseError(err)
+			_ = mrb.Yield(block, oruby.Int(int(c)))
+			if mrb.Exc() != nil {
+				return mrb.RaiseError(mrb.Err())
 			}
 		}
 		return self
@@ -243,10 +242,10 @@ func ioEachCodepoint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioIsEof(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok {
-		return RaiseIOError(mrb,"stream not open for reading")
+		return RaiseIOError(mrb, "stream not open for reading")
 	}
 
-	_,err := r.Read([]byte{})
+	_, err := r.Read([]byte{})
 	return oruby.Bool(err == io.EOF)
 }
 
@@ -268,7 +267,7 @@ func ioFlush(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
-func getFile(mrb *oruby.MrbState, self oruby.Value) (*os.File,error) {
+func getFile(mrb *oruby.MrbState, self oruby.Value) (*os.File, error) {
 	if f, ok := mrb.Data(self).(*os.File); ok {
 		return f, nil
 	}
@@ -281,14 +280,14 @@ func ioFsync(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	_=f.Sync()
+	_ = f.Sync()
 	return oruby.Int(0)
 }
 
 func ioGetbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok || r == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport reading")
+		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
 
 	rb := bufio.NewReader(r)
@@ -305,7 +304,7 @@ func ioGetbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioGetc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok || r == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport reading")
+		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
 	rb := bufio.NewReader(r)
 	b, _, err := rb.ReadRune()
@@ -318,7 +317,7 @@ func ioGetc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StrNew(string(b))
 }
 
-func setLastLine(mrb *oruby.MrbState, self oruby.Value, line string)  oruby.Value {
+func setLastLine(mrb *oruby.MrbState, self oruby.Value, line string) oruby.Value {
 	v := mrb.StrNew(line)
 	mrb.GVSet(mrb.Intern("$_"), v)
 
@@ -328,13 +327,13 @@ func setLastLine(mrb *oruby.MrbState, self oruby.Value, line string)  oruby.Valu
 	if !noV.IsNil() {
 		no = noV.Int()
 	}
-	_= mrb.IVSet(self, lineno, oruby.MrbFixnumValue(no+1))
+	_ = mrb.IVSet(self, lineno, oruby.MrbFixnumValue(no+1))
 
 	return v
 }
 
 func setLineNo(mrb *oruby.MrbState, self oruby.Value, v int) {
-	_=mrb.IVSet(self, mrb.Intern("@lineno"), mrb.FixnumValue(v))
+	_ = mrb.IVSet(self, mrb.Intern("@lineno"), mrb.FixnumValue(v))
 }
 
 func ioGets(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -388,7 +387,7 @@ func ioPid(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioPos(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s, ok := mrb.Data(self).(io.Seeker)
 	if !ok {
-		return RaiseIOError(mrb,"stream cannot tell position")
+		return RaiseIOError(mrb, "stream cannot tell position")
 	}
 
 	pos, err := s.Seek(0, io.SeekCurrent)
@@ -403,7 +402,7 @@ func ioSetPos(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	pos := mrb.GetArgsFirst().Int64()
 	s, ok := mrb.Data(self).(io.Seeker)
 	if !ok {
-		return RaiseIOError(mrb,"stream cannot tell position")
+		return RaiseIOError(mrb, "stream cannot tell position")
 	}
 
 	pos, err := s.Seek(pos, io.SeekStart)
@@ -421,7 +420,7 @@ func ioPread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	buf := make([]byte, maxlen.Int64())
 	offset := off.Int64()
 
-	defer func(){
+	defer func() {
 		if err == nil && outbuff.IsString() {
 			mrb.StrResize(outbuff, 0)
 			mrb.StrCat(outbuff, string(buf))
@@ -437,7 +436,7 @@ func ioPread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	if seeker, ok := f.(io.Seeker); ok {
-		if _,err = seeker.Seek(offset, io.SeekStart); err != nil {
+		if _, err = seeker.Seek(offset, io.SeekStart); err != nil {
 			return mrb.RaiseError(err)
 		}
 
@@ -466,7 +465,7 @@ func ioPrint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	outsep := mrb.GetGV("$\\") // If the output record separator os not nil, it is appended to the output.
 	w, ok := mrb.Data(self).(io.Writer)
 	if !ok || w == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport writing")
+		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 
 	for i := 0; i < argc; i++ {
@@ -501,7 +500,7 @@ func ioPrintf(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	w, ok := mrb.Data(self).(io.Writer)
 	if !ok || w == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport writing")
+		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 
 	s, err := mrb.FuncallWithBlock(mrb.KernelModule(), mrb.Intern("sprintf"), args.SliceIntf()...)
@@ -523,7 +522,7 @@ func ioPutc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ch := byte(0)
 	w, ok := mrb.Data(self).(io.Writer)
 	if !ok || w == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport writing")
+		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 	switch c.Type() {
 	case oruby.MrbTTFixnum:
@@ -547,11 +546,11 @@ func ioPutc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func pArray(mrb *oruby.MrbState, ary oruby.Value, w io.Writer) error {
 	if ary.Len() == 0 {
-		_,err := io.WriteString(w, "\n")
+		_, err := io.WriteString(w, "\n")
 		return err
 	}
 
-	for i:= 0; i < ary.Len(); i++ {
+	for i := 0; i < ary.Len(); i++ {
 		v := mrb.AryEntry(ary, i)
 		if v.IsArray() {
 			err := pArray(mrb, v, w)
@@ -584,14 +583,14 @@ func ioPuts(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	argc := args.Len()
 	w, ok := mrb.Data(self).(io.Writer)
 	if !ok || w == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport writing")
+		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 	if argc == 0 {
-		_,_ = io.WriteString(w, "\n")
+		_, _ = io.WriteString(w, "\n")
 		return mrb.NilValue()
 	}
 
-	for i:= 0; i < argc; i++ {
+	for i := 0; i < argc; i++ {
 		v := args.Item(i)
 		if v.IsArray() {
 			err := pArray(mrb, v, w)
@@ -637,7 +636,7 @@ func ioPwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	if seeker, ok := f.(io.Seeker); ok {
-		if _,err := seeker.Seek(offset.Int64(), io.SeekStart); err != nil {
+		if _, err := seeker.Seek(offset.Int64(), io.SeekStart); err != nil {
 			return mrb.RaiseError(err)
 		}
 
@@ -661,13 +660,13 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok || r == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport reading")
+		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
 
 	// length: 0, nil, omitted or positive integer
 	if l.IsNil() {
 		//
-	} else if l.IsFixnum() {
+	} else if l.IsInteger() {
 		length = l.Int64()
 		if length == 0 {
 			return mrb.StrNew("")
@@ -700,7 +699,7 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioReadbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok || r == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport reading")
+		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
 	var b byte
 	_, err := r.Read([]byte{b})
@@ -716,10 +715,10 @@ func ioReadbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioReadchar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok || r == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport reading")
+		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
 	rs := bufio.NewReader(r)
-	chr,_, err := rs.ReadRune()
+	chr, _, err := rs.ReadRune()
 	if errors.Is(err, io.EOF) {
 		return RaiseEOF(mrb)
 	}
@@ -738,7 +737,7 @@ func ioReadline(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	reader.Scan()
 	if reader.Err() != nil {
 		mrb.SetGV("$_", mrb.NilValue())
-		if errors.Is(reader.Err(), io.EOF){
+		if errors.Is(reader.Err(), io.EOF) {
 			RaiseEOF(mrb)
 		}
 		return RaiseIOError(mrb, reader.Err().Error())
@@ -767,9 +766,9 @@ func ioReadpartial(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	length, outbuf := mrb.GetArgs2()
 	r, ok := mrb.Data(self).(io.Reader)
 	if !ok || r == nil {
-		return RaiseIOError(mrb,"IO Stream does not suport reading")
+		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
-	if !length.IsFixnum() {
+	if !length.IsInteger() {
 		mrb.EArgumentError().Raise("maxlength must be integer")
 	}
 
@@ -811,7 +810,7 @@ func ioSeek(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	seeker, ok := mrb.Data(self).(io.Seeker)
 	if !ok || seeker == nil {
-		return RaiseIOError(mrb,"IO object does not support seek")
+		return RaiseIOError(mrb, "IO object does not support seek")
 	}
 
 	pos, err := seeker.Seek(offset.Int64(), whence.Int())
@@ -849,7 +848,7 @@ func ioSetSync(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioTell(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s, ok := mrb.Data(self).(io.Seeker)
 	if !ok || s == nil {
-		return RaiseIOError(mrb,"IO object does not support position")
+		return RaiseIOError(mrb, "IO object does not support position")
 	}
 
 	ret, err := s.Seek(0, io.SeekCurrent)
@@ -889,7 +888,7 @@ func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	w, ok := mrb.Data(self).(io.Writer)
 	if !ok || w == nil {
-		return 	RaiseIOError(mrb,"IO object does not support writing")
+		return RaiseIOError(mrb, "IO object does not support writing")
 	}
 
 	cnt := int64(0)
@@ -907,4 +906,3 @@ func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	return oruby.Int64(cnt)
 }
-

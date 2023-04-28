@@ -267,7 +267,7 @@ func ioOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return ret
 	}
 
-	obj, _ := mrb.Yield(block, ret)
+	obj := mrb.Yield(block, ret)
 	if closer, ok := ioObject.(io.Closer); ok {
 		_ = closer.Close()
 	}
@@ -319,9 +319,9 @@ func ioForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			lines.PushString(reader.Text())
 			continue
 		}
-		_, err := mrb.YieldArgv(block, reader.Text())
-		if err != nil {
-			return mrb.RaiseError(err)
+		_ = mrb.YieldArgv(block, reader.Text())
+		if mrb.Exc() != nil {
+			return mrb.RaiseError(mrb.Err())
 		}
 	}
 	if closer != nil {

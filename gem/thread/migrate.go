@@ -175,7 +175,7 @@ func migrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValue, err
 }
 
 func migrateSimpleIV(mrb, mrb2 *oruby.MrbState, v, v2 oruby.Value) error {
-	a := mrb.RObject(v).Call("instance_variables").RArray()
+	a := mrb.RValue(v).Call("instance_variables").RArray()
 
 	for i := 0; i < a.Len(); i++ {
 		sym := mrb.Symbol(a.Item(i))

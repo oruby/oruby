@@ -2,7 +2,6 @@ package process
 
 import (
 	"fmt"
-	"github.com/oruby/oruby/gem/signal"
 	"math"
 	"os"
 	"os/user"
@@ -13,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/oruby/oruby/gem/signal"
+
 	"github.com/oruby/oruby"
 	//_ "github.com/oruby/oruby/gem/thread"
 	_ "github.com/oruby/oruby/gem/signal"
@@ -20,7 +21,7 @@ import (
 
 type processData struct {
 	sync.Mutex
-	runners		map[int]*cmdRunner
+	runners     map[int]*cmdRunner
 	savedUserID int
 	wakeupChan  chan struct{}
 	tms         oruby.RClass
@@ -65,13 +66,13 @@ func init() {
 		mProcData := &processData{
 			savedUserID: os.Geteuid(),
 			wakeupChan:  make(chan struct{}),
-			tms: mrb.ClassPtr(tmsV.Value()),
-			runners: make(map[int]*cmdRunner, 10),
+			tms:         mrb.ClassPtr(tmsV.Value()),
+			runners:     make(map[int]*cmdRunner, 10),
 		}
 
 		mProc := mrb.DefineGoModule("Process", mProcData)
 
-		mProc.Const("WNOHANG",   1)
+		mProc.Const("WNOHANG", 1)
 		mProc.Const("WUNTRACED", 2)
 
 		mrb.DefineClassMethod(mProc, "exec", procExec, mrb.ArgsAny())
@@ -108,7 +109,7 @@ func init() {
 		mrb.DefineModuleFunc(mProc, "euid", os.Geteuid)
 		mrb.DefineModuleFunc(mProc, "egid", os.Getegid)
 		mrb.DefineModuleFunc(mProc, "groups", os.Getgroups)
-		mrb.DefineModuleFunction(mProc, "initgroups", procInitgroups, mrb.ArgsArg(1,1))
+		mrb.DefineModuleFunction(mProc, "initgroups", procInitgroups, mrb.ArgsArg(1, 1))
 
 		mProcUID := mrb.DefineModuleUnder(mProc, "UID")
 		mProcGID := mrb.DefineModuleUnder(mProc, "GID")
@@ -117,7 +118,7 @@ func init() {
 		mrb.DefineModuleFunc(mProcUID, "eid", os.Geteuid)
 		mrb.DefineModuleFunc(mProcGID, "gid", os.Getegid)
 
-		mrb.DefineModuleFunc(mProcUID, "from_name", func(name string)(int,error) {
+		mrb.DefineModuleFunc(mProcUID, "from_name", func(name string) (int, error) {
 			g, err := user.Lookup(name)
 			if err != nil {
 				return -1, oruby.EArgumentError(err.Error())
@@ -129,7 +130,7 @@ func init() {
 			return gid, nil
 		})
 
-		mrb.DefineModuleFunc(mProcGID, "from_name", func(name string)(int,error) {
+		mrb.DefineModuleFunc(mProcGID, "from_name", func(name string) (int, error) {
 			g, err := user.LookupGroup(name)
 			if err != nil {
 				return -1, oruby.EArgumentError(err.Error())
@@ -198,10 +199,10 @@ func procInitgroups(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func errorState(err error) *status {
 	return &status{
-		Pid: 0,
+		Pid:        0,
 		Exitstatus: 127,
-		IsSucess: false,
-		IsExited: true,
+		IsSucess:   false,
+		IsExited:   true,
 	}
 }
 
@@ -235,7 +236,7 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ret, state := runner.Wait(pid, 0)
 
 	// Error
-	if !ret.IsFixnum() {
+	if !ret.IsInteger() {
 		if runner.exception {
 			return ret
 		}
@@ -251,7 +252,7 @@ func procGetCmd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, args)
 
 	if !block.IsNil() {
-		ret,_ := mrb.YieldArgv(block, mrb.DataValue(runner.cmd))
+		ret := mrb.YieldArgv(block, mrb.DataValue(runner.cmd))
 		runner.cleanup()
 		return ret
 	}
@@ -357,7 +358,7 @@ func procWait2(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ret = mrb.FixnumValue(result)
 	}
 
-	if !ret.IsFixnum() {
+	if !ret.IsInteger() {
 		return ret
 	}
 
@@ -377,7 +378,7 @@ func procWaitall(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if !runnersCleared {
 			procData.Lock()
 			keys := make([]*cmdRunner, 0, len(procData.runners))
-			for _,v := range procData.runners {
+			for _, v := range procData.runners {
 				if v.cmd.ProcessState != nil {
 					continue
 				}
@@ -387,7 +388,7 @@ func procWaitall(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 			for _, runner := range keys {
 				rret, state := runner.Wait(runner.cmd.Process.Pid, 0)
-				if !rret.IsFixnum() {
+				if !rret.IsInteger() {
 					return rret
 				}
 				ret.Push(mrb.AryNewFromValues(rret, mrb.Value(state)))
@@ -524,7 +525,7 @@ func procSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	select {
 	case <-mrb.ExitChan():
 		break
-	case <- procData.wakeupChan:
+	case <-procData.wakeupChan:
 		break
 	case <-time.After(duration * time.Nanosecond):
 		break

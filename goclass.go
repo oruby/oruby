@@ -18,10 +18,16 @@ func (c RClass) Error() error {
 	return nil
 }
 
-// RObject returns RObject for MrbValue interface
-func (mrb *MrbState) RObject(v MrbValue) RObject {
-	return RObject{v.Value().v, mrb}
+// RValue returns RValue for MrbValue interface
+func (mrb *MrbState) RValue(v MrbValue) RValue {
+	return RValue{v.Value().v, mrb}
 }
+
+// RBasic returns pointer to mruby basic object
+func (c RClass) RBasic() RBasic { return RBasic{(*C.struct_RBasic)(unsafe.Pointer(c.p))} }
+
+// RObject returns pointer to mruby object which has instance variables (iv table)
+func (c RClass) RObject() RObject { return RObject{(*C.struct_RObject)(unsafe.Pointer(c.p))} }
 
 // Super returns class
 func (c RClass) Super() RClass { return RClass{c.p.super, c.mrb} }
@@ -30,7 +36,7 @@ func (c RClass) Super() RClass { return RClass{c.p.super, c.mrb} }
 func (c RClass) Mrb() *MrbState { return c.mrb }
 
 // InstanceTT returns class instance type
-func (c RClass) InstanceTT() int { return int(C._MRB_INSTANCE_TT(c.p)) }
+func (c RClass) InstanceTT() Type { return Type(C._MRB_INSTANCE_TT(c.p)) }
 
 // Real returns top parent class
 func (c RClass) Real() RClass { return RClass{C.mrb_class_real(c.p), c.mrb} }
@@ -39,13 +45,13 @@ func (c RClass) Real() RClass { return RClass{C.mrb_class_real(c.p), c.mrb} }
 func (c RClass) ClassPath() Value { return Value{C.mrb_class_path(c.mrb.p, c.p)} }
 
 // New creates new object instance
-func (c RClass) New(args ...interface{}) (RObject, error) {
+func (c RClass) New(args ...interface{}) (RValue, error) {
 	obj, err := c.mrb.ObjNew(c, args...)
 	if err != nil {
-		return RObject{}, err
+		return RValue{}, err
 	}
 
-	return RObject{obj.Value().v, c.mrb}, nil
+	return RValue{obj.Value().v, c.mrb}, nil
 }
 
 // NewInstance creates new object instance, panics on error
@@ -123,7 +129,7 @@ func (c RClass) NewGoInstance(obj interface{}) (Value, error) {
 
 		if klass != unsafe.Pointer(c.p) {
 			v := mrbObjValue(klass)
-			return c.mrb.nilValue, fmt.Errorf(
+			return nilValue, fmt.Errorf(
 				"creation failed, expected type for %v class but got %v", c.Name(), c.mrb.ClassPtr(v).Name(),
 			)
 		}
@@ -262,8 +268,8 @@ func (c RClass) DefineClassUnder(name string, super RClass) RClass {
 }
 
 // Call shortcut for mrb.Call(klass, method, args)
-func (c RClass) Call(name string, args ...interface{}) RObject {
-	return RObject{v: c.mrb.Call(c, name, args...).v, mrb: c.mrb}
+func (c RClass) Call(name string, args ...interface{}) RValue {
+	return RValue{v: c.mrb.Call(c, name, args...).v, mrb: c.mrb}
 }
 
 // AttrReader creates getter method for instance variable with same name.

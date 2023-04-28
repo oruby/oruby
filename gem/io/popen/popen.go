@@ -39,7 +39,7 @@ func ioCloseRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok {
 		return gemIO.RaiseIOError(mrb, "IO stream is not duplexed")
 	}
-	_= sp.ReadCloser.Close()
+	_ = sp.ReadCloser.Close()
 	return mrb.NilValue()
 }
 
@@ -48,7 +48,7 @@ func ioCloseWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok {
 		return gemIO.RaiseIOError(mrb, "IO stream is not duplexed")
 	}
-	_= sp.WriteCloser.Close()
+	_ = sp.WriteCloser.Close()
 	return mrb.NilValue()
 }
 
@@ -59,10 +59,10 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	args, block := mrb.GetArgsWithBlock()
-	env  := args.Item(0)
+	env := args.Item(0)
 	command := args.Item(1)
 	modeV := args.Item(2)
-	opt  := args.GetLastHash()
+	opt := args.GetLastHash()
 
 	if !env.IsHash() {
 		modeV = command
@@ -133,9 +133,9 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return ret
 	}
 
-	result, err := mrb.Yield(block, ret)
-	if err != nil {
-		return mrb.RaiseError(err)
+	result := mrb.Yield(block, ret)
+	if mrb.Exc() != nil {
+		return mrb.RaiseError(mrb.Err())
 	}
 
 	if err = cmd.Wait(); err != nil {
@@ -149,7 +149,7 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 		// Default is RDONLY
 		return 0, nil
 
-	} else if mode.IsFixnum() {
+	} else if mode.IsInteger() {
 		// mode integer: File::RDONLY|File::EXCL
 		return mode.Int(), nil
 
@@ -157,23 +157,23 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 		// mode: popen - int only
 		mFlags := mrb.HashFetch(mode, mrb.Intern("mode"), oruby.Int(0)).Int()
 		fFlags := mrb.HashFetch(mode, mrb.Intern("flags"), oruby.Int(0)).Int()
-		return mFlags|fFlags, nil
+		return mFlags | fFlags, nil
 
-	} else  {
+	} else {
 		return 0, oruby.EArgumentError("illegal access mode %v", mrb.Inspect(mode))
 	}
 }
 
 func parseFlags(mrb *oruby.MrbState, mode, optHash oruby.Value) (int, error) {
-	flags,err := modeToFlags(mrb, mode)
+	flags, err := modeToFlags(mrb, mode)
 	if err != nil {
 		return 0, err
 	}
 
-	flagsOpt,err := modeToFlags(mrb, optHash)
+	flagsOpt, err := modeToFlags(mrb, optHash)
 	if err != nil {
 		return 0, err
 	}
 
-	return flags|flagsOpt, nil
+	return flags | flagsOpt, nil
 }

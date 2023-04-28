@@ -55,12 +55,7 @@ func TestMrbStackedException(t *testing.T) {
 
 	evalFunc := func(mrb *MrbState, self Value) MrbValue {
 		arg := mrb.GetArgsBlock()
-		result, err := mrb.Yield(arg, mrb.NilValue())
-		if err != nil {
-			return mrb.EExceptionClass().RaiseError(mrb.Err())
-		}
-
-		return result
+		return mrb.Yield(arg, mrb.NilValue())
 	}
 
 	mrb.SingletonClass(mrb.TopSelf()).DefineMethod("myeval", evalFunc, ArgsBlock())
@@ -109,12 +104,7 @@ func TestMrbStackedInnerException(t *testing.T) {
 
 	evalFunc := func(mrb *MrbState, self Value) MrbValue {
 		arg := mrb.GetArgsBlock()
-		result, err := mrb.Yield(arg, mrb.nilValue)
-		if err != nil {
-			return mrb.EExceptionClass().RaiseError(mrb.Err())
-		}
-
-		return result
+		return mrb.Yield(arg, nilValue)
 	}
 
 	mrb.SingletonClass(mrb.TopSelf()).DefineMethod("myeval", evalFunc, ArgsBlock())
