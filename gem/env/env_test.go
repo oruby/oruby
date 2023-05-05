@@ -1,11 +1,12 @@
 package env
 
 import (
-	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/assert"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/assert"
 )
 
 func extractEnv(kv int) []string {
@@ -175,6 +176,8 @@ func Test_envGetKey(t *testing.T) {
 
 	ret, err := mrb.Eval("ENV['ORUBY_TEST_KEY']")
 	assert.NilError(t, err)
+	assert.NilError(t, mrb.Err())
+
 	assert.Equal(t, ret.String(), "ORUBY_TEST")
 }
 
@@ -182,7 +185,7 @@ func Test_envSetKey(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	_= os.Unsetenv("ORUBY_TEST_KEY")
+	_ = os.Unsetenv("ORUBY_TEST_KEY")
 
 	ret, err := mrb.Eval("ENV.has_key? 'ORUBY_TEST_KEY'")
 	assert.NilError(t, err)
@@ -218,4 +221,3 @@ func Test_envSetKey(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFalse)
 }
-

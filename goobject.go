@@ -106,9 +106,22 @@ func (obj RValue) IVGet(sym MrbSym) Value {
 
 // IVSet set instance variable
 func (obj RValue) IVSet(sym MrbSym, v MrbValue) error {
-	return obj.mrb.tryE(func() {
-		C.mrb_iv_set(obj.mrb.p, obj.Value().v, C.mrb_sym(sym), v.Value().v)
-	})
+	switch obj.Type() {
+	case MrbTTObject,
+		MrbTTClass,
+		MrbTTModule,
+		MrbTTSClass,
+		MrbTTHash,
+		MrbTTCData,
+		MrbTTException:
+		if err := obj.mrb.CheckFrozen(obj); err != nil {
+			return err
+		}
+	default:
+		return EArgumentError(" cannot set instance variable")
+	}
+	C.mrb_iv_set(obj.mrb.p, obj.Value().v, C.mrb_sym(sym), v.Value().v)
+	return nil
 }
 
 // SetIV set instance variable as string

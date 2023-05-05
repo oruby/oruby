@@ -77,6 +77,13 @@ void _mrb_method_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx
 }
 
 void _define_class_method(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec) {
-  mrb_value sclass = mrb_singleton_class(mrb, mrb_obj_value(c));
-  _mrb_method_new_cfunc(mrb, mrb_class_ptr(sclass), id, idx, aspec);
+  //mrb_value sclass = mrb_singleton_class(mrb, mrb_obj_value(c));
+  //  _mrb_method_new_cfunc(mrb, mrb_class_ptr(sclass), id, idx, aspec);
+  struct RClass* sclass = mrb_singleton_class_ptr(mrb, mrb_obj_value(c));
+  _mrb_method_new_cfunc(mrb, sclass, id, idx, aspec);
+}
+
+void _define_singleton_method(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec) {
+  struct RClass* sclass = mrb_singleton_class_ptr(mrb, mrb_obj_value(c));
+  _mrb_method_new_cfunc(mrb, sclass, id, idx, aspec);
 }

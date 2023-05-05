@@ -1,9 +1,10 @@
 package file
 
 import (
-	"github.com/oruby/oruby"
 	"io/ioutil"
 	"os"
+
+	"github.com/oruby/oruby"
 )
 
 type tmpfile struct {
@@ -11,15 +12,15 @@ type tmpfile struct {
 }
 
 func (f tmpfile) Free() {
-	_= f.Close()
-	_= os.Remove(f.Name())
+	_ = f.Close()
+	_ = os.Remove(f.Name())
 }
 
 func initTmpFile(mrb *oruby.MrbState, fileClass oruby.RClass) {
 	tmp := mrb.DefineClass("Tempfile", fileClass)
 	tmp.DefineClassMethod("create", tmpCreate, mrb.ArgsOpt(4))
-	tmp.DefineClassMethod("open",   tmpOpen, mrb.ArgsOpt(4))
-	tmp.DefineMethod("initialize",  tmpInit, mrb.ArgsOpt(4))
+	tmp.DefineClassMethod("open", tmpOpen, mrb.ArgsOpt(4))
+	tmp.DefineMethod("initialize", tmpInit, mrb.ArgsOpt(4))
 	tmp.DefineMethod("close", tmpClose, mrb.ArgsOpt(1))
 	tmp.DefineMethod("close!", tmpCloseBang, mrb.ArgsNone())
 	tmp.DefineMethod("delete", tmpUnlink, mrb.ArgsNone())
@@ -39,7 +40,7 @@ func openTmpFile(mrb *oruby.MrbState, args oruby.RArgs) (string, string, int, in
 		dir = args.Item(1).String()
 	}
 
-	flags := os.O_RDWR|os.O_CREATE|os.O_EXCL
+	flags := os.O_RDWR | os.O_CREATE | os.O_EXCL
 	perm := 0600
 	opt := args.GetLastHash()
 
@@ -66,22 +67,22 @@ func tmpCreate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if block.IsNil() {
 		return ret
 	}
-	result, _ := mrb.Yield(block, ret)
+	result := mrb.Yield(block, ret)
 	tmpCloseBang(mrb, ret.Value())
 
 	return result
 }
 
 func tmpOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-  	block := mrb.GetArgsBlock()
-  	ret, err := mrb.ObjNew(mrb.ClassPtr(self), mrb.GetArgs().SliceIntf()...)
+	block := mrb.GetArgsBlock()
+	ret, err := mrb.ObjNew(mrb.ClassPtr(self), mrb.GetArgs().SliceIntf()...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-  	if block.IsNil() {
-  		return ret
+	if block.IsNil() {
+		return ret
 	}
-	result, _ := mrb.Yield(block, ret)
+	result := mrb.Yield(block, ret)
 	tmpCloseBang(mrb, ret.Value())
 
 	return result
@@ -117,7 +118,7 @@ func tmpInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func tmpClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	unlink := mrb.GetArgsFirst().Bool()
 	f := mrb.Data(self).(*os.File)
-	_= f.Close()
+	_ = f.Close()
 	mrb.SetIV(self, "@closed", true)
 	if unlink {
 		return tmpUnlink(mrb, self)
@@ -127,7 +128,7 @@ func tmpClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func tmpCloseBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	f := mrb.Data(self).(*os.File)
-	_= f.Close()
+	_ = f.Close()
 	mrb.SetIV(self, "@closed", true)
 	return tmpUnlink(mrb, self)
 }
@@ -175,4 +176,3 @@ func tmpUnlink(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	return mrb.TrueValue()
 }
-

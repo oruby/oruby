@@ -38,21 +38,6 @@ extern "C" {
 #include "mruby/internal.h"
 #include "mruby/version.h"
 
-extern void execE(void *f);
-
-static void tryE(mrb_state *mrb, void *f) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-
-  MRB_TRY(&c_jmp)
-    mrb->jmp = &c_jmp;
-    execE(f);
-  MRB_CATCH(&c_jmp)
-    mrb_print_error(mrb);
-  MRB_END_EXC(&c_jmp)
-  mrb->jmp = prev_jmp;
-}
-
 static char* _MRUBY_COPYRIGHT()  { return MRUBY_COPYRIGHT; }
 static char* _MRUBY_DESCRIPTION()  { return MRUBY_DESCRIPTION; }
 static mrb_int _MRUBY_RELEASE_MAJOR()  { return (mrb_int)MRUBY_RELEASE_MAJOR; }

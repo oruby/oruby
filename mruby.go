@@ -260,10 +260,10 @@ func (mrb *MrbState) Inject(proc RProc) {
 
 	// mrb->jmp == 0 if no vm code is executing
 	// This will be picked from main executing goroutine
-	if mrb.p.jmp == nil {
-		mrb.injectMainChan <- proc
-		return
-	}
+	//if mrb.p.jmp == nil {
+	//	mrb.injectMainChan <- proc
+	//	return
+	//}
 
 	// Execute procedure via inject_run VM debug hook
 	mrb.injectVMChan <- proc
@@ -866,7 +866,7 @@ func (mrb *MrbState) SingletonClass(obj MrbValue) RClass {
 // SingletonClassPtr returns the singleton class of an object
 // Returns `NULL` for immediate values,
 func (mrb *MrbState) SingletonClassPtr(obj MrbValue) RClass {
-	return mrb.SingletonClassPtr(obj)
+	return mrb.SingletonClass(obj)
 }
 
 // IncludeModule Include a module in another class or module.
@@ -1009,27 +1009,30 @@ func (mrb *MrbState) UndefClassMethodID(klass RClass, name MrbSym) {
 
 // ObjNew creates new oruby object
 func (mrb *MrbState) ObjNew(c RClass, args ...interface{}) (RValue, error) {
+	switch c.Type() {
+	case MrbTTSClass:
+		return RValue{}, ETypeError("can't create instance of singleton class")
+	}
+	ttype := c.InstanceTT()
+	if ttype != 0 && ttype <= MrbTTCptr {
+		return RValue{}, ETypeError("can't create instance of %v", c.Name())
+	}
+
 	argv := make([]C.mrb_value, len(args)+1)
 	for i := range args {
 		argv[i] = mrb.Value(args[i]).v
 	}
 
-	v, err := mrb.try(func() C.mrb_value {
-		return C.mrb_obj_new(
-			mrb.p,
-			c.p,
-			C.mrb_int(len(args)),
-			&argv[0],
-		)
-	})
+	ret := RValue{C.mrb_obj_new(
+		mrb.p,
+		c.p,
+		C.mrb_int(len(args)),
+		&argv[0],
+	), mrb}
 
 	runtime.KeepAlive(argv)
 
-	if err != nil {
-		return RValue{}, err
-	}
-
-	return RValue{v.v, mrb}, err
+	return ret, nil
 }
 
 // ClassNewInstance creates new oruby object, alias for ObjNew
@@ -1050,11 +1053,33 @@ func (mrb *MrbState) NewInstance(className string, args ...interface{}) RValue {
 	return result
 }
 
+func (mrb *MrbState) checkInheritable(super RClass) error {
+	if super.Type() == MrbTTSClass {
+		return ETypeError("can't make subclass of singleton class")
+	}
+	if super.Type() != MrbTTClass {
+		return ETypeError("superclass must be a Class (%v given)", super.Name())
+	}
+	if super.p == mrb.p.class_class {
+		return ETypeError("can't make subclass of Class")
+	}
+	return nil
+}
+
 // ClassNew creates new class
-func (mrb *MrbState) ClassNew(super RClass) (RClass, error) {
-	return mrb.tryC(func() *C.struct_RClass {
-		return C.mrb_class_new(mrb.p, super.p)
-	})
+func (mrb *MrbState) ClassNew(super ...RClass) (RClass, error) {
+	switch len(super) {
+	case 0:
+		return RClass{C.mrb_class_new(mrb.p, nil), mrb}, nil
+	case 1:
+		if err := mrb.checkInheritable(super[0]); err != nil {
+			return RClass{}, err
+		}
+
+		return RClass{C.mrb_class_new(mrb.p, super[0].p), mrb}, nil
+	default:
+		return RClass{}, EArgumentError("only one superclass allowed")
+	}
 }
 
 // ModuleNew creates new module
@@ -1102,10 +1127,7 @@ func (mrb *MrbState) ExcGet(name string) RClass {
 
 // ExcGetID returns exception class by name
 func (mrb *MrbState) ExcGetID(excID MrbSym) RClass {
-	exc, _ := mrb.tryC(func() *C.struct_RClass {
-		return C.mrb_exc_get_id(mrb.p, C.mrb_sym(excID))
-	})
-	return exc
+	return RClass{C.mrb_exc_get_id(mrb.p, C.mrb_sym(excID)), mrb}
 }
 
 // ClassDefinedUnder  Returns true if inner class was defined, and false if the inner class was not defined
@@ -1166,11 +1188,11 @@ func (mrb *MrbState) ModuleGetUnderID(outer RClass, name MrbSym) RClass {
 // NotImplemented function to raise NotImplementedError with current method name
 // this func can be used as a placeholder for unimplemented methods in class def
 func (mrb *MrbState) NotImplemented(*MrbState, Value) MrbValue {
-	err := mrb.tryE(func() {
-		C.mrb_notimplement(mrb.p)
-	})
-	return mrb.ENotImplementedError().RaiseError(err)
-	// C.mrb_notimplement_m() never called
+	mid := mrb.GetMID()
+	err := Raisef(errNotImplementedError, "%v() function is unimplemented on this machine", mrb.SymName(mid))
+
+	return mrb.RaiseError(err)
+	// C.mrb_notimplement() and  C.mrb_notimplement_m() never called
 }
 
 // ObjDup duplicates MrbValue object
@@ -1920,13 +1942,9 @@ func (mrb *MrbState) ExcNew(c RClass, msg string) Value {
 //
 //	Instead, consider using this idiom in case of error:
 //
-//	   return mrb.Raise(mrb.StandardError(), "Something went wrong")
-//
-//	or
-//
 //	   return mrb.StandardError().Raise("Something went wrong")
 //
-//	This will return Exception from Go, and raise it on C side
+//	This will return Exception from Go, and oruby will raise it on C side
 func (mrb *MrbState) ExcRaise(exc MrbValue) {
 	C.mrb_exc_raise(mrb.p, exc.Value().v)
 }
@@ -1985,15 +2003,20 @@ func (mrb *MrbState) NameError(id MrbSym, format string, args ...interface{}) Va
 // FrozenError error
 func (mrb *MrbState) FrozenError(obj MrbValue) Value {
 	return mrb.EFrozenError().Raisef("can't modify frozen %v", mrb.TypeName(obj))
-	// C.mrb_frozen_error not called
+	// C.mrb_frozen_error() not called
 }
 
 // ArgnumError error
 func (mrb *MrbState) ArgnumError(argc, min, max int) Value {
-	err := mrb.tryE(func() {
-		C.mrb_argnum_error(mrb.p, C.mrb_int(argc), C.int(min), C.int(max))
-	})
-	return mrb.EArgumentError().RaiseError(err)
+	switch {
+	case min == max:
+		return mrb.EArgumentError().Raisef("wrong number of arguments (given %v, expected %v)", argc, min)
+	case max < 0:
+		return mrb.EArgumentError().Raisef("wrong number of arguments (given %v, expected %v+)", argc, min)
+	default:
+		return mrb.EArgumentError().Raisef("wrong number of arguments (given %v, expected %v..%v)", argc, min, max)
+	}
+	// C.mrb_argnum_error() is never called
 }
 
 // Warn error
@@ -2291,10 +2314,8 @@ func (mrb *MrbState) FiberAliveP(fib MrbValue) Value {
 func (mrb *MrbState) EFiberError() RClass { return mrb.ExcGet("FiberError") }
 
 // StackExtend extend stack. Error is raised if new stack size > C.MRB_STACK_MAX
-func (mrb *MrbState) StackExtend(size int) error {
-	return mrb.tryE(func() {
-		C.mrb_stack_extend(mrb.p, C.mrb_int(size))
-	})
+func (mrb *MrbState) StackExtend(size int) {
+	C.mrb_stack_extend(mrb.p, C.mrb_int(size))
 }
 
 // MrbPool struct

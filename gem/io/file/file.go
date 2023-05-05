@@ -2,11 +2,12 @@ package file
 
 import (
 	"errors"
-	"github.com/oruby/oruby"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/oruby/oruby"
 )
 
 func init() {
@@ -107,7 +108,7 @@ func init() {
 }
 
 func proxyClassMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec) {
-	fileClass.DefineClassMethod(name, func(mrb *oruby.MrbState, self oruby.Value)oruby.MrbValue{
+	fileClass.DefineClassMethod(name, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ai := mrb.GCArenaSave()
 		defer mrb.GCArenaRestore(ai)
 
@@ -126,7 +127,7 @@ func proxyClassMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbA
 }
 
 func proxyMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec) {
-	fileClass.DefineMethod(name, func(mrb *oruby.MrbState, self oruby.Value)oruby.MrbValue{
+	fileClass.DefineMethod(name, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ai := mrb.GCArenaSave()
 		defer mrb.GCArenaRestore(ai)
 
@@ -327,7 +328,7 @@ func fileSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func fileDirname(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	name := mrb.GetArgsFirst().String()
 	f := mrb.ClassGet("File")
-	sep := f.ConstGet("SEPARATOR").String() +	mrb.String(f.ConstGet("ALT_SEPARATOR"))
+	sep := f.ConstGet("SEPARATOR").String() + mrb.String(f.ConstGet("ALT_SEPARATOR"))
 
 	idx := strings.LastIndexAny(name, sep)
 	if idx < 0 {
@@ -335,7 +336,7 @@ func fileDirname(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	ok := false
-	for i := idx; i >= 0 ; i-- {
+	for i := idx; i >= 0; i-- {
 		if !ok && !strings.Contains(sep, string(name[i])) {
 			ok = true
 			continue
@@ -508,7 +509,6 @@ func fileToPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StrNew(f.Name())
 }
 
-
 func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 	var err error
 	name := args.Item(0).String()
@@ -550,7 +550,7 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 		perm = args.Item(2).Int()
 	}
 
-	flags = flags|optFlags
+	flags = flags | optFlags
 	if flags == 0 {
 		flags = os.O_RDONLY
 	}
@@ -558,15 +558,17 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 	return os.OpenFile(name, flags, os.FileMode(perm))
 }
 
-//:mode Same as mode parameter
-//:flags Specifies file open flags as integer. If mode parameter is given, this parameter will be bitwise-ORed.
-//:external_encoding External encoding for the IO.
-//:internal_encoding Internal encoding for the IO. “-” is a synonym for the default internal encoding.
-//                   If the value is nil no conversion occurs.
-//:encoding Specifies external and internal encodings as “extern:intern”.
-//:textmode If the value is truth value, same as “t” in argument mode.
-//:binmode  If the value is truth value, same as “b” in argument mode.
-//:autoclose If the value is false, the fd will be kept open after this IO instance gets finalized.
+// :mode Same as mode parameter
+// :flags Specifies file open flags as integer. If mode parameter is given, this parameter will be bitwise-ORed.
+// :external_encoding External encoding for the IO.
+// :internal_encoding Internal encoding for the IO. “-” is a synonym for the default internal encoding.
+//
+//	If the value is nil no conversion occurs.
+//
+// :encoding Specifies external and internal encodings as “extern:intern”.
+// :textmode If the value is truth value, same as “t” in argument mode.
+// :binmode  If the value is truth value, same as “b” in argument mode.
+// :autoclose If the value is false, the fd will be kept open after this IO instance gets finalized.
 func fileOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ai := mrb.GCArenaSave()
 	defer mrb.GCArenaRestore(ai)
@@ -580,11 +582,10 @@ func fileOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if block.IsNil() {
 		return file
 	}
-	ret, err := mrb.YieldArgv(block, file)
-	if err != nil {
-		return mrb.RaiseError(err)
+	ret := mrb.YieldArgv(block, file)
+	if mrb.Exc() != nil {
+		return mrb.Exc()
 	}
-
 	return ret
 }
 

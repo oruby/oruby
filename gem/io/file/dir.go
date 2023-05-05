@@ -63,7 +63,7 @@ func dirOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if block.IsNil() {
 		return ret
 	}
-	result, _ := mrb.Yield(block, ret)
+	result := mrb.Yield(block, ret)
 	_ = ret.Data().(*os.File).Close()
 	return result
 }
@@ -107,9 +107,9 @@ func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, skipDots bo
 	}
 	err := eachName(dir, skipDots, func(f string) error {
 		if !block.IsNil() {
-			_, err := mrb.Yield(block, mrb.StrNew(f))
-			if err != nil {
-				return err
+			_ = mrb.Yield(block, mrb.StrNew(f))
+			if mrb.Exc() != nil {
+				return mrb.Err()
 			}
 			return nil
 		}
@@ -187,7 +187,7 @@ func dirChdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	ret, _ = mrb.YieldArgv(block, mrb.StrNew(dir))
+	ret = mrb.YieldArgv(block, mrb.StrNew(dir))
 
 	if err := os.Chdir(wdir); err != nil {
 		return mrb.RaiseError(err)
@@ -295,9 +295,9 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if block.IsNil() {
 			mrb.AryPush(ret, mrb.StrNew(f))
 		} else {
-			_, err := mrb.Yield(block, mrb.StrNew(f))
-			if err != nil {
-				return err
+			_ = mrb.Yield(block, mrb.StrNew(f))
+			if mrb.Exc() != nil {
+				return mrb.Err()
 			}
 		}
 		return nil

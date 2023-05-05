@@ -10,6 +10,9 @@ import (
 func init() {
 	oruby.Gem("env", func(mrb *oruby.MrbState) interface{} {
 		env := mrb.HashNew().RValue
+		//env := mrb.ClassNew(mrb.HashClass())
+		//mrb.UndefMethod()
+		//env := mrb.singl mrb.HashNew().RValue
 		mrb.DefineSingletonMethod(env, "values", envValues, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "value?", envHasValue, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "has_value?", envHasValue, mrb.ArgsReq(1))
@@ -18,6 +21,8 @@ func init() {
 		mrb.DefineSingletonMethod(env, "has_key?", envHasKey, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "member?", envHasKey, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "include?", envHasKey, mrb.ArgsReq(1))
+		mrb.UndefMethod(mrb.SingletonClassPtr(env), "[]")
+		mrb.DefineSingletonMethod(env, "get", envGetKey, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "[]", envGetKey, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "[]=", envSetKey, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "store", envSetKey, mrb.ArgsReq(1))
@@ -28,7 +33,8 @@ func init() {
 		mrb.DefineSingletonMethod(env, "__delete", envDelete, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "to_s", envToS, mrb.ArgsNone())
 
-		mrb.ConstSet(mrb.KernelModule(), mrb.Intern("ENV"), env)
+		mrb.ConstSet(mrb.KernelModule(), mrb.Sym("ENV"), env)
+		//mrb.DefineGlobalConst("ENV", env)
 		return nil
 	})
 }
