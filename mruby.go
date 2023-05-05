@@ -50,19 +50,19 @@ type MrbState struct {
 	p *C.mrb_state
 
 	sync.Mutex
-	stack          int32
-	WaitGroup      sync.WaitGroup
-	mrbProcs       map[unsafe.Pointer]MrbFuncT
-	classmap       map[reflect.Type]unsafe.Pointer
-	hooks          map[unsafe.Pointer]interface{}
-	funcs          []interface{}
-	matrix         [][]interface{}
-	exitChan       chan struct{}
-	injectVMChan   chan RProc
-	injectMainChan chan RProc
-	features       map[string]interface{} // features stash
-	callSym        MrbSym                 // cached mrb.Intern("call")
-	afterInitSym   MrbSym                 // cached mrb.Intern("after_init")
+	stack        int32
+	WaitGroup    sync.WaitGroup
+	mrbProcs     map[unsafe.Pointer]MrbFuncT
+	classmap     map[reflect.Type]unsafe.Pointer
+	hooks        map[unsafe.Pointer]interface{}
+	funcs        []interface{}
+	matrix       [][]interface{}
+	exitChan     chan struct{}
+	injectVMChan chan RProc
+	InjectChan   chan RProc
+	features     map[string]interface{} // features stash
+	callSym      MrbSym                 // cached mrb.Intern("call")
+	afterInitSym MrbSym                 // cached mrb.Intern("after_init")
 }
 
 // NewCore create state is MrbState without gems,
@@ -238,13 +238,13 @@ func inject_run(idx C.mrb_int) *C.struct_RProc {
 
 	select {
 	case <-mrb.exitChan:
+		return nil
 	case proc := <-mrb.injectVMChan:
 		return proc.p
 		// C.mrb_funcall_with_block(mrb.p,proc.p, C.mrb_sym(mrb.callSym), 0, nil, nilValue.v	)
 	default:
+		return nil
 	}
-
-	return nil
 }
 
 // InjectFunc of MrbFuncT code from goroutine, thread or signal handler to be executed in mrb
@@ -260,19 +260,23 @@ func (mrb *MrbState) Inject(proc RProc) {
 
 	// mrb->jmp == 0 if no vm code is executing
 	// This will be picked from main executing goroutine
-	//if mrb.p.jmp == nil {
-	//	mrb.injectMainChan <- proc
-	//	return
-	//}
+	if mrb.p.jmp == nil {
+		go func() {
+			mrb.InjectChan <- proc
+		}()
+		return
+	}
 
 	// Execute procedure via inject_run VM debug hook
-	mrb.injectVMChan <- proc
+	go func() {
+		mrb.injectVMChan <- proc
+	}()
 }
 
 // startInjector for code to be executed from goroutines in main mrb
 func (mrb *MrbState) startInjector() {
 	mrb.Lock()
-	mrb.injectMainChan = make(chan RProc)
+	mrb.InjectChan = make(chan RProc)
 	mrb.injectVMChan = make(chan RProc)
 	C.set_mrb_injector(mrb.p)
 	atomic.StoreInt32(&mrb.stack, 1)
@@ -282,10 +286,13 @@ func (mrb *MrbState) startInjector() {
 	go func() {
 		for {
 			select {
-			case proc := <-mrb.injectMainChan:
+			case proc, ok := <-mrb.InjectChan:
+				if !ok {
+					return
+				}
 				_, _ = mrb.FuncallWithBlock(proc, mrb.callSym)
-			case <-mrb.exitChan:
-				return
+				//			case <-mrb.ExitChan():
+				//				return
 			}
 		}
 	}()
@@ -296,7 +303,7 @@ func (mrb *MrbState) startInjector() {
 // so all goroutines are signaled to close
 //
 // Go routines from Gems that have exit procs should
-// send proc via mrb.InjectChan() and then signal mrb.WaitGroup.Done()
+// send proc via mrb.InjectChan and then signal mrb.WaitGroup.Done()
 // After mrb.WaitGroup.Wait() finishes, mrb.InjectChan is closed.
 func (mrb *MrbState) Close() {
 	if mrb.p != nil {
@@ -307,14 +314,26 @@ func (mrb *MrbState) Close() {
 		close(mrb.exitChan)
 
 		// Goroutines from Gems that send exit procs should
-		// send proc to mrb.InjectChan() and then signal mrb.WaitGroup.Done()
+		// send proc to mrb.InjectChan and then signal mrb.WaitGroup.Done()
+		go func() {
+			for len(mrb.InjectChan) != 0 {
+				proc, ok := <-mrb.InjectChan
+				if ok {
+					_, err := mrb.FuncallWithBlock(proc, mrb.callSym)
+					if err != nil {
+						println(err)
+					}
+				}
+			}
+		}()
+
 		mrb.WaitGroup.Wait()
 
 		if mrb.injectVMChan != nil {
 			close(mrb.injectVMChan)
 		}
-		if mrb.injectMainChan != nil {
-			close(mrb.injectMainChan)
+		if mrb.InjectChan != nil {
+			close(mrb.InjectChan)
 		}
 
 		idx := int(C._mrb_get_idx(mrb.p))

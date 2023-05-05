@@ -108,7 +108,7 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 
 				// zero signal handler, executed at MrbState closing
 				if !handlers.exitHandler.IsNil() {
-					mrb.Inject(mrb.RProc(handlers.exitHandler))
+					mrb.InjectChan <- mrb.RProc(handlers.exitHandler)
 				}
 
 				handlers.current = nil
