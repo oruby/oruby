@@ -2,7 +2,9 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
-import "fmt"
+import (
+	"fmt"
+)
 
 // Arguments interface to simplify RArray and RArgs arguments
 type Arguments interface {
@@ -25,15 +27,22 @@ func (a RInterfaceArgs) Get(mrb *MrbState, i int) interface{} {
 	return a.items[i]
 }
 
-// RArgs implments Go struct with args for MrbFuncT
-// it implements Arguments interface and other methods simmilar to RArray
+// RArgs implements Go struct with args for MrbFuncT
+// it implements Arguments interface and other methods similar to RArray
 type RArgs struct {
-	items []Value
+	mrb    *MrbState
+	items  []Value
+	kwargs Value
 }
 
 // RArgsNew constructor for RArgs
-func RArgsNew(self Value, items ...Value) RArgs {
-	return RArgs{append([]Value{self}, items...)}
+func RArgsNew(mrb *MrbState, items ...Value) RArgs {
+	return RArgs{mrb, items, nilValue}
+}
+
+// SetKeywordArgs constructor for RArgs
+func (a RArgs) SetKeywordArgs(kwargs Value) {
+	a.kwargs = kwargs
 }
 
 // Item returns value item at index, or Nil if index is invalid
@@ -54,16 +63,6 @@ func (a RArgs) Item(index int) Value {
 // Get returns item from mrb state
 func (a RArgs) Get(mrb *MrbState, i int) interface{} {
 	return mrb.Intf(a.Item(i))
-}
-
-// GetLastHash returns last item if it is a hash
-// idiom is used in Ruby function definitions
-func (a RArgs) GetLastHash() Value {
-	item := a.Item(-1)
-	if !item.IsHash() {
-		return nilValue
-	}
-	return item
 }
 
 // SetItem returns value item at index, or Nil if index is invalid
@@ -137,41 +136,37 @@ func (a RArgs) SliceIntf() []interface{} {
 	return ret
 }
 
-// GetArgs returns all arguments passed to MrbFuncT function
-// as RArray type
-func (mrb *MrbState) GetArgs(defaults ...interface{}) RArgs {
-	args := RArgs{mrb.Args()}
-	for i := args.Len(); i < len(defaults); i++ {
-		args.items = append(args.items, mrb.Value(defaults[i]))
-	}
-	return args
-}
-
 // GetArgs3 return three function arguments
 func (mrb *MrbState) GetArgs3(defaults ...interface{}) (Value, Value, Value) {
 	args := mrb.GetArgs(defaults...)
 	return args.Item(0).Value(), args.Item(1).Value(), args.Item(2).Value()
 }
 
-// GetSelfArgs returns all arguments passed to function as Go slice, with arg0 as first argument
-func (mrb *MrbState) GetSelfArgs(self MrbValue) RArgs {
-	argc := int(C.mrb_get_argc(mrb.p))
-	args := C.mrb_get_argv(mrb.p)
-	ret := make([]Value, argc+1)
-	ret[0] = self.Value()
-	for i := 1; i < argc; i++ {
-		ret[i] = Value{C._mrb_get_arg(args, C.int(i))}
-	}
-	return RArgs{ret}
-}
-
-// Args returns all arguments passed to MrbFuncT function as Go slice
+// Args returns all arguments passed to MrbFuncT function as array of values
 func (mrb *MrbState) Args() []Value {
 	argc := int(C.mrb_get_argc(mrb.p))
 	args := C.mrb_get_argv(mrb.p)
-	ret := make([]Value, argc)
+	items := make([]Value, argc)
 	for i := 0; i < argc; i++ {
-		ret[i] = Value{C._mrb_get_arg(args, C.int(i))}
+		items[i] = Value{C._mrb_get_arg(args, C.int(i))}
+	}
+	return items
+}
+
+// GetArgs returns all arguments passed to MrbFuncT function
+// as RArray type
+func (mrb *MrbState) GetArgs(defaults ...interface{}) RArgs {
+	argc := int(C.mrb_get_argc(mrb.p))
+	args := C.mrb_get_argv(mrb.p)
+	items := make([]Value, argc)
+	for i := 0; i < argc; i++ {
+		items[i] = Value{C._mrb_get_arg(args, C.int(i))}
+	}
+
+	ret := RArgs{mrb, items, Value{C._mrb_get_args_kw(mrb.p)}}
+
+	for i := ret.Len(); i < len(defaults); i++ {
+		ret.items = append(ret.items, mrb.Value(defaults[i]))
 	}
 	return ret
 }
@@ -180,6 +175,11 @@ func (mrb *MrbState) Args() []Value {
 // and block as second value.
 func (mrb *MrbState) GetArgsWithBlock(defaults ...interface{}) (RArgs, RProc) {
 	return mrb.GetArgs(defaults...), mrb.GetArgsBlock()
+}
+
+// KeywordArgs returns provided keyword args as RHash
+func (mrb *MrbState) KeywordArgs() RHash {
+	return RHash{RValue{C._mrb_get_args_kw(mrb.p), mrb}}
 }
 
 // GetArgs2 return two function arguments
@@ -191,6 +191,13 @@ func (mrb *MrbState) GetArgs2(defaults ...interface{}) (Value, Value) {
 // GetArgsFirst returns first argument
 func (mrb *MrbState) GetArgsFirst() Value {
 	return Value{C._mrb_get_args_first(mrb.p)}
+}
+
+// GetArg1 retrieves the first and only argument from mrb_state.
+// Raises ArgumentError unless the number of arguments is exactly one.
+// Correctly handles *splat arguments.
+func (mrb *MrbState) GetArg1() Value {
+	return Value{C.mrb_get_arg1(mrb.p)}
 }
 
 // GetArgsCount returns numer of arguments passed to function

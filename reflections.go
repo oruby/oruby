@@ -174,7 +174,7 @@ func (c RClass) RegisterGoClass(constructor interface{}) {
 			opt++
 		}
 
-		aspec := ArgsArg(v.NumIn()-opt, opt)
+		aspec := ArgsArg(uint32(v.NumIn()-opt), uint32(opt))
 		v = v.Out(0)
 
 		// define init_go method so that initialize could be redefined

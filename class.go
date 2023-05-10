@@ -127,7 +127,7 @@ func (mrb *MrbState) DefineMethodFuncID(c RClass, mid MrbSym, f interface{}) {
 			opt++
 		}
 
-		aspec = mrb.ArgsArg(t.NumIn()-opt, opt)
+		aspec = mrb.ArgsArg(uint32(t.NumIn()-opt), uint32(opt))
 	} else {
 		env = mrb.registerFuncIndex(func() interface{} { return f })
 	}

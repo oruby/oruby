@@ -327,7 +327,7 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(argc), &args[0])
 
 	runtime.KeepAlive(args)
-	return RProc{proc, mrb}, ArgsReq(v.Type().NumIn())
+	return RProc{proc, mrb}, ArgsReq(uint32(v.Type().NumIn()))
 }
 
 // LoadProc loads and executes proc

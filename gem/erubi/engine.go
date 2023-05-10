@@ -16,7 +16,7 @@ type Engine struct {
 	filename   string
 	bufvar     string
 	bufval     string
-	src        string
+	src        strings.Builder
 	escapefunc string
 	regex      *regexp.Regexp
 	preamble   string
@@ -72,12 +72,13 @@ func New(options map[string]interface{}) *Engine {
 		filename:   getS(options, "filename", ""),
 		bufvar:     getS(options, "bufvar", outvar),
 		bufval:     getS(options, "bufval", "::String.new"),
-		src:        getS(options, "src", ""),
 		escapefunc: getS(options, "escapefunc", "::Erubi.h"),
 		regex:      regexp.MustCompile(reg),
 		preamble:   getS(options, "preamble", ""),
 		postamble:  getS(options, "postamble", ""),
 	}
+
+	e.src.WriteString(getS(options, "src", ""))
 
 	return e
 }
@@ -90,7 +91,7 @@ func NewInit(input string, options map[string]interface{}) (*Engine, error) {
 }
 
 // Src code generated from the template, which can be evaled
-func (e *Engine) Src() string { return e.src }
+func (e *Engine) Src() string { return e.src.String() }
 
 // Filename of the template, if one was given
 func (e *Engine) Filename() string { return e.filename }
@@ -101,15 +102,19 @@ func (e *Engine) Bufvar() string { return e.filename }
 // Init engine with string
 func (e *Engine) Init(input string) error {
 	if e.freeze {
-		e.src += "# frozen_string_literal: true\n"
+		e.src.WriteString("# frozen_string_literal: true\n")
 	}
 
 	if e.ensure {
-		e.src += fmt.Sprintf("begin; __original_outvar = %v if defined?(%v); ", e.bufvar, e.bufvar)
+		e.src.WriteString("begin; __original_outvar = ")
+		e.src.WriteString(e.bufvar)
+		e.src.WriteString(" if defined?(")
+		e.src.WriteString(e.bufvar)
+		e.src.WriteString("); ")
 	}
 
 	if e.escape {
-		e.src += "__erubi = ::Erubi;"
+		e.src.WriteString("__erubi = ::Erubi;")
 		e.escapefunc = "__erubi.h"
 	}
 
@@ -118,10 +123,10 @@ func (e *Engine) Init(input string) error {
 	}
 
 	if e.postamble == "" {
-		e.postamble = fmt.Sprintf("%v.to_s\n", e.bufvar)
+		e.postamble = fmt.Sprintf("\n%v.to_s\n", e.bufvar)
 	}
 
-	e.src += e.preamble
+	e.src.WriteString(e.preamble)
 
 	pos := 0
 	isBol := true
@@ -172,6 +177,9 @@ func (e *Engine) Init(input string) error {
 							text = ""
 						}
 					}
+				} else {
+					lspace = text
+					text = ""
 				}
 			}
 		}
@@ -228,43 +236,55 @@ func (e *Engine) Init(input string) error {
 		}
 	}
 
+	var s string
 	if pos == 0 {
-		e.addText(input)
+		s = input
 	} else {
-		e.addText(input[pos:])
+		s = input[pos:]
 	}
-	if e.src[len(e.src)-1] != '\n' {
-		e.src += "\n"
+	e.addText(s)
+	if s == "" || s[len(s)-1] != '\n' {
+		e.src.WriteByte('\n')
 	}
 
 	e.addPostamble()
 
 	if e.ensure {
-		e.src += "; ensure\n  " + e.bufvar + " = __original_outvar\nend\n"
+		e.src.WriteString("; ensure\n  ")
+		e.src.WriteString(e.bufvar)
+		e.src.WriteString(" = __original_outvar\nend\n")
 	}
 
 	return nil
 }
 
-// Add raw text to the template
+var tRegEx = regexp.MustCompile("['\\\\]")
+
+// addText adds raw text to the template
 func (e *Engine) addText(text string) {
 	if text == "" {
 		return
 	}
-	t := regexp.MustCompile("['\\\\]")
-	e.src += fmt.Sprintf(" %v << '%v'.freeze;", e.bufvar, t.ReplaceAllString(text, "\\\\\\&"))
+	e.src.WriteByte(' ')
+	e.src.WriteString(e.bufvar)
+	e.src.WriteString(" << '")
+	e.src.WriteString(tRegEx.ReplaceAllString(text, "\\\\\\&"))
+	e.src.WriteString("'.freeze;")
 }
 
-// Add ruby code to the template
+// addCode adds ruby code to the template
 func (e *Engine) addCode(code string) {
-	e.src += code
-	if code != "" && code[len(code)-1] != '\n' {
-		e.src += ";"
+	if code == "" {
+		return
+	}
+	e.src.WriteString(code)
+	if code[len(code)-1] != '\n' {
+		e.src.WriteByte(';')
 	}
 }
 
-// Add the given ruby expression result to the template,
-//escaping it based on the indicator given and escape flag.
+// addExpression adds the given ruby expression result to the template,
+// escaping it based on the indicator given and escape flag.
 func (e *Engine) addExpression(indicator, code string) {
 	if (indicator == "=") && !e.escape {
 		e.addExpressionResult(code)
@@ -273,23 +293,23 @@ func (e *Engine) addExpression(indicator, code string) {
 	}
 }
 
-// Add the result of Ruby expression to the template
+// addExpressionResult adds the result of Ruby expression to the template
 func (e *Engine) addExpressionResult(code string) {
-	e.src += " " + e.bufvar + " << (" + code + ").to_s;"
+	e.src.WriteString(" " + e.bufvar + " << (" + code + ").to_s;")
 }
 
-// Add the escaped result of Ruby expression to the template
+// addExpressionResultEscaped adds the escaped result of Ruby expression to the template
 func (e *Engine) addExpressionResultEscaped(code string) {
-	e.src += " " + e.bufvar + " << " + e.escapefunc + "((" + code + "));"
+	e.src.WriteString(" " + e.bufvar + " << " + e.escapefunc + "((" + code + "));")
 }
 
-// Add the given postamble to the src.  Can be overridden in subclasses
+// addPostamble adds the given postamble to the src.  Can be overridden in subclasses
 // to make additional changes to src that depend on the current state.
 func (e *Engine) addPostamble() {
-	e.src += e.postamble
+	e.src.WriteString(e.postamble)
 }
 
-// Raise an exception, as the base engine class does not support handling other indicators.
+// handle raises an exception, as the base engine class does not support handling other indicators.
 func (e *Engine) handle(indicator, code, tailch, rspace, lspace string) error {
 	return errors.New("ArgumentError: Invalid indicator: " + indicator)
 }

@@ -42,7 +42,7 @@ func openTmpFile(mrb *oruby.MrbState, args oruby.RArgs) (string, string, int, in
 
 	flags := os.O_RDWR | os.O_CREATE | os.O_EXCL
 	perm := 0600
-	opt := args.GetLastHash()
+	opt := mrb.KeywordArgs()
 
 	if nameV.IsArray() {
 		name = mrb.String(mrb.AryEntry(nameV, 0)) + "*" +
@@ -51,7 +51,7 @@ func openTmpFile(mrb *oruby.MrbState, args oruby.RArgs) (string, string, int, in
 		name = nameV.String()
 	}
 
-	if opt.IsHash() {
+	if !opt.IsNil() {
 		flags = mrb.HashFetch(opt, mrb.Intern("mode"), oruby.Int(flags)).Int()
 	}
 

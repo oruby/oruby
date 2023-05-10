@@ -2,12 +2,13 @@ package io
 
 import (
 	"bufio"
-	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/assert"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/assert"
 )
 
 type h = map[oruby.MrbSym]interface{}
@@ -22,7 +23,8 @@ func Test_openLineReader(t *testing.T) {
 			fd, err = os.Open(name)
 			assert.NilError(t, err)
 		}
-		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2), mrb.Value(opt))
+		args := oruby.RArgsNew(mrb, mrb.Value(arg1), mrb.Value(arg2))
+		args.SetKeywordArgs(mrb.Value(opt))
 		return openLineReader(mrb, mrb.Value(fd), args, 0)
 	}
 
@@ -74,7 +76,8 @@ func Test_openLineReaderSepLimitChomp(t *testing.T) {
 	chompTrue := h{mrb.Intern("chomp"): true}
 
 	olr := func(fd, arg1, arg2 interface{}, opt h) (*bufio.Scanner, io.Closer, error) {
-		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2), mrb.Value(opt))
+		args := oruby.RArgsNew(mrb, mrb.Value(arg1), mrb.Value(arg2))
+		args.SetKeywordArgs(mrb.Value(opt))
 		return openLineReader(mrb, mrb.Value(fd), args, 0)
 	}
 
@@ -110,4 +113,3 @@ func Test_openLineReaderSepLimitChomp(t *testing.T) {
 	assert.Equal(t, r.Scan(), true)
 	assert.Equal(t, r.Text(), "2")
 }
-

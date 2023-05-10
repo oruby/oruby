@@ -39,12 +39,12 @@ func TestMrbStackedException(t *testing.T) {
 
 	_, err := mrb.LoadString("test")
 	if err == nil {
-		t.Fatal("No exception when one was expected")
+		t.Error("No exception when one was expected")
 		return
 	}
 
 	if !strings.Contains(err.Error(), "Fail us!") {
-		t.Fatalf("Expected 'Fail us!' got '%v'", err.Error())
+		t.Errorf("Expected 'Fail us!' got '%v'", err.Error())
 		return
 	}
 
@@ -62,17 +62,17 @@ func TestMrbStackedException(t *testing.T) {
 
 	result, err := mrb.LoadString("myeval { raise 'foo' }")
 	if err == nil {
-		t.Fatal("did not error")
+		t.Error("did not error")
 		return
 	}
 
 	if !strings.HasPrefix(err.Error(), "foo") {
-		t.Fatalf("Expected 'foo' got '%v'", err)
+		t.Errorf("Expected 'foo' got '%v'", err)
 		return
 	}
 
 	if !result.IsNil() {
-		t.Fatal("result was not cleared")
+		t.Error("result was not cleared")
 		return
 	}
 }
@@ -83,17 +83,17 @@ func TestInnerRaise(t *testing.T) {
 
 	result, err := mrb.LoadString("raise 'foo'")
 	if err == nil {
-		t.Fatal("did not error")
+		t.Error("did not error")
 		return
 	}
 
 	if !strings.HasPrefix(err.Error(), "foo") {
-		t.Fatalf("Expected 'foo' got '%v'", err)
+		t.Errorf("Expected 'foo' got '%v'", err)
 		return
 	}
 
 	if !result.IsNil() {
-		t.Fatal("result was not cleared")
+		t.Error("result was not cleared")
 		return
 	}
 }
@@ -111,17 +111,17 @@ func TestMrbStackedInnerException(t *testing.T) {
 
 	result, err := mrb.LoadString("myeval { raise 'foo' }")
 	if err == nil {
-		t.Fatal("did not error")
+		t.Error("did not error")
 		return
 	}
 
 	if !strings.HasPrefix(err.Error(), "foo") {
-		t.Fatalf("Expected 'foo' got '%v'", err)
+		t.Errorf("Expected 'foo' got '%v'", err)
 		return
 	}
 
 	if !result.IsNil() {
-		t.Fatal("result was not cleared")
+		t.Error("result was not cleared")
 		return
 	}
 }
@@ -133,15 +133,17 @@ func checkRaiserMethod(t *testing.T, mrb *MrbState, f MrbFuncT, aspec MrbAspec) 
 
 	result, err := mrb.LoadString("do_fail")
 	if err == nil {
-		t.Fatal("did not error")
+		t.Error("did not error")
+		return
 	}
 
 	if !strings.HasPrefix(err.Error(), "Unknown class: NonExistingClass") {
-		t.Fatalf("Expected 'Unknown class: NonExistingClass' got '%v'", err)
+		t.Errorf("Expected 'Unknown class: NonExistingClass' got '%v'", err)
+		return
 	}
 
 	if !result.IsNil() {
-		t.Fatal("result was not cleared")
+		t.Error("result was not cleared")
 		return
 	}
 }

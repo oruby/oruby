@@ -1,9 +1,10 @@
 package erubi
 
 import (
-	"github.com/oruby/oruby"
 	"strings"
 	"testing"
+
+	"github.com/oruby/oruby"
 )
 
 var options *Engine
@@ -33,7 +34,7 @@ func checkOutputE(t *testing.T, e *Engine, input, binding, src, result string) (
 		t.Fatal(err)
 	}
 
-	tsrc := e.src
+	tsrc := e.Src()
 
 	v, err := mrb.Eval(binding + "\n" + tsrc)
 	if err != nil {
@@ -90,12 +91,30 @@ _buf.to_s
  <tbody>
   <tr>
    <td>1</td>
-   <td>&amp;&#39;&lt;&gt;&#34;2</td>
+   <td>&amp;&#39;&lt;&gt;&quot;2</td>
   </tr>
  </tbody>
 </table>
 1
 `)
+}
+
+func TestShouldStripOnlyWhitespaceForSpecificTags_reg1(t *testing.T) {
+	list := `list = ['&\'<>"2']`
+	checkOutput(t,
+		`
+  <%# 3 %>//
+`,
+		list,
+		`_buf = ::String.new;
+'; _buf << '  '; _buf << '//
+';
+_buf.to_s
+`,
+		`
+  //
+`)
+
 }
 
 func TestShouldStripOnlyWhitespaceForSpecificTags(t *testing.T) {
@@ -138,7 +157,7 @@ c
 a
 '; _buf << '  '; 2 ; _buf << '/ 
 b
-'; _buf << '  ';; _buf << '//
+'; _buf << '  '; _buf << '//
 c
 ';
 _buf.to_s
@@ -166,7 +185,6 @@ func TestShouldHandleEnsure(t *testing.T) {
 	e := New(nil)
 	e.ensure = true
 	e.bufvar = "@a"
-
 
 	mrb, closer := checkOutputE(t, e,
 		`<table>

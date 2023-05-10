@@ -4,6 +4,7 @@ package oruby
 import "C"
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"strconv"
 	"unsafe"
@@ -100,7 +101,7 @@ func (v Value) String() string {
 	case MrbTTTrue:
 		return "true"
 	default:
-		panic("TypeError: no direct conversion into String. Try mrb.String(v)")
+		panic(fmt.Sprintf("TypeError: no direct conversion of '%v' into String. Try mrb.String(v)", TypeName(v.Type())))
 	}
 }
 

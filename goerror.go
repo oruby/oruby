@@ -113,13 +113,14 @@ func EError(name, format string, args ...interface{}) error {
 
 // RaiseError containing error type and message
 type RaiseError struct {
-	err error
-	msg string
+	err       error
+	msg       string
+	backtrace string
 }
 
 // Raise raises error with type and error message
 func Raise(err error, msg string) error {
-	return &RaiseError{err, msg}
+	return &RaiseError{err: err, msg: msg}
 }
 
 // Raisef raises error with type and formated error message
@@ -136,6 +137,11 @@ func (e *RaiseError) Error() string {
 // String implements stringer interface
 func (e *RaiseError) String() string {
 	return e.msg
+}
+
+// Backtrace contains backtrace if provided
+func (e *RaiseError) Backtrace() string {
+	return e.backtrace
 }
 
 // Unwrap returns inner error

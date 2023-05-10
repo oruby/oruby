@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
-	"runtime"
+	"os"
 
 	"github.com/oruby/oruby"
 )
@@ -21,8 +21,8 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index
 
 	arg1 := args.ItemDef(index, globalSeparator)
 	arg2 := args.Item(index + 1)
-	opt := args.GetLastHash()
-	chomp := opt.IsHash() && mrb.HashGet(opt, mrb.Intern("chomp")).Bool()
+	opt := mrb.KeywordArgs()
+	chomp := !opt.IsNil() && opt.Get(mrb.Intern("chomp")).Bool()
 
 	switch arg1.Type() {
 	case oruby.MrbTTString:
@@ -42,7 +42,7 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index
 		limit = arg2.Int()
 	}
 
-	f, err := openIO(mrb, fd, mrb.NilValue(), opt)
+	f, err := openIO(mrb, fd, mrb.NilValue(), opt.Value())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -81,7 +81,8 @@ func getSpliter(sep *string, chomp bool, limit int) bufio.SplitFunc {
 	// paragraphs
 	separator := []byte(*sep)
 	if separator == nil {
-		if runtime.GOOS == "windows" {
+		if os.PathSeparator == '\\' {
+			// Windows uses \ as path separator, and CRLF as line ending
 			separator = []byte("\n\r\n\r")
 		} else {
 			separator = []byte("\n\n")

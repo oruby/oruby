@@ -1,8 +1,9 @@
 package erubi
 
 import (
+	"strings"
+
 	"github.com/oruby/oruby"
-	"html"
 )
 
 // eruby consts
@@ -33,11 +34,18 @@ func init() {
 	})
 }
 
-// erubiH implements Erubi.h() to escape html characters using Go html.EscapeString
-// there are minor differences, for example &quot; vs &#37; but shoud work just fine
+var htmlRubyEscaper = strings.NewReplacer(
+	`&`, "&amp;",
+	`'`, "&#39;", // "&#39;" is shorter than "&apos;" and apos was not in HTML until HTML5.
+	`<`, "&lt;",
+	`>`, "&gt;",
+	`"`, "&quot;", // "&#34;" is shorter than "&quot;", but Ruby returns &quot;
+)
+
+// erubiH implements Erubi.h() to escape html characters
 func erubiH(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	v := mrb.GetArgsFirst()
-	s := html.EscapeString(mrb.String(v))
+	s := htmlRubyEscaper.Replace(mrb.String(v))
 
 	return mrb.StrNew(s)
 }

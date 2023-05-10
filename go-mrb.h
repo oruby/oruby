@@ -138,9 +138,9 @@ static mrb_value _mrb_ptr_to_str(mrb_state *mrb, uintptr_t p) { return mrb_ptr_t
 // or RBasic object with NIL pointer
 static mrb_bool _mrb_is_nil(mrb_value o)    {
 	if (mrb_nil_p(o) || (mrb_immediate_p(o) && (mrb_ptr(o) == NULL))) {
-		return 1;
+		return TRUE;
 	}
-	return 0;
+	return FALSE;
 }
 
 // Hash
@@ -215,10 +215,7 @@ static mrb_method_t _MRB_METHOD_FROM_PROC(struct RProc *p) {
 // Instance macro helpers
 static void _MRB_SET_INSTANCE_TT(struct RClass *c, uint32_t tt) { MRB_SET_INSTANCE_TT(c, tt); }
 static uint32_t _MRB_INSTANCE_TT(struct RClass *c) { return (uint32_t)MRB_INSTANCE_TT(c); }
-static struct RClass* _mrb_class_origin(struct RClass *c) {
-    MRB_CLASS_ORIGIN(c);
-    return c;
-}
+static struct RClass* _mrb_class_origin(struct RClass *c) { MRB_CLASS_ORIGIN(c); return c; }
 
 // RData value
 static struct RData* _RDATA(mrb_value a)      { return RDATA(a);     };
@@ -254,10 +251,21 @@ _mrb_get_arg(mrb_value *args, int index) {
 	return args[index];
 }
 
+// Return block argument, which is last argument
 static mrb_value
 _mrb_get_args_block(mrb_state *mrb) {
   mrb_callinfo *ci = mrb->c->ci;
   return ci->stack[mrb_ci_bidx(ci)];
+}
+
+// Return kwargs hash table
+static mrb_value
+_mrb_get_args_kw(mrb_state *mrb) {
+  mrb_callinfo *ci = mrb->c->ci;
+  if (ci->nk > 0) {
+    return ci->stack[mrb_ci_bidx(ci)-1];
+  }
+  return mrb_nil_value();
 }
 
 // Bit packed options from struct
@@ -317,6 +325,61 @@ _mrb_funcall_with_block(mrb_state *mrb, mrb_value b, mrb_sym mid, mrb_int argc, 
 
   return result;
 }
+
+static mrb_value
+_mrb_yield(mrb_state *mrb, mrb_value b, mrb_value arg) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_yield(mrb, b, arg);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
+static mrb_value
+_mrb_yield_argv(mrb_state *mrb, mrb_value b, mrb_int argc, const mrb_value *argv) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_yield_argv(mrb, b, argc, argv);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
+static mrb_value
+_mrb_yield_with_class(mrb_state *mrb, mrb_value b, mrb_int argc, const mrb_value *argv, mrb_value self, struct RClass *c) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_yield_with_class(mrb, b, argc, argv, self, c);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
 
 static struct REnv *
 _mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)

@@ -62,7 +62,7 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	env := args.Item(0)
 	command := args.Item(1)
 	modeV := args.Item(2)
-	opt := args.GetLastHash()
+	opt := mrb.KeywordArgs()
 
 	if !env.IsHash() {
 		modeV = command
@@ -90,7 +90,7 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	}
 
-	mode, err := parseFlags(mrb, modeV, opt)
+	mode, err := parseFlags(mrb, modeV, opt.Value())
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

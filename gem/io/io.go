@@ -1,5 +1,6 @@
 package io
 
+import "C"
 import (
 	"bufio"
 	"io"
@@ -28,7 +29,7 @@ func init() {
 		cIO.DefineClassMethod("copy_stream", ioCopyStream, mrb.ArgsArg(2, 2))
 		cIO.DefineClassMethod("foreach", ioForeach, mrb.ArgsArg(2, 3)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("pipe", ioPipe, mrb.ArgsOpt(3)|mrb.ArgsBlock())
-		cIO.DefineClassMethod("readlines", ioSReadlines, mrb.ArgsArg(2, 3))
+		cIO.DefineClassMethod("readlines", ioSReadlines, mrb.ArgsArg(1, 3)|mrb.ArgsKey(0, 1))
 		cIO.DefineClassMethod("select", mrb.NotImplemented, mrb.ArgsArg(1, 3))
 		cIO.DefineClassMethod("try_convert", ioTryConvert, mrb.ArgsReq(1))
 		cIO.DefineClassMethod("open", ioOpen, mrb.ArgsArg(1, 2)|mrb.ArgsBlock())
@@ -87,7 +88,7 @@ func init() {
 		cIO.DefineMethod("readbyte", ioReadbyte, mrb.ArgsNone())
 		cIO.DefineMethod("readchar", ioReadchar, mrb.ArgsNone())
 		cIO.DefineMethod("readline", ioReadline, mrb.ArgsOpt(3))
-		cIO.DefineMethod("readlines", ioReadlines, mrb.ArgsArg(1, 2))
+		cIO.DefineMethod("readlines", ioReadlines, mrb.ArgsOpt(2))
 		cIO.DefineMethod("readpartial", ioReadpartial, mrb.ArgsArg(1, 1))
 		cIO.DefineMethod("rewind", ioRewind, mrb.ArgsNone())
 		cIO.DefineMethod("seek", ioSeek, mrb.ArgsArg(1, 1))
@@ -290,6 +291,7 @@ func ioPipe(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func ioSReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs()
+
 	reader, closer, err := openLineReader(mrb, a.Item(0), a, 1)
 	if err != nil {
 		return mrb.RaiseError(err)

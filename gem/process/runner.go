@@ -90,7 +90,7 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 // parseArgsStructure returns env, command, params and options from args
 func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, string, []string, oruby.Value) {
 	env := mrb.NilValue()
-	options := args.GetLastHash()
+	options := mrb.KeywordArgs()
 	command := args.Item(0)
 	argStart := 1
 
@@ -108,9 +108,8 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 	}
 
 	// If no options given - last item is also param
-	if !options.IsHash() && args.Len() > 1 {
+	if args.Len() > 1 {
 		params = append(params, mrb.String(options))
-		options = mrb.NilValue()
 	}
 
 	var cmd string
@@ -127,7 +126,7 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 		params = append([]string{cmd}, params...)
 	}
 
-	return env, cmd, params, options
+	return env, cmd, params, options.Value()
 }
 
 // setENV sets Cmd Environment

@@ -167,6 +167,25 @@ func Test_ioSReadlines(t *testing.T) {
 	assert.Equal(t, ret.Interface(), []interface{}{"li", "", " 1", "\nl", "in", "e ", "2"})
 }
 
+func Test_ioSReadlines_reg1(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	f, err := os.Open("testdata/test.txt")
+	defer f.Close()
+	assert.NilError(t, err)
+
+	mrb.SetGV("$pid", mrb.Value(f))
+	mrb.SetGV("$/", "\n")
+
+	_, err = f.Seek(0, io.SeekStart)
+	assert.NilError(t, err)
+
+	ret, err := mrb.Eval(`IO.readlines($pid, chomp: true)`)
+	assert.NilError(t, err)
+	assert.Equal(t, ret.Interface(), []interface{}{"line 1", "line 2"})
+}
+
 func Test_ioForeach(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
