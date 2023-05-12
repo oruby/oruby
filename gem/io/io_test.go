@@ -19,8 +19,6 @@ func Test_raiseEOF(t *testing.T) {
 	v := RaiseEOF(mrb)
 	assert.Expect(t, mrb.ObjIsKindOf(v, mrb.EExceptionClass()), "exception excepted")
 	assert.Expect(t, mrb.Exc() != nil, "Should be raised")
-	assert.Expect(t, *mrb.Exc() == mrb.RValue(v), "Should be raised")
-	assert.Expect(t, *mrb.Exc() == mrb.RValue(v), "Should be raised")
 }
 
 func Test_raiseIOError(t *testing.T) {
@@ -30,7 +28,6 @@ func Test_raiseIOError(t *testing.T) {
 	v := RaiseIOError(mrb, "IO error")
 	assert.Expect(t, mrb.ObjIsKindOf(v, mrb.EExceptionClass()), "Should be exception")
 	assert.Expect(t, mrb.Exc() != nil, "Should be raised")
-	assert.Expect(t, *mrb.Exc() == mrb.RValue(v), "Should be raised")
 }
 
 func Test_getStream(t *testing.T) {

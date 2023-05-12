@@ -264,8 +264,8 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	flags |= fnmExtglob | fnmPathname
 
-	opt := args.KeywordArgs()
-	if opt.IsHash() {
+	opt := mrb.KeywordArgs()
+	if !opt.IsNil() {
 		if base := mrb.HashFetch(opt, mrb.Intern("base"), oruby.Nil); base.IsString() {
 			basePath = base.String()
 		}
@@ -311,8 +311,8 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func dirAref(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	basePath := ""
-	opt := args.KeywordArgs()
-	if opt.IsHash() {
+	opt := mrb.KeywordArgs()
+	if !opt.IsNil() {
 		if base := mrb.HashFetch(opt, mrb.Intern("base"), oruby.Nil); base.IsString() {
 			basePath = base.String()
 		}
