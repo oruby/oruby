@@ -1,8 +1,9 @@
 package thread
 
 import (
-	"github.com/oruby/oruby"
 	"testing"
+
+	"github.com/oruby/oruby"
 )
 
 func TestContext(t *testing.T) {
@@ -10,14 +11,14 @@ func TestContext(t *testing.T) {
 	defer mrb.Close()
 
 	v, err := mrb.Eval(`
-		Thread.new { "yea" }.join
+		t = Thread.new { "yea" }.join
 	`)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 
 	if v.String() != "yea" {
 		t.Errorf("expected 'yea' got '%v'", mrb.String(v))
 	}
 }
-

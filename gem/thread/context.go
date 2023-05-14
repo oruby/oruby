@@ -3,6 +3,7 @@ package thread
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/oruby/oruby"
 )
@@ -128,13 +129,40 @@ func (c *Context) worker() {
 	c.alive = false
 }
 
-func (c *Context) Join(limit int) (interface{}, error) {
+// Join will make the calling thread suspend execution and run this thr.
+// Does not return until thr exits or until the given limit seconds have passed.
+//
+// If the time limit expires, nil will be returned, otherwise thr is returned.
+//
+// Any threads not joined will be killed when the main program exits.
+//
+// [-] If thr had previously raised an exception and the ::abort_on_exception or $DEBUG flags are not set,
+// [-] (so the exception has not yet been processed), it will be processed at this time.
+// a = Thread.new { print "a"; sleep(10); print "b"; print "c" }
+func (c *Context) Join(limit ...int) (interface{}, error) {
 	if !c.IsAlive() {
 		return c.resultCaller, c.err
 	}
 
 	c.Wakeup()
-	c.mrb.WaitGroup.Wait()
+
+	if len(limit) > 0 && limit[0] > 0 {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			c.mrb.WaitGroup.Wait()
+		}()
+		select {
+		case <-done:
+			break // completed normally
+		case <-time.After(time.Duration(limit[0]) * time.Second):
+			// timout expired - return nil
+			return oruby.Nil, nil
+		}
+	} else {
+		// Wait forever
+		c.mrb.WaitGroup.Wait()
+	}
 
 	c.Lock()
 	defer c.Unlock()
@@ -147,16 +175,16 @@ func (c *Context) Join(limit int) (interface{}, error) {
 	c.mrb.Close()
 	c.mrb = nil
 
-	return c, nil
+	return c.resultCaller, nil
 }
 
 func (c *Context) Kill() interface{} {
+	c.Lock()
+	defer c.Unlock()
+
 	if c.mrb == nil {
 		return nil
 	}
-
-	c.Lock()
-	defer c.Unlock()
 
 	c.mrb.Close()
 	c.mrb = nil
@@ -240,7 +268,7 @@ func (c *Context) Status() interface{} {
 }
 
 func (c *Context) Value() (interface{}, error) {
-	_, _ = c.Join(0)
+	_, _ = c.Join()
 	return c.resultCaller, c.err
 }
 

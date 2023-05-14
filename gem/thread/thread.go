@@ -15,7 +15,7 @@ func init() {
 		threadClass.Populate()
 		threadClass.Const("COPY_VALUES", true)
 
-		threadClass.DefineMethod("initialize", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
+		threadClass.DefineMethod("initialize", newThread, mrb.ArgsBlock())
 		threadClass.DefineAlias("terminate", "kill")
 		threadClass.DefineModuleFunction("start", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
 		threadClass.DefineModuleFunction("go", goThread, mrb.ArgsAny()+mrb.ArgsBlock())

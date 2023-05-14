@@ -123,7 +123,7 @@ func (e *Engine) Init(input string) error {
 	}
 
 	if e.postamble == "" {
-		e.postamble = fmt.Sprintf("\n%v.to_s\n", e.bufvar)
+		e.postamble = fmt.Sprintf("%v.to_s\n", e.bufvar)
 	}
 
 	e.src.WriteString(e.preamble)

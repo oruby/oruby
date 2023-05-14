@@ -64,7 +64,7 @@ func (v Value) RBasic() RBasic {
 
 // RBasicPtr returns RBasic object pointer from value
 func (mrb *MrbState) RBasicPtr(v MrbValue) *RBasic {
-	if !v.Value().HasBasic() {
+	if v.Type() <= MrbTTCptr {
 		return nil
 	}
 	return &RBasic{(*C.struct_RBasic)(C._mrb_ptr(v.Value().v))}
@@ -147,7 +147,7 @@ func MrbObjPtr(v MrbValue) uintptr {
 
 // Ptr returns pointer to mruby object if it exists in value
 func (v Value) Ptr() uintptr {
-	if !v.Value().HasBasic() {
+	if !v.HasBasic() {
 		return 0
 	}
 	return uintptr(C._mrb_ptr(v.v))

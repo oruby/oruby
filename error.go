@@ -31,8 +31,8 @@ func (e RException) ExitStatus() int {
 	return e.mrb.IVGet(e, e.mrb.Intern("status")).Int()
 }
 
-func (e RException) Backtrace() Value {
-	return Value{C.mrb_exc_backtrace(e.mrb.p, e.v)}
+func (e RException) Backtrace() RValue {
+	return RValue{C.mrb_exc_backtrace(e.mrb.p, e.v), e.mrb}
 }
 
 // MrbExcPtr returns RException
