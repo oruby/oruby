@@ -1,6 +1,7 @@
 package signal
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -86,33 +87,36 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 		return
 	}
 
-	handlers.c = make(chan os.Signal, 1)
+	handlers.c = make(chan os.Signal, 5)
 	mrb.WaitGroup.Add(1)
 
 	go func() {
 		for {
 			select {
-			case sig := <-handlers.c:
-				if sig == nil {
-					return
-				}
-				cmd, ok := handlers.current[sig]
-				if ok && cmd.IsProc() {
-					//TODO: This doesn't work. It needs to inject into main thread
-					mrb.Inject(mrb.RProc(cmd))
+			case sig, ok := <-handlers.c:
+				if ok && sig != nil {
+					cmd, ok := handlers.current[sig]
+					fmt.Printf("signal %v, %v\n", sig, cmd)
+					if ok && cmd.IsProc() {
+						//TODO: This doesn't work. It needs to inject into main thread
+						mrb.Inject(mrb.RProc(cmd))
+						fmt.Printf("signal %v, %v - Inject done\n", sig, cmd)
+					}
 				}
 			case <-mrb.ExitChan():
 				// gracefull close goroutine on mrb state close
 				signal.Stop(handlers.c)
 				close(handlers.c)
-
+				fmt.Printf("ExitChan - stop handlers\n")
 				// zero signal handler, executed at MrbState closing
 				if !handlers.exitHandler.IsNil() {
+					fmt.Printf("ExitChan - InjectChan exitandler %v\n", handlers.exitHandler)
 					mrb.InjectChan <- mrb.RProc(handlers.exitHandler)
 				}
 
 				handlers.current = nil
 				mrb.WaitGroup.Done()
+				fmt.Printf("ExitChan - WaitGroup done\n")
 				return
 			}
 		}
@@ -142,6 +146,7 @@ func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		prev = handlers.exitHandler
 		handlers.exitHandler = command
 		if command.IsProc() {
+			mrb.GCProtect(command)
 			trap(mrb, handlers)
 			return prev
 		}
@@ -151,6 +156,7 @@ func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	handlers.current[sig] = command
 
 	if command.IsProc() {
+		mrb.GCProtect(command)
 		trap(mrb, handlers)
 		signal.Notify(handlers.c, sig)
 		return prev

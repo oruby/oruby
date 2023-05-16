@@ -117,8 +117,8 @@ func ioIsClosed(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	a, block := mrb.GetArgsWithBlock()
-	reader, closer, err := openLineReader(mrb, self, a, 0)
+	a, kwargs, block := mrb.GetAllArgs()
+	reader, closer, err := openLineReader(mrb, self, a, kwargs, 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -337,7 +337,7 @@ func setLineNo(mrb *oruby.MrbState, self oruby.Value, v int) {
 }
 
 func ioGets(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), 0)
+	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -729,7 +729,7 @@ func ioReadchar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioReadline(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), 0)
+	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -747,7 +747,7 @@ func ioReadline(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), 0)
+	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

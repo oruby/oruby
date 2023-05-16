@@ -3,7 +3,6 @@ package process
 import (
 	"os"
 	"os/exec"
-	"runtime"
 	"syscall"
 	"testing"
 
@@ -12,7 +11,7 @@ import (
 )
 
 func executable() string {
-	if runtime.GOOS == "windows" {
+	if os.PathSeparator == '\\' {
 		return "'where'"
 	}
 	return "'/bin/echo'"

@@ -148,12 +148,17 @@ func checkRaiserMethod(t *testing.T, mrb *MrbState, f MrbFuncT, aspec MrbAspec) 
 	}
 }
 
+// TestRaiseFromApi ClassGet("NonExistingClass") panics on Go side. Panic() can be
+// intercepted via mrb.Try() helper - it will intercept Go panics/exceptions and
+// converted result to ORuby MrbValue which contains RException MrbValue
+// That exception is re-raised on C side, so Go stack is preserved and error can be handled
 func TestRaiseFromApi(t *testing.T) {
 	mrb := MrbOpen()
 	defer mrb.Close()
 
 	checkRaiserMethod(t, mrb, func(mrb *MrbState, self Value) MrbValue {
-		mrb.ClassGet("NonExistingClass")
-		return self
+		return mrb.Try(func() MrbValue {
+			return mrb.ClassGet("NonExistingClass")
+		})
 	}, mrb.ArgsNone())
 }

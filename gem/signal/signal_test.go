@@ -18,13 +18,15 @@ func TestTrap(t *testing.T) {
 		Signal.trap(0) { p "Exited." }
 	`)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 
 	v := mrb.GetGV("$testv")
 
 	if !v.IsInteger() || v.Int() != 0 {
-		t.Fatalf("expected 0 got %v", mrb.Inspect(v))
+		t.Errorf("expected 0 got %v", mrb.Inspect(v))
+		return
 	}
 
 	// Give some time for signal to be processed
@@ -32,7 +34,8 @@ func TestTrap(t *testing.T) {
 
 	err = syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 
 	// Give some time for signal to be processed
@@ -41,7 +44,7 @@ func TestTrap(t *testing.T) {
 	v2 := mrb.GetGV("$testv")
 
 	if v2.Int() != 1 {
-		t.Fatalf("expected 1 got %v", mrb.String(v2))
+		t.Errorf("expected 1 got %v", mrb.String(v2))
 	}
 }
 
@@ -53,7 +56,8 @@ func TestInfinite(t *testing.T) {
 		<-time.After(100 * time.Millisecond)
 		err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 	}()
 
@@ -65,12 +69,13 @@ func TestInfinite(t *testing.T) {
 		end		
 	`)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 
 	v2 := mrb.GetGV("$testv").Int()
 	if v2 != 1 {
-		t.Fatalf("expected 1 got %v", v2)
+		t.Errorf("expected 1 got %v", v2)
 	}
 }
 
@@ -81,11 +86,13 @@ func TestList(t *testing.T) {
 	signal := mrb.ModuleGet("Signal")
 	list := signal.Call("list")
 	if mrb.Err() != nil {
-		t.Fatal(mrb.Err())
+		t.Error(mrb.Err())
+		return
 	}
 	sigs, ok := mrb.Intf(list).(map[string]interface{})
 	if !ok {
-		t.Fatal("Signal list is not map[string]interface{}")
+		t.Error("Signal list is not map[string]interface{}")
+		return
 	}
 
 	if len(sigs) != len(signals) {
@@ -126,7 +133,8 @@ func TestSignalExceptions(t *testing.T) {
 	eSignal := mrb.ClassGet("SignalException")
 	e, err := eSignal.New("INT", "Message")
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	if e.GetIV("@signo").Int() != int(syscall.SIGINT) {
 		t.Error("Signo: ", e.GetIV("@signo"))
@@ -139,7 +147,8 @@ func TestSignalExceptions(t *testing.T) {
 	eInterrupt := mrb.ClassGet("Interrupt")
 	e, err = eInterrupt.New("Message2")
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 
 	if e.GetIV("@signo").Int() != int(syscall.SIGINT) {

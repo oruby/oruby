@@ -9,7 +9,7 @@ import (
 	"github.com/oruby/oruby"
 )
 
-func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index int) (*bufio.Scanner, io.Closer, error) {
+func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, kwargs oruby.RHash, index int) (*bufio.Scanner, io.Closer, error) {
 	var sep *string
 	limit := 0
 
@@ -21,8 +21,7 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index
 
 	arg1 := args.ItemDef(index, globalSeparator)
 	arg2 := args.Item(index + 1)
-	opt := mrb.KeywordArgs()
-	chomp := !opt.IsNil() && opt.Get(mrb.Intern("chomp")).Bool()
+	chomp := kwargs.Get(mrb.Intern("chomp")).Bool()
 
 	switch arg1.Type() {
 	case oruby.MrbTTString:
@@ -42,7 +41,7 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, index
 		limit = arg2.Int()
 	}
 
-	f, err := openIO(mrb, fd, mrb.NilValue(), opt.Value())
+	f, err := openIO(mrb, fd, mrb.NilValue(), kwargs.Value())
 	if err != nil {
 		return nil, nil, err
 	}

@@ -23,9 +23,9 @@ func Test_openLineReader(t *testing.T) {
 			fd, err = os.Open(name)
 			assert.NilError(t, err)
 		}
-		args := oruby.RArgsNew(mrb, mrb.Value(arg1), mrb.Value(arg2))
-		args.SetKeywordArgs(mrb.Value(opt))
-		return openLineReader(mrb, mrb.Value(fd), args, 0)
+		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2))
+		options := mrb.EnsureHashType(mrb.Value(opt))
+		return openLineReader(mrb, mrb.Value(fd), args, options, 0)
 	}
 
 	r, _, err := olr(strings.NewReader("test$test$test$"), "$", nil, nil)
@@ -69,6 +69,28 @@ func Test_openLineReader(t *testing.T) {
 	assert.Equal(t, r.Text(), "qq")
 }
 
+func Test_openLineReader_reg1(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	olr := func(fd, arg1, arg2 interface{}, opt h) (*bufio.Scanner, io.Closer, error) {
+		var err error
+		if name, ok := fd.(string); ok {
+			fd, err = os.Open(name)
+			assert.NilError(t, err)
+		}
+		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2))
+		options := mrb.EnsureHashType(mrb.Value(opt))
+		return openLineReader(mrb, mrb.Value(fd), args, options, 0)
+	}
+
+	r, _, err := olr(strings.NewReader("test$test$test$"), "$", nil, h{mrb.Sym("chomp"): true})
+	assert.NilError(t, err)
+	r.Scan()
+	assert.NilError(t, r.Err())
+	assert.Equal(t, r.Text(), "test")
+}
+
 func Test_openLineReaderSepLimitChomp(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -76,9 +98,9 @@ func Test_openLineReaderSepLimitChomp(t *testing.T) {
 	chompTrue := h{mrb.Intern("chomp"): true}
 
 	olr := func(fd, arg1, arg2 interface{}, opt h) (*bufio.Scanner, io.Closer, error) {
-		args := oruby.RArgsNew(mrb, mrb.Value(arg1), mrb.Value(arg2))
-		args.SetKeywordArgs(mrb.Value(opt))
-		return openLineReader(mrb, mrb.Value(fd), args, 0)
+		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2))
+		options := mrb.EnsureHashType(mrb.Value(opt))
+		return openLineReader(mrb, mrb.Value(fd), args, options, 0)
 	}
 
 	r, _, err := olr(strings.NewReader("test$qqst$test$"), "$", 2, chompTrue)

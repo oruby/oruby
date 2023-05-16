@@ -30,19 +30,12 @@ func (a RInterfaceArgs) Get(mrb *MrbState, i int) interface{} {
 // RArgs implements Go struct with args for MrbFuncT
 // it implements Arguments interface and other methods similar to RArray
 type RArgs struct {
-	mrb    *MrbState
-	items  []Value
-	kwargs Value
+	items []Value
 }
 
 // RArgsNew constructor for RArgs
-func RArgsNew(mrb *MrbState, items ...Value) RArgs {
-	return RArgs{mrb, items, nilValue}
-}
-
-// SetKeywordArgs constructor for RArgs
-func (a RArgs) SetKeywordArgs(kwargs Value) {
-	a.kwargs = kwargs
+func RArgsNew(items ...Value) RArgs {
+	return RArgs{items}
 }
 
 // Item returns value item at index, or Nil if index is invalid
@@ -163,7 +156,7 @@ func (mrb *MrbState) GetArgs(defaults ...interface{}) RArgs {
 		items[i] = Value{C._mrb_get_arg(args, C.int(i))}
 	}
 
-	ret := RArgs{mrb, items, Value{C._mrb_get_args_kw(mrb.p)}}
+	ret := RArgs{items}
 
 	for i := ret.Len(); i < len(defaults); i++ {
 		ret.items = append(ret.items, mrb.Value(defaults[i]))
@@ -177,9 +170,17 @@ func (mrb *MrbState) GetArgsWithBlock(defaults ...interface{}) (RArgs, RProc) {
 	return mrb.GetArgs(defaults...), mrb.GetArgsBlock()
 }
 
+func (mrb *MrbState) GetAllArgs(defaults ...interface{}) (RArgs, RHash, RProc) {
+	return mrb.GetArgs(defaults...), mrb.KeywordArgs(), mrb.GetArgsBlock()
+}
+
 // KeywordArgs returns provided keyword args as RHash
 func (mrb *MrbState) KeywordArgs() RHash {
-	return RHash{RValue{C._mrb_get_args_kw(mrb.p), mrb}}
+	args := RValue{C._mrb_get_args_kw(mrb.p), mrb}
+	if args.IsNil() {
+		return mrb.HashNew()
+	}
+	return RHash{args}
 }
 
 // GetArgs2 return two function arguments

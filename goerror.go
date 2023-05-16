@@ -244,30 +244,25 @@ func (c RClass) RaiseError(err error) Value {
 	return c.Raise(err.Error())
 }
 
-func mrbErrorHandler(mrb *MrbState, old *C.struct_mrb_jmpbuf, err *error) {
-	mrb.p.jmp = old
+func ErrorHandler(mrb *MrbState, result *MrbValue) {
 	if r := recover(); r != nil {
 		switch x := r.(type) {
 		case string:
-			*err = errors.New(x)
+			*result = mrb.RaiseError(errors.New(x))
 		case error:
-			*err = x
+			*result = mrb.RaiseError(x)
 		default:
-			*err = errors.New("unknown error")
+			*result = mrb.RaiseError(errors.New("unknown error"))
 		}
 	}
-
-	if *err == nil {
-		*err = mrb.Err()
+	if mrb.Exc() != nil {
+		*result = *mrb.Exc()
 	}
 }
 
-func (mrb *MrbState) try(f func() C.mrb_value) (result Value, err error) {
-	old := mrb.p.jmp
-	mrb.p.jmp = nil
-	defer mrbErrorHandler(mrb, old, &err)
-
-	result = Value{f()}
-
-	return result, err
+func (mrb *MrbState) Try(f func() MrbValue) (result MrbValue) {
+	defer ErrorHandler(mrb, &result)
+	mrb.ExcClear()
+	result = f()
+	return result
 }

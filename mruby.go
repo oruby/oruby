@@ -2,7 +2,7 @@ package oruby
 
 // #cgo CFLAGS: -I${SRCDIR}/mruby/include -I${SRCDIR}/mruby/build/host/include
 // #cgo LDFLAGS: -L${SRCDIR}/mruby/build/host/lib
-// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_DEBUG -DMRB_USE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_USE_METHOD_T_STRUCT -DMRB_NO_BOXING
+// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_USE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_USE_METHOD_T_STRUCT -DMRB_NO_BOXING
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -102,12 +102,7 @@ func NewCore() (*MrbState, error) {
 	// mruby code have SystemCallError::_sys_fail method, but it is not used
 	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
 
-	runtime.SetFinalizer(mrb, mrbFinalizer)
 	return mrb, nil
-}
-
-func mrbFinalizer(mrb *MrbState) {
-	mrb.Close()
 }
 
 // MrbValue is interface type which can return oruby value
@@ -239,9 +234,12 @@ func inject_run(idx C.mrb_int) *C.struct_RProc {
 	select {
 	case <-mrb.exitChan:
 		return nil
-	case proc := <-mrb.injectVMChan:
-		return proc.p
-		// C.mrb_funcall_with_block(mrb.p,proc.p, C.mrb_sym(mrb.callSym), 0, nil, nilValue.v	)
+	case proc, ok := <-mrb.injectVMChan:
+		if ok {
+			return proc.p
+		}
+		return nil
+		// C.mrb_funcall_with_block(mrb.p, proc.p, C.mrb_sym(mrb.callSym), 0, nil, Nil.v)
 	default:
 		return nil
 	}
@@ -290,9 +288,9 @@ func (mrb *MrbState) startInjector() {
 				if !ok {
 					return
 				}
-				_, _ = mrb.FuncallWithBlock(proc, mrb.callSym)
-				//			case <-mrb.ExitChan():
-				//				return
+				C.mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v)
+			case <-mrb.ExitChan():
+				return
 			}
 		}
 	}()
@@ -307,8 +305,6 @@ func (mrb *MrbState) startInjector() {
 // After mrb.WaitGroup.Wait() finishes, mrb.InjectChan is closed.
 func (mrb *MrbState) Close() {
 	if mrb.p != nil {
-		runtime.SetFinalizer(mrb, nil)
-
 		// Signal all mrb goroutines that we are closing
 		// and Wait all well-behaved goroutines to finish
 		close(mrb.exitChan)
@@ -316,13 +312,13 @@ func (mrb *MrbState) Close() {
 		// Goroutines from Gems that send exit procs should
 		// send proc to mrb.InjectChan and then signal mrb.WaitGroup.Done()
 		go func() {
-			for len(mrb.InjectChan) != 0 {
+			for {
 				proc, ok := <-mrb.InjectChan
 				if ok {
-					_, err := mrb.FuncallWithBlock(proc, mrb.callSym)
-					if err != nil {
-						println(err)
-					}
+					C.mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v)
+				} else {
+					// return when chanel is closed
+					return
 				}
 			}
 		}()
@@ -422,13 +418,19 @@ func (mrb *MrbState) Value(o interface{}) Value {
 	case []byte:
 		return mrb.BytesValue(v)
 	case map[string]interface{}:
-		hash := mrb.HashNewCapa(32)
+		hash := mrb.HashNewCapa(len(v))
 		for key, val := range v {
 			hash.Set(mrb.Value(key), mrb.Value(val))
 		}
 		return hash.Value()
+	case map[MrbSym]interface{}:
+		hash := mrb.HashNewCapa(len(v))
+		for key, val := range v {
+			hash.Set(mrb.SymbolValue(key), mrb.Value(val))
+		}
+		return hash.Value()
 	case map[interface{}]interface{}:
-		hash := mrb.HashNewCapa(32)
+		hash := mrb.HashNewCapa(len(v))
 		for key, val := range v {
 			hash.Set(mrb.Value(key), mrb.Value(val))
 		}
@@ -1880,7 +1882,7 @@ func (mrb *MrbState) ConvertType(val MrbValue, mrbtype Type, tname, method strin
 //	   b.kind_of? M       #=> true
 func (mrb *MrbState) ObjIsKindOf(obj MrbValue, c RClass) bool {
 	switch c.Type() {
-	case C.MRB_TT_MODULE, C.MRB_TT_CLASS, C.MRB_TT_ICLASS, C.MRB_TT_SCLASS:
+	case MrbTTModule, MrbTTClass, MrbTTIClass, MrbTTSClass:
 		return C.mrb_obj_is_kind_of(mrb.p, obj.Value().v, c.p) != false
 	default:
 		panic(fmt.Sprintf("class or module required but got %v", c.Name()))

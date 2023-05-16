@@ -292,7 +292,7 @@ func ioPipe(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioSReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs()
 
-	reader, closer, err := openLineReader(mrb, a.Item(0), a, 1)
+	reader, closer, err := openLineReader(mrb, a.Item(0), a, mrb.KeywordArgs(), 1)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -309,8 +309,8 @@ func ioSReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	a, block := mrb.GetArgsWithBlock()
-	reader, closer, err := openLineReader(mrb, a.Item(0), a, 1)
+	a, kwargs, block := mrb.GetAllArgs()
+	reader, closer, err := openLineReader(mrb, a.Item(0), a, kwargs, 1)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

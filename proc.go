@@ -236,14 +236,16 @@ func (mrb *MrbState) ProcNew(irep MrbIrep) RProc { return RProc{C.mrb_proc_new(m
 
 // RProc returns RProc struct from proc ruby value, or nil if vale is not proc
 func (mrb *MrbState) RProc(v MrbValue) RProc {
-	if v.Value().IsNil() {
+	value := v.Value()
+
+	if value.IsNil() {
 		return RProc{nil, mrb}
 	}
 
-	if !v.Value().IsProc() {
+	if !value.IsProc() {
 		panic("value is not RProc")
 	}
-	return RProc{(*C.struct_RProc)(C._mrb_ptr(v.Value().v)), mrb}
+	return RProc{(*C.struct_RProc)(C._mrb_ptr(value.v)), mrb}
 }
 
 // NLocals get locals count for irep proc
