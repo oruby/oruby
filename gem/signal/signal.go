@@ -1,7 +1,6 @@
 package signal
 
 import (
-	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -96,27 +95,23 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 			case sig, ok := <-handlers.c:
 				if ok && sig != nil {
 					cmd, ok := handlers.current[sig]
-					fmt.Printf("signal %v, %v\n", sig, cmd)
 					if ok && cmd.IsProc() {
 						//TODO: This doesn't work. It needs to inject into main thread
 						mrb.Inject(mrb.RProc(cmd))
-						fmt.Printf("signal %v, %v - Inject done\n", sig, cmd)
 					}
 				}
 			case <-mrb.ExitChan():
 				// gracefull close goroutine on mrb state close
 				signal.Stop(handlers.c)
 				close(handlers.c)
-				fmt.Printf("ExitChan - stop handlers\n")
 				// zero signal handler, executed at MrbState closing
 				if !handlers.exitHandler.IsNil() {
-					fmt.Printf("ExitChan - InjectChan exitandler %v\n", handlers.exitHandler)
 					mrb.InjectChan <- mrb.RProc(handlers.exitHandler)
 				}
 
 				handlers.current = nil
-				mrb.WaitGroup.Done()
-				fmt.Printf("ExitChan - WaitGroup done\n")
+				// WaitGroupDone() helper is used to ensure execution after exitHandler
+				mrb.InjectChan <- mrb.WaitGroupDone()
 				return
 			}
 		}

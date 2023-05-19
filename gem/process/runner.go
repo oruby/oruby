@@ -103,13 +103,8 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 	params := make([]string, 0, args.Len()-argStart+1)
 
 	// Params: from first arg after command, till options
-	for i := argStart; i < args.Len()-1; i++ {
+	for i := argStart; i < args.Len(); i++ {
 		params = append(params, mrb.String(args.Item(i)))
-	}
-
-	// If no options given - last item is also param
-	if args.Len() > 1 {
-		params = append(params, mrb.String(options))
 	}
 
 	var cmd string

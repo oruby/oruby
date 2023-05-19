@@ -7,7 +7,6 @@ import (
 	"os/user"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -203,6 +202,7 @@ func errorState(err error) *status {
 		Exitstatus: 127,
 		IsSucess:   false,
 		IsExited:   true,
+		err:        err,
 	}
 }
 
@@ -223,8 +223,6 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	defer runner.cleanup()
 
 	shell := platformGetShell()
-	//exec.Command(shell, "-c", strings.Join(runner.cmd.Args, " "))
-	runner.cmd.Args = []string{shell, "-c", strings.Join(runner.cmd.Args, " ")}
 	runner.cmd.Path = shell
 
 	pid, err := runner.run()
@@ -238,9 +236,13 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	// Error
 	if !ret.IsInteger() {
 		if runner.exception {
-			return ret
+			setStatus(mrb, errorState(runner.err))
+			return mrb.NilValue()
 		}
-		mrb.ExcClear()
+		if mrb.Exc() != nil {
+			setStatus(mrb, errorState(mrb.Err()))
+			mrb.ExcClear()
+		}
 		return mrb.NilValue()
 	}
 

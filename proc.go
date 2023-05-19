@@ -100,16 +100,16 @@ func (p RProc) IsScope() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_SCO
 func (p RProc) IsNoArg() bool { return (C._mrb_rproc_flags(p.p) & C.MRB_PROC_NOARG) != 0 }
 
 // Flags returns rproc flags
-func (p RProc) Flags() int { return int(C._mrb_rproc_flags(p.p)) }
+func (p RProc) Flags() uint32 { return uint32(C._mrb_rproc_flags(p.p)) }
 
 // FlagSet set proc flag
-func (p RProc) FlagSet(flag int) {
+func (p RProc) FlagSet(flag uint32) {
 	flags := C._mrb_rproc_flags(p.p) & C.uint32_t(flag)
 	C._mrb_rproc_set_flags(p.p, C.uint32_t(flags))
 }
 
 // FlagUnset unset proc flag
-func (p RProc) FlagUnset(flag int) {
+func (p RProc) FlagUnset(flag uint32) {
 	flags := C._mrb_rproc_flags(p.p) & ^C.uint32_t(flag)
 	C._mrb_rproc_set_flags(p.p, C.uint32_t(flags))
 }
@@ -150,15 +150,17 @@ func (p RProc) Data() interface{} {
 		return nil
 	}
 
-	if !p.HasEnv() {
-		return p.mrb.mrbProcs[unsafe.Pointer(p.p)]
+	if p.HasEnv() {
+		i := p.mrb.ProcCFuncEnvGet(0)
+		if i.IsInteger() {
+			return p.mrb.getMrbFuncT(uint(i.Int()))
+		}
 	}
 
-	i := p.mrb.ProcCFuncEnvGet(0)
-	if !i.IsInteger() {
-		return p.mrb.mrbProcs[unsafe.Pointer(p.p)]
-	}
-	return p.mrb.funcs[i.Int()]
+	p.mrb.Lock()
+	defer p.mrb.Unlock()
+
+	return p.mrb.mrbProcs[unsafe.Pointer(p.p)]
 }
 
 // SetTargetClass sets target class for proc

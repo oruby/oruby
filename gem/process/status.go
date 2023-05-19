@@ -2,6 +2,7 @@ package process
 
 import (
 	"fmt"
+
 	"github.com/oruby/oruby"
 )
 
@@ -17,6 +18,7 @@ type status struct {
 	Exitstatus   int
 	IsSucess     bool
 	IsCoredump   bool
+	err          error
 }
 
 func (s *status) Equal(s2 *status) bool {
@@ -44,7 +46,7 @@ func initStatus(mProc oruby.RClass) {
 	cProcessStatus := mProc.DefineClassUnder("Status", mrb.ObjectClass())
 	mrb.DefineGoClassUnder(mProc, "Status", &status{})
 	cProcessStatus.UndefClassMethod("new")
-	cProcessStatus.DefineAlias("==","equal")
+	cProcessStatus.DefineAlias("==", "equal")
 	cProcessStatus.DefineAlias("&", "bit_and")
-	cProcessStatus.DefineAlias(">>","r_shift")
+	cProcessStatus.DefineAlias(">>", "r_shift")
 }

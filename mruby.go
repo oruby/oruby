@@ -236,10 +236,10 @@ func inject_run(idx C.mrb_int) *C.struct_RProc {
 		return nil
 	case proc, ok := <-mrb.injectVMChan:
 		if ok {
+			// C.mrb_funcall_with_block() is done on C side
 			return proc.p
 		}
 		return nil
-		// C.mrb_funcall_with_block(mrb.p, proc.p, C.mrb_sym(mrb.callSym), 0, nil, Nil.v)
 	default:
 		return nil
 	}
@@ -259,16 +259,12 @@ func (mrb *MrbState) Inject(proc RProc) {
 	// mrb->jmp == 0 if no vm code is executing
 	// This will be picked from main executing goroutine
 	if mrb.p.jmp == nil {
-		go func() {
-			mrb.InjectChan <- proc
-		}()
+		mrb.InjectChan <- proc
 		return
 	}
 
 	// Execute procedure via inject_run VM debug hook
-	go func() {
-		mrb.injectVMChan <- proc
-	}()
+	mrb.injectVMChan <- proc
 }
 
 // startInjector for code to be executed from goroutines in main mrb
@@ -288,12 +284,24 @@ func (mrb *MrbState) startInjector() {
 				if !ok {
 					return
 				}
-				C.mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v)
-			case <-mrb.ExitChan():
-				return
+				mrb.Lock()
+				f, ok := mrb.mrbProcs[unsafe.Pointer(proc.p)]
+				mrb.Unlock()
+				if ok {
+					f(mrb, proc.Value())
+					return
+				}
+				C._mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v)
 			}
 		}
 	}()
+}
+
+func (mrb *MrbState) WaitGroupDone() RProc {
+	return mrb.ProcNewCFunc(func(*MrbState, Value) MrbValue {
+		mrb.WaitGroup.Done()
+		return nilValue
+	})
 }
 
 // Close oruby state
@@ -301,8 +309,11 @@ func (mrb *MrbState) startInjector() {
 // so all goroutines are signaled to close
 //
 // Go routines from Gems that have exit procs should
-// send proc via mrb.InjectChan and then signal mrb.WaitGroup.Done()
-// After mrb.WaitGroup.Wait() finishes, mrb.InjectChan is closed.
+// send proc via mrb.InjectChan and then signal mrb.WaitGroup.Done() directly
+// or via mrb.InjectChan<-mrb.WaitGroupDone() helper
+//
+// After mrb.WaitGroup.Wait() finishes, mrb.InjectChan is closed and internal
+// C MRuby state is closed
 func (mrb *MrbState) Close() {
 	if mrb.p != nil {
 		// Signal all mrb goroutines that we are closing
@@ -310,19 +321,8 @@ func (mrb *MrbState) Close() {
 		close(mrb.exitChan)
 
 		// Goroutines from Gems that send exit procs should
-		// send proc to mrb.InjectChan and then signal mrb.WaitGroup.Done()
-		go func() {
-			for {
-				proc, ok := <-mrb.InjectChan
-				if ok {
-					C.mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v)
-				} else {
-					// return when chanel is closed
-					return
-				}
-			}
-		}()
-
+		// send atexit procs to mrb.InjectChan, and then signal
+		// mrb.WaitGroup.Done() directly or via mrb.InjectChan<-mrb.WaitGroupDone() helper
 		mrb.WaitGroup.Wait()
 
 		if mrb.injectVMChan != nil {
@@ -1412,7 +1412,7 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 	}
 
 	var err error
-	v := Value{C.mrb_funcall_with_block(
+	v := Value{C._mrb_funcall_with_block(
 		mrb.p,
 		self.Value().v,
 		C.mrb_sym(nameSym),
@@ -2361,10 +2361,11 @@ func (mrb *MrbState) Alloca(size uint) Buff {
 }
 
 // StateAtextit set exis func
-func (mrb *MrbState) StateAtextit(f MrbAtexitFunc) {
-	// C.mrb_state_atexit(mrb.p, f);
-	// Unsupported in go
-}
+//func (mrb *MrbState) StateAtextit(f MrbAtexitFunc) {
+// C.mrb_state_atexit(mrb.p, f);
+// Unsupported in oruby - use gem with Inject() on exiting
+// visit signal gem from oruby repository for example
+//}
 
 // ShowVersion print oruby version
 func (mrb *MrbState) ShowVersion() {

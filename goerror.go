@@ -262,7 +262,9 @@ func ErrorHandler(mrb *MrbState, result *MrbValue) {
 
 func (mrb *MrbState) Try(f func() MrbValue) (result MrbValue) {
 	defer ErrorHandler(mrb, &result)
+
 	mrb.ExcClear()
 	result = f()
+
 	return result
 }

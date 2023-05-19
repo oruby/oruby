@@ -103,7 +103,7 @@ func TestShouldStripOnlyWhitespaceForSpecificTags_reg1(t *testing.T) {
 	list := `list = ['&\'<>"2']`
 	checkOutput(t,
 		`
-  <%# 3 %>//
+<%# 3 %>//
 `,
 		list,
 		`_buf = ::String.new;
