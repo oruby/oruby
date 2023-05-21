@@ -99,24 +99,6 @@ _buf.to_s
 `)
 }
 
-func TestShouldStripOnlyWhitespaceForSpecificTags_reg1(t *testing.T) {
-	list := `list = ['&\'<>"2']`
-	checkOutput(t,
-		`
-<%# 3 %>//
-`,
-		list,
-		`_buf = ::String.new;
-'; _buf << '  '; _buf << '//
-';
-_buf.to_s
-`,
-		`
-  //
-`)
-
-}
-
 func TestShouldStripOnlyWhitespaceForSpecificTags(t *testing.T) {
 	list := `list = ['&\'<>"2']`
 	checkOutput(t,

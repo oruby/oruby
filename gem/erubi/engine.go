@@ -9,10 +9,12 @@ import (
 
 // Engine as close as possible to Erubi::Engine implementation
 type Engine struct {
-	escape     bool
-	trim       bool
-	ensure     bool
-	freeze     bool
+	escape                 bool
+	trim                   bool
+	ensure                 bool
+	freeze                 bool
+	freezeTemplateLiterals bool
+	//chainAppends bool
 	filename   string
 	bufvar     string
 	bufval     string
@@ -21,6 +23,7 @@ type Engine struct {
 	regex      *regexp.Regexp
 	preamble   string
 	postamble  string
+	textEnd    string
 }
 
 func getB(h map[string]interface{}, key string, def bool) bool {
@@ -65,19 +68,24 @@ func New(options map[string]interface{}) *Engine {
 	outvar := getS(options, "outvar", "_buf")
 
 	e := &Engine{
-		escape:     getB(options, "escape", escapeHTML),
-		trim:       getB(options, "trim", true),
-		ensure:     getB(options, "ensure", false),
-		freeze:     getB(options, "freeze", false),
-		filename:   getS(options, "filename", ""),
-		bufvar:     getS(options, "bufvar", outvar),
-		bufval:     getS(options, "bufval", "::String.new"),
-		escapefunc: getS(options, "escapefunc", "::Erubi.h"),
-		regex:      regexp.MustCompile(reg),
-		preamble:   getS(options, "preamble", ""),
-		postamble:  getS(options, "postamble", ""),
+		escape:                 getB(options, "escape", escapeHTML),
+		trim:                   getB(options, "trim", true),
+		ensure:                 getB(options, "ensure", false),
+		freeze:                 getB(options, "freeze", false),
+		filename:               getS(options, "filename", ""),
+		bufvar:                 getS(options, "bufvar", outvar),
+		bufval:                 getS(options, "bufval", "::String.new"),
+		escapefunc:             getS(options, "escapefunc", "::Erubi.h"),
+		regex:                  regexp.MustCompile(reg),
+		preamble:               getS(options, "preamble", ""),
+		postamble:              getS(options, "postamble", ""),
+		freezeTemplateLiterals: getB(options, "freeze_template_literals", true),
+		textEnd:                "'",
 	}
 
+	if e.freezeTemplateLiterals {
+		e.textEnd = "'.freeze"
+	}
 	e.src.WriteString(getS(options, "src", ""))
 
 	return e
@@ -243,9 +251,7 @@ func (e *Engine) Init(input string) error {
 		s = input[pos:]
 	}
 	e.addText(s)
-	if s == "" || s[len(s)-1] != '\n' {
-		e.src.WriteByte('\n')
-	}
+	e.src.WriteByte('\n')
 
 	e.addPostamble()
 
@@ -269,7 +275,8 @@ func (e *Engine) addText(text string) {
 	e.src.WriteString(e.bufvar)
 	e.src.WriteString(" << '")
 	e.src.WriteString(tRegEx.ReplaceAllString(text, "\\\\\\&"))
-	e.src.WriteString("'.freeze;")
+	e.src.WriteString(e.textEnd)
+	e.src.WriteByte(';')
 }
 
 // addCode adds ruby code to the template
