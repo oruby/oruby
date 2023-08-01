@@ -199,7 +199,7 @@ func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
 
 	args.rfp = "" // flag.Args()[0]
 
-	return false, nil
+	return true, nil
 }
 
 // Print a short remark for the user
