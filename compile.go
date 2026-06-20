@@ -9,9 +9,9 @@ import (
 	"unsafe"
 )
 
-// MrbcContext struct
-type MrbcContext struct {
-	p   *C.struct_mrbc_context
+// MrbCcontext struct
+type MrbCcontext struct {
+	p   *C.struct_mrb_ccontext
 	mrb *MrbState
 }
 
@@ -24,82 +24,82 @@ func iifmb(v bool) C.mrb_bool {
 }
 
 // LineNo from context
-func (c *MrbcContext) LineNo() int { return int(c.p.lineno) }
+func (c *MrbCcontext) LineNo() int { return int(c.p.lineno) }
 
 // SetLineNo sets lineno in context
-func (c *MrbcContext) SetLineNo(lineno int) { c.p.lineno = C.uint16_t(lineno) }
+func (c *MrbCcontext) SetLineNo(lineno int) { c.p.lineno = C.uint16_t(lineno) }
 
 // CaptureErrors returns if errors are captured
-func (c *MrbcContext) CaptureErrors() bool { return C._mrbc_capture_errors(c.p) != 0 }
+func (c *MrbCcontext) CaptureErrors() bool { return C._mrbc_capture_errors(c.p) != 0 }
 
 // SetCaptureErrors sets error capturing on or off
-func (c *MrbcContext) SetCaptureErrors(b bool) { C._mrbc_set_capture_errors(c.p, iifmb(b)) }
+func (c *MrbCcontext) SetCaptureErrors(b bool) { C._mrbc_set_capture_errors(c.p, iifmb(b)) }
 
 // DumpResult returns if result is dumped
-func (c *MrbcContext) DumpResult() bool { return C._mrbc_dump_result(c.p) != 0 }
+func (c *MrbCcontext) DumpResult() bool { return C._mrbc_dump_result(c.p) != 0 }
 
 // SetDumpResult sets result dump on or off
-func (c *MrbcContext) SetDumpResult(b bool) { C._mrbc_set_dump_result(c.p, iifmb(b)) }
+func (c *MrbCcontext) SetDumpResult(b bool) { C._mrbc_set_dump_result(c.p, iifmb(b)) }
 
 // NoExec returns if NoExec is turend on
-func (c *MrbcContext) NoExec() bool { return C._mrbc_no_exec(c.p) != 0 }
+func (c *MrbCcontext) NoExec() bool { return C._mrbc_no_exec(c.p) != 0 }
 
 // SetNoExec sets NoExec on or off
-func (c *MrbcContext) SetNoExec(b bool) { C._mrbc_set_no_exec(c.p, iifmb(b)) }
+func (c *MrbCcontext) SetNoExec(b bool) { C._mrbc_set_no_exec(c.p, iifmb(b)) }
 
 // SetNoOptimize sets NoOptimize on or off
-func (c *MrbcContext) SetNoOptimize(b bool) { C._mrbc_set_no_optimize(c.p, iifmb(b)) }
+func (c *MrbCcontext) SetNoOptimize(b bool) { C._mrbc_set_no_optimize(c.p, iifmb(b)) }
 
 // SetNoExtOps sets NoExtOps on or off
-func (c *MrbcContext) SetNoExtOps(b bool) { C._mrbc_set_no_ext_ops(c.p, iifmb(b)) }
+func (c *MrbCcontext) SetNoExtOps(b bool) { C._mrbc_set_no_ext_ops(c.p, iifmb(b)) }
 
-// MrbcContextNew create new context
-func (mrb *MrbState) MrbcContextNew() *MrbcContext {
-	return &MrbcContext{C.mrbc_context_new(mrb.p), mrb}
+// MrbCcontextNew create new context
+func (mrb *MrbState) MrbCcontextNew() *MrbCcontext {
+	return &MrbCcontext{C.mrb_ccontext_new(mrb.p), mrb}
 }
 
-// Free MrbcContext
-func (c *MrbcContext) Free() { C.mrbc_context_free(c.mrb.p, c.p) }
+// Free MrbCcontext
+func (c *MrbCcontext) Free() { C.mrb_ccontext_free(c.mrb.p, c.p) }
 
-// Filename set for MrbcContext
-func (c *MrbcContext) Filename(filename string) string {
+// Filename set for MrbCcontext
+func (c *MrbCcontext) Filename(filename string) string {
 	cfn := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfn))
-	return C.GoString(C.mrbc_filename(c.mrb.p, c.p, cfn))
+	return C.GoString(C.mrb_ccontext_filename(c.mrb.p, c.p, cfn))
 }
 
 // PartialHook set parser hook
-func (c *MrbcContext) PartialHook(partialHook PartialHookF) {
+func (c *MrbCcontext) PartialHook(partialHook PartialHookF) {
 	c.mrb.setHook(unsafe.Pointer(c.p), partialHook)
 }
 
 // CleanupLocalVariables clears local variables
-func (c *MrbcContext) CleanupLocalVariables() {
-	C.mrbc_cleanup_local_variables(c.mrb.p, c.p)
+func (c *MrbCcontext) CleanupLocalVariables() {
+	C.mrbc_cleanup_local_variables(c.p)
 }
 
 // LoadFile loads file into oruby context
-func (c *MrbcContext) LoadFile(filename string) (Value, error) {
+func (c *MrbCcontext) LoadFile(filename string) (Value, error) {
 	return c.mrb.LoadFileCxt(filename, c)
 }
 
 // LoadString loads string into oruby context
-func (c *MrbcContext) LoadString(s string) (Value, error) {
+func (c *MrbCcontext) LoadString(s string) (Value, error) {
 	return c.mrb.LoadStringCxt(s, c)
 }
 
 // LoadBytes loads string into oruby context
-func (c *MrbcContext) LoadBytes(buf []byte) (Value, error) {
+func (c *MrbCcontext) LoadBytes(buf []byte) (Value, error) {
 	return c.mrb.LoadBytesCxt(buf, c)
 }
 
-// MrbcContextFree free context
-func (mrb *MrbState) MrbcContextFree(context *MrbcContext) {
-	C.mrbc_context_free(mrb.p, context.p)
+// MrbCcontextFree free context
+func (mrb *MrbState) MrbCcontextFree(context *MrbCcontext) {
+	C.mrb_ccontext_free(mrb.p, context.p)
 }
 
 // MrbcFilename return filename
-func (mrb *MrbState) MrbcFilename(context *MrbcContext, filename string) string {
+func (mrb *MrbState) MrbcFilename(context *MrbCcontext, filename string) string {
 	cfn := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfn))
 	return C.GoString(C.mrbc_filename(mrb.p, context.p, cfn))
@@ -119,14 +119,14 @@ func go_partial_hook_callback(p *C.struct_mrb_parser_state) C.int {
 	return C.int(f(MrbParserState{p}))
 }
 
-// MrbcContextPartialHook set parser hook
-func (mrb *MrbState) MrbcContextPartialHook(cxt *MrbcContext, partialHook PartialHookF) {
+// MrbCcontextPartialHook set parser hook
+func (mrb *MrbState) MrbCcontextPartialHook(cxt *MrbCcontext, partialHook PartialHookF) {
 	mrb.setHook(unsafe.Pointer(cxt.p), partialHook)
 }
 
-// MrbcContextCleanupLocalVariables clear local variables
-func (mrb *MrbState) MrbcContextCleanupLocalVariables(cxt *MrbcContext) {
-	C.mrbc_cleanup_local_variables(mrb.p, cxt.p)
+// MrbCcontextCleanupLocalVariables clear local variables
+func (mrb *MrbState) MrbCcontextCleanupLocalVariables(cxt *MrbCcontext) {
+	C.mrbc_cleanup_local_variables(cxt.p)
 }
 
 // MrbAstNode AST node structure
@@ -146,10 +146,10 @@ func (n *MrbAstNode) Car() *MrbAstNode { return astNode(n.p.car) }
 func (n *MrbAstNode) Cdr() *MrbAstNode { return astNode(n.p.cdr) }
 
 // LineNo from AST node
-func (n *MrbAstNode) LineNo() int { return int(n.p.lineno) }
+// func (n *MrbAstNode) LineNo() int { return int(n.p.lineno) }
 
 // FilenameIndex from AST node
-func (n *MrbAstNode) FilenameIndex() int { return int(n.p.filename_index) }
+// func (n *MrbAstNode) FilenameIndex() int { return int(n.p.filename_index) }
 
 // mrb_lex_state_enum
 const (
@@ -221,8 +221,8 @@ func (p MrbParserState) NErr() int { return int(p.p.nerr) }
 func (p MrbParserState) NWarn() int { return int(p.p.nwarn) }
 
 // Context returns mrb context from parser state
-func (p MrbParserState) Context() *MrbcContext {
-	return &MrbcContext{p.p.cxt, p.State()}
+func (p MrbParserState) Context() *MrbCcontext {
+	return &MrbCcontext{p.p.cxt, p.State()}
 }
 
 // State returns parsers mrb state
@@ -319,7 +319,7 @@ func (mrb *MrbState) ParserNew() MrbParserState {
 func (p MrbParserState) Free() { C.mrb_parser_free(p.p) }
 
 // Parse parses oruby context
-func (p MrbParserState) Parse(context *MrbcContext) {
+func (p MrbParserState) Parse(context *MrbCcontext) {
 	C.mrb_parser_parse(p.p, context.p)
 }
 
@@ -345,7 +345,7 @@ func loadFile(fileName string) (string, error) {
 }
 
 // ParseFile to oruby parser state
-func (mrb *MrbState) ParseFile(fileName string, context *MrbcContext) (MrbParserState, error) {
+func (mrb *MrbState) ParseFile(fileName string, context *MrbCcontext) (MrbParserState, error) {
 	s, err := loadFile(fileName)
 	if err != nil {
 		return MrbParserState{nil}, err
@@ -356,7 +356,7 @@ func (mrb *MrbState) ParseFile(fileName string, context *MrbcContext) (MrbParser
 }
 
 // ParseString to oruby parser state
-func (mrb *MrbState) ParseString(s string, context *MrbcContext) (MrbParserState, error) {
+func (mrb *MrbState) ParseString(s string, context *MrbCcontext) (MrbParserState, error) {
 	cs := C.CString(s)
 	defer C.free(unsafe.Pointer(cs))
 	p := C.mrb_parse_nstring(mrb.p, cs, C.size_t(len(s)), context.p)
@@ -379,7 +379,7 @@ func (mrb *MrbState) GenerateCode(parser MrbParserState) (RProc, error) {
 }
 
 // LoadExec loads and executes parser context, returning Value
-func (mrb *MrbState) LoadExec(parser MrbParserState, context *MrbcContext) Value {
+func (mrb *MrbState) LoadExec(parser MrbParserState, context *MrbCcontext) Value {
 	return Value{C.mrb_load_exec(mrb.p, parser.p, context.p)}
 }
 
@@ -406,7 +406,7 @@ func (mrb *MrbState) LoadString(s string) (Value, error) {
 }
 
 // LoadFileCxt loads file into oruby context
-func (mrb *MrbState) LoadFileCxt(fileName string, context *MrbcContext) (Value, error) {
+func (mrb *MrbState) LoadFileCxt(fileName string, context *MrbCcontext) (Value, error) {
 	data, err := os.ReadFile(fileName)
 	if err != nil {
 		return mrb.NilValue(), err
@@ -417,12 +417,12 @@ func (mrb *MrbState) LoadFileCxt(fileName string, context *MrbcContext) (Value, 
 }
 
 // LoadStringCxt loads string into oruby context
-func (mrb *MrbState) LoadStringCxt(s string, context *MrbcContext) (Value, error) {
+func (mrb *MrbState) LoadStringCxt(s string, context *MrbCcontext) (Value, error) {
 	return mrb.LoadBytesCxt([]byte(s), context)
 }
 
 // LoadBytesCxt loads bytes into oruby context
-func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbcContext) (Value, error) {
+func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, error) {
 	if len(buf) == 0 {
 		return nilValue, errors.New("empty buffer")
 	}

@@ -51,7 +51,7 @@ static void _mrb_set_idx(mrb_state *mrb, mrb_int idx) {
 
   *i = idx;
 
-  MRB_SET_FROZEN_FLAG(s);
+  s->frozen = 1;
   mrb_sym sym = mrb_intern_lit(mrb, "$MRB");
   mrb_gv_set(mrb, sym, mrb_obj_value(s));
 
@@ -89,9 +89,7 @@ static void set_mrb_injector(mrb_state *mrb) {
 }
 
 // RBasic macro proxy calls
-static void _MRB_SET_FROZEN_FLAG(struct RBasic *o)   { MRB_SET_FROZEN_FLAG(o); }
-static void _MRB_UNSET_FROZEN_FLAG(struct RBasic *o) { MRB_UNSET_FROZEN_FLAG(o); }
-static mrb_bool  _mrb_basic_frozen(struct RBasic *o) { return MRB_FROZEN_P(o) != 0; }
+static mrb_bool  _mrb_frozen_p(struct RBasic *o) { return mrb_frozen_p(o) != 0; }
 static uint32_t  _mrb_basic_flags(struct RBasic *o)   { return o->flags; }
 static enum mrb_vtype  _mrb_basic_type(struct RBasic *o)   { return o->tt; }
 static void      _mrb_basic_set_color(struct RBasic *o, int c) { o->gc_color = c; }
@@ -162,7 +160,7 @@ static int  _MRB_PROC_CFUNC_P(struct RProc *p)    { return (int)(MRB_PROC_CFUNC_
 static mrb_func_t _MRB_PROC_CFUNC(struct RProc *p) { return MRB_PROC_CFUNC(p); }
 static int  _MRB_PROC_STRICT_P(struct RProc *p)   { return (int)(MRB_PROC_STRICT_P(p)); }
 static mrb_func_t _MRB_METHOD_FUNC(mrb_method_t m) { return MRB_METHOD_CFUNC(m); }
-static struct RProc *_MRB_METHOD_PROC(mrb_method_t m) { return MRB_METHOD_PROC(m); }
+static struct RProc *_MRB_METHOD_PROC(mrb_method_t m) { return (struct RProc*)(MRB_METHOD_PROC(m)); }
 static mrb_bool _MRB_METHOD_UNDEF_P(mrb_method_t m) { return MRB_METHOD_UNDEF_P(m); }
 
 static uint16_t _mrb_rproc_nlocals(struct RProc *p)  { return p->body.irep->nlocals; }
@@ -198,12 +196,6 @@ static int print(const char *fmt, ...) {
   va_end(myargs);
   p(str);
   return ret;
-}
-
-static mrb_method_t _MRB_METHOD_NOARG_SET(mrb_method_t m) {
-  mrb_method_t ret = m;
-  MRB_METHOD_NOARG_SET(ret);
-  return ret; 
 }
 
 static mrb_method_t _MRB_METHOD_FROM_PROC(struct RProc *p) {

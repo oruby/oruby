@@ -109,7 +109,7 @@ func (mrb *MrbState) LoadIrepBuf(buffer []byte) (Value, error) {
 }
 
 // LoadIrepCxt irep api
-func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbcContext) (Value, error) {
+func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbCcontext) (Value, error) {
 	var ret Value
 	bufLen := len(buffer)
 
@@ -124,12 +124,12 @@ func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbcContext) (Value, er
 }
 
 // LoadIrepBuf for context
-func (c *MrbcContext) LoadIrepBuf(buffer []byte) (Value, error) {
+func (c *MrbCcontext) LoadIrepBuf(buffer []byte) (Value, error) {
 	return c.mrb.LoadIrepCxt(buffer, c)
 }
 
 // LoadIrepFile for context
-func (c *MrbcContext) LoadIrepFile(filename string) (Value, error) {
+func (c *MrbCcontext) LoadIrepFile(filename string) (Value, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return c.mrb.NilValue(), err
@@ -144,7 +144,7 @@ func (c *MrbcContext) LoadIrepFile(filename string) (Value, error) {
 // - File starts with "RITE"
 // - At least `sizeof(struct rite_binary_header)` bytes can be read
 // - `NUL` is included in the first 64 bytes of the file
-func (c *MrbcContext) LoadDetectFile(filename string) (Value, error) {
+func (c *MrbCcontext) LoadDetectFile(filename string) (Value, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return c.mrb.NilValue(), err
@@ -154,7 +154,7 @@ func (c *MrbcContext) LoadDetectFile(filename string) (Value, error) {
 	// C.mrb_load_detect_file_cxt() is never called
 }
 
-func (c *MrbcContext) LoadDetectBuf(data []byte) (Value, error) {
+func (c *MrbCcontext) LoadDetectBuf(data []byte) (Value, error) {
 	return c.mrb.LoadDetectBufCxt(data, c)
 }
 
@@ -164,7 +164,7 @@ func (c *MrbcContext) LoadDetectBuf(data []byte) (Value, error) {
 // - File starts with "RITE"
 // - At least `sizeof(struct rite_binary_header)` bytes can be read
 // - `NUL` is included in the first 64 bytes of the file
-func (mrb *MrbState) LoadDetectBufCxt(data []byte, c *MrbcContext) (Value, error) {
+func (mrb *MrbState) LoadDetectBufCxt(data []byte, c *MrbCcontext) (Value, error) {
 	if bytes.HasPrefix(data, []byte(RiteBinaryIdent)) && len(data) >= 64 && bytes.Contains(data[:63], []byte{'\x00'}) {
 		return mrb.LoadIrepCxt(data, c)
 	}
@@ -178,7 +178,7 @@ func (mrb *MrbState) LoadDetectBufCxt(data []byte, c *MrbcContext) (Value, error
 }
 
 // LoadIrepBufCxt irep load form buffer with context, same as LoadIrepCxt
-func (mrb *MrbState) LoadIrepBufCxt(buffer []byte, context *MrbcContext) (Value, error) {
+func (mrb *MrbState) LoadIrepBufCxt(buffer []byte, context *MrbCcontext) (Value, error) {
 	return mrb.LoadIrepCxt(buffer, context)
 }
 

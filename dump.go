@@ -90,7 +90,7 @@ func (mrb *MrbState) LoadIrepFile(filename string) (Value, error) {
 }
 
 // LoadIrepFileCxt irep load from file with mrbc context
-func (mrb *MrbState) LoadIrepFileCxt(filename string, context *MrbcContext) (Value, error) {
+func (mrb *MrbState) LoadIrepFileCxt(filename string, context *MrbCcontext) (Value, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return mrb.NilValue(), err

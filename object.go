@@ -28,14 +28,14 @@ func (b RBasic) IsNil() bool {
 }
 
 // IsFrozen return true if object is frozen
-func (b RBasic) IsFrozen() bool { return C._mrb_basic_frozen(b.p) != false }
+func (b RBasic) IsFrozen() bool { return b.p.frozen != 0 }
 
 // SetFrozen sets or unsets frozen flag
 func (b RBasic) SetFrozen(v bool) {
 	if v {
-		C._MRB_SET_FROZEN_FLAG(b.p)
+		b.p.frozen = 1
 	} else {
-		C._MRB_UNSET_FROZEN_FLAG(b.p)
+		b.p.frozen = 0
 	}
 }
 
@@ -122,7 +122,7 @@ func MrbSetFrozenFlag(v MrbValue) {
 		return
 	}
 
-	C._MRB_SET_FROZEN_FLAG(value.RBasic().p)
+	value.RBasic().SetFrozen(true)
 }
 
 // MrbUnsetFrozenFlag check if object is frozen
@@ -132,7 +132,7 @@ func MrbUnsetFrozenFlag(v MrbValue) {
 		return
 	}
 
-	C._MRB_UNSET_FROZEN_FLAG(value.RBasic().p)
+	value.RBasic().SetFrozen(false)
 }
 
 // MrbObjPtr returns uintptr of MrbValue object

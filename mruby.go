@@ -739,7 +739,7 @@ func (mrb *MrbState) Eval(code string) (result RValue, err error) {
 	//	defer errorHandler(&err)
 	mrb.ExcClear()
 
-	cxt := mrb.MrbcContextNew()
+	cxt := mrb.MrbCcontextNew()
 	cxt.SetCaptureErrors(true)
 	defer cxt.Free()
 
@@ -1781,7 +1781,7 @@ func (mrb *MrbState) GCArenaSave() int32 {
 
 // GCArenaRestore restore GC arena
 func (mrb *MrbState) GCArenaRestore(idx int32) {
-	mrb.p.gc.arena_idx = (idx)
+	mrb.p.gc.arena_idx = C.int(idx)
 }
 
 // GCMark mark GC
