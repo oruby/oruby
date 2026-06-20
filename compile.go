@@ -139,12 +139,6 @@ func astNode(node *C.struct_mrb_ast_node) *MrbAstNode {
 	return &MrbAstNode{node}
 }
 
-// Car from AST node
-func (n *MrbAstNode) Car() *MrbAstNode { return astNode(n.p.car) }
-
-// Cdr form AST node
-func (n *MrbAstNode) Cdr() *MrbAstNode { return astNode(n.p.cdr) }
-
 // LineNo from AST node
 // func (n *MrbAstNode) LineNo() int { return int(n.p.lineno) }
 

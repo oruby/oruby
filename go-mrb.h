@@ -89,6 +89,7 @@ static void set_mrb_injector(mrb_state *mrb) {
 }
 
 // RBasic macro proxy calls
+static void      _MRB_SET_FROZEN(struct RBasic *o, mrb_bool value) { o->frozen = value ? 1 : 0; }
 static mrb_bool  _mrb_frozen_p(struct RBasic *o) { return mrb_frozen_p(o) != 0; }
 static uint32_t  _mrb_basic_flags(struct RBasic *o)   { return o->flags; }
 static enum mrb_vtype  _mrb_basic_type(struct RBasic *o)   { return o->tt; }

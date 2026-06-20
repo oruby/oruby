@@ -2336,21 +2336,21 @@ func (mrb *MrbState) StackExtend(size int) {
 }
 
 // MrbMemPool struct
-type MrbMemPool struct{ p *C.struct_mrb_mempool }
+type MemPool struct{ p *C.struct_mempool }
 
 // PoolOpen opens new pool
-func (mrb *MrbState) PoolOpen() MrbMemPool { return MrbMemPool{C.mempool_open(mrb.p)} }
+func MemPoolOpen() MemPool { return MemPool{C.mempool_open()} }
 
 // Close closes pool
-func (pool *MrbMemPool) Close() { C.mempool_close(pool.p) }
+func (pool *MemPool) Close() { C.mempool_close(pool.p) }
 
 // Alloc alocates size memory in pool
-func (pool *MrbMemPool) Alloc(size int) Buff {
+func (pool *MemPool) Alloc(size int) Buff {
 	return Buff{C.mempool_alloc(pool.p, C.size_t(size))}
 }
 
 // Realloc realocates size memory in pool
-func (pool *MrbMemPool) Realloc(buffer Buff, oldlen, newlen uint) Buff {
+func (pool *MemPool) Realloc(buffer Buff, oldlen, newlen uint) Buff {
 	return Buff{C.mempool_realloc(pool.p, buffer.p, C.size_t(oldlen), C.size_t(newlen))}
 }
 

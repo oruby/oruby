@@ -28,15 +28,11 @@ func (b RBasic) IsNil() bool {
 }
 
 // IsFrozen return true if object is frozen
-func (b RBasic) IsFrozen() bool { return b.p.frozen != 0 }
+func (b RBasic) IsFrozen() bool { return C._mrb_frozen_p(b.p) != false }
 
 // SetFrozen sets or unsets frozen flag
 func (b RBasic) SetFrozen(v bool) {
-	if v {
-		b.p.frozen = 1
-	} else {
-		b.p.frozen = 0
-	}
+	C._MRB_SET_FROZEN(b.p, C.mrb_bool(v))
 }
 
 // Flags return object flags

@@ -65,17 +65,6 @@ func (b RBreak) ValueSet(v MrbValue) {
 	brk.val = v.Value().v
 }
 
-func (b RBreak) ProcGet() RProc {
-	brk := b.ptr()
-	return RProc{brk.proc, b.mrb}
-}
-
-// ProcSet sets break value
-func (b RBreak) ProcSet(p RProc) {
-	brk := b.ptr()
-	brk.proc = p.p
-}
-
 // SysFail return SystemCallError with message
 func (mrb *MrbState) SysFail(err error) Value {
 	if mrb.ClassDefined("SystemCallError") {
