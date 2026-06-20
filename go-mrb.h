@@ -94,8 +94,8 @@ static void _MRB_UNSET_FROZEN_FLAG(struct RBasic *o) { MRB_UNSET_FROZEN_FLAG(o);
 static mrb_bool  _mrb_basic_frozen(struct RBasic *o) { return MRB_FROZEN_P(o) != 0; }
 static uint32_t  _mrb_basic_flags(struct RBasic *o)   { return o->flags; }
 static enum mrb_vtype  _mrb_basic_type(struct RBasic *o)   { return o->tt; }
-static void      _mrb_basic_set_color(struct RBasic *o, int c) { o->color = c; }
-static int       _mrb_basic_color(struct RBasic *o)  { return o->color; }
+static void      _mrb_basic_set_color(struct RBasic *o, int c) { o->gc_color = c; }
+static int       _mrb_basic_color(struct RBasic *o)  { return o->gc_color; }
 
 // defines as functions making them visible on the Go side
 static mrb_int _RARRAY_LEN(struct RArray *a)    { return ARY_LEN(a); }
@@ -457,7 +457,7 @@ _mrb_proc_env_get(mrb_state *mrb, struct RProc *p, mrb_int idx)
   return e->stack[idx];
 }
 
-static void _mrb_pool_value_migrate(mrb_pool_value *v) {
+static void _mrb_pool_value_migrate(mrb_irep_pool *v) {
   if ((v->tt & 3) == IREP_TT_STR) {
     uint32_t len = v->tt >> 2;
     char *p = (char*)malloc(len+1);

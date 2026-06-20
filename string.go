@@ -34,15 +34,20 @@ func RStringEnd(a MrbValue) uintptr { return uintptr(unsafe.Pointer(C._RSTRING_E
 
 // string flags
 const (
-	MrbStrShared        = 1
-	MrbStrFShared       = 2
-	MrbStrNofree        = 4
-	MrbStrEmbed         = 8
-	MrbStrASCII         = 16
+	MrbStrNormal   = 0
+	MrbStrShared   = 1
+	MrbStrFShared  = 2
+	MrbStrNofree   = 4
+	MrbStrEmbed    = 8
+	MrbStrTypeMask = 15
+
 	MrbStrEmbedLenShift = 6
-	MrbStrEmbedLenBit   = 5
-	MrbStrEmbedLenMask  = ((1 << C.MRB_STR_EMBED_LEN_BIT) - 1) << C.MRB_STR_EMBED_LEN_SHIFT
-	MrbStrTypeMask      = 15
+	MrbStrEmbedLenBits  = 5
+	MrbStrEmbedLenMask  = ((1 << C.MRB_STR_EMBED_LEN_BITS) - 1) << C.MRB_STR_EMBED_LEN_SHIFT
+
+	MrbStrBinary    = 16
+	MrbStrSingeByte = 32
+	MrbStrStateMask = 48
 )
 
 //func (mrb *MrbState) GCFreeStr(s RString) { C.mrb_gc_free_str(mrb.p, s.Ptr().p) }

@@ -1775,10 +1775,14 @@ func (mrb *MrbState) FullGC() {
 func (mrb *MrbState) IncrementalGC() { C.mrb_incremental_gc(mrb.p) }
 
 // GCArenaSave save GC arena
-func (mrb *MrbState) GCArenaSave() int32 { return int32(C.mrb_gc_arena_save(mrb.p)) }
+func (mrb *MrbState) GCArenaSave() int32 {
+	return int32(mrb.p.gc.arena_idx)
+}
 
 // GCArenaRestore restore GC arena
-func (mrb *MrbState) GCArenaRestore(n int32) { C.mrb_gc_arena_restore(mrb.p, C.int(n)) }
+func (mrb *MrbState) GCArenaRestore(idx int32) {
+	mrb.p.gc.arena_idx = (idx)
+}
 
 // GCMark mark GC
 func (mrb *MrbState) GCMark(o RBasic) { C.mrb_gc_mark(mrb.p, o.p) }
@@ -2331,33 +2335,23 @@ func (mrb *MrbState) StackExtend(size int) {
 	C.mrb_stack_extend(mrb.p, C.mrb_int(size))
 }
 
-// MrbPool struct
-type MrbPool struct{ p *C.struct_mrb_pool }
+// MrbMemPool struct
+type MrbMemPool struct{ p *C.struct_mrb_mempool }
 
 // PoolOpen opens new pool
-func (mrb *MrbState) PoolOpen() MrbPool { return MrbPool{C.mrb_pool_open(mrb.p)} }
+func (mrb *MrbState) PoolOpen() MrbMemPool { return MrbMemPool{C.mempool_open(mrb.p)} }
 
 // Close closes pool
-func (pool *MrbPool) Close() { C.mrb_pool_close(pool.p) }
+func (pool *MrbMemPool) Close() { C.mempool_close(pool.p) }
 
 // Alloc alocates size memory in pool
-func (pool *MrbPool) Alloc(size int) Buff {
-	return Buff{C.mrb_pool_alloc(pool.p, C.size_t(size))}
+func (pool *MrbMemPool) Alloc(size int) Buff {
+	return Buff{C.mempool_alloc(pool.p, C.size_t(size))}
 }
 
 // Realloc realocates size memory in pool
-func (pool *MrbPool) Realloc(buffer Buff, oldlen, newlen uint) Buff {
-	return Buff{C.mrb_pool_realloc(pool.p, buffer.p, C.size_t(oldlen), C.size_t(newlen))}
-}
-
-// CanRealloc check if memory can be reallocated
-func (pool *MrbPool) CanRealloc(buffer Buff, size uint) bool {
-	return C.mrb_pool_can_realloc(pool.p, buffer.p, C.size_t(size)) != false
-}
-
-// Alloca temporary memory allocation, only effective while GC arena is kept
-func (mrb *MrbState) Alloca(size uint) Buff {
-	return Buff{C.mrb_alloca(mrb.p, C.size_t(size))}
+func (pool *MrbMemPool) Realloc(buffer Buff, oldlen, newlen uint) Buff {
+	return Buff{C.mempool_realloc(pool.p, buffer.p, C.size_t(oldlen), C.size_t(newlen))}
 }
 
 // StateAtextit set exis func

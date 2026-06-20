@@ -26,28 +26,28 @@ const (
 	IrepTtSflag = 2 /* static string flag */
 )
 
-type MrbPoolValue struct {
-	v *C.mrb_pool_value
+type MrbIrepPool struct {
+	v *C.mrb_irep_pool
 }
 
-func (pv MrbPoolValue) Type() IrepPoolType {
+func (pv MrbIrepPool) Type() IrepPoolType {
 	return IrepPoolType(uint32(pv.v.tt) & 7)
 }
 
-func (pv MrbPoolValue) IsString() bool {
+func (pv MrbIrepPool) IsString() bool {
 	t := pv.Type()
 	return (t == IrepTtStr) || (t == IrepTtSstr)
 }
 
-func (pv MrbPoolValue) IsStr() bool {
+func (pv MrbIrepPool) IsStr() bool {
 	return IrepPoolType(uint32(pv.v.tt)&3) == IrepTtStr
 }
 
-func (pv MrbPoolValue) IsSStr() bool {
+func (pv MrbIrepPool) IsSStr() bool {
 	return pv.Type() == IrepTtSstr
 }
 
-func (pv MrbPoolValue) Migrate() {
+func (pv MrbIrepPool) Migrate() {
 	C._mrb_pool_value_migrate(pv.v)
 }
 
@@ -191,9 +191,6 @@ func (mrb *MrbState) IrepDecref(irep MrbIrep) { C.mrb_irep_decref(mrb.p, irep.p)
 // IrepCutref cut reference form irep
 func (mrb *MrbState) IrepCutref(irep MrbIrep) { C.mrb_irep_cutref(mrb.p, irep.p) }
 
-// IrepRemoveLV removes local variables from irep
-func (mrb *MrbState) IrepRemoveLV(irep MrbIrep) { C.mrb_irep_remove_lv(mrb.p, irep.p) }
-
 // IsNil returns true if irep is empty
 func (irep MrbIrep) IsNil() bool { return irep.p == nil }
 
@@ -208,9 +205,6 @@ func (irep MrbIrep) Decref() { C.mrb_irep_decref(irep.mrb.p, irep.p) }
 
 // Cutref cut reference form irep
 func (irep MrbIrep) Cutref() { C.mrb_irep_cutref(irep.mrb.p, irep.p) }
-
-// RemoveLV removes local variables from irep
-func (irep MrbIrep) RemoveLV() { C.mrb_irep_remove_lv(irep.mrb.p, irep.p) }
 
 // NLocals returns number of local variables
 func (irep MrbIrep) NLocals() int {
@@ -248,15 +242,15 @@ func (irep MrbIrep) PLen() int {
 }
 
 // Pool returns Value at index
-func (irep MrbIrep) Pool(index int) MrbPoolValue {
+func (irep MrbIrep) Pool(index int) MrbIrepPool {
 	if index < 0 || index >= irep.PLen() {
-		return MrbPoolValue{}
+		return MrbIrepPool{}
 	}
 
 	l := int(irep.p.plen)
-	slice := (*[1 << 28]C.mrb_pool_value)(unsafe.Pointer(irep.p.pool))[:l:l]
+	slice := (*[1 << 28]C.mrb_irep_pool)(unsafe.Pointer(irep.p.pool))[:l:l]
 
-	return MrbPoolValue{&slice[index]}
+	return MrbIrepPool{&slice[index]}
 }
 
 // ILen returns number of ISeq MrbCode items
