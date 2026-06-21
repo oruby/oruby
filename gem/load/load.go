@@ -36,7 +36,7 @@ func init() {
 }
 
 func loadScript(mrb *oruby.MrbState, fileName string) (oruby.RProc, error) {
-	cxt := mrb.MrbcContextNew()
+	cxt := mrb.MrbCcontextNew()
 	defer cxt.Free()
 	cxt.SetCaptureErrors(true)
 	cxt.Filename(fileName)

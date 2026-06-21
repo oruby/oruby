@@ -83,22 +83,6 @@ func (mrb *MrbState) ExcNewStr(c RClass, str MrbValue) Value {
 	return Value{C.mrb_exc_new_str(mrb.p, c.p, str.Value().v)}
 }
 
-// MakeException from go values
-func (mrb *MrbState) MakeException(args ...interface{}) Value {
-	l := len(args)
-
-	if l == 0 {
-		return Value{C.mrb_make_exception(mrb.p, 0, nil)}
-	}
-
-	argv := make([]C.mrb_value, l)
-	for i := range argv {
-		argv[i] = mrb.Value(args[i]).Value().v
-	}
-
-	return Value{C.mrb_make_exception(mrb.p, (C.mrb_int)(l), (*C.mrb_value)(&argv[0]))}
-}
-
 func (mrb *MrbState) NoMethodError(methodId MrbSym, args MrbValue, fmt string, fmtArgs ...interface{}) Value {
 	ret := mrb.ENoMethodError().Raisef(fmt, fmtArgs...)
 	mrb.SetIV(ret, "name", mrb.SymbolValue(methodId))

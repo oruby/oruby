@@ -224,7 +224,7 @@ func checkKeyword(buf, word string) bool {
 	return (s == "") || (s[0] == ' ') || (s[0] == '\t') || (s[0] == '\x0A') || (s[0] == '\x0D')
 }
 
-func declLvUnderscore(mrb *oruby.MrbState, cxt *oruby.MrbcContext) error {
+func declLvUnderscore(mrb *oruby.MrbState, cxt *oruby.MrbCcontext) error {
 	parser, err := mrb.ParseString("_=nil", cxt)
 	if err != nil {
 		return err
@@ -289,7 +289,7 @@ func main() {
 
 	printHint()
 
-	cxt := mrb.MrbcContextNew()
+	cxt := mrb.MrbCcontextNew()
 	defer cxt.Free()
 
 	/* Load libraries */
