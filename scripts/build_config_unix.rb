@@ -23,8 +23,8 @@ MRuby::Build.new do |conf|
   conf.cc do |cc|
   #   cc.command = ENV['CC'] || 'gcc'
   #   cc.flags = [ENV['CFLAGS'] || %w()]
-  #   cc.flags = [%w(-g -ggdb -O0 -Wall -Werror-implicit-function-declaration -gstabs+)] #=[ENV['CFLAGS'] || %w()]
-     cc.flags = [%w(-g3 -ggdb -O0 -Wall -Werror-implicit-function-declaration -gstabs+)] #=[ENV['CFLAGS'] || %w()]
+  #   cc.flags = [%w(-g -ggdb -O0 -Wall -Werror-implicit-function-declaration)] #=[ENV['CFLAGS'] || %w()]
+     cc.flags = [%w(-g3 -ggdb -O0 -Wall -Werror-implicit-function-declaration)] #=[ENV['CFLAGS'] || %w()]
   #   cc.include_paths = ["#{root}/include"]
   #   cc.defines = %w(DISABLE_GEMS)
      cc.defines << %w(MRB_INT64 MRB_HIGH_PROFILE MRB_USE_METHOD_T_STRUCT MRB_NO_BOXING)

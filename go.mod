@@ -1,6 +1,6 @@
 module github.com/oruby/oruby
 
-go 1.20
+go 1.26
 
 require (
 	github.com/mattn/go-sqlite3 v1.14.16
