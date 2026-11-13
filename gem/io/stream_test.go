@@ -13,7 +13,7 @@ func Test_valueToS(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	v2s := func(v oruby.Value) string  {
+	v2s := func(v oruby.Value) string {
 		t.Helper()
 		ret, err := valueToS(mrb, v)
 		if err != nil {
@@ -23,7 +23,7 @@ func Test_valueToS(t *testing.T) {
 		return ret.String()
 	}
 
-  	assert.Equal(t, v2s(mrb.Value("test")), "test")
+	assert.Equal(t, v2s(mrb.Value("test")), "test")
 	assert.Equal(t, v2s(mrb.Value(23)), "23")
 	assert.Equal(t, v2s(mrb.TrueValue()), "true")
 	assert.Equal(t, v2s(mrb.NilValue()), "")
@@ -33,10 +33,10 @@ func Test_valueToS(t *testing.T) {
 func Test_ioWriteString(t *testing.T) {
 }
 
-func  Test_ioSetAutosclose(t *testing.T) {
+func Test_ioSetAutosclose(t *testing.T) {
 }
 
-func  Test_ioIsAutoclose(t *testing.T) {
+func Test_ioIsAutoclose(t *testing.T) {
 }
 
 func Test_ioBinmode(t *testing.T) {
@@ -48,7 +48,7 @@ func Test_ioIsBinbode(t *testing.T) {
 func Test_ioClose(t *testing.T) {
 }
 
-func  Test_ioIsCloseOnExec(t *testing.T) {
+func Test_ioIsCloseOnExec(t *testing.T) {
 }
 
 func Test_ioCloseRead(t *testing.T) {
@@ -191,5 +191,3 @@ func Test_ioUngetc(t *testing.T) {
 
 func Test_ioWrite(t *testing.T) {
 }
-
-

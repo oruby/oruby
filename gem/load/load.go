@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/oruby/oruby"
 )
@@ -22,7 +23,8 @@ func init() {
 		mrb.SetGV("$LOADED_FEATURES", loadedFeatures)
 		mrb.SetGV(`$"`, loadedFeatures)
 
-		mrb.DefineClass("ELoadError", mrb.EScriptError())
+		loadError := mrb.DefineClass("LoadError", mrb.EScriptError())
+		mrb.DefineGlobalConst("ELoadError", loadError)
 
 		mrb.DefineGlobalFunction("load", loadLoad, mrb.ArgsReq(1))
 		mrb.DefineGlobalFunction("require", loadRequire, mrb.ArgsReq(1))
@@ -77,27 +79,19 @@ func loadIrep(mrb *oruby.MrbState, fileName string) (oruby.RProc, error) {
 }
 
 func doLoad(mrb *oruby.MrbState, fullName string, wrap bool) error {
-	var proc oruby.RProc
 	var err error
 
-	// load in anonymous module as toplevel
+	cxt := mrb.MrbCcontextNew()
+	defer cxt.Free()
+	cxt.Filename(fullName)
+
 	switch filepath.Ext(fullName) {
-	case ".rb":
-		proc, err = loadScript(mrb, fullName)
 	case ".mrb":
-		proc, err = loadIrep(mrb, fullName)
+		_, err = cxt.LoadIrepFile(fullName)
 	default:
-		err = fmt.Errorf("cannot load such file -- %v. '%v' not supported", fullName, filepath.Ext(fullName))
+		_, err = mrb.LoadFileCxt(fullName, cxt)
 	}
 
-	if err != nil {
-		return err
-	}
-
-	ai := mrb.GCArenaSave()
-	defer mrb.GCArenaRestore(ai)
-
-	mrb.YieldWithClass(proc, mrb.TopSelf(), mrb.ObjectClass())
 	return err
 }
 
@@ -133,7 +127,7 @@ func resolveFeaturePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	feature := mrb.GetArgsFirst().String()
 	name, err := resolveName(mrb, feature)
 	if err != nil {
-		return mrb.Raisef(mrb.ClassGet("ELoadError"), err.Error())
+		return mrb.Raise(mrb.ClassGet("ELoadError"), err.Error())
 	}
 	return mrb.StrNew(name)
 }
@@ -146,12 +140,16 @@ func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	name, err := fullName(nameValue.String())
 	if err != nil {
-		return mrb.Raisef(mrb.ClassGet("ELoadError"), "cannot load such file -- %v", nameValue.String())
+		return mrb.Raisef(mrb.ClassGet("LoadError"), "cannot load such file -- %v", nameValue.String())
 	}
+
+	nv := mrb.StrNew(name)
+	loadingFilesAdd(mrb, nv)
+	defer loadingFilesDelete(mrb, nv)
 
 	err = doLoad(mrb, name, wrap.Bool())
 	if err != nil {
-		return mrb.Raise(mrb.ClassGet("ELoadError"), err.Error())
+		return mrb.Raise(mrb.ClassGet("LoadError"), err.Error())
 	}
 
 	return mrb.TrueValue()
@@ -165,28 +163,34 @@ func fullName(filename string) (string, error) {
 }
 
 func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
-	const supportedExtCount = 2
+	if len(feature) == 0 {
+		return "", errors.New("cannot load such file -- ")
+	}
 
-	filenames := make([]string, supportedExtCount)
+	var filenames []string
 	if filepath.Ext(feature) == "" {
-		filenames[0] = feature + ".rb"
-		filenames[1] = feature + ".mrb"
+		filenames = []string{feature + ".rb", feature + ".mrb"}
 	} else {
-		filenames[0] = feature
+		filenames = []string{feature}
 	}
 
 	if feature[0] == '.' || feature[0] == '/' || feature[0] == filepath.Separator ||
 		(len(feature) > 1 && feature[1] == ':') {
-		return fullName(feature)
+		if name, err := fullName(feature); err == nil {
+			return name, nil
+		}
+		for _, fn := range filenames {
+			if name, err := fullName(fn); err == nil {
+				return name, nil
+			}
+		}
+		return "", fmt.Errorf("cannot load such file -- %v", feature)
 	}
 
 	paths := mrb.GVGetObj(mrb.Intern("$LOAD_PATH")).RArray()
 	for i := 0; i < paths.Len(); i++ {
 		path := paths.Item(i).String()
 		for _, filename := range filenames {
-			if filename == "" {
-				continue
-			}
 			fName := filepath.Join(path, filename)
 			name, err := fullName(fName)
 			if err == nil {
@@ -224,7 +228,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	// Load feature
 	loadingFilesAdd(mrb, nameValue)
 	defer loadingFilesDelete(mrb, nameValue)
-	if err := doLoad(mrb, name, true); err != nil {
+	if err := doLoad(mrb, name, false); err != nil {
 		return mrb.Raise(mrb.ClassGet("ELoadError"), err.Error())
 	}
 
@@ -243,14 +247,29 @@ func loadRequire(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	feature := mrb.GetArgsFirst().String()
-	file := mrb.GVGet(mrb.Intern("$\"__")).String()
+
+	var file string
+	res, err := mrb.Funcall(mrb.TopSelf(), mrb.Intern("caller"), 0)
+	if err == nil && res.Type() == oruby.MrbTTArray {
+		ary := mrb.EnsureArrayType(res)
+		if ary.Len() > 0 {
+			loc := ary.Item(0).String()
+			if idx := strings.Index(loc, ":"); idx != -1 {
+				file = loc[:idx]
+			}
+		}
+	}
+
+	if file == "" || file == "-e" {
+		file = mrb.GVGet(mrb.Intern("$\"__")).String()
+	}
 	if file == "" {
 		file = os.Args[0]
 	}
 
 	name, err := filepath.Abs(filepath.Join(filepath.Dir(file), feature))
 	if err != nil {
-		return mrb.Raise(mrb.ClassGet("ELoadError"), err.Error())
+		return mrb.Raise(mrb.ClassGet("LoadError"), err.Error())
 	}
 
 	return doRequire(mrb, name)

@@ -18,6 +18,7 @@ import (
 const (
 	MrbDumpDebugInfo = uint8(1)
 	MrbDumpStatic    = uint8(2)
+	MrbDumpNoLvar    = uint8(4)
 	DumpDebugInfo    = MrbDumpDebugInfo
 )
 

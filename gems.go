@@ -34,10 +34,11 @@ func (mrb *MrbState) GemData(name string) interface{} {
 
 // Resolve inits gem from available Go gems if not already initialized
 // returns:
-//    false - if feature is already initialized
-//    true - if feature is found and initialized
 //
-//    error is returned if feature cannot be found
+//	false - if feature is already initialized
+//	true - if feature is found and initialized
+//
+//	error is returned if feature cannot be found
 func (mrb *MrbState) Resolve(name string) (bool, error) {
 	if name == "" {
 		return false, EArgumentError("error - empty feature name")
@@ -59,8 +60,9 @@ func (mrb *MrbState) Resolve(name string) (bool, error) {
 
 // Require inits gem from available Go gems if not already initialized
 // returns:
-//    false - if feature is already initialized
-//    true - if feature is found and initialized
+//
+//	false - if feature is already initialized
+//	true - if feature is found and initialized
 //
 // Panics is feature cannot be found
 func (mrb *MrbState) Require(name string) bool {

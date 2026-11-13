@@ -1,7 +1,10 @@
 package process
 
 import (
+	"syscall"
+
 	"github.com/oruby/oruby"
+	"golang.org/x/sys/unix"
 )
 
 func initPlatformUnix(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {

@@ -8,7 +8,7 @@ import (
 type superPipe struct {
 	io.ReadCloser
 	io.WriteCloser
-	pid int
+	pid  int
 	mode int
 }
 type pipeError struct {

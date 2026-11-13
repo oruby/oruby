@@ -13,7 +13,119 @@ func initPrint(mrb *MrbState) interface{} {
 	kernel.DefineMethod("printf", printPrintf, mrb.ArgsAny())
 	kernel.DefineMethod("defined?", mrubyDefined, mrb.ArgsAny())
 
+	if mrb.RespondTo(kernel.Value(), mrb.Intern("Integer")) {
+		kernel.DefineAlias("_mrb_original_Integer", "Integer")
+		kernel.DefineMethod("Integer", kernelInteger, mrb.ArgsAny())
+	}
+	if mrb.RespondTo(kernel.Value(), mrb.Intern("Float")) {
+		kernel.DefineAlias("_mrb_original_Float", "Float")
+		kernel.DefineMethod("Float", kernelFloat, mrb.ArgsAny())
+	}
+
+	kernel.DefineMethod("at_exit", kernelAtExit, mrb.ArgsBlock())
+	if mrb.RespondTo(kernel.Value(), mrb.Intern("exit")) {
+		kernel.DefineAlias("_mrb_original_exit", "exit")
+		kernel.DefineMethod("exit", kernelExit, mrb.ArgsOpt(1))
+	}
+
 	return nil
+}
+
+func kernelAtExit(mrb *MrbState, self Value) MrbValue {
+	block := mrb.GetArgsBlock()
+	if block.IsNil() {
+		return mrb.Raise(mrb.EArgumentError(), "tried to create Proc object without a block")
+	}
+
+	listVal := mrb.GetGV("$__at_exit_list__")
+	var list RArray
+	if listVal.IsNil() {
+		list = mrb.AryNew()
+		mrb.SetGV("$__at_exit_list__", list.Value())
+	} else {
+		list = mrb.GVGetObj(mrb.Intern("$__at_exit_list__")).RArray()
+	}
+
+	list.Unshift(block)
+	return block
+}
+
+func (mrb *MrbState) RunAtExitHandlers() {
+	listVal := mrb.GetGV("$__at_exit_list__")
+	if listVal.IsNil() {
+		return
+	}
+	list := mrb.GVGetObj(mrb.Intern("$__at_exit_list__")).RArray()
+	mrb.SetGV("$__at_exit_list__", mrb.NilValue())
+	for list.Len() > 0 {
+		handler := list.Shift()
+		if !handler.IsNil() {
+			mrb.Yield(handler, mrb.NilValue())
+		}
+	}
+}
+
+func kernelExit(mrb *MrbState, self Value) MrbValue {
+	args := mrb.GetArgs()
+	mrb.RunAtExitHandlers()
+	return mrb.Call(self, "_mrb_original_exit", args.SliceIntf()...)
+}
+
+func kernelInteger(mrb *MrbState, self Value) MrbValue {
+	args := mrb.GetArgs()
+	if args.Len() == 0 {
+		return mrb.Raise(mrb.EArgumentError(), "wrong number of arguments (given 0, expected 1..2)")
+	}
+	arg := args.Item(0)
+
+	to_int := mrb.Intern("to_int")
+	if mrb.RespondTo(arg, to_int) {
+		res, err := mrb.FuncallWithBlock(arg, to_int)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return res
+	}
+
+	if arg.Type() != MrbTTString {
+		to_i := mrb.Intern("to_i")
+		if mrb.RespondTo(arg, to_i) {
+			res, err := mrb.FuncallWithBlock(arg, to_i)
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+			return res
+		}
+	}
+
+	res, err := mrb.FuncallWithBlock(self, mrb.Intern("_mrb_original_Integer"), args.SliceIntf()...)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return res
+}
+
+func kernelFloat(mrb *MrbState, self Value) MrbValue {
+	args := mrb.GetArgs()
+	if args.Len() == 0 {
+		return mrb.Raise(mrb.EArgumentError(), "wrong number of arguments (given 0, expected 1)")
+	}
+	arg := args.Item(0)
+
+	to_f := mrb.Intern("to_f")
+	if arg.Type() != MrbTTString && mrb.RespondTo(arg, to_f) {
+		res, err := mrb.FuncallWithBlock(arg, to_f)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return res
+	}
+
+	res, err := mrb.FuncallWithBlock(self, mrb.Intern("_mrb_original_Float"), args.SliceIntf()...)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return res
 }
 
 func mrubyDefined(mrb *MrbState, self Value) MrbValue {
@@ -52,11 +164,11 @@ func printPuts(mrb *MrbState, self Value) MrbValue {
 		}
 
 		s := mrb.String(v)
-		if len(s) == 0 || s[len(s)-1] != '\n' {
+		if len(s) > 0 && s[len(s)-1] == '\n' {
 			fmt.Print(s)
-			continue
+		} else {
+			fmt.Println(s)
 		}
-		fmt.Println(s)
 	}
 	if args.Len() == 0 {
 		fmt.Println("")

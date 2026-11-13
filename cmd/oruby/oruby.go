@@ -113,7 +113,7 @@ func main() {
 
 	if okToContinue, err := parseArgs(mrb, &args); !okToContinue {
 		if err != nil {
-			exitCode = exitFailure(err.Error())
+			exitCode = exitFailure("%s", err.Error())
 		}
 		return
 	}
@@ -122,7 +122,7 @@ func main() {
 	mrb.DefineGlobalConst("ARGV", mrb.Value(os.Args))
 	mrb.GVSet(mrb.Intern("$DEBUG"), mrb.BoolValue(args.debug))
 
-	c := mrb.MrbcContextNew()
+	c := mrb.MrbCcontextNew()
 	defer c.Free()
 
 	c.SetDumpResult(args.verbose)

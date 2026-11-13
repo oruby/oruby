@@ -2,10 +2,6 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
-import (
-	"errors"
-	"unsafe"
-)
 
 // enum mrb_debug_line_type
 const (
@@ -37,28 +33,22 @@ func (mrb *MrbState) DebugGetFilename(irep MrbIrep, pc uint32) string {
 
 // DebugGetLine get line from irep's debug info and program counter
 // @return returns -1 if not found
-func (mrb *MrbState) DebugGetLine(irep MrbIrep, pc uint32) uint32 {
-	return uint32(C.mrb_debug_get_line(mrb.p, irep.p, C.uint32_t(pc)))
+func (mrb *MrbState) DebugGetLine(irep MrbIrep, pc uint32) int32 {
+	return int32(C.mrb_debug_get_line(mrb.p, irep.p, C.uint32_t(pc)))
 }
 
-// DebugInfoAlloc allocate debug info
-func (mrb *MrbState) DebugInfoAlloc(irep MrbIrep) MrbIrepDebugInfo {
-	return MrbIrepDebugInfo{(*C.struct_mrb_irep_debug_info)(C.mrb_debug_info_alloc(mrb.p, irep.p))}
-}
-
-// DebugInfoAppendFile append to file
-func (mrb *MrbState) DebugInfoAppendFile(info MrbIrepDebugInfo, filename string, lines *uint16, startPos, endPos uint32) (MrbIrepDebugInfoFile, error) {
-	cfilename := C.CString(filename)
-	defer C.free(unsafe.Pointer(cfilename))
-	clines := C.uint16_t(*lines)
-	p := C.mrb_debug_info_append_file(mrb.p, info.p, cfilename, &clines, C.uint32_t(startPos), C.uint32_t(endPos))
-
-	if p == nil {
-		return MrbIrepDebugInfoFile{nil}, errors.New("Debug_info_append_file error")
+// DebugGetPosition get line and filename from irep's debug info and program counter
+// @return ok is false if not found
+func (mrb *MrbState) DebugGetPosition(irep MrbIrep, pc uint32) (line int32, filename string, ok bool) {
+	var cline C.int32_t
+	var cfile *C.char
+	if C.mrb_debug_get_position(mrb.p, irep.p, C.uint32_t(pc), &cline, &cfile) == false {
+		return -1, "", false
 	}
-
-	*lines = (uint16)(clines)
-	return MrbIrepDebugInfoFile{(*C.struct_mrb_irep_debug_info_file)(p)}, nil
+	if cfile != nil {
+		filename = C.GoString(cfile)
+	}
+	return int32(cline), filename, true
 }
 
 // DebugInfoFree free debug info

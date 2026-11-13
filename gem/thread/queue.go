@@ -9,9 +9,9 @@ import (
 
 type queue struct {
 	sync.Mutex
-	mrb *oruby.MrbState
-	ch chan interface{}
-	items *list.List
+	mrb    *oruby.MrbState
+	ch     chan interface{}
+	items  *list.List
 	closed bool
 }
 
@@ -92,7 +92,7 @@ func (q *queue) Clear() {
 }
 
 // IsCLosed returns true if queue is closed
-func (q *queue) IsClosed() bool  {
+func (q *queue) IsClosed() bool {
 	if q.closed {
 		return true
 	}

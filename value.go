@@ -12,37 +12,40 @@ import (
 
 type Type uint32
 
-// ORuby value types
+// ORuby value types (mirror enum mrb_vtype; order changes between mruby versions)
 const (
-	MrbTTFalse     Type = iota
-	MrbTTTrue           // 1
-	MrbTTSymbol         // 2
-	MrbTTUndef          // 3
-	MrbTTFree           // 4
-	MrbTTFloat          // 5
-	MrbTTInteger        // 6
-	MrbTTCptr           // 7
-	MrbTTObject         // 8
-	MrbTTClass          // 9
-	MrbTTModule         // 10
-	MrbTTIClass         // 11
-	MrbTTSClass         // 12
-	MrbTTProc           // 13
-	MrbTTArray          // 14
-	MrbTTHash           // 15
-	MrbTTString         // 16
-	MrbTTRange          // 17
-	MrbTTException      // 18
-	MrbTTEnv            // 19
-	MrbTTCData          // 20
-	MrbTTFiber          // 21
-	MrbTTStruct         // 22
-	MrbTTIStruct        // 23
-	MrbTTBreak          // 24
-	MrbTTComplex        // 25
-	MrbTTRational       // 26
-	MrbTTBigInt         // 27
-	MrbTTMaxdefine      // 28
+	MrbTTFalse     Type = C.MRB_TT_FALSE
+	MrbTTTrue      Type = C.MRB_TT_TRUE
+	MrbTTSymbol    Type = C.MRB_TT_SYMBOL
+	MrbTTUndef     Type = C.MRB_TT_UNDEF
+	MrbTTFree      Type = C.MRB_TT_FREE
+	MrbTTFloat     Type = C.MRB_TT_FLOAT
+	MrbTTInteger   Type = C.MRB_TT_INTEGER
+	MrbTTCptr      Type = C.MRB_TT_CPTR
+	MrbTTObject    Type = C.MRB_TT_OBJECT
+	MrbTTClass     Type = C.MRB_TT_CLASS
+	MrbTTModule    Type = C.MRB_TT_MODULE
+	MrbTTSClass    Type = C.MRB_TT_SCLASS
+	MrbTTHash      Type = C.MRB_TT_HASH
+	MrbTTCData     Type = C.MRB_TT_CDATA
+	MrbTTException Type = C.MRB_TT_EXCEPTION
+	MrbTTIClass    Type = C.MRB_TT_ICLASS
+	MrbTTProc      Type = C.MRB_TT_PROC
+	MrbTTArray     Type = C.MRB_TT_ARRAY
+	MrbTTString    Type = C.MRB_TT_STRING
+	MrbTTRange     Type = C.MRB_TT_RANGE
+	MrbTTEnv       Type = C.MRB_TT_ENV
+	MrbTTFiber     Type = C.MRB_TT_FIBER
+	MrbTTStruct    Type = C.MRB_TT_STRUCT
+	MrbTTIStruct   Type = C.MRB_TT_ISTRUCT
+	MrbTTBreak     Type = C.MRB_TT_BREAK
+	MrbTTComplex   Type = C.MRB_TT_COMPLEX
+	MrbTTRational  Type = C.MRB_TT_RATIONAL
+	MrbTTBigInt    Type = C.MRB_TT_BIGINT
+	MrbTTBacktrace Type = C.MRB_TT_BACKTRACE
+	MrbTTSet       Type = C.MRB_TT_SET
+	MrbTTSVar      Type = C.MRB_TT_SVAR
+	MrbTTMaxdefine Type = C.MRB_TT_MAXDEFINE
 )
 
 // MrbTTFixnum is deprecated. MrbTTInteger is preferred

@@ -74,7 +74,30 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 // threadCurrent returns current thread
 func threadCurrent(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.ModCVGet(mrb.ClassOf(self), mrb.Intern("@@current"))
+	threadClass := mrb.ClassGet("Thread")
+	sym := mrb.Intern("@@current")
+	val := mrb.ModCVGet(threadClass, sym)
+	if !val.IsNil() {
+		return val
+	}
+	c := &Context{
+		sync.Mutex{},
+		"main",
+		mrb,
+		nil,
+		oruby.RArgs{},
+		oruby.RProc{},
+		nil,
+		mrb.NilValue(),
+		nil,
+		mrb.NilValue(),
+		true,
+		false,
+		make(chan struct{}),
+	}
+	mainThread := mrb.DataWrapInterface(threadClass, c).Value()
+	mrb.ModCVSet(threadClass, sym, mainThread)
+	return mainThread
 }
 
 // goThread creates lightweight thread based go function executed via goroutine

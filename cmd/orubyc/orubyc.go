@@ -157,7 +157,7 @@ func loadFile(mrb *oruby.MrbState, args *mrbcArgs) oruby.Value {
 	var result oruby.Value
 	input := args.argv[args.idx]
 
-	c := mrb.MrbcContextNew()
+	c := mrb.MrbCcontextNew()
 	defer c.Free()
 
 	c.SetDumpResult(args.verbose)
@@ -199,7 +199,7 @@ func dumpFile(mrb *oruby.MrbState, wfp *os.File, outfile string, proc oruby.RPro
 	irep := proc.IRep()
 
 	if args.removeLv {
-		mrb.IrepRemoveLV(irep)
+		args.flags |= oruby.MrbDumpNoLvar
 	}
 
 	if args.initname != "" {
@@ -239,7 +239,7 @@ func main() {
 	resume, err := parseArgs(mrb, &args)
 	if !resume {
 		if err != nil {
-			exitCode = exitFailure(err.Error())
+			exitCode = exitFailure("%s", err.Error())
 			usage(os.Args[0])
 		}
 		return

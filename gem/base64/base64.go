@@ -59,7 +59,9 @@ func base64StrictEncode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 // Returns the Base64-decoded version of str. This method complies with “Base 64 Encoding with URL and Filename
-//  Safe Alphabet'' in RFC 4648. The alphabet uses '-' instead of '+' and '_' instead of '/' The padding character
+//
+//	Safe Alphabet'' in RFC 4648. The alphabet uses '-' instead of '+' and '_' instead of '/' The padding character
+//
 // is optional. This method accepts both correctly-padded and unpadded input.
 // Note that it still rejects incorrectly-padded input.
 func base64UrlSafeDecode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -80,9 +82,9 @@ func base64UrlSafeDecode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.BytesValue(data)
 }
 
-//  Returns the Base64-encoded version of bin. This method complies with “Base 64 Encoding with URL and Filename
-//  Safe Alphabet'' in RFC 4648. The alphabet uses '-' instead of '+' and '_' instead of '/'.
-//  Note that the result can still contain '='. You can remove the padding by setting padding as false.
+// Returns the Base64-encoded version of bin. This method complies with “Base 64 Encoding with URL and Filename
+// Safe Alphabet” in RFC 4648. The alphabet uses '-' instead of '+' and '_' instead of '/'.
+// Note that the result can still contain '='. You can remove the padding by setting padding as false.
 func base64UrlSafeEncode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	str := mrb.String(args.Item(0))

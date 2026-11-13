@@ -5,7 +5,6 @@ import (
 	"os"
 )
 
-
 func fileUmask(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	umask := mrb.GetArgs().ItemDefInt(0, 0)
 	return oruby.Integer(0)
@@ -30,7 +29,7 @@ func platformDup(f *os.File) (*os.File, error) {
 	statT := stat.Sys().(*syscall.Win32FileAttributeData)
 	if statT != nil {
 		m := int(statT.FileAttributes)
-		if m & syscall.FILE_ATTRIBUTE_READONLY != 0 {
+		if m&syscall.FILE_ATTRIBUTE_READONLY != 0 {
 			flags = os.O_RDONLY
 		} else {
 			flags = os.O_RDWR

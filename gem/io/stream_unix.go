@@ -1,5 +1,7 @@
 package io
 
+// #include <unistd.h>
+import "C"
 import (
 	"os"
 	"syscall"
@@ -13,3 +15,6 @@ func platformDup(f *os.File) (*os.File, error) {
 	return os.NewFile(uintptr(fd), f.Name()), nil
 }
 
+func platformIsatty(f *os.File) bool {
+	return C.isatty(C.int(f.Fd())) != 0
+}

@@ -55,9 +55,6 @@ const (
 // StrModify modify string
 func (mrb *MrbState) StrModify(s RString) { C.mrb_str_modify(mrb.p, s.Ptr().p) }
 
-// StrModifyKeepASCII modify stringwith keeping ASCII flag if set
-func (mrb *MrbState) StrModifyKeepASCII(s RString) { C.mrb_str_modify_keep_ascii(mrb.p, s.Ptr().p) }
-
 // MrbStrIndex finds the index of a substring in a string
 func (mrb *MrbState) MrbStrIndex(str MrbValue, s string, offset int) int {
 	cstr := C.CString(s)

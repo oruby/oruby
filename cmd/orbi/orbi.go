@@ -270,7 +270,7 @@ func main() {
 	if ok, err := parseArgs(mrb, &args); !ok {
 		if err != nil {
 			usage(os.Args[0])
-			exitCode = exitFailure(err.Error())
+			exitCode = exitFailure("%s", err.Error())
 		}
 		return
 	}
@@ -309,7 +309,7 @@ func main() {
 	/* MIRB_UNDERSCORE */
 	err = declLvUnderscore(mrb, cxt)
 	if err != nil {
-		exitCode = exitFailure(err.Error())
+		exitCode = exitFailure("%s", err.Error())
 		return
 	}
 
@@ -328,7 +328,7 @@ func main() {
 		}
 	}()
 
-	c := make(chan os.Signal)
+	c := make(chan os.Signal, 1)
 	go func() {
 		<-c
 		mrb.Close()

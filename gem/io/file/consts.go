@@ -5,7 +5,6 @@ import (
 	"os"
 )
 
-//
 const (
 	fnmNoescape   = 0x01
 	fnmPathname   = 0x02
@@ -17,14 +16,17 @@ const (
 )
 
 func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) oruby.RClass {
-	//mrb.SetGV("$>", osStdout)
-	//mrb.SetGV("$<", osStdin) // or argf
-	mrb.SetGV("STDIN", os.Stdin)
-	mrb.SetGV("$stdin", mrb.GetGV("STDIN"))
-	mrb.SetGV("STDOUT", os.Stdout)
-	mrb.SetGV("$stdout", mrb.GetGV("STDOUT"))
-	mrb.SetGV("STDERR", os.Stderr)
-	mrb.SetGV("$stderr", mrb.GetGV("STDERR"))
+	stdin := mrb.Value(os.Stdin)
+	stdout := mrb.Value(os.Stdout)
+	stderr := mrb.Value(os.Stderr)
+
+	mrb.DefineGlobalConst("STDIN", stdin)
+	mrb.DefineGlobalConst("STDOUT", stdout)
+	mrb.DefineGlobalConst("STDERR", stderr)
+
+	mrb.SetGV("$stdin", stdin)
+	mrb.SetGV("$stdout", stdout)
+	mrb.SetGV("$stderr", stderr)
 
 	consts := mrb.DefineModuleUnder(fileClass, "Constants")
 
@@ -37,23 +39,23 @@ func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) oruby.RClass {
 	consts.Const("SEPARATOR", "/")
 	consts.Const("PATH_SEPARATOR", os.PathListSeparator)
 
-	consts.Const("NULL",   os.DevNull)
+	consts.Const("NULL", os.DevNull)
 
 	consts.Const("RDONLY", os.O_RDONLY)
 	consts.Const("WRONLY", os.O_WRONLY)
-	consts.Const("RDWR",   os.O_RDWR)
+	consts.Const("RDWR", os.O_RDWR)
 	consts.Const("APPEND", os.O_APPEND)
-	consts.Const("CREAT",  os.O_CREATE)
-	consts.Const("EXCL",   os.O_EXCL)
-	consts.Const("TRUNC",  os.O_TRUNC)
-	consts.Const("SYNC",   os.O_SYNC)
+	consts.Const("CREAT", os.O_CREATE)
+	consts.Const("EXCL", os.O_EXCL)
+	consts.Const("TRUNC", os.O_TRUNC)
+	consts.Const("SYNC", os.O_SYNC)
 
-	consts.Const("FNM_NOESCAPE",  fnmNoescape)
-	consts.Const("FNM_PATHNAME",  fnmPathname)
-	consts.Const("FNM_DOTMATCH",  fnmDotmatch)
-	consts.Const("FNM_CASEFOLD",  fnmCasefold)
-	consts.Const("FNM_EXTGLOB",   fnmExtglob)
-	consts.Const("FNM_SYSCASE",   fnmSyscase)
+	consts.Const("FNM_NOESCAPE", fnmNoescape)
+	consts.Const("FNM_PATHNAME", fnmPathname)
+	consts.Const("FNM_DOTMATCH", fnmDotmatch)
+	consts.Const("FNM_CASEFOLD", fnmCasefold)
+	consts.Const("FNM_EXTGLOB", fnmExtglob)
+	consts.Const("FNM_SYSCASE", fnmSyscase)
 	consts.Const("FNM_SHORTNAME", fnmShortname)
 	consts.Const("FNM_GLOB_NOSORT", fnmGlobNosort)
 

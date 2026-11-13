@@ -1,3 +1,3 @@
 package file
 
-var fnmSyscase = 0x08
+const fnmSyscase = 0x08

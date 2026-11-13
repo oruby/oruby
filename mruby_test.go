@@ -145,7 +145,7 @@ func TestFuncs(t *testing.T) {
 	Expect(t, MrbType(fv) == MrbTTProc, "Expecting Proc mrb value, got MRB_TT %d", MrbType(mrb.Value(f)))
 	fvv := mrb.Call(fv, "call", "X")
 
-	Expect(t, mrb.ClassOf(fvv).Name() != "TypeError", " method call returned TypeError: "+mrb.StrToCstr(mrb.Call(fvv, "to_s")))
+	Expect(t, mrb.ClassOf(fvv).Name() != "TypeError", " method call returned TypeError: %s", mrb.StrToCstr(mrb.Call(fvv, "to_s")))
 	ExpectEql(t, mrb.String(fvv), "Prefix-X")
 }
 

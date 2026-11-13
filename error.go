@@ -67,15 +67,7 @@ func (b RBreak) ValueSet(v MrbValue) {
 
 // SysFail return SystemCallError with message
 func (mrb *MrbState) SysFail(err error) Value {
-	if mrb.ClassDefined("SystemCallError") {
-		// mruby: if class SystemCallError exists, return SystemCallError._sys_fail(no, mesg)
-		// oruby: Go handles system call errors, with messages
-		return mrb.Raise(mrb.ClassGet("SystemCallError"), err.Error())
-	}
-
-	return mrb.Raise(mrb.ERuntimeError(), err.Error())
-
-	// C.mrb_sys_fail(mrb.p, cmesg) never called
+	return mrb.RaiseError(err)
 }
 
 // ExcNewStr create new exception

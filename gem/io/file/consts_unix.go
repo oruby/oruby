@@ -5,8 +5,6 @@ import (
 	"syscall"
 )
 
-const fnmSyscase = 0x00
-
 func initPlatformConsts(consts oruby.RClass) {
 	consts.Const("ALT_SEPARATOR", nil)
 

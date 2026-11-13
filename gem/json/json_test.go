@@ -31,7 +31,7 @@ func TestGenerate(t *testing.T) {
 	assert(t, "stringify object with float value", `JSON::stringify({"foo"=> 2.3}) == '{"foo":2.3}'`)
 	assert(t, "stringify object with nil value", `JSON::stringify({"foo"=> nil}) == '{"foo":null}'`)
 	assert(t, "stringify object with boolean key and float value", `JSON::stringify({true=> 3.4}) == '{"true":3.4}'`)
-	assert(t, "stringify object with object key and float value", `JSON::stringify({{"foo"=> "bar"}=> 1.2}) == '{"{\"foo\"=\u003e\"bar\"}":1.2}'`)
+	assert(t, "stringify object with object key and float value", `JSON::stringify({{"foo"=> "bar"}=> 1.2}) == '{"{\"foo\" =\u003e \"bar\"}":1.2}'`)
 	assert(t, "stringify empty array", `JSON::stringify([]) == "[]"`)
 	assert(t, "strnigify array with few elements", `JSON::stringify([1,true,"foo"]) == "[1,true,\"foo\"]"`)
 	assert(t, "stringify object with several keys", `JSON::stringify({"foo"=>1, "bar"=> 2}) == '{"bar":2,"foo":1}'`)

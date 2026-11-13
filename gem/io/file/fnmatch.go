@@ -46,7 +46,7 @@ func fnmatch(name, pattern string, flags int) (bool, error) {
 				r += "(?:.*)?/"
 			}
 			i += 3
-		} else if pattern[i] == '\\'  {
+		} else if pattern[i] == '\\' {
 			if flags&fnmNoescape != 0 {
 				r += regexp.QuoteMeta("\\")
 			} else {
@@ -83,7 +83,7 @@ func fnmatch(name, pattern string, flags int) (bool, error) {
 				r += "\\{"
 			} else {
 				r = r + "(" + strings.ReplaceAll(pattern[i:j], ",", "|") + ")"
-				i = j+1
+				i = j + 1
 			}
 		} else if pattern[i] == '[' {
 			i += 1
@@ -92,13 +92,13 @@ func fnmatch(name, pattern string, flags int) (bool, error) {
 				j += 1
 			}
 			if j >= l {
-				r += "\\["  //# didn't find a closing ']', backtracking
+				r += "\\[" //# didn't find a closing ']', backtracking
 			} else {
 				stuff := strings.ReplaceAll(pattern[i:j], "\\", "\\\\")
 				if flags&fnmPathname != 0 {
 					stuff = strings.ReplaceAll(stuff, "/", "^/")
 				}
-				i = j+1
+				i = j + 1
 				if len(stuff) > 0 {
 					r = r + "[" + stuff + "]"
 				}
@@ -117,4 +117,3 @@ func fnmatch(name, pattern string, flags int) (bool, error) {
 
 	return regexp.MatchString(r, name)
 }
-

@@ -136,11 +136,9 @@ func timeMinus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	switch t2 := mrb.Data(v).(type) {
 	case *time.Time:
-		ret := time.Unix(t.Unix()-t2.Unix(), t.UnixNano()-t2.UnixNano())
-		return timeValue(mrb, self, ret)
+		return mrb.FloatValue(t.Sub(*t2).Seconds())
 	case time.Time:
-		ret := time.Unix(t.Unix()-t2.Unix(), t.UnixNano()-t2.UnixNano())
-		return timeValue(mrb, self, ret)
+		return mrb.FloatValue(t.Sub(t2).Seconds())
 	case time.Duration:
 		return timeValue(mrb, self, t.Add(-t2))
 	case *time.Duration:

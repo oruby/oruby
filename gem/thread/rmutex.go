@@ -3,7 +3,7 @@ package thread
 import "sync"
 
 type rmutex struct {
-	mutex sync.Mutex
+	mutex    sync.Mutex
 	IsLocked bool
 }
 

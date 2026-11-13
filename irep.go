@@ -100,7 +100,7 @@ func (mrb *MrbState) LoadIrep(buffer []byte) (Value, error) {
 		ret = Value{C.mrb_load_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen))}
 		runtime.KeepAlive(buffer)
 	}
-	return ret, mrb.Err()
+	return mrb.loadResult(ret)
 }
 
 // LoadIrepBuf irep load from buffer, same as LoadIrep()
@@ -116,11 +116,11 @@ func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbCcontext) (Value, er
 	if bufLen == 0 {
 		ret = Value{C.mrb_load_irep_cxt(mrb.p, nil, context.p)}
 	} else {
-		ret = Value{C.mrb_load_irep_buf_cxt(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), context.p)}
+		ret = Value{C._mrb_load_irep_buf_cxt(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), context.p)}
 		runtime.KeepAlive(buffer)
 	}
 
-	return ret, mrb.Err()
+	return mrb.loadResult(ret)
 }
 
 // LoadIrepBuf for context

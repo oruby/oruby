@@ -61,16 +61,16 @@ func initFileStat(mrb *oruby.MrbState, fileClass oruby.RClass) {
 
 // extendedStat is for platform support to fill this struct using syscall
 type extendedStat struct {
-	ino uint64
-	dev uint64
-	nlink uint64
-	uid int
-	gid int
-	rdev uint64
-	blksize int64
-	blocks int64
-	atime time.Time
-	ctime time.Time
+	ino       uint64
+	dev       uint64
+	nlink     uint64
+	uid       int
+	gid       int
+	rdev      uint64
+	blksize   int64
+	blocks    int64
+	atime     time.Time
+	ctime     time.Time
 	birthtime time.Time
 }
 
@@ -246,8 +246,8 @@ func statInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	return mrb.StrNew(fmt.Sprintf(
-		"#<File::Stat dev=%x, ino=%d, mode=%o, nlink=%d, uid=%d, gid=%d, rdev=%x, " +
-        "size=%d, blksize=%d, blocks=%d, atime=%v, mtime=%v, ctime=%v%v>",
+		"#<File::Stat dev=%x, ino=%d, mode=%o, nlink=%d, uid=%d, gid=%d, rdev=%x, "+
+			"size=%d, blksize=%d, blocks=%d, atime=%v, mtime=%v, ctime=%v%v>",
 		ext.dev,
 		ext.ino,
 		stat.Mode(),
@@ -327,7 +327,7 @@ func statIsReadable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	perm := stat.Mode().Perm()
 
-	if euid == ext.uid  {
+	if euid == ext.uid {
 		return oruby.Bool((perm&0400 != 0))
 	}
 	if os.Getegid() == ext.gid {
@@ -348,7 +348,7 @@ func statIsReadableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	perm := stat.Mode().Perm()
 
-	if uid == ext.uid  {
+	if uid == ext.uid {
 		return oruby.Bool((perm&0400 != 0))
 	}
 	if os.Getgid() == ext.gid {
@@ -421,7 +421,7 @@ func statIsWritable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	perm := stat.Mode().Perm()
 
-	if euid == ext.uid  {
+	if euid == ext.uid {
 		return oruby.Bool((perm&0200 != 0))
 	}
 	if os.Getegid() == ext.gid {
@@ -442,7 +442,7 @@ func statIsWritableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	perm := stat.Mode().Perm()
 
-	if uid == ext.uid  {
+	if uid == ext.uid {
 		return oruby.Bool((perm&0200 != 0))
 	}
 	if os.Getegid() == ext.gid {

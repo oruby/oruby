@@ -51,7 +51,6 @@ func platformGetShell() string {
 	return os.GetEnv("SYSTEMROOT") + "\\System32\\cmd.exe"
 }
 
-
 func (runner *cmdRunner) run() (int, error) {
 	err := runner.cmd.Start()
 	if err != nil {
@@ -68,7 +67,7 @@ func (runner *cmdRunner) platformWait(pid, flags int, lastState *status) (int, e
 	return ret, err
 }
 
-func  platformUpdateState(lastState *status, sysState interface{}) {
+func platformUpdateState(lastState *status, sysState interface{}) {
 	waitStatus, ok := sysState.(syscall.WaitStatus)
 	if !ok {
 		return

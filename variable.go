@@ -168,11 +168,17 @@ func (mrb *MrbState) ModClassVariables(v MrbValue) RArray {
 
 // ModCVGet module get class variable
 func (mrb *MrbState) ModCVGet(c RClass, sym MrbSym) Value {
+	if !mrb.ModCVDefined(c, sym) {
+		return mrb.NilValue()
+	}
 	return Value{C.mrb_mod_cv_get(mrb.p, c.p, C.mrb_sym(sym))}
 }
 
 // CVGet get class variable
 func (mrb *MrbState) CVGet(c MrbValue, sym MrbSym) Value {
+	if !mrb.CVDefined(c, sym) {
+		return mrb.NilValue()
+	}
 	return Value{C.mrb_cv_get(mrb.p, c.Value().v, C.mrb_sym(sym))}
 }
 

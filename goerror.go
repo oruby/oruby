@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 )
 
 var errRuntimeError = errors.New("RuntimeError")
@@ -149,6 +150,18 @@ func (e *RaiseError) Unwrap() error {
 	return e.err
 }
 
+func (mrb *MrbState) getErrnoClass(name string) RClass {
+	if !mrb.ClassDefined("Errno") {
+		return mrb.ESystemCallError()
+	}
+	mod := mrb.ModuleGet("Errno")
+	val := mod.ConstGet(name)
+	if val.IsClass() {
+		return mrb.ClassPtr(val)
+	}
+	return mrb.ESystemCallError()
+}
+
 func (mrb *MrbState) getErrorKlass(err error) RClass {
 	switch err {
 	case errRuntimeError:
@@ -187,8 +200,49 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 		return mrb.getErrorKlass(e.err)
 	}
 
-	if errors.Is(err, &os.SyscallError{}) || os.IsExist(err) || os.IsNotExist(err) ||
-		os.IsPermission(err) || os.IsTimeout(err) {
+	var sysErr syscall.Errno
+	if errors.As(err, &sysErr) {
+		switch sysErr {
+		case syscall.ENOENT:
+			return mrb.getErrnoClass("ENOENT")
+		case syscall.ENOTDIR:
+			return mrb.getErrnoClass("ENOTDIR")
+		case syscall.EEXIST:
+			return mrb.getErrnoClass("EEXIST")
+		case syscall.EACCES, syscall.EPERM:
+			return mrb.getErrnoClass("EACCES")
+		case syscall.EINVAL:
+			return mrb.getErrnoClass("EINVAL")
+		case syscall.EBADF:
+			return mrb.getErrnoClass("EBADF")
+		case syscall.EISDIR:
+			return mrb.getErrnoClass("EISDIR")
+		case syscall.ENOTEMPTY:
+			return mrb.getErrnoClass("ENOTEMPTY")
+		case syscall.EBUSY:
+			return mrb.getErrnoClass("EBUSY")
+		case syscall.EXDEV:
+			return mrb.getErrnoClass("EXDEV")
+		case syscall.ENOSPC:
+			return mrb.getErrnoClass("ENOSPC")
+		case syscall.EPIPE:
+			return mrb.getErrnoClass("EPIPE")
+		case syscall.ESRCH:
+			return mrb.getErrnoClass("ESRCH")
+		}
+	}
+
+	if os.IsNotExist(err) {
+		return mrb.getErrnoClass("ENOENT")
+	}
+	if os.IsPermission(err) {
+		return mrb.getErrnoClass("EACCES")
+	}
+	if os.IsExist(err) {
+		return mrb.getErrnoClass("EEXIST")
+	}
+
+	if errors.Is(err, &os.SyscallError{}) || os.IsTimeout(err) {
 		return mrb.ESystemCallError()
 	}
 

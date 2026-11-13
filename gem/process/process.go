@@ -120,11 +120,11 @@ func init() {
 		mrb.DefineModuleFunc(mProcUID, "from_name", func(name string) (int, error) {
 			g, err := user.Lookup(name)
 			if err != nil {
-				return -1, oruby.EArgumentError(err.Error())
+				return -1, oruby.EArgumentError("%v", err)
 			}
 			gid, err := strconv.Atoi(g.Gid)
 			if err != nil {
-				return -1, oruby.EArgumentError(err.Error())
+				return -1, oruby.EArgumentError("%v", err)
 			}
 			return gid, nil
 		})
@@ -132,11 +132,11 @@ func init() {
 		mrb.DefineModuleFunc(mProcGID, "from_name", func(name string) (int, error) {
 			g, err := user.LookupGroup(name)
 			if err != nil {
-				return -1, oruby.EArgumentError(err.Error())
+				return -1, oruby.EArgumentError("%v", err)
 			}
 			gid, err := strconv.Atoi(g.Gid)
 			if err != nil {
-				return -1, oruby.EArgumentError(err.Error())
+				return -1, oruby.EArgumentError("%v", err)
 			}
 			return gid, nil
 		})
@@ -213,7 +213,7 @@ func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	err := syscall.Exec(runner.cmd.Path, runner.cmd.Args, runner.cmd.Env)
 	if err != nil {
 		setStatus(mrb, errorState(err))
-		return mrb.RaiseError(oruby.EError("SystemCallError", err.Error()))
+		return mrb.RaiseError(oruby.EError("SystemCallError", "%v", err))
 	}
 	return mrb.NilValue()
 }

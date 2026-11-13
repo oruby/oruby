@@ -16,14 +16,14 @@ func Test_ioPopen(t *testing.T) {
 	ret := mrb.Call(v, "readlines")
 	assert.NilError(t, mrb.Err())
 	assert.Expect(t, ret.IsArray(), "array expected, got %v", mrb.String(ret))
-	assert.Expect(t, ret.Len() > 0,  "array len expected")
+	assert.Expect(t, ret.Len() > 0, "array len expected")
 	println(ret.Len())
 
 	r := mrb.AryPop(ret)
 	assert.Expect(t, r.IsString(), "string item expected")
 	assert.Expect(t, r.String() == "test\n", "array expected")
 
-	_,err = mrb.Eval("Process.wait $pid")
+	_, err = mrb.Eval("Process.wait $pid")
 	assert.NilError(t, mrb.Err())
 }
 
@@ -34,7 +34,3 @@ func Test_ioPopenFork(t *testing.T) {
 	_, err := mrb.Eval(`$p = IO.popen("-")`)
 	assert.Error(t, err, "popen Fork via ('-') is not supported")
 }
-
-
-
-

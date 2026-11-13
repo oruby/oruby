@@ -27,6 +27,7 @@ test:
 	go test
 	(cd gem/assert && go test)
 	(cd gem/base64 && go test)
+	(cd gem/bigint && go test)
 	(cd gem/complex && go test)
 	(cd gem/database && go test)
 	(cd gem/env && go test)

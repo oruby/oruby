@@ -8,9 +8,9 @@ import (
 )
 
 type stringio struct {
-	mrb *oruby.MrbState
-	value oruby.Value
-	pos int
+	mrb    *oruby.MrbState
+	value  oruby.Value
+	pos    int
 	closed bool
 }
 
@@ -80,7 +80,7 @@ func (sio *stringio) Seek(offset int64, whence int) (int64, error) {
 	if newPos < 0 {
 		return 0, errors.New("negative result pos")
 	} else if newPos >= l {
-		newPos = l-1
+		newPos = l - 1
 	}
 	sio.pos = newPos
 	return int64(newPos), nil
@@ -126,7 +126,7 @@ func sioInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.EArgumentError().Raisef("No implicit conversion of %v into String", mrb.TypeName(arg))
 	}
 
-		mrb.SetIV(self, "@string", arg)
+	mrb.SetIV(self, "@string", arg)
 	sio := &stringio{
 		mrb,
 		arg,

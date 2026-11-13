@@ -17,7 +17,7 @@ func statIsExecutableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue 
 
 	perm := stat.Mode().Perm()
 
-	if uid == ext.uid  {
+	if uid == ext.uid {
 		return oruby.Bool((perm&0100 != 0))
 	}
 	if os.Getgid() == ext.gid {
@@ -38,7 +38,7 @@ func statIsExecutable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	perm := stat.Mode().Perm()
 
-	if euid == ext.uid  {
+	if euid == ext.uid {
 		return oruby.Bool((perm&0100 != 0))
 	}
 	if os.Getegid() == ext.gid {
@@ -61,4 +61,3 @@ func major(dev uint64) uint32 {
 func minor(dev uint64) uint32 {
 	return unix.Minor(dev)
 }
-

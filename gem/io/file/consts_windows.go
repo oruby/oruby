@@ -18,4 +18,3 @@ func initPlatformConsts(consts oruby.RClass) {
 	consts.Const("ASYNC", syscall.O_ASYNC)
 	consts.Const("CLOEXEC", syscall.O_CLOEXEC)
 }
-

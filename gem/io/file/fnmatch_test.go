@@ -22,23 +22,35 @@ func flagsToStr(flags ...int) (result string) {
 	for _, flag := range flags {
 		f |= flag
 	}
-	if f&fnmPathname != 0 { result += " fnmPathname" }
-	if f&fnmDotmatch != 0 { result += " fnmDotmatch" }
-	if f&fnmNoescape != 0 { result += " fnmNoescape" }
-	if f&fnmCasefold != 0 { result += " fnmCasefold" }
-	if f&fnmExtglob  != 0 { result += " fnmExtglob"  }
-	if result != "" { result = " flags:" + result }
+	if f&fnmPathname != 0 {
+		result += " fnmPathname"
+	}
+	if f&fnmDotmatch != 0 {
+		result += " fnmDotmatch"
+	}
+	if f&fnmNoescape != 0 {
+		result += " fnmNoescape"
+	}
+	if f&fnmCasefold != 0 {
+		result += " fnmCasefold"
+	}
+	if f&fnmExtglob != 0 {
+		result += " fnmExtglob"
+	}
+	if result != "" {
+		result = " flags:" + result
+	}
 	return
 }
 
-func fnmTrue(t *testing.T, pattern, name string, flags ...int)  {
+func fnmTrue(t *testing.T, pattern, name string, flags ...int) {
 	t.Helper()
 	if !fnm(t, pattern, name, flags...) {
 		t.Errorf(`"%v" expected to match "%v" %v`, pattern, name, flagsToStr(flags...))
 	}
 }
 
-func fnmFalse(t *testing.T, pattern, name string, flags ...int)  {
+func fnmFalse(t *testing.T, pattern, name string, flags ...int) {
 	t.Helper()
 	if fnm(t, pattern, name, flags...) {
 		t.Errorf(`"%v" expected NOT to match "%v" %v`, pattern, name, flagsToStr(flags...))
@@ -96,29 +108,28 @@ func Test_fnmatch(t *testing.T) {
 	fnmTrue(t, "**/foo", "a/.b/c/foo", fnmPathname|fnmDotmatch)
 }
 
-func Test_fnmatchDotmatch(t *testing.T)	{
+func Test_fnmatchDotmatch(t *testing.T) {
 	fnmFalse(t, "*/*", "dave/.profile", fnmPathname)
 	fnmTrue(t, "*/*", "dave/.profile", fnmPathname|fnmDotmatch)
 }
 
 func Test_fnmatchComplex(t *testing.T) {
-	fnmTrue(t ,"**/testdata/**/*.txt","testdata/zero.txt", fnmPathname)
-	fnmTrue(t, "**/testdata/**/*.txt", "testdata/test.txt",fnmPathname)
-	fnmTrue(t, "**/testdata/**/*.txt", "testdata/glob/globfile.txt",fnmPathname)
-	fnmTrue(t, "**/testdata/**/*.txt", "testdata/glob/a/afile.txt",fnmPathname)
+	fnmTrue(t, "**/testdata/**/*.txt", "testdata/zero.txt", fnmPathname)
+	fnmTrue(t, "**/testdata/**/*.txt", "testdata/test.txt", fnmPathname)
+	fnmTrue(t, "**/testdata/**/*.txt", "testdata/glob/globfile.txt", fnmPathname)
+	fnmTrue(t, "**/testdata/**/*.txt", "testdata/glob/a/afile.txt", fnmPathname)
 
-	fnmTrue(t ,"**/testdata/*.txt","testdata/zero.txt",fnmPathname)
-	fnmTrue(t, "**/testdata/*.txt","testdata/test.txt",fnmPathname)
-	fnmFalse(t,"**/testdata/*.txt", "testdata/glob/globfile.txt",fnmPathname)
-	fnmFalse(t,"**/testdata/*.txt", "testdata/glob/a/afile.txt",fnmPathname)
+	fnmTrue(t, "**/testdata/*.txt", "testdata/zero.txt", fnmPathname)
+	fnmTrue(t, "**/testdata/*.txt", "testdata/test.txt", fnmPathname)
+	fnmFalse(t, "**/testdata/*.txt", "testdata/glob/globfile.txt", fnmPathname)
+	fnmFalse(t, "**/testdata/*.txt", "testdata/glob/a/afile.txt", fnmPathname)
 }
 
 func Test_StarPath(t *testing.T) {
-	fnmTrue(t,"*", "/")
-	fnmFalse(t,"*", "/", fnmPathname)
+	fnmTrue(t, "*", "/")
+	fnmFalse(t, "*", "/", fnmPathname)
 }
 
 func Test_Subdir(t *testing.T) {
-	fnmTrue(t,"testdata/test.tx?", "testdata/test.txt", fnmPathname)
+	fnmTrue(t, "testdata/test.tx?", "testdata/test.txt", fnmPathname)
 }
-

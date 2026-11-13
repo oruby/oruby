@@ -1,6 +1,7 @@
 package regexp
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,12 +18,11 @@ func initString(mrb *oruby.MrbState) {
 	str.DefineAlias("old_index", "index")
 	str.DefineMethod("index", stringIndex, mrb.ArgsArg(1, 1))
 	str.DefineAlias("old_sub", "sub")
-	str.DefineMethod("sub", stringSub, mrb.ArgsReq(1))
-	// str.{
-	//DefineMethodf("sub!", stringSubBang, mrb.ArgsReq(1))
+	str.DefineMethod("sub", stringSub, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
+	str.DefineMethod("sub!", stringSubBang, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
 	str.DefineAlias("old_gsub", "gsub")
 	str.DefineMethod("gsub", stringGsub, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
-	str.DefineMethod("gsub!", stringGsubBang, mrb.ArgsReq(1))
+	str.DefineMethod("gsub!", stringGsubBang, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
 	str.DefineMethod("scan", stringScan, mrb.ArgsReq(1))
 	str.DefineAlias("old_slice", "slice")
 	str.DefineMethod("slice", stringSlice, mrb.ArgsArg(1, 2))
@@ -46,7 +46,7 @@ func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	re, ok := mrb.Data(pattern).(*regexp.Regexp)
 	if !ok {
-		mrb.Call(self, "old_split", pattern, limit)
+		return mrb.Call(self, "old_split", pattern, limit)
 	}
 
 	result := mrb.AryNew()
@@ -140,7 +140,61 @@ func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.Value(m.NamedCaptures()[mrb.String(capture)])
 }
 
-func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func interpolateBackrefs(replace string, m *MatchData, s string, start, end int) string {
+	if !strings.Contains(replace, "\\") {
+		return replace
+	}
+	wholeMatch, _ := m.toString(0)
+	replace = strings.ReplaceAll(replace, "\\&", wholeMatch)
+	replace = strings.ReplaceAll(replace, "\\0", wholeMatch)
+	replace = strings.ReplaceAll(replace, "\\`", s[:start])
+	replace = strings.ReplaceAll(replace, "\\'", s[end:])
+
+	for i := 1; i < m.Size(); i++ {
+		v, isNil := m.toString(i)
+		if isNil {
+			v = ""
+		}
+		replace = strings.ReplaceAll(replace, "\\"+strconv.Itoa(i), v)
+	}
+	for name, val := range m.NamedCaptures() {
+		if name != "" && val != nil {
+			replace = strings.ReplaceAll(replace, "\\k<"+name+">", fmt.Sprint(val))
+		}
+	}
+	return replace
+}
+
+func doReplace(mrb *oruby.MrbState, re *regexp.Regexp, s string, pos int, f func(v string) (string, bool)) (string, int) {
+	if pos > len(s) {
+		return s, len(s) + 1
+	}
+	matchValue := doMatch(mrb, re, s, pos)
+	if matchValue.IsNil() {
+		return s, len(s) + 1
+	}
+	m := mrb.Data(matchValue).(*MatchData)
+	start, _ := m.Begin(0)
+	end, _ := m.End(0)
+	if start < 0 || end < start || start > len(s) || end > len(s) {
+		return s, len(s) + 1
+	}
+
+	capture := s[start:end]
+	replace, lit := f(capture)
+	if !lit {
+		replace = interpolateBackrefs(replace, m, s, start, end)
+	}
+
+	ret := s[:start] + replace + s[end:]
+	nextPos := start + len(replace)
+	if end == start {
+		nextPos++
+	}
+	return ret, nextPos
+}
+
+func doSub(mrb *oruby.MrbState, self oruby.Value) (oruby.MrbValue, bool) {
 	args, block := mrb.GetArgsWithBlock()
 	pattern := args.Item(0)
 	replace := args.ItemDef(1, mrb.NilValue())
@@ -148,17 +202,19 @@ func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r := getRegexp(mrb, pattern)
 	if r == nil {
 		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("old_sub"), pattern, replace, block)
-		return ret
+		return ret, false
 	}
 	if block.IsNil() && replace.IsNil() {
-		return mrb.Call(self, "to_enum", mrb.Intern("gsub"), pattern)
+		return mrb.Call(self, "to_enum", mrb.Intern("sub"), pattern), false
 	}
 	if block.IsNil() && replace.Type() != oruby.MrbTTHash {
-		//	return r.ReplaceAllString(s, replaceStr)
 		replaceStr = mrb.EnsureStringType(replace).String()
 	}
 
-	s, _ := doReplace(mrb, r, mrb.String(self), 0, func(v string) (string, bool) {
+	orig := mrb.String(self)
+	matched := false
+	s, _ := doReplace(mrb, r, orig, 0, func(v string) (string, bool) {
+		matched = true
 		if !block.IsNil() {
 			ret := mrb.Yield(block, mrb.StringValue(v))
 			return mrb.String(ret), true
@@ -173,61 +229,24 @@ func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	})
 
-	return mrb.StringValue(s)
+	return mrb.StringValue(s), matched && s != orig
 }
 
-func stringGsubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	self = stringGsub(mrb, self).Value()
+func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	res, _ := doSub(mrb, self)
+	return res
+}
+
+func stringSubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	res, modified := doSub(mrb, self)
+	if !modified {
+		return mrb.NilValue()
+	}
+	mrb.Call(self, "replace", res)
 	return self
 }
 
-func doReplace(mrb *oruby.MrbState, re *regexp.Regexp, s string, pos int, f func(v string) (string, bool)) (string, int) {
-	matchValue := doMatch(mrb, re, s, pos)
-	if matchValue.IsNil() {
-		return s, len(s)
-	}
-	m := mrb.Data(matchValue).(*MatchData)
-	ret := s
-	for i := 1; i < m.Size(); i++ {
-		capture, isNil := m.toString(i)
-		if isNil {
-			continue
-		}
-		replace, lit := f(capture)
-		if lit && (replace == capture) {
-			continue
-		}
-		if !lit {
-			for i, name := range m.Names() {
-				v, isNil := m.toString(i)
-				if isNil {
-					continue
-				}
-				if name != "" {
-					replace = strings.ReplaceAll(replace, "\\k<"+name+">", v)
-				} else {
-					replace = strings.ReplaceAll(replace, "\\"+strconv.Itoa(i), v)
-				}
-			}
-		}
-		start, _ := m.Begin(i)
-		end, _ := m.End(i)
-
-		ret = ret[:start-1] + replace + ret[end+1:]
-
-		// Adjust sizes if replacment is different size
-		diff := len(capture) - len(replace)
-		m.result[2*i+1] += diff
-		for _, idx := range m.result {
-			if idx > i {
-				m.result[idx] += diff
-			}
-		}
-	}
-	return ret, m.allEnd()
-}
-
-func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func doGsub(mrb *oruby.MrbState, self oruby.Value) (oruby.MrbValue, bool) {
 	args, block := mrb.GetArgsWithBlock()
 	pattern := args.Item(0)
 	replace := args.ItemDef(1, mrb.NilValue())
@@ -235,20 +254,24 @@ func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r := getRegexp(mrb, pattern)
 	if r == nil {
 		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("old_gsub"), pattern, replace, block)
-		return ret
+		return ret, false
 	}
 	if block.IsNil() && replace.IsNil() {
-		return mrb.Call(self, "to_enum", mrb.Intern("gsub"), pattern)
+		return mrb.Call(self, "to_enum", mrb.Intern("gsub"), pattern), false
 	}
 	if block.IsNil() && replace.Type() != oruby.MrbTTHash {
-		//	return r.ReplaceAllString(s, replaceStr)
 		replaceStr = mrb.EnsureStringType(replace).String()
 	}
 
-	s := mrb.String(self)
+	orig := mrb.String(self)
+	s := orig
 	pos := 0
-	for pos < len(s) {
-		s, pos = doReplace(mrb, r, s, pos, func(v string) (string, bool) {
+	matched := false
+	for pos <= len(s) {
+		var nextPos int
+		var nextS string
+		nextS, nextPos = doReplace(mrb, r, s, pos, func(v string) (string, bool) {
+			matched = true
 			if !block.IsNil() {
 				ret := mrb.Yield(block, mrb.StringValue(v))
 				return mrb.String(ret), true
@@ -262,8 +285,27 @@ func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				return replaceStr, false
 			}
 		})
+		s = nextS
+		if nextPos <= pos || nextPos > len(s) {
+			break
+		}
+		pos = nextPos
 	}
-	return mrb.StringValue(s)
+	return mrb.StringValue(s), matched && s != orig
+}
+
+func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	res, _ := doGsub(mrb, self)
+	return res
+}
+
+func stringGsubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	res, modified := doGsub(mrb, self)
+	if !modified {
+		return mrb.NilValue()
+	}
+	mrb.Call(self, "replace", res)
+	return self
 }
 
 func stringIsMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

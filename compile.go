@@ -374,7 +374,7 @@ func (mrb *MrbState) GenerateCode(parser MrbParserState) (RProc, error) {
 
 // LoadExec loads and executes parser context, returning Value
 func (mrb *MrbState) LoadExec(parser MrbParserState, context *MrbCcontext) Value {
-	return Value{C.mrb_load_exec(mrb.p, parser.p, context.p)}
+	return Value{C._mrb_load_exec(mrb.p, parser.p, context.p)}
 }
 
 // LoadFile loads file to oruby value
@@ -394,7 +394,7 @@ func (mrb *MrbState) LoadString(s string) (Value, error) {
 
 	// Will not throw, sets mrb->exc exception
 	ret := Value{C.mrb_load_nstring(mrb.p, cs, C.size_t(len(s)))}
-	return ret, mrb.Err()
+	return mrb.loadResult(ret)
 
 	// pure C.mrb_load_string() is never called
 }
@@ -423,13 +423,13 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	var ret Value
 
 	if len(buf) == 0 {
-		ret = Value{C.mrb_load_string_cxt(mrb.p, nil, context.p)}
+		ret = Value{C._mrb_load_string_cxt(mrb.p, nil, context.p)}
 	} else {
-		ret = Value{C.mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p)}
+		ret = Value{C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p)}
 		runtime.KeepAlive(buf)
 	}
 
-	return ret, mrb.Err()
+	return mrb.loadResult(ret)
 }
 
 // CodedumpAll helper for oruby cmd

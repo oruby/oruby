@@ -175,7 +175,7 @@ func (p RProc) TargetClass() RClass {
 
 // Load procedure
 func (p RProc) Load() Value {
-	return Value{C.mrb_load_proc(p.mrb.p, p.p)}
+	return Value{C._mrb_load_proc(p.mrb.p, p.p)}
 }
 
 // MrbAspecReq required
@@ -336,7 +336,7 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 
 // LoadProc loads and executes proc
 func (mrb *MrbState) LoadProc(proc RProc) Value {
-	return Value{C.mrb_load_proc(mrb.p, proc.p)}
+	return Value{C._mrb_load_proc(mrb.p, proc.p)}
 }
 
 // ProcSet sets proc on call info

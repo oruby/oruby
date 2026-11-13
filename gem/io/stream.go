@@ -258,6 +258,14 @@ func ioFileno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.Int(int(f.Fd()))
 }
 
+func ioIsTty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	f, err := getFile(mrb, self)
+	if err != nil {
+		return mrb.FalseValue()
+	}
+	return oruby.Bool(platformIsatty(f))
+}
+
 func ioFlush(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if r, ok := mrb.Data(self).(bufio.Writer); ok {
 		if err := r.Flush(); err != nil {

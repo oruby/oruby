@@ -2,7 +2,7 @@ package file
 
 import "github.com/oruby/oruby"
 
-func initFileTest(mrb *oruby.MrbState ) oruby.RClass {
+func initFileTest(mrb *oruby.MrbState) oruby.RClass {
 
 	f := mrb.DefineModule("FileTest")
 	proxyClassMethodToStat(f, "blockdev?", mrb.ArgsReq(1))

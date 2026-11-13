@@ -2,7 +2,8 @@ package oruby
 
 // #cgo CFLAGS: -I${SRCDIR}/mruby/include -I${SRCDIR}/mruby/build/host/include
 // #cgo LDFLAGS: -L${SRCDIR}/mruby/build/host/lib
-// #cgo amd64   CFLAGS:  -DMRB_INT64 -DMRB_USE_DEBUG_HOOK -DMRB_HIGH_PROFILE -DMRB_USE_METHOD_T_STRUCT -DMRB_NO_BOXING
+// // Must match MRUBY_CFLAGS in mruby/build/host/lib/libmruby.flags.mak (build_config_*.rb defines + defines added by gems)
+// #cgo CFLAGS: -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -101,6 +102,14 @@ func NewCore() (*MrbState, error) {
 	// SystemCallError exception
 	// mruby code have SystemCallError::_sys_fail method, but it is not used
 	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
+	mrb.DefineClass("SystemExit", mrb.EExceptionClass())
+
+	// Standard Ruby constants
+	platform := runtime.GOARCH + "-" + runtime.GOOS
+	mrb.DefineGlobalConst("RUBY_PLATFORM", mrb.StrNew(platform))
+	mrb.DefineGlobalConst("RUBY_ENGINE", mrb.StrNew("oruby"))
+	mrb.DefineGlobalConst("RUBY_ENGINE_VERSION", mrb.StrNew("0.1.0"))
+	mrb.DefineGlobalConst("RUBY_DESCRIPTION", mrb.StrNew(fmt.Sprintf("oruby 0.1.0 [%s]", platform)))
 
 	return mrb, nil
 }
@@ -331,6 +340,8 @@ func (mrb *MrbState) Close() {
 		if mrb.InjectChan != nil {
 			close(mrb.InjectChan)
 		}
+
+		mrb.RunAtExitHandlers()
 
 		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
@@ -804,9 +815,17 @@ func (mrb *MrbState) Err() error {
 		return nil
 	}
 
-	r := mrb.Inspect(exc)
-	fmt.Println(exc.Backtrace())
+	// "message (ClassName)" - same format mruby uses for uncaught exceptions
+	r := Value{C.mrb_exc_get_output(mrb.p, mrb.p.exc)}
 	return errors.New(mrb.StrToCstr(r))
+}
+
+// loadResult returns v and nil error, or Nil and the pending exception as error
+func (mrb *MrbState) loadResult(v Value) (Value, error) {
+	if err := mrb.Err(); err != nil {
+		return Nil, err
+	}
+	return v, nil
 }
 
 // ObjectClass in state
@@ -1382,6 +1401,7 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 
 	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
 		desc := mrb.Call(v, "to_s")
+		mrb.p.exc = C._mrb_obj_ptr(v.v)
 		err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
 	}
 
@@ -1423,6 +1443,7 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 
 	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
 		desc := mrb.Call(v, "to_s")
+		mrb.p.exc = C._mrb_obj_ptr(v.v)
 		err = fmt.Errorf("%v.%v -> %v (%v)",
 			mrb.ClassOf(self).Name(), mrb.SymName(nameSym), // ->
 			mrb.String(desc), mrb.ClassOf(v).Name(),
@@ -2500,16 +2521,12 @@ func (mrb *MrbState) DefineModuleFunc(klass RClass, name string, f interface{}) 
 		panic(fmt.Sprintf("DefineModuleFunc: Expected function, got '%v'", v.Kind()))
 	}
 
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-
 	argc := v.NumIn()
-	// function reference is set as oruby function env
-	env := mrb.registerFunc(f)
+	env := mrb.registerFuncIndex(f)
+	aspec := ArgsReq(uint32(argc))
+	sym := mrb.Intern(name)
 
-	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(1), &env)
-	m := C._MRB_PROC_CFUNC(proc)
-	C.mrb_define_module_function(mrb.p, klass.p, cname, (*[0]byte)(m), C.mrb_aspec(ArgsReq(uint32(argc))))
+	C._mrb_proc_new_module_function(mrb.p, klass.p, C.mrb_sym(sym), C.int(env), C.mrb_aspec(aspec))
 }
 
 // DefineClassFunc define class func
@@ -2520,15 +2537,12 @@ func (mrb *MrbState) DefineClassFunc(klass RClass, name string, f interface{}) {
 		panic(fmt.Sprintf("DefineClassFunc: Expected func type, got %v", v.Kind()))
 	}
 
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-
 	argc := v.NumIn()
-	env := mrb.registerFunc(f)
+	env := mrb.registerFuncIndex(f)
+	aspec := ArgsReq(uint32(argc))
+	sym := mrb.Intern(name)
 
-	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(1), &env)
-	m := C._MRB_PROC_CFUNC(proc)
-	C.mrb_define_class_method(mrb.p, klass.p, cname, (*[0]byte)(m), C.mrb_aspec(ArgsReq(uint32(argc))))
+	C._mrb_proc_new_class_method(mrb.p, klass.p, C.mrb_sym(sym), C.int(env), C.mrb_aspec(aspec))
 }
 
 // DefineSingletonFunc gefine golang singleton func
@@ -2539,15 +2553,12 @@ func (mrb *MrbState) DefineSingletonFunc(obj RValue, name string, f interface{})
 		panic(fmt.Sprintf("DefineSingletonFunc: Expected func type, got %v", v.Kind()))
 	}
 
-	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-
 	argc := v.NumIn()
-	env := mrb.registerFunc(f)
+	env := mrb.registerFuncIndex(f)
+	aspec := ArgsReq(uint32(argc))
+	sym := mrb.Intern(name)
 
-	proc := C.mrb_proc_new_cfunc_with_env(mrb.p, (*[0]byte)(C.set_gofunc_callback), C.mrb_int(1), &env)
-	m := C._MRB_PROC_CFUNC(proc)
-	C.mrb_define_singleton_method(mrb.p, obj.RObject().p, cname, (*[0]byte)(m), C.mrb_aspec(ArgsReq(uint32(argc))))
+	C._mrb_proc_new_singleton_method(mrb.p, obj.Value().v, C.mrb_sym(sym), C.int(env), C.mrb_aspec(aspec))
 }
 
 // State returns uintptr of C.mrb_state pointer

@@ -35,9 +35,6 @@ func (s RString) IsFShared() bool { return s.Flags()&MrbStrFShared != 0 }
 // IsNoFree returns true if string is marked with MrbStrNofree flag
 func (s RString) IsNoFree() bool { return s.Flags()&MrbStrNofree != 0 }
 
-// ModifyKeepASCII modify stringwith keeping ASCII flag if set
-func (s RString) ModifyKeepASCII() { C.mrb_str_modify_keep_ascii(s.mrb.p, s.Ptr().p) }
-
 // Clone returns copy of string
 func (s RString) Clone() RString {
 	return RString{RValue{

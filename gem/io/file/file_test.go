@@ -21,8 +21,8 @@ func Test_fileAbsolutePath(t *testing.T) {
 		return file.Call("absolute_path", of).String()
 	}
 
-	cwd,_ := os.Getwd()
-	_=os.Chdir(os.TempDir())
+	cwd, _ := os.Getwd()
+	_ = os.Chdir(os.TempDir())
 	defer os.Chdir(cwd)
 
 	target, _ := filepath.Abs("~oracle/bin")
@@ -38,8 +38,8 @@ func Test_fileIsAbsolutePath(t *testing.T) {
 		return file.Call("absolute_path?", of).Bool()
 	}
 
-	cwd,_ := os.Getwd()
-	_=os.Chdir(os.TempDir())
+	cwd, _ := os.Getwd()
+	_ = os.Chdir(os.TempDir())
 	defer os.Chdir(cwd)
 
 	assert.Equal(t, isAbsPath("~oracle/bin"), false)
@@ -88,11 +88,11 @@ func Test_fileChown(t *testing.T) {
 	assert.NilError(t, err)
 	defer os.Remove(tmp.Name())
 
-	ret := file.Call("chown", -1,-1, tmp.Name())
+	ret := file.Call("chown", -1, -1, tmp.Name())
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Int(), 1)
 
-	ret = file.Call("chown", 0,0, tmp.Name())
+	ret = file.Call("chown", 0, 0, tmp.Name())
 	assert.Equal(t, ret.Type(), oruby.MrbTTException)
 	assert.Expect(t, mrb.Err() != nil, "not permited")
 }
@@ -105,21 +105,21 @@ func Test_fileLchown(t *testing.T) {
 	tmp, err := ioutil.TempFile("", "ft*.tmp")
 	assert.NilError(t, err)
 	name := tmp.Name()
-	_= tmp.Close()
+	_ = tmp.Close()
 
 	err = os.Symlink(name, name+"2")
 	assert.NilError(t, err)
 
-	ret := file.Call("lchown", -1,-1, name+"2")
+	ret := file.Call("lchown", -1, -1, name+"2")
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Int(), 1)
 
-	ret = file.Call("lchown", 0,0, name+"2")
+	ret = file.Call("lchown", 0, 0, name+"2")
 	assert.Equal(t, ret.Type(), oruby.MrbTTException)
 	assert.Expect(t, mrb.Err() != nil, "not permited")
 
-	_=os.Remove(name)
-	_=os.Remove(name+"2")
+	_ = os.Remove(name)
+	_ = os.Remove(name + "2")
 }
 
 func Test_fileUnlink(t *testing.T) {
@@ -130,7 +130,7 @@ func Test_fileUnlink(t *testing.T) {
 	tmp, err := ioutil.TempFile("", "ft*.tmp")
 	name := tmp.Name()
 	assert.NilError(t, err)
-	_= tmp.Close()
+	_ = tmp.Close()
 
 	ret := file.Call("unlink", name)
 	assert.NilError(t, mrb.Err())
@@ -154,7 +154,6 @@ func Test_fileDirname(t *testing.T) {
 	assert.Equal(t, dirname("/home/gumby/work/ruby.rb"), "/home/gumby/work")
 }
 
-
 func Test_fileExist(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -166,18 +165,18 @@ func Test_fileExist(t *testing.T) {
 
 	ret, err := mrb.FuncallWithBlock(f, mrb.Intern("exist?"), name)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.IsNil(),false)
+	assert.Equal(t, ret.IsNil(), false)
 	assert.Expect(t, ret.Type() == oruby.MrbTTTrue || ret.Type() == oruby.MrbTTFalse, "")
-	assert.Equal(t, ret.Bool(),true)
+	assert.Equal(t, ret.Bool(), true)
 
-	_=tmp.Close()
-	_=os.Remove(name)
+	_ = tmp.Close()
+	_ = os.Remove(name)
 
 	ret, err = mrb.FuncallWithBlock(f, mrb.Intern("exist?"), name)
 	assert.NilError(t, err)
-	assert.Equal(t, ret.IsNil(),false)
+	assert.Equal(t, ret.IsNil(), false)
 	assert.Expect(t, ret.Type() == oruby.MrbTTTrue || ret.Type() == oruby.MrbTTFalse, "")
-	assert.Equal(t, ret.Bool(),false)
+	assert.Equal(t, ret.Bool(), false)
 }
 
 func Test_fileExpandPath(t *testing.T) {
@@ -192,12 +191,12 @@ func Test_fileExpandPath(t *testing.T) {
 		return ret.String()
 	}
 
-	home,err := os.UserHomeDir()
+	home, err := os.UserHomeDir()
 	assert.NilError(t, err)
 
-	assert.Equal(t, expandPath("~oracle/bin", ""),  home+"/oracle/bin")
-	assert.Equal(t, expandPath(":~oracle/bin", ""),  ":"+home+"/oracle/bin")
-	assert.Equal(t, expandPath("ruby", "/usr/bin"),  "/usr/bin/ruby")
+	assert.Equal(t, expandPath("~oracle/bin", ""), home+"/oracle/bin")
+	assert.Equal(t, expandPath(":~oracle/bin", ""), ":"+home+"/oracle/bin")
+	assert.Equal(t, expandPath("ruby", "/usr/bin"), "/usr/bin/ruby")
 
 	//file, err := mrb.Eval("__FILE__")
 	//assert.NilError(t, err)
@@ -229,7 +228,6 @@ func Test_fileExtname(t *testing.T) {
 	assert.Equal(t, extName(".profile.sh"), ".sh")
 }
 
-
 func Test_fileMatch(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -246,57 +244,57 @@ func Test_fileMatch(t *testing.T) {
 		assert.Expect(t, ret.Type() == oruby.MrbTTTrue || ret.Type() == oruby.MrbTTFalse, "")
 		return ret.Bool()
 	}
-	assert.Equal(t, fnmatch("cat","cat")  ,true)
-	assert.Equal(t, fnmatch("cat","category"),false)
-	assert.Equal(t, fnmatch("c{at,ub}s", "cats")  ,false)
-	assert.Equal(t, fnmatch("c{at,ub}s","cats", fnmExtglob) ,true)
-	assert.Equal(t, fnmatch("c?t","cat") ,true)
-	assert.Equal(t, fnmatch("c??t","cat") ,false)
-	assert.Equal(t, fnmatch("c*", "cats"),true)
-	assert.Equal(t, fnmatch("c*t","c/a/b/t"),true)
-	assert.Equal(t, fnmatch("ca[a-z]","cat") ,true)
-	assert.Equal(t, fnmatch("ca[^t]","cat") ,false)
-	assert.Equal(t, fnmatch("cat", "CAT"),false)
-	assert.Equal(t, fnmatch("cat", "CAT", fnmCasefold) ,true)
+	assert.Equal(t, fnmatch("cat", "cat"), true)
+	assert.Equal(t, fnmatch("cat", "category"), false)
+	assert.Equal(t, fnmatch("c{at,ub}s", "cats"), false)
+	assert.Equal(t, fnmatch("c{at,ub}s", "cats", fnmExtglob), true)
+	assert.Equal(t, fnmatch("c?t", "cat"), true)
+	assert.Equal(t, fnmatch("c??t", "cat"), false)
+	assert.Equal(t, fnmatch("c*", "cats"), true)
+	assert.Equal(t, fnmatch("c*t", "c/a/b/t"), true)
+	assert.Equal(t, fnmatch("ca[a-z]", "cat"), true)
+	assert.Equal(t, fnmatch("ca[^t]", "cat"), false)
+	assert.Equal(t, fnmatch("cat", "CAT"), false)
+	assert.Equal(t, fnmatch("cat", "CAT", fnmCasefold), true)
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		assert.Equal(t, fnmatch("cat", "CAT", fnmSyscase), true)
 	} else {
 		assert.Equal(t, fnmatch("cat", "CAT", fnmSyscase), false)
 	}
-	assert.Equal(t, fnmatch("?","/", fnmPathname)  ,false)
-	assert.Equal(t, fnmatch("*", "/", fnmPathname)  ,false)
-	assert.Equal(t, fnmatch("[/]","/", fnmPathname)  ,false)
+	assert.Equal(t, fnmatch("?", "/", fnmPathname), false)
+	assert.Equal(t, fnmatch("*", "/", fnmPathname), false)
+	assert.Equal(t, fnmatch("[/]", "/", fnmPathname), false)
 
-	assert.Equal(t, fnmatch("\\?", "?")  ,true)
-	assert.Equal(t, fnmatch("\\a", "a")  ,true)
-	assert.Equal(t, fnmatch("\\a", "\\a", fnmNoescape)  ,true)
-	assert.Equal(t, fnmatch("[\\?]","?")  ,true)
+	assert.Equal(t, fnmatch("\\?", "?"), true)
+	assert.Equal(t, fnmatch("\\a", "a"), true)
+	assert.Equal(t, fnmatch("\\a", "\\a", fnmNoescape), true)
+	assert.Equal(t, fnmatch("[\\?]", "?"), true)
 
-	assert.Equal(t, fnmatch("*", ".profile") ,false)
-	assert.Equal(t, fnmatch("*",".profile", fnmDotmatch)  ,true)
-	assert.Equal(t, fnmatch(".*",  ".profile") ,true)
+	assert.Equal(t, fnmatch("*", ".profile"), false)
+	assert.Equal(t, fnmatch("*", ".profile", fnmDotmatch), true)
+	assert.Equal(t, fnmatch(".*", ".profile"), true)
 
 	rbfiles := "**/*.rb"
-	assert.Equal(t, fnmatch(rbfiles, "main.rb")  ,false)
-	assert.Equal(t, fnmatch(rbfiles, "./main.rb"),false)
-	assert.Equal(t, fnmatch(rbfiles, "lib/song.rb") ,true)
-	assert.Equal(t, fnmatch("**.rb", "main.rb")  ,true)
+	assert.Equal(t, fnmatch(rbfiles, "main.rb"), false)
+	assert.Equal(t, fnmatch(rbfiles, "./main.rb"), false)
+	assert.Equal(t, fnmatch(rbfiles, "lib/song.rb"), true)
+	assert.Equal(t, fnmatch("**.rb", "main.rb"), true)
 	//TODO: this fails - I have no idea wath is the logic behing this
-	assert.Equal(t, fnmatch("**.rb", "./main.rb"),false)
-	assert.Equal(t, fnmatch("**.rb", "lib/song.rb") ,true)
-	assert.Equal(t, fnmatch("*",  "dave/.profile") ,true)
+	assert.Equal(t, fnmatch("**.rb", "./main.rb"), false)
+	assert.Equal(t, fnmatch("**.rb", "lib/song.rb"), true)
+	assert.Equal(t, fnmatch("*", "dave/.profile"), true)
 
 	pattern := "*/*"
-	assert.Equal(t, fnmatch(pattern, "dave/.profile", fnmPathname)  ,false)
-	assert.Equal(t, fnmatch(pattern, "dave/.profile", fnmPathname|fnmDotmatch) ,true)
+	assert.Equal(t, fnmatch(pattern, "dave/.profile", fnmPathname), false)
+	assert.Equal(t, fnmatch(pattern, "dave/.profile", fnmPathname|fnmDotmatch), true)
 
 	pattern = "**/foo"
-	assert.Equal(t, fnmatch(pattern, "foo", fnmPathname)  ,true)
-	assert.Equal(t, fnmatch(pattern, "a/b/c/foo", fnmPathname)  ,true)
-	assert.Equal(t, fnmatch(pattern, "/a/b/c/foo", fnmPathname) ,true)
-	assert.Equal(t, fnmatch(pattern, "c:/a/b/c/foo", fnmPathname)  ,true)
-	assert.Equal(t, fnmatch(pattern, "a/.b/c/foo", fnmPathname) ,false)
-	assert.Equal(t, fnmatch(pattern, "a/.b/c/foo", fnmPathname|fnmDotmatch) ,true)
+	assert.Equal(t, fnmatch(pattern, "foo", fnmPathname), true)
+	assert.Equal(t, fnmatch(pattern, "a/b/c/foo", fnmPathname), true)
+	assert.Equal(t, fnmatch(pattern, "/a/b/c/foo", fnmPathname), true)
+	assert.Equal(t, fnmatch(pattern, "c:/a/b/c/foo", fnmPathname), true)
+	assert.Equal(t, fnmatch(pattern, "a/.b/c/foo", fnmPathname), false)
+	assert.Equal(t, fnmatch(pattern, "a/.b/c/foo", fnmPathname|fnmDotmatch), true)
 }
 
 func Test_fileIdentical(t *testing.T) {
@@ -315,7 +313,7 @@ func Test_fileIdentical(t *testing.T) {
 	assert.NilError(t, err)
 	defer os.RemoveAll(dir)
 
-	cwd,_ := os.Getwd()
+	cwd, _ := os.Getwd()
 	err = os.Chdir(dir)
 	defer os.Chdir(cwd)
 	assert.NilError(t, err)
@@ -323,7 +321,7 @@ func Test_fileIdentical(t *testing.T) {
 	err = ioutil.WriteFile("a", []byte("temp content"), 0666)
 	assert.NilError(t, err)
 
-	assert.Equal(t, identical("a", "a"),true)
+	assert.Equal(t, identical("a", "a"), true)
 	assert.Equal(t, identical("a", "./a"), true)
 
 	err = os.Symlink("a", "b")
@@ -354,8 +352,8 @@ func Test_fileJoin(t *testing.T) {
 	assert.Equal(t, join("usr", "mail", "gumby"), "usr/mail/gumby")
 }
 
-//lchmod
-//lchown
+// lchmod
+// lchown
 func Test_fileLink(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -367,12 +365,12 @@ func Test_fileLink(t *testing.T) {
 	defer tmp.Close()
 	defer os.Remove(name)
 
-	ret, err := mrb.FuncallWithBlock(file ,mrb.Intern("link"), name, name+"2")
+	ret, err := mrb.FuncallWithBlock(file, mrb.Intern("link"), name, name+"2")
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
 	assert.Equal(t, ret.Int(), 0)
 
-	_= os.Remove(name+"2")
+	_ = os.Remove(name + "2")
 }
 
 func Test_fileLStat(t *testing.T) {
@@ -383,7 +381,7 @@ func Test_fileLStat(t *testing.T) {
 	tmp, err := ioutil.TempFile("", "ft*.tmp")
 	assert.NilError(t, err)
 	name := tmp.Name()
-	_= tmp.Close()
+	_ = tmp.Close()
 
 	err = os.Symlink(name, name+"2")
 	assert.NilError(t, err)
@@ -391,12 +389,12 @@ func Test_fileLStat(t *testing.T) {
 	ret := f.Call("lstat", name+"2")
 	assert.Equal(t, mrb.Data(ret).(os.FileInfo).Name(), filepath.Base(name+"2"))
 
-	_= os.Remove(name)
-	_= os.Remove(name+"2")
+	_ = os.Remove(name)
+	_ = os.Remove(name + "2")
 }
 
-//lutime
-//mkfifo
+// lutime
+// mkfifo
 func Test_filePath(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -405,7 +403,7 @@ func Test_filePath(t *testing.T) {
 	ret := file.Call("path", "/dev/null")
 	assert.Equal(t, ret.Type(), oruby.MrbTTString)
 	assert.Equal(t, ret.String(), "/dev/null")
-   //File.path(Pathname.new("/tmp")),  "/tmp"
+	//File.path(Pathname.new("/tmp")),  "/tmp"
 }
 
 func Test_fileReadlink(t *testing.T) {
@@ -416,7 +414,7 @@ func Test_fileReadlink(t *testing.T) {
 	tmp, err := ioutil.TempFile("", "ft*.tmp")
 	assert.NilError(t, err)
 	name := tmp.Name()
-	_= tmp.Close()
+	_ = tmp.Close()
 
 	err = os.Symlink(name, name+"2")
 	assert.NilError(t, err)
@@ -425,8 +423,8 @@ func Test_fileReadlink(t *testing.T) {
 	assert.Equal(t, ret.Type(), oruby.MrbTTString)
 	assert.Equal(t, ret.String(), name)
 
-	_= os.Remove(name+"2")
-	_= os.Remove(name)
+	_ = os.Remove(name + "2")
+	_ = os.Remove(name)
 }
 
 func Test_fileRealdirpath(t *testing.T) {
@@ -476,13 +474,13 @@ func Test_fileRename(t *testing.T) {
 	tmp, err := ioutil.TempFile("", "ft*.tmp")
 	assert.NilError(t, err)
 	name := tmp.Name()
-	_= tmp.Close()
+	_ = tmp.Close()
 
-	ret, err := mrb.FuncallWithBlock(file ,mrb.Intern("rename"), name, name+"2")
+	ret, err := mrb.FuncallWithBlock(file, mrb.Intern("rename"), name, name+"2")
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
 	assert.Equal(t, ret.Int(), 0)
-	_= os.Remove(name+"2")
+	_ = os.Remove(name + "2")
 }
 
 func Test_fileSplit(t *testing.T) {
@@ -513,16 +511,16 @@ func Test_fileStat(t *testing.T) {
 	ret := f.Call("stat", name)
 	assert.Equal(t, mrb.Data(ret).(os.FileInfo).Name(), filepath.Base(name))
 
-	_= tmp.Close()
+	_ = tmp.Close()
 
 	err = os.Symlink(name, name+"2")
 	assert.NilError(t, err)
 
-	_= f.Call("lstat", name+"2")
+	_ = f.Call("lstat", name+"2")
 	assert.Equal(t, mrb.Data(ret).(os.FileInfo).Name(), filepath.Base(name))
 
-	_= os.Remove(name)
-	_= os.Remove(name+"2")
+	_ = os.Remove(name)
+	_ = os.Remove(name + "2")
 }
 
 func Test_fileSymlink(t *testing.T) {
@@ -533,16 +531,16 @@ func Test_fileSymlink(t *testing.T) {
 	tmp, err := ioutil.TempFile("", "ft*.tmp")
 	assert.NilError(t, err)
 	name := tmp.Name()
-	_= tmp.Close()
+	_ = tmp.Close()
 
-	_= os.Remove(name+"3")
-	ret, err := mrb.FuncallWithBlock(file ,mrb.Intern("symlink"), name, name+"3")
+	_ = os.Remove(name + "3")
+	ret, err := mrb.FuncallWithBlock(file, mrb.Intern("symlink"), name, name+"3")
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
 	assert.Equal(t, ret.Int(), 0)
 
-	_= os.Remove(name)
-	_= os.Remove(name+"3")
+	_ = os.Remove(name)
+	_ = os.Remove(name + "3")
 }
 
 func Test_fileTruncate(t *testing.T) {
@@ -557,7 +555,7 @@ func Test_fileTruncate(t *testing.T) {
 	_, err = tmp.WriteString("TestTestTest")
 	assert.NilError(t, err)
 	name := tmp.Name()
-	_= tmp.Close()
+	_ = tmp.Close()
 
 	_, err = mrb.FuncallWithBlock(file, mrb.Intern("truncate"), name, 4)
 	assert.NilError(t, err)
@@ -575,9 +573,9 @@ func Test_fileMkfifo(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 	file := mrb.ClassGet("File")
-	fifo := filepath.Join(os.TempDir(), "fifo_test_" + strconv.Itoa(time.Now().Nanosecond()))
+	fifo := filepath.Join(os.TempDir(), "fifo_test_"+strconv.Itoa(time.Now().Nanosecond()))
 
-	ret := file.Call("mkfifo",  fifo)
+	ret := file.Call("mkfifo", fifo)
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
 	assert.Equal(t, ret.Int(), 0)
@@ -587,7 +585,7 @@ func Test_fileMkfifo(t *testing.T) {
 	assert.Equal(t, ret.Type(), oruby.MrbTTTrue)
 
 	err := os.Remove(fifo)
-	assert.NilError(t,err)
+	assert.NilError(t, err)
 }
 
 func Test_fileUmask(t *testing.T) {
@@ -607,7 +605,6 @@ func Test_fileUmask(t *testing.T) {
 	ret, err = mrb.FuncallWithBlock(file, mrb.Intern("umask"), 0111)
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
-
 
 	ret, err = mrb.FuncallWithBlock(file, mrb.Intern("umask"), oldUmask)
 	assert.NilError(t, err)
@@ -647,7 +644,7 @@ func Test_fileInit(t *testing.T) {
 	assert.NilError(t, err)
 	assert.Error(t, file.Close(), "should be already closed")
 
-	_= fileNew("testdata/test.txt", "r+")
+	_ = fileNew("testdata/test.txt", "r+")
 	assert.NilError(t, err)
 
 	_, err = mrb.Eval(`File.new($fname, $mode, 0777)`)
@@ -680,11 +677,11 @@ func Test_fileFChown(t *testing.T) {
 	defer os.Remove(tmp.Name())
 	f := mrb.Value(tmp)
 
-	ret := mrb.Call(f, "chown", -1,-1, tmp.Name())
+	ret := mrb.Call(f, "chown", -1, -1, tmp.Name())
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Int(), 0)
 
-	ret = mrb.Call(f, "chown", 0,0, tmp.Name())
+	ret = mrb.Call(f, "chown", 0, 0, tmp.Name())
 	assert.Equal(t, ret.Type(), oruby.MrbTTException)
 	assert.Expect(t, mrb.Err() != nil, "not permited")
 }
@@ -718,7 +715,7 @@ func Test_fileToPath(t *testing.T) {
 	ret, err := mrb.FuncallWithBlock(f, mrb.Intern("to_path"))
 	assert.NilError(t, err)
 	assert.Equal(t, ret.String(), tmp.Name())
-	_= tmp.Close()
+	_ = tmp.Close()
 }
 
 func Test_fileFTruncate(t *testing.T) {
@@ -735,11 +732,9 @@ func Test_fileFTruncate(t *testing.T) {
 	f := mrb.Value(tmp)
 	_, err = mrb.FuncallWithBlock(f, mrb.Intern("truncate"), 4)
 	assert.NilError(t, err)
-	_= tmp.Close()
+	_ = tmp.Close()
 
 	b, err := ioutil.ReadFile(name)
 	assert.NilError(t, err)
 	assert.Equal(t, string(b), "Test")
 }
-
-

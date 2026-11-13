@@ -255,7 +255,7 @@ _mrb_get_args_block(mrb_state *mrb) {
 static mrb_value
 _mrb_get_args_kw(mrb_state *mrb) {
   mrb_callinfo *ci = mrb->c->ci;
-  if (ci->nk > 0) {
+  if (ci->kw) {
     return ci->stack[mrb_ci_bidx(ci)-1];
   }
   return mrb_nil_value();
@@ -279,7 +279,6 @@ static void _mrbc_set_no_ext_ops(mrbc_context *c, mrb_bool v)     { c->no_ext_op
 static mrb_bool _gc_iterating(mrb_state *mrb) { return mrb->gc.iterating; }
 static mrb_bool _gc_full(mrb_state *mrb) { return mrb->gc.full; }
 static mrb_bool _gc_generational(mrb_state *mrb) { return mrb->gc.generational; }
-static mrb_bool _gc_out_of_memory(mrb_state *mrb) { return mrb->gc.out_of_memory; }
 static mrb_bool _gc_disabled(mrb_state *mrb) { return mrb->gc.disabled; }
 static void _gc_set_disabled(mrb_state *mrb, mrb_bool v) { mrb->gc.disabled = v; }
 static struct RBasic *_gc_arena_peek(mrb_state *mrb, mrb_int i) {
@@ -373,6 +372,96 @@ _mrb_yield_with_class(mrb_state *mrb, mrb_value b, mrb_int argc, const mrb_value
   return result;
 }
 
+static mrb_value
+_mrb_load_nstring_cxt(mrb_state *mrb, const char *s, size_t len, mrb_ccontext *c) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_load_nstring_cxt(mrb, s, len, c);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
+static mrb_value
+_mrb_load_string_cxt(mrb_state *mrb, const char *s, mrb_ccontext *c) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_load_string_cxt(mrb, s, c);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
+static mrb_value
+_mrb_load_exec(mrb_state *mrb, struct mrb_parser_state *p, mrb_ccontext *c) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_load_exec(mrb, p, c);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
+static mrb_value
+_mrb_load_irep_buf_cxt(mrb_state *mrb, const void *buf, size_t buf_size, mrb_ccontext *c) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_load_irep_buf_cxt(mrb, buf, buf_size, c);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
+static mrb_value
+_mrb_load_proc(mrb_state *mrb, struct RProc *p) {
+  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  mrb_value result = mrb_nil_value();
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    result = mrb_load_proc(mrb, p);
+    mrb->jmp = prev_jmp;
+    mrb_gc_protect(mrb, result);
+  } MRB_CATCH(&c_jmp) {
+    mrb->jmp = prev_jmp;
+    result = mrb_obj_value(mrb->exc);
+  } MRB_END_EXC(&c_jmp);
+
+  return result;
+}
+
 
 static struct REnv *
 _mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)
@@ -382,9 +471,9 @@ _mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)
 
   e = (struct REnv*)mrb_obj_alloc(mrb, MRB_TT_ENV, mrb->object_class);
   e->stack = NULL;
+  MRB_ENV_CLOSE(e);
   if (argc > 0) {
     e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * argc);
-    mrb_env_unshare(mrb, e, TRUE);
     for (i = 0; i < argc; i++) {
       e->stack[i] = argv[i];
     }
@@ -393,6 +482,7 @@ _mrb_create_env(mrb_state *mrb, struct RProc *p, mrb_int argc, mrb_value *argv)
 
   p->e.env = e;
   p->flags |= MRB_PROC_ENVSET;
+  mrb_field_write_barrier(mrb, (struct RBasic*)p, (struct RBasic*)e);
 
   return e;
 }
@@ -483,6 +573,9 @@ int set_each_object_callback(struct mrb_state *mrb, struct RBasic *obj, void *da
 
 // static void _mrb_copy_value(mrb_value *v1, mrb_value *v2) { *v1=*v2; }
 void _mrb_proc_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
+void _mrb_proc_new_module_function(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
+void _mrb_proc_new_class_method(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
+void _mrb_proc_new_singleton_method(mrb_state *mrb, mrb_value obj, mrb_sym id, int idx, mrb_aspec aspec);
 void _mrb_method_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 void _define_class_method(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 

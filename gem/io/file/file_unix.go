@@ -49,7 +49,7 @@ func platformDup(f *os.File) (*os.File, error) {
 
 	if uid == 0 && (perm&0111 != 0) {
 		flags = os.O_RDWR
-	} else  if uid == ext.uid  && (perm&0101 != 0) {
+	} else if uid == ext.uid && (perm&0101 != 0) {
 		flags = os.O_RDWR
 	} else if os.Getegid() == ext.gid && (perm&0011 != 0) {
 		flags = os.O_RDWR
@@ -61,4 +61,3 @@ func platformDup(f *os.File) (*os.File, error) {
 func platformOpenFile(name string, mode int, perm os.FileMode) (int, error) {
 	return syscall.Open(name, mode|syscall.O_CLOEXEC, uint32(perm))
 }
-
