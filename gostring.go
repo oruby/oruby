@@ -2,7 +2,10 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
-import "unsafe"
+import (
+	"runtime"
+	"unsafe"
+)
 
 // Index finds the index of a substring in a string
 func (s RString) Index(str string, offset int) int {
@@ -106,11 +109,14 @@ func (s RString) Equal(str2 MrbValue) bool {
 	return C.mrb_str_equal(s.mrb.p, s.v, str2.Value().v) != false
 }
 
-// Cat Returns a concatenated string comprised of a Ruby string and a C string.
+// Cat Returns a concatenated string comprised of a Ruby string and a Go string.
 func (s RString) Cat(str string) RString {
-	cs := C.CString(str)
-	defer C.free(unsafe.Pointer(cs))
-	return s.cloneV(C.mrb_str_cat(s.mrb.p, s.v, cs, C.size_t(len(str))))
+	if len(str) == 0 {
+		return s
+	}
+	v := s.cloneV(C.mrb_str_cat(s.mrb.p, s.v, (*C.char)(unsafe.Pointer(unsafe.StringData(str))), C.size_t(len(str))))
+	runtime.KeepAlive(str)
+	return v
 }
 
 // CatStr concat

@@ -300,10 +300,8 @@ func (mrb *MrbState) FloatValue(f float64) Value {
 
 // StringValue float to oruby value
 func (mrb *MrbState) StringValue(s string) RString {
-	ptr := C.CString(s)
-	defer C.free(unsafe.Pointer(ptr))
 	return RString{RValue{
-		C.mrb_str_new(mrb.p, ptr, C.mrb_int(len(s))),
+		mrb.StrNew(s).v,
 		mrb,
 	}}
 }

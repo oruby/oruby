@@ -1670,23 +1670,47 @@ func (mrb *MrbState) Free(buffer Buff) {
 	C.mrb_free(mrb.p, p)
 }
 
-// StrNew Allocates new C string from go string
+var (
+	staticStrMu   sync.RWMutex
+	staticStrPool = make(map[string]*C.char)
+)
+
+func getStaticCString(s string) *C.char {
+	staticStrMu.RLock()
+	cs, ok := staticStrPool[s]
+	staticStrMu.RUnlock()
+	if ok {
+		return cs
+	}
+
+	staticStrMu.Lock()
+	defer staticStrMu.Unlock()
+	if cs, ok = staticStrPool[s]; ok {
+		return cs
+	}
+	cs = C.CString(s)
+	staticStrPool[s] = cs
+	return cs
+}
+
+// StrNew Allocates new C string from go string directly without C.CString malloc
 func (mrb *MrbState) StrNew(s string) Value {
-	cs := C.CString(s)
-	size := len(s)
-	defer C.free(unsafe.Pointer(cs))
-	return Value{C.mrb_str_new(mrb.p, cs, C.mrb_int(size))}
+	if len(s) == 0 {
+		return Value{C.mrb_str_new(mrb.p, nil, 0)}
+	}
+	v := Value{C.mrb_str_new(mrb.p, (*C.char)(unsafe.Pointer(unsafe.StringData(s))), C.mrb_int(len(s)))}
+	runtime.KeepAlive(s)
+	return v
 	// C.mrb_str_new_cstr() is never called
 }
 
-// StrNewStatic is an alias for StrNew
+// StrNewStatic creates a static, non-copied Ruby string from a Go string using mrb_str_new_static
 func (mrb *MrbState) StrNewStatic(s string) Value {
-	cs := C.CString(s)
-	size := len(s)
-	defer C.free(unsafe.Pointer(cs))
-
-	return Value{C.mrb_str_new(mrb.p, cs, C.mrb_int(size))}
-	// C.mrb_str_new_static() is unsupported in Go
+	if len(s) == 0 {
+		return Value{C.mrb_str_new_static(mrb.p, nil, 0)}
+	}
+	cs := getStaticCString(s)
+	return Value{C.mrb_str_new_static(mrb.p, cs, C.mrb_int(len(s)))}
 }
 
 // ObjFreeze freeze value

@@ -2,7 +2,10 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
-import "unsafe"
+import (
+	"runtime"
+	"unsafe"
+)
 
 // RString struct
 type RString struct{ RValue }
@@ -174,11 +177,14 @@ func (mrb *MrbState) StrEqual(str1, str2 MrbValue) bool {
 	return C.mrb_str_equal(mrb.p, str1.Value().v, str2.Value().v) != false
 }
 
-// StrCat Returns a concatenated string comprised of a Ruby string and a C string.
+// StrCat Returns a concatenated string comprised of a Ruby string and a Go string.
 func (mrb *MrbState) StrCat(str MrbValue, s string) Value {
-	cs := C.CString(s)
-	defer C.free(unsafe.Pointer(cs))
-	return Value{C.mrb_str_cat(mrb.p, str.Value().v, cs, C.size_t(len(s)))}
+	if len(s) == 0 {
+		return str.Value()
+	}
+	v := Value{C.mrb_str_cat(mrb.p, str.Value().v, (*C.char)(unsafe.Pointer(unsafe.StringData(s))), C.size_t(len(s)))}
+	runtime.KeepAlive(s)
+	return v
 }
 
 // StrCatBytes Returns a concatenated string comprised of a Ruby string and []byte
