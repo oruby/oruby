@@ -26,7 +26,13 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	mrb.DefineModuleFunc(mProc, "setpgid", syscall.Setpgid)
 	mrb.DefineModuleFunc(mProc, "setsid", syscall.Setsid)
 	mrb.DefineModuleFunc(mProc, "getpriority", syscall.Getpriority)
-	mrb.DefineModuleFunc(mProc, "setpriority", syscall.Setpriority)
+	mrb.DefineModuleFunc(mProc, "setpriority", func(which, who, prio int) (int, error) {
+		err := syscall.Setpriority(which, who, prio)
+		if err != nil {
+			return 0, err
+		}
+		return 0, nil
+	})
 
 	mProc.Const("PRIO_PROCESS", syscall.PRIO_PROCESS)
 	mProc.Const("PRIO_PGRP", syscall.PRIO_PGRP)

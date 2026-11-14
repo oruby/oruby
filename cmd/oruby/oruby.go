@@ -21,6 +21,8 @@ type Args struct {
 	libs        []string
 	scriptArgs  []string
 	eline       string
+	dashN       bool
+	dashP       bool
 }
 
 func usage(name string) {
@@ -51,6 +53,9 @@ func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
 
 	for i := 0; i < len(rawArgs); i++ {
 		arg := rawArgs[i]
+		if arg == "" {
+			continue
+		}
 		if arg == "--" {
 			if rfp == "" && len(cmdlines) == 0 && i+1 < len(rawArgs) {
 				rfp = rawArgs[i+1]
@@ -99,6 +104,10 @@ func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
 				}
 			case strings.HasPrefix(arg, "-r"):
 				args.libs = append(args.libs, arg[2:])
+			case arg == "-n":
+				args.dashN = true
+			case arg == "-p":
+				args.dashP = true
 			case strings.HasPrefix(arg, "--disable") || strings.HasPrefix(arg, "--enable"):
 			case strings.HasPrefix(arg, "-W"):
 			case arg == "-w":
@@ -208,7 +217,39 @@ func main() {
 	c.Filename(cmdline)
 
 	/* Load program */
-	if args.mrbfile || strings.EqualFold(filepath.Ext(cmdline), ".mrb") {
+	if args.dashN || args.dashP {
+		mrb.Eval(`
+module Kernel
+  def chomp(sep = $/)
+    $_ = $_&.chomp(sep)
+  end
+  def chop
+    $_ = $_&.chop
+  end
+  module_function :chomp, :chop
+  private :chomp, :chop
+end
+`)
+		var src string
+		if args.rfp != "" {
+			b, readErr := os.ReadFile(args.rfp)
+			if readErr != nil {
+				err = readErr
+			} else {
+				src = string(b)
+			}
+		} else {
+			src = args.cmdline
+		}
+		if err == nil {
+			post := ""
+			if args.dashP {
+				post = "print $_\n"
+			}
+			wrapped := fmt.Sprintf("while gets\n%s\n%send", src, post)
+			v, err = c.LoadString(wrapped)
+		}
+	} else if args.mrbfile || strings.EqualFold(filepath.Ext(cmdline), ".mrb") {
 		v, err = c.LoadIrepFile(args.rfp)
 	} else if args.rfp != "" {
 		v, err = c.LoadFile(args.rfp)
@@ -222,6 +263,16 @@ func main() {
 			exitCode = 1
 			return
 		}
+		exc := mrb.Exc()
+		if exc != nil && exc.IsKindOf(mrb.ClassGet("SystemExit")) {
+			mrb.RunAtExitHandlers()
+			statusVal := mrb.Call(exc.Value(), "status")
+			exitCode = 0
+			if !statusVal.IsNil() {
+				exitCode = int(statusVal.Int())
+			}
+			return
+		}
 		exitCode = exitFailure("%v: %v\n", os.Args[0], err)
 		return
 	}
@@ -229,6 +280,16 @@ func main() {
 	mrb.GCArenaRestore(ai)
 
 	if mrb.Err() != nil {
+		exc := mrb.Exc()
+		if exc != nil && exc.IsKindOf(mrb.ClassGet("SystemExit")) {
+			mrb.RunAtExitHandlers()
+			statusVal := mrb.Call(exc.Value(), "status")
+			exitCode = 0
+			if !statusVal.IsNil() {
+				exitCode = int(statusVal.Int())
+			}
+			return
+		}
 		if !mrb.UndefP(v) {
 			mrb.PrintError()
 		}

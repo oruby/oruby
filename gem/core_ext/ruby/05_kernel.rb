@@ -158,3 +158,44 @@ class Thread
     end
   end
 end
+
+class SystemExit < Exception
+  attr_reader :status
+
+  def initialize(*args)
+    if args.empty?
+      @status = 0
+      super("SystemExit")
+    elsif args.size == 1
+      arg = args[0]
+      if arg == true
+        @status = 0
+        super("SystemExit")
+      elsif arg == false
+        @status = 1
+        super("SystemExit")
+      elsif arg.is_a?(Numeric)
+        @status = arg.to_i
+        super("SystemExit")
+      else
+        @status = 0
+        super(arg.to_s)
+      end
+    else
+      status_arg, msg = args[0], args[1]
+      if status_arg == true
+        @status = 0
+      elsif status_arg == false
+        @status = 1
+      else
+        @status = status_arg.to_i
+      end
+      super(msg.to_s)
+    end
+  end
+
+  def success?
+    @status == 0
+  end
+end
+

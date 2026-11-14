@@ -28,6 +28,7 @@ func init() {
 		mutexClass := mrb.DefineGoClass("Mutex", newMutex)
 		mutexClass.DefineMethod("sleep", mutexSleep, mrb.ArgsReq(1))
 		mutexClass.DefineMethod("synchronize", mutexSynchronize, mrb.ArgsReq(1))
+		mutexClass.DefineAlias("locked?", "locked")
 
 		queueClass := mrb.DefineGoClass("Queue", &queue{})
 		queueClass.DefineMethod("initialize", newQueue, mrb.ArgsOpt(1))

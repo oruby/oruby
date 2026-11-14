@@ -25,8 +25,7 @@ func ioInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func valueToS(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
-	switch v.Type() {
-	case oruby.MrbTTString, oruby.MrbTTFixnum, oruby.MrbTTFalse, oruby.MrbTTTrue:
+	if v.Type() == oruby.MrbTTString {
 		return v, nil
 	}
 
@@ -34,7 +33,10 @@ func valueToS(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
 	if err != nil {
 		return mrb.NilValue(), err
 	}
-	return sv, nil
+	if sv.Type() == oruby.MrbTTString {
+		return sv, nil
+	}
+	return mrb.StrNew(mrb.String(sv)), nil
 }
 
 func ioWriteString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

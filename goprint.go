@@ -51,6 +51,12 @@ func kernelAtExit(mrb *MrbState, self Value) MrbValue {
 }
 
 func (mrb *MrbState) RunAtExitHandlers() {
+	exitTrap := mrb.GetGV("$__exit_trap_proc__")
+	if !exitTrap.IsNil() {
+		mrb.SetGV("$__exit_trap_proc__", mrb.NilValue())
+		mrb.Yield(exitTrap, mrb.NilValue())
+	}
+
 	listVal := mrb.GetGV("$__at_exit_list__")
 	if listVal.IsNil() {
 		return

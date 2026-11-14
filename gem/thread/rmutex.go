@@ -30,3 +30,7 @@ func (rm *rmutex) TryLock() bool {
 	rm.Lock()
 	return true
 }
+
+func (rm *rmutex) Locked() bool {
+	return rm.IsLocked
+}

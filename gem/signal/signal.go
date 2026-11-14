@@ -139,16 +139,22 @@ func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	// EXIT signal 0 handler
 	if sigID == 0 {
-		prev = handlers.exitHandler
-		handlers.exitHandler = command
+		prev = mrb.GetGV("$__exit_trap_proc__")
+		mrb.SetGV("$__exit_trap_proc__", command)
 		if command.IsProc() {
 			mrb.GCProtect(command)
-			trap(mrb, handlers)
-			return prev
 		}
+		return prev
 	}
 
 	prev = handlers.current[sig]
+	if prev.IsNil() {
+		if sig == syscall.SIGINT {
+			prev = mrb.StrNew("DEFAULT").Value()
+		} else if command.IsString() && command.String() == "DEFAULT" {
+			prev = mrb.StrNew("SYSTEM_DEFAULT").Value()
+		}
+	}
 	handlers.current[sig] = command
 
 	if command.IsProc() {

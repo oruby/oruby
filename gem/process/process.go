@@ -49,7 +49,7 @@ func init() {
 		mrb.DefineGlobalFunction("exec", procExec, mrb.ArgsAny())
 		// Unsupported fork shoud not respond to 'fork' method
 		//mrb.DefineGlobalFunction("fork", procFork, mrb.ArgsAny())
-		mrb.DefineGlobalFunction("exit!", procExit, mrb.ArgsOpt(1))
+		mrb.DefineGlobalFunction("exit!", procExitBang, mrb.ArgsOpt(1))
 		mrb.DefineGlobalFunction("system", procSystem, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("`", procBacktick, mrb.ArgsAny())
 		mrb.DefineModuleFunction(mrb.KernelModule(), "`", procBacktick, mrb.ArgsAny())
@@ -80,7 +80,7 @@ func init() {
 		mrb.DefineClassMethod(mProc, "exec", procExec, mrb.ArgsAny())
 		//mrb.DefineClassMethod(mProc, "fork", procFork, mrb.ArgsAny())
 		mrb.DefineClassMethod(mProc, "spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
-		mrb.DefineClassMethod(mProc, "exit!", procExit, mrb.ArgsOpt(1))
+		mrb.DefineClassMethod(mProc, "exit!", procExitBang, mrb.ArgsOpt(1))
 		mrb.DefineClassMethod(mProc, "exit", procExit, mrb.ArgsOpt(1))
 		mrb.DefineClassMethod(mProc, "abort", procAbort, mrb.ArgsOpt(1))
 		mrb.DefineClassMethod(mProc, "last_status", procLastStatus, mrb.ArgsNone())
@@ -536,19 +536,40 @@ func procAbort(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func procExit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	status := mrb.GetArgsFirst()
-
+	code := 0
 	switch status.Type() {
 	case oruby.MrbTTTrue:
-		os.Exit(0)
+		code = 0
 	case oruby.MrbTTFalse:
 		if status.IsNil() {
-			os.Exit(0)
+			code = 0
 		} else {
-			os.Exit(1)
+			code = 1
 		}
 	default:
-		os.Exit(status.Int())
+		code = status.Int()
 	}
+	mrb.RunAtExitHandlers()
+	os.Exit(code)
+	return mrb.NilValue()
+}
+
+func procExitBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	status := mrb.GetArgsFirst()
+	code := 0
+	switch status.Type() {
+	case oruby.MrbTTTrue:
+		code = 0
+	case oruby.MrbTTFalse:
+		if status.IsNil() {
+			code = 0
+		} else {
+			code = 1
+		}
+	default:
+		code = status.Int()
+	}
+	os.Exit(code)
 	return mrb.NilValue()
 }
 

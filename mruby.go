@@ -368,13 +368,13 @@ func New() (*MrbState, error) {
 		return mrb, err
 	}
 
+	if !GemExists("print") {
+		mrb.features["print"] = initPrint(mrb)
+	}
+
 	// Init all Go gems
 	for k, geminit := range gems {
 		mrb.features[k] = geminit(mrb)
-	}
-
-	if !GemExists("print") {
-		mrb.features["print"] = initPrint(mrb)
 	}
 
 	return mrb, nil
