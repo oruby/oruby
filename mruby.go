@@ -65,6 +65,7 @@ type MrbState struct {
 	features     map[string]interface{} // features stash
 	callSym      MrbSym                 // cached mrb.Intern("call")
 	afterInitSym MrbSym                 // cached mrb.Intern("after_init")
+	symCache     map[string]MrbSym
 }
 
 // NewCore create state is MrbState without gems,
@@ -91,6 +92,7 @@ func NewCore() (*MrbState, error) {
 		make(map[string]interface{}),
 		0,
 		0,
+		make(map[string]MrbSym),
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
@@ -104,6 +106,29 @@ func NewCore() (*MrbState, error) {
 	// mruby code have SystemCallError::_sys_fail method, but it is not used
 	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
 	mrb.DefineClass("SystemExit", mrb.EExceptionClass())
+	mrb.Eval(`
+class SystemExit < Exception
+  attr_reader :status
+  def initialize(status = 0, msg = "SystemExit")
+    if status == true
+      @status = 0
+    elsif status == false
+      @status = 1
+    elsif status.is_a?(Numeric)
+      @status = status.to_i
+    elsif status.is_a?(String)
+      @status = 0
+      msg = status
+    else
+      @status = 0
+    end
+    super(msg)
+  end
+  def success?
+    @status == 0
+  end
+end
+`)
 
 	// Standard Ruby constants
 	platform := runtime.GOARCH + "-" + runtime.GOOS
@@ -111,6 +136,7 @@ func NewCore() (*MrbState, error) {
 	mrb.DefineGlobalConst("RUBY_ENGINE", mrb.StrNew("oruby"))
 	mrb.DefineGlobalConst("RUBY_ENGINE_VERSION", mrb.StrNew("0.1.0"))
 	mrb.DefineGlobalConst("RUBY_DESCRIPTION", mrb.StrNew(fmt.Sprintf("oruby 0.1.0 [%s]", platform)))
+	mrb.SetGV("$VERBOSE", mrb.FalseValue())
 
 	return mrb, nil
 }
@@ -1374,6 +1400,11 @@ func (mrb *MrbState) Call(self MrbValue, name string, args ...interface{}) Value
 	return result
 }
 
+// CallerReceiver returns caller's self value
+func (mrb *MrbState) CallerReceiver() Value {
+	return Value{C._mrb_caller_receiver(mrb.p)}
+}
+
 // Funcall call oruby function
 func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{}) (Value, error) {
 	var err error
@@ -1395,9 +1426,19 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 		}
 	}
 
-	a := make([]C.mrb_value, l+1)
+	var stackBuf [8]C.mrb_value
+	var a []C.mrb_value
+	if l <= 8 {
+		a = stackBuf[:l]
+	} else {
+		a = make([]C.mrb_value, l)
+	}
 	for i := range args {
 		a[i] = mrb.Value(args[i]).v
+	}
+	var aPtr *C.mrb_value
+	if l > 0 {
+		aPtr = &a[0]
 	}
 
 	v := Value{C._mrb_funcall_with_block(
@@ -1405,14 +1446,16 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 		self.Value().v,
 		C.mrb_sym(nameSym),
 		C.mrb_int(l),
-		(*C.mrb_value)(&a[0]),
+		aPtr,
 		C.mrb_nil_value(),
 	)}
 
-	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
-		desc := mrb.Call(v, "to_s")
-		mrb.p.exc = C._mrb_obj_ptr(v.v)
-		err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
+	if mrb.p.exc != nil || v.Type() == C.MRB_TT_EXCEPTION {
+		if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
+			desc := mrb.Call(v, "to_s")
+			mrb.p.exc = C._mrb_obj_ptr(v.v)
+			err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
+		}
 	}
 
 	runtime.KeepAlive(a)
@@ -1436,9 +1479,19 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 		}
 	}
 
-	a := make([]C.mrb_value, argc+1)
+	var stackBuf [8]C.mrb_value
+	var a []C.mrb_value
+	if argc <= 8 {
+		a = stackBuf[:argc]
+	} else {
+		a = make([]C.mrb_value, argc)
+	}
 	for i := range args[:argc] {
 		a[i] = mrb.Value(args[i]).v
+	}
+	var aPtr *C.mrb_value
+	if argc > 0 {
+		aPtr = &a[0]
 	}
 
 	var err error
@@ -1447,17 +1500,19 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 		self.Value().v,
 		C.mrb_sym(nameSym),
 		C.mrb_int(argc),
-		(*C.mrb_value)(&a[0]),
+		aPtr,
 		block.v,
 	)}
 
-	if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
-		desc := mrb.Call(v, "to_s")
-		mrb.p.exc = C._mrb_obj_ptr(v.v)
-		err = fmt.Errorf("%v.%v -> %v (%v)",
-			mrb.ClassOf(self).Name(), mrb.SymName(nameSym), // ->
-			mrb.String(desc), mrb.ClassOf(v).Name(),
-		)
+	if mrb.p.exc != nil || v.Type() == C.MRB_TT_EXCEPTION {
+		if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
+			desc := mrb.Call(v, "to_s")
+			mrb.p.exc = C._mrb_obj_ptr(v.v)
+			err = fmt.Errorf("%v.%v -> %v (%v)",
+				mrb.ClassOf(self).Name(), mrb.SymName(nameSym), // ->
+				mrb.String(desc), mrb.ClassOf(v).Name(),
+			)
+		}
 	}
 
 	runtime.KeepAlive(a)
@@ -1466,10 +1521,18 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 
 // Sym converts string to oruby symbol
 func (mrb *MrbState) Sym(name string) MrbSym {
+	if mrb.symCache != nil {
+		if sym, ok := mrb.symCache[name]; ok {
+			return sym
+		}
+	}
 	cname := C.CString(name)
-	defer C.free(unsafe.Pointer(cname))
-	sym := C.mrb_intern(mrb.p, cname, C.size_t(len(name)))
-	return MrbSym(sym)
+	sym := MrbSym(C.mrb_intern(mrb.p, cname, C.size_t(len(name))))
+	C.free(unsafe.Pointer(cname))
+	if mrb.symCache != nil {
+		mrb.symCache[name] = sym
+	}
+	return sym
 	// C.mrb_intern_cstr() is never called
 }
 
@@ -2005,6 +2068,13 @@ func (mrb *MrbState) ExcNew(c RClass, msg string) Value {
 //	This will return Exception from Go, and oruby will raise it on C side
 func (mrb *MrbState) ExcRaise(exc MrbValue) {
 	C.mrb_exc_raise(mrb.p, exc.Value().v)
+}
+
+// RaiseObj raises existing exception value
+func (mrb *MrbState) RaiseObj(exc MrbValue) Value {
+	ret := exc.Value()
+	mrb.p.exc = C._mrb_obj_ptr(ret.v)
+	return ret
 }
 
 // Raise raises Exception from err class.

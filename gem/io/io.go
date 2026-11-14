@@ -480,6 +480,8 @@ func openIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
 	var ioObject interface{}
 
 	switch fd.Type() {
+	case oruby.MrbTTString:
+		return os.Open(fd.String())
 	case oruby.MrbTTCData:
 		ioObject = mrb.Data(fd)
 		switch ioObject.(type) {
@@ -492,6 +494,12 @@ func openIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
 			}
 		}
 	case oruby.MrbTTObject:
+		if path, err := mrb.Funcall(fd, mrb.Intern("to_path")); err == nil && path.IsString() {
+			return os.Open(path.String())
+		}
+		if path, err := mrb.Funcall(fd, mrb.Intern("to_str")); err == nil && path.IsString() {
+			return os.Open(path.String())
+		}
 		ret, err := mrb.FuncallWithBlock(fd, mrb.Intern("to_io"))
 		if err == nil {
 			return mrb.Data(ret), nil

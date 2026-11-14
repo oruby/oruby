@@ -124,6 +124,10 @@ end
 
 class Thread
   module Backtrace
+    def self.limit
+      $__backtrace_limit__ || -1
+    end
+
     class Location
       attr_reader :path, :lineno, :label
 
@@ -198,4 +202,28 @@ class SystemExit < Exception
     @status == 0
   end
 end
+
+class BasicObject
+  def method_missing(mid, *args, &blk)
+    ::Object.instance_method(:method_missing).bind(self).call(mid, *args, &blk)
+  end
+end
+
+module Kernel
+  def exit(status = 0)
+    raise SystemExit.new(status)
+  end
+  module_function :exit
+end
+
+module Process
+  def self.exit(status = 0)
+    ::Kernel.exit(status)
+  end
+
+  def self.argv0
+    @argv0 ||= ($0 ? $0.dup.freeze : "".freeze)
+  end
+end
+
 

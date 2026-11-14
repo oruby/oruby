@@ -22,6 +22,14 @@ func oneLiner(eval string) error {
 	defer mrb.Close()
 
 	_, err := mrb.Eval(eval)
+	if exc := mrb.Exc(); exc != nil && exc.IsKindOf(mrb.ClassGet("SystemExit")) {
+		code := 0
+		statusVal := mrb.Call(exc.Value(), "status")
+		if statusVal.IsInteger() {
+			code = statusVal.Int()
+		}
+		os.Exit(code)
+	}
 	return err
 }
 

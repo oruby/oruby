@@ -369,6 +369,18 @@ _mrb_yield_with_class(mrb_state *mrb, mrb_value b, mrb_int argc, const mrb_value
 }
 
 static mrb_value
+_mrb_caller_receiver(mrb_state *mrb) {
+  if (mrb->c->ci > mrb->c->cibase + 1) {
+    mrb_callinfo *prev = mrb->c->ci - 2;
+    if (prev->stack) {
+      return prev->stack[0];
+    }
+  }
+  return mrb_nil_value();
+}
+
+
+static mrb_value
 _mrb_load_nstring_cxt(mrb_state *mrb, const char *s, size_t len, mrb_ccontext *c) {
   struct mrb_jmpbuf *prev_jmp = mrb->jmp;
   struct mrb_jmpbuf c_jmp;

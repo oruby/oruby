@@ -5,24 +5,27 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/oruby/oruby"
 )
 
 type Args struct {
-	rfp         string
-	cmdline     string
-	fname       bool
-	mrbfile     bool
-	checkSyntax bool
-	verbose     bool
-	debug       bool
-	libs        []string
-	scriptArgs  []string
-	eline       string
-	dashN       bool
-	dashP       bool
+	rfp            string
+	cmdline        string
+	fname          bool
+	mrbfile        bool
+	checkSyntax    bool
+	verbose        bool
+	debug          bool
+	libs           []string
+	scriptArgs     []string
+	eline          string
+	dashN          bool
+	dashP          bool
+	backtraceLimit string
+	warningLevel   int
 }
 
 func usage(name string) {
@@ -109,9 +112,28 @@ func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
 			case arg == "-p":
 				args.dashP = true
 			case strings.HasPrefix(arg, "--disable") || strings.HasPrefix(arg, "--enable"):
-			case strings.HasPrefix(arg, "-W"):
 			case arg == "-w":
 				args.verbose = true
+				args.warningLevel = 2
+			case arg == "-W0":
+				args.warningLevel = 0
+			case arg == "-W1":
+				args.warningLevel = 1
+			case arg == "-W2" || arg == "-W":
+				args.warningLevel = 2
+			case strings.HasPrefix(arg, "-W"):
+				if len(arg) > 2 {
+					if lvl, err := strconv.Atoi(arg[2:]); err == nil {
+						args.warningLevel = lvl
+					}
+				}
+			case strings.HasPrefix(arg, "--backtrace-limit="):
+				args.backtraceLimit = strings.TrimPrefix(arg, "--backtrace-limit=")
+			case arg == "--backtrace-limit":
+				if i+1 < len(rawArgs) {
+					i++
+					args.backtraceLimit = rawArgs[i]
+				}
 			case strings.HasPrefix(arg, "-i"):
 			case arg == "-n" || arg == "-p" || arg == "-l" || arg == "-a":
 			default:
@@ -147,7 +169,7 @@ func exitFailure(format string, v ...any) int {
 }
 
 func main() {
-	args := Args{}
+	args := Args{warningLevel: -1}
 	var v oruby.MrbValue
 	exitCode := 0
 	defer func() { os.Exit(exitCode) }()
@@ -187,6 +209,22 @@ func main() {
 		cmdline = "-e"
 	}
 	mrb.SetGV("$0", cmdline)
+	mrb.Eval(fmt.Sprintf(`Process.instance_variable_set(:@argv0, %q.dup.freeze)`, cmdline))
+	if args.backtraceLimit != "" {
+		if n, err := strconv.Atoi(args.backtraceLimit); err == nil {
+			mrb.SetGV("$__backtrace_limit__", n)
+		}
+	}
+	switch args.warningLevel {
+	case 0:
+		mrb.SetGV("$VERBOSE", mrb.NilValue())
+	case 1:
+		mrb.SetGV("$VERBOSE", mrb.FalseValue())
+	case 2:
+		mrb.SetGV("$VERBOSE", mrb.TrueValue())
+	default:
+		mrb.SetGV("$VERBOSE", mrb.FalseValue())
+	}
 
 	/* Load libraries */
 	for _, lib := range args.libs {
@@ -302,4 +340,6 @@ end
 		exitCode = 0
 		return
 	}
+
+	mrb.RunAtExitHandlers()
 }

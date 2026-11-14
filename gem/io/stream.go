@@ -342,9 +342,20 @@ func ioGetbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
 
-	rb := bufio.NewReader(r)
-	b, err := rb.Peek(1)
-	if errors.Is(err, io.EOF) {
+	if br, ok := r.(io.ByteReader); ok {
+		b, err := br.ReadByte()
+		if errors.Is(err, io.EOF) {
+			return mrb.NilValue()
+		}
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return oruby.Int(int(b))
+	}
+
+	var b [1]byte
+	n, err := r.Read(b[:])
+	if n == 0 || errors.Is(err, io.EOF) {
 		return mrb.NilValue()
 	}
 	if err != nil {
@@ -358,15 +369,38 @@ func ioGetc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok || r == nil {
 		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
-	rb := bufio.NewReader(r)
-	b, _, err := rb.ReadRune()
-	if errors.Is(err, io.EOF) {
+
+	if rr, ok := r.(io.RuneReader); ok {
+		rn, _, err := rr.ReadRune()
+		if errors.Is(err, io.EOF) {
+			return mrb.NilValue()
+		}
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(string(rn))
+	}
+
+	var b [4]byte
+	n, err := r.Read(b[:1])
+	if n == 0 || errors.Is(err, io.EOF) {
 		return mrb.NilValue()
 	}
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	return mrb.StrNew(string(b))
+	need := 1
+	if b[0] >= 0xC0 && b[0] < 0xE0 {
+		need = 2
+	} else if b[0] >= 0xE0 && b[0] < 0xF0 {
+		need = 3
+	} else if b[0] >= 0xF0 {
+		need = 4
+	}
+	if need > 1 {
+		_, _ = io.ReadFull(r, b[1:need])
+	}
+	return mrb.StrNew(string(b[:need]))
 }
 
 func setLastLine(mrb *oruby.MrbState, self oruby.Value, line string) oruby.Value {

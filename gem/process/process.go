@@ -549,6 +549,14 @@ func procExit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	default:
 		code = status.Int()
 	}
+	sysExitClass := mrb.ClassGet("SystemExit")
+	if !sysExitClass.IsNil() {
+		exc, err := mrb.ObjNew(sysExitClass, code)
+		if err == nil {
+			mrb.IVSet(exc, mrb.Intern("@status"), mrb.FixnumValue(code))
+			return mrb.RaiseObj(exc)
+		}
+	}
 	mrb.RunAtExitHandlers()
 	os.Exit(code)
 	return mrb.NilValue()

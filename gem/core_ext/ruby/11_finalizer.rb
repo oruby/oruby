@@ -13,7 +13,8 @@ module ObjectSpace
     if callable.is_a?(Method) && callable.receiver.equal?(obj)
       warn_self = true
     elsif callable.is_a?(Proc)
-      if (callable.binding.eval("self") rescue nil).equal?(obj)
+      caller_recv = _caller_receiver rescue nil
+      if caller_recv && caller_recv.equal?(obj)
         warn_self = true
       end
     end
@@ -49,8 +50,9 @@ module ObjectSpace
         procs.each do |pr|
           begin
             pr.call(k)
+          rescue SystemExit
           rescue Exception => e
-            warn "warning: Exception in finalizer: #{e.message} (#{e.class})" if $VERBOSE
+            warn "warning: Exception in finalizer: #{e.message} (#{e.class})" unless $VERBOSE.nil?
           end
         end
       end

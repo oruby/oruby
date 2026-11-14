@@ -46,6 +46,13 @@ end
 			panic("core_ext read error: " + err.Error())
 		}
 
+		if mrb.ClassDefined("ObjectSpace") {
+			mObjSpace := mrb.ModuleGet("ObjectSpace")
+			mrb.DefineClassMethod(mObjSpace, "_caller_receiver", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+				return mrb.CallerReceiver()
+			}, oruby.ArgsNone())
+		}
+
 		c := mrb.MrbCcontextNew()
 		defer c.Free()
 
