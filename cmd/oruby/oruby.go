@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -20,8 +19,8 @@ type Args struct {
 	verbose     bool
 	debug       bool
 	libs        []string
-	// args      []string // os.Args used instead
-	eline string
+	scriptArgs  []string
+	eline       string
 }
 
 func usage(name string) {
@@ -45,46 +44,86 @@ func usage(name string) {
 }
 
 func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
-	flag.BoolVar(&args.mrbfile, "b", false, "load and execute RiteBinary (mrb) file")
-	flag.BoolVar(&args.checkSyntax, "c", false, "check syntax only")
-	flag.BoolVar(&args.debug, "d", false, "set debugging flags (set $DEBUG to true)")
-	flag.StringVar(&args.eline, "e", "", "one line of script")
-	rlib := flag.String("r", "", "load the library before executing your script")
-	v := flag.Bool("v", false, "print version number, then run in verbose mode")
-	flag.BoolVar(&args.verbose, "verbose", false, "run in verbose mode")
-	version := flag.Bool("version", false, "print the version")
-	copyright := flag.Bool("copyright", false, "print the copyright")
+	rawArgs := os.Args[1:]
+	var scriptArgs []string
+	var rfp string
+	var cmdlines []string
 
-	flag.Parse()
+	for i := 0; i < len(rawArgs); i++ {
+		arg := rawArgs[i]
+		if arg == "--" {
+			if rfp == "" && len(cmdlines) == 0 && i+1 < len(rawArgs) {
+				rfp = rawArgs[i+1]
+				scriptArgs = rawArgs[i+2:]
+			} else {
+				scriptArgs = append(scriptArgs, rawArgs[i+1:]...)
+			}
+			break
+		}
 
-	if *version {
-		mrb.ShowVersion()
-		return false, nil
-	}
-	if *copyright {
-		mrb.ShowCopyright()
-		return false, nil
-	}
+		if (rfp != "" || len(cmdlines) > 0) && (!strings.HasPrefix(arg, "-") || arg == "-") {
+			scriptArgs = append(scriptArgs, rawArgs[i:]...)
+			break
+		}
 
-	if *v {
-		mrb.ShowVersion()
-		args.verbose = true
-	}
-
-	if args.eline != "" {
-		args.cmdline = args.cmdline + "\n" + args.eline
-	}
-
-	if rlib != nil {
-		if *rlib == "" {
-			return false, fmt.Errorf("%v: No library specified for -r\n", os.Args[0])
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			switch {
+			case arg == "-b":
+				args.mrbfile = true
+			case arg == "-c":
+				args.checkSyntax = true
+			case arg == "-d":
+				args.debug = true
+			case arg == "-v":
+				mrb.ShowVersion()
+				args.verbose = true
+			case arg == "--verbose":
+				args.verbose = true
+			case arg == "--version":
+				mrb.ShowVersion()
+				os.Exit(0)
+			case arg == "--copyright":
+				mrb.ShowCopyright()
+				os.Exit(0)
+			case arg == "-e":
+				if i+1 < len(rawArgs) {
+					i++
+					cmdlines = append(cmdlines, rawArgs[i])
+				}
+			case strings.HasPrefix(arg, "-e"):
+				cmdlines = append(cmdlines, arg[2:])
+			case arg == "-r":
+				if i+1 < len(rawArgs) {
+					i++
+					args.libs = append(args.libs, rawArgs[i])
+				}
+			case strings.HasPrefix(arg, "-r"):
+				args.libs = append(args.libs, arg[2:])
+			case strings.HasPrefix(arg, "--disable") || strings.HasPrefix(arg, "--enable"):
+			case strings.HasPrefix(arg, "-W"):
+			case arg == "-w":
+				args.verbose = true
+			case strings.HasPrefix(arg, "-i"):
+			case arg == "-n" || arg == "-p" || arg == "-l" || arg == "-a":
+			default:
+			}
+		} else {
+			if rfp == "" && len(cmdlines) == 0 {
+				rfp = arg
+			} else {
+				scriptArgs = append(scriptArgs, arg)
+			}
 		}
 	}
 
-	if len(flag.Args()) > 0 {
-		args.rfp = flag.Args()[0]
-		args.cmdline = args.rfp
-	} // else if stdin {}
+	args.rfp = rfp
+	if len(cmdlines) > 0 {
+		args.eline = strings.Join(cmdlines, "\n")
+		args.cmdline = args.eline
+	} else if rfp != "" {
+		args.cmdline = rfp
+	}
+	args.scriptArgs = scriptArgs
 
 	if args.cmdline == "" && args.rfp == "" {
 		return false, nil
@@ -119,13 +158,14 @@ func main() {
 	}
 
 	ai := mrb.GCArenaSave()
-	mrb.DefineGlobalConst("ARGV", mrb.Value(os.Args))
+	mrb.DefineGlobalConst("ARGV", mrb.Value(args.scriptArgs))
 	mrb.GVSet(mrb.Intern("$DEBUG"), mrb.BoolValue(args.debug))
+	mrb.GVSet(mrb.Intern("$VERBOSE"), mrb.BoolValue(args.verbose))
 
 	c := mrb.MrbCcontextNew()
 	defer c.Free()
 
-	c.SetDumpResult(args.verbose)
+	c.SetDumpResult(false)
 	c.SetNoExec(args.checkSyntax)
 
 	/* Set $0 */
@@ -141,6 +181,9 @@ func main() {
 
 	/* Load libraries */
 	for _, lib := range args.libs {
+		if lib == "rubygems" {
+			continue
+		}
 		var err error
 		c.Filename(lib)
 		if strings.EqualFold(filepath.Ext(lib), ".mrb") {
@@ -174,6 +217,11 @@ func main() {
 	}
 
 	if err != nil {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file or directory") {
+			fmt.Fprintf(os.Stderr, "%s: cannot load such file -- %s (LoadError)\n", os.Args[0], args.rfp)
+			exitCode = 1
+			return
+		}
 		exitCode = exitFailure("%v: %v\n", os.Args[0], err)
 		return
 	}
@@ -190,5 +238,7 @@ func main() {
 
 	if args.checkSyntax {
 		fmt.Println("Syntax OK")
+		exitCode = 0
+		return
 	}
 }

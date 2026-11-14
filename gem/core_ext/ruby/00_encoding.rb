@@ -23,6 +23,14 @@ module Encoding
 end
 
 class << Encoding
+  def locale_charmap
+    lc = ENV["LC_ALL"] || ENV["LC_CTYPE"] || ENV["LANG"] || ""
+    if lc == "C" || lc == "POSIX"
+      "US-ASCII"
+    else
+      "UTF-8"
+    end
+  end
   def list
     [find("UTF-8"), find("US-ASCII"), find("ASCII-8BIT"), find("UTF-16BE"), find("UTF-16LE")]
   end
