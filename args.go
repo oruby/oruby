@@ -75,7 +75,7 @@ func (a RArgs) SetItem(index int, v MrbValue) {
 
 // ItemDef returns value item at index, or default value if arg is nil
 func (a RArgs) ItemDef(index int, def MrbValue) Value {
-	if index < 0 || index >= len(a.items) {
+	if index < 0 || index >= len(a.items) || a.items[index].IsNil() {
 		return def.Value()
 	}
 
@@ -85,7 +85,7 @@ func (a RArgs) ItemDef(index int, def MrbValue) Value {
 // ItemDefFunc returns value item at index, or default value from func f
 // if arg is nil
 func (a RArgs) ItemDefFunc(index int, defF func() MrbValue) Value {
-	if index < 0 || index >= len(a.items) {
+	if index < 0 || index >= len(a.items) || a.items[index].IsNil() {
 		return defF().Value()
 	}
 
@@ -94,7 +94,7 @@ func (a RArgs) ItemDefFunc(index int, defF func() MrbValue) Value {
 
 // ItemDefInt returns value as int at index, or default int value if arg is nil
 func (a RArgs) ItemDefInt(index, def int) int {
-	if index < 0 || index >= len(a.items) {
+	if index < 0 || index >= len(a.items) || a.items[index].IsNil() {
 		return def
 	}
 
@@ -103,7 +103,7 @@ func (a RArgs) ItemDefInt(index, def int) int {
 
 // ItemDefBool returns value as bool at index, or default bool value if arg is nil
 func (a RArgs) ItemDefBool(index int, def bool) bool {
-	if index < 0 || index >= len(a.items) {
+	if index < 0 || index >= len(a.items) || a.items[index].IsNil() {
 		return def
 	}
 

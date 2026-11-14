@@ -26,6 +26,8 @@ type Context struct {
 	wakeupChan   chan struct{}
 }
 
+var activeContexts sync.Map
+
 func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, proc := mrb.GetArgsWithBlock()
 
@@ -63,7 +65,10 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	c.alive = true
-	c.mrb.CVSet(mrb.ClassGet("Thread"), mrb.Intern("@@current"), c.mrb.Value(c))
+	threadClass := c.mrb.ClassGet("Thread")
+	if !threadClass.IsNil() {
+		c.mrb.CVSet(threadClass, c.mrb.Intern("@@current"), c.mrb.DataWrapInterface(threadClass, c).Value())
+	}
 	c.mrb.WaitGroup.Add(1)
 	go c.worker()
 
@@ -144,6 +149,9 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func (c *Context) worker() {
+	activeContexts.Store(c.mrb, c)
+	defer activeContexts.Delete(c.mrb)
+
 	c.result = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
 	c.err = c.mrb.Err()
 	c.mrb.GCProtect(c.result)

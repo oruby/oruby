@@ -3,8 +3,10 @@ package io
 import "C"
 import (
 	"bufio"
+	"errors"
 	"io"
 	"os"
+	"syscall"
 
 	"github.com/oruby/oruby"
 )
@@ -160,59 +162,150 @@ func closeStream(s interface{}, isFilePath bool) error {
 	return nil
 }
 
+func parseCopyStreamInt(mrb *oruby.MrbState, v oruby.Value) (int64, error) {
+	if v.IsInteger() {
+		return int64(v.Int()), nil
+	}
+	if mrb.RespondTo(v, mrb.Intern("to_int")) {
+		res, err := mrb.Funcall(v, mrb.Intern("to_int"))
+		if err != nil {
+			return 0, err
+		}
+		if res.IsInteger() {
+			return int64(res.Int()), nil
+		}
+		return 0, oruby.ETypeError("can't convert %v into Integer", mrb.TypeName(res))
+	}
+	return 0, oruby.ETypeError("can't convert %v into Integer", mrb.TypeName(v))
+}
+
+func resolveStreamArg(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
+	if v.IsString() || v.IsData() {
+		return v, nil
+	}
+	if mrb.RespondTo(v, mrb.Intern("to_path")) {
+		res, err := mrb.Funcall(v, mrb.Intern("to_path"))
+		if err != nil {
+			return v, err
+		}
+		if !res.IsString() {
+			return v, oruby.ETypeError("can't convert %v into String", mrb.TypeName(res))
+		}
+		return res, nil
+	}
+	if mrb.RespondTo(v, mrb.Intern("to_io")) {
+		res, err := mrb.Funcall(v, mrb.Intern("to_io"))
+		if err != nil {
+			return v, err
+		}
+		return res, nil
+	}
+	return v, nil
+}
+
 func ioCopyStream(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	from := args.Item(0)
 	to := args.Item(1)
 
-	src, err := getStream(mrb, os.O_RDONLY, from)
-	if err != nil {
-		return mrb.RaiseError(err)
-	}
-	defer closeStream(src, from.IsString())
-
-	dest, err := getStream(mrb, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, to)
+	fromResolved, err := resolveStreamArg(mrb, from)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	offset := int64(args.ItemDefInt(3, 0))
-	if offset > 0 {
+	streamFn := getStream
+	if data := mrb.GemData("io"); data != nil {
+		if ioData, ok := data.(*IoData); ok && ioData.GetStream != nil {
+			streamFn = ioData.GetStream
+		}
+	}
+
+	src, err := streamFn(mrb, os.O_RDONLY, fromResolved)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	defer closeStream(src, fromResolved.IsString())
+
+	toResolved, err := resolveStreamArg(mrb, to)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	dest, err := streamFn(mrb, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, toResolved)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+
+	var offset int64
+	offsetSpecified := false
+	if args.Len() > 3 && !args.Item(3).IsNil() {
+		offset, err = parseCopyStreamInt(mrb, args.Item(3))
+		if err != nil {
+			_ = closeStream(dest, toResolved.IsString())
+			return mrb.RaiseError(err)
+		}
+		offsetSpecified = true
+	}
+
+	if offsetSpecified {
 		if seeker, ok := src.(io.Seeker); ok {
 			// If IO object, and offset is set copy_stream doesn’t move the current file offset
-			if !from.IsString() {
+			if !fromResolved.IsString() {
 				oldPos, err := seeker.Seek(0, io.SeekCurrent)
 				if err != nil {
-					_ = closeStream(dest, to.IsString())
+					_ = closeStream(dest, toResolved.IsString())
 					return mrb.RaiseError(err)
 				}
 				defer func() { _, _ = seeker.Seek(oldPos, io.SeekStart) }()
 			}
 
 			if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
-				_ = closeStream(dest, to.IsString())
+				_ = closeStream(dest, toResolved.IsString())
 				return mrb.RaiseError(err)
 			}
 		} else {
-			mrb.EArgumentError().Raise("source does not support offset seek")
+			_ = closeStream(dest, toResolved.IsString())
+			return mrb.EArgumentError().Raise("source does not support offset seek")
 		}
 	}
 
-	var ret int64
+	var length int64 = -1
+	if args.Len() > 2 && !args.Item(2).IsNil() {
+		length, err = parseCopyStreamInt(mrb, args.Item(2))
+		if err != nil {
+			_ = closeStream(dest, toResolved.IsString())
+			return mrb.RaiseError(err)
+		}
+	}
 
-	length := int64(args.ItemDefInt(2, -1))
+	writer, ok := dest.(io.Writer)
+	if !ok || writer == nil {
+		_ = closeStream(dest, toResolved.IsString())
+		return RaiseIOError(mrb, "destination is not writable")
+	}
+
+	reader, ok := src.(io.Reader)
+	if !ok || reader == nil {
+		_ = closeStream(dest, toResolved.IsString())
+		return RaiseIOError(mrb, "source is not readable")
+	}
+
+	var ret int64
 	if length < 0 {
-		ret, err = io.Copy(dest.(io.Writer), src.(io.Reader))
+		ret, err = io.Copy(writer, reader)
 	} else {
-		ret, err = io.CopyN(dest.(io.Writer), src.(io.Reader), length)
+		ret, err = io.Copy(writer, io.LimitReader(reader, length))
 	}
 	if err != nil {
-		_ = closeStream(dest, to.IsString())
+		_ = closeStream(dest, toResolved.IsString())
+		if errors.Is(err, syscall.EBADF) || errors.Is(err, os.ErrClosed) {
+			return RaiseIOError(mrb, err.Error())
+		}
 		return mrb.RaiseError(err)
 	}
 
 	// Destination could error on close, discarding writes
-	if err = closeStream(dest, to.IsString()); err != nil {
+	if err = closeStream(dest, toResolved.IsString()); err != nil {
 		return mrb.RaiseError(err)
 	}
 

@@ -45,17 +45,63 @@ func init() {
 		mrb.DefineClass("ThreadError", mrb.EStandardErrorClass())
 		mrb.DefineClass("ClosedQueueError", mrb.ClassGet("StopIteration"))
 
+		mrb.DefineGlobalFunction("sleep", threadSleep, mrb.ArgsOpt(1))
+		mrb.DefineModuleFunction(mrb.KernelModule(), "sleep", threadSleep, mrb.ArgsOpt(1))
+
 		return nil
 	})
 }
 
 func threadMain(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.CVGet(mrb.ClassOf(self), mrb.Intern("@@main"))
+}
+
+func threadPass(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runtime.Gosched()
 	return oruby.Nil
 }
 
-func threadPass(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.CVGet(mrb.ClassOf(self), mrb.Intern("@@main"))
+func threadSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	t := mrb.GetArgsFirst()
+	var duration time.Duration
+	if t.IsNil() {
+		duration = time.Duration(math.MaxInt64)
+	} else {
+		duration = time.Duration(int64(t.Float64() * float64(time.Second)))
+	}
+
+	var c *Context
+	if val, ok := activeContexts.Load(mrb); ok {
+		c = val.(*Context)
+	}
+
+	if c != nil {
+		c.Lock()
+		c.sleeping = true
+		c.Unlock()
+
+		defer func() {
+			c.Lock()
+			c.sleeping = false
+			c.Unlock()
+		}()
+	}
+
+	start := time.Now()
+	if c != nil && c.mrbCaller != nil {
+		select {
+		case <-mrb.ExitChan():
+		case <-c.mrbCaller.ExitChan():
+		case <-time.After(duration):
+		}
+	} else {
+		select {
+		case <-mrb.ExitChan():
+		case <-time.After(duration):
+		}
+	}
+
+	return mrb.FloatValue(float64(time.Since(start)) / float64(time.Second))
 }
 
 func threadKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
