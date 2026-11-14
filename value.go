@@ -70,7 +70,7 @@ func checkType(valueType, mustBeType Type) {
 func (v Value) Int() int {
 	switch v.Type() {
 	case MrbTTInteger:
-		return int(C._mrb_fixnum(v.v))
+		return int(*(*int64)(unsafe.Pointer(&v.v)))
 	case MrbTTSymbol:
 		return int(v.Symbol())
 	case MrbTTFalse:
@@ -187,8 +187,13 @@ func (v Value) TestFlag(flag uint32) bool {
 // MrbType returns type of oruby value
 func MrbType(v MrbValue) Type { return v.Type() }
 
-// MrbPtr return pointer in oruby value
-func MrbPtr(v MrbValue) uintptr { return uintptr(C._mrb_ptr(v.Value().v)) }
+// Pointer returns direct pointer from value without CGO overhead
+func (v Value) Pointer() uintptr {
+	return *(*uintptr)(unsafe.Pointer(&v.v))
+}
+
+// MrbPtr return pointer in oruby value without CGO overhead
+func MrbPtr(v MrbValue) uintptr { return v.Value().Pointer() }
 
 // MrbFloat returns float form value
 func MrbFloat(v MrbValue) float64 { return float64(C._mrb_float(v.Value().v)) }
@@ -320,11 +325,21 @@ func (mrb *MrbState) BytesValue(buf []byte) Value {
 // FloatPool pool
 func (mrb *MrbState) FloatPool(f float64) Value { return mrb.FloatValue(f) }
 
-// FixnumValue converts int to Value
-func (mrb *MrbState) FixnumValue(n int) Value { return Value{C.mrb_fixnum_value(C.mrb_int(n))} }
+// FixnumValue converts int to Value without CGO overhead
+func (mrb *MrbState) FixnumValue(n int) Value {
+	var cv C.mrb_value
+	cv.tt = C.MRB_TT_INTEGER
+	*(*int64)(unsafe.Pointer(&cv)) = int64(n)
+	return Value{cv}
+}
 
-// MrbFixnumValue finxnum value
-func MrbFixnumValue(i int) Value { return Value{C.mrb_fixnum_value(C.mrb_int(i))} }
+// MrbFixnumValue fixnum value without CGO overhead
+func MrbFixnumValue(i int) Value {
+	var cv C.mrb_value
+	cv.tt = C.MRB_TT_INTEGER
+	*(*int64)(unsafe.Pointer(&cv)) = int64(i)
+	return Value{cv}
+}
 
 // MrbSymbolValue MigrateTo from symbol
 func MrbSymbolValue(i MrbSym) Value { return Value{C.mrb_symbol_value(C.mrb_sym(i))} }
@@ -390,12 +405,16 @@ func Int64(i int64) Value {
 	return Value{C.mrb_fixnum_value(C.mrb_int(i))}
 }
 
-// BoolValue from boolen
+// BoolValue from boolean without CGO overhead
 func (mrb *MrbState) BoolValue(b bool) Value {
+	var cv C.mrb_value
 	if b {
-		return Value{C.mrb_true_value()}
+		cv.tt = C.MRB_TT_TRUE
+	} else {
+		cv.tt = C.MRB_TT_FALSE
 	}
-	return Value{C.mrb_false_value()}
+	*(*int64)(unsafe.Pointer(&cv)) = 1
+	return Value{cv}
 }
 
 // Predefined helper values

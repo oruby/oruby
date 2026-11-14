@@ -165,3 +165,13 @@ func (mrb *MrbState) MethodExists(cl RClass, id MrbSym) bool {
 func (mrb *MrbState) ClassReal(cl RClass) RClass {
 	return RClass{C.mrb_class_real(cl.p), mrb}
 }
+
+// VmDefineClass defines or reopens a class
+func (mrb *MrbState) VmDefineClass(outer, super Value, id MrbSym) RClass {
+	return RClass{C.mrb_vm_define_class(mrb.p, outer.v, super.v, C.mrb_sym(id)), mrb}
+}
+
+// VmDefineModule defines or reopens a module
+func (mrb *MrbState) VmDefineModule(outer Value, id MrbSym) RClass {
+	return RClass{C.mrb_vm_define_module(mrb.p, outer.v, C.mrb_sym(id)), mrb}
+}

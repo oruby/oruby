@@ -976,6 +976,12 @@ func go_mrb_proc_callback(mrbidx C.mrb_int, self C.mrb_value) C.mrb_value {
 
 	mrb.Lock()
 	f := mrb.mrbProcs[C._mrb_ptr(self)]
+	if f == nil {
+		currProc := C._mrb_current_proc(mrb.p)
+		if currProc != nil {
+			f = mrb.mrbProcs[unsafe.Pointer(currProc)]
+		}
+	}
 	mrb.Unlock()
 
 	if f == nil {
@@ -2679,10 +2685,10 @@ func (mrb *MrbState) Context() MrbContext { return MrbContext{mrb.p.c, mrb} }
 func (mrb *MrbState) NilValue() Value { return nilValue }
 
 // FalseValue helper
-func (mrb *MrbState) FalseValue() Value { return Value{C.mrb_false_value()} }
+func (mrb *MrbState) FalseValue() Value { return False }
 
 // TrueValue helper
-func (mrb *MrbState) TrueValue() Value { return Value{C.mrb_true_value()} }
+func (mrb *MrbState) TrueValue() Value { return True }
 
 // UndefValue helper
 func (mrb *MrbState) UndefValue() Value { return Value{C.mrb_undef_value()} }

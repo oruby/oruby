@@ -42,4 +42,6 @@ func TestParse(t *testing.T) {
 	assert(t, "parse object", `JSON::parse('{"foo": "bar"}') == {"foo"=>"bar"}`)
 	assert(t, "parse null", `JSON::parse('{"foo": null}') == {"foo"=>nil}`)
 	assert(t, "parse array", `JSON::parse('[true, "foo"]')[1] == "foo"`)
+	assert(t, "parse numbers", `JSON::parse('[1, 2, 3]') == [1, 2, 3]`)
+	assert(t, "parse nested", `JSON::parse('{"a": {"b": [1, false]}}')["a"]["b"][0] == 1`)
 }

@@ -8,6 +8,7 @@ import (
 	//_ "github.com/oruby/oruby/gem/database"
 	_ "github.com/oruby/oruby/gem/env"
 	_ "github.com/oruby/oruby/gem/erubi"
+	_ "github.com/oruby/oruby/gem/http"
 	_ "github.com/oruby/oruby/gem/io"
 	_ "github.com/oruby/oruby/gem/io/file"
 	_ "github.com/oruby/oruby/gem/io/popen"

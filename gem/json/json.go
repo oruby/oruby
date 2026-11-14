@@ -1,7 +1,8 @@
 package json
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 
 	"github.com/oruby/oruby"
 )
@@ -15,27 +16,8 @@ func init() {
 		jsonModule.DefineClassMethod("pretty_generate", mrbJSONPrettyGenerate, mrb.ArgsArg(1, 1)) // pretty_generate(obj, opts = nil)
 		jsonModule.DefineClassMethod("fast_generate", mrbJSONGenerate, mrb.ArgsArg(1, 1))         // fast_generate(obj, opts = nil)
 
-		// indent: a string used to indent levels (default: "),
-		// space: a string that is put after, a : or , delimiter (default: "),
-		// space_before: a string that is put before a : pair delimiter (default: "),
-		// object_nl: a string that is put at the end of a JSON object (default: "),
-		// array_nl: a string that is put at the end of a JSON array (default: "),
-		// allow_nan: true if NaN, Infinity, and -Infinity should be generated, otherwise an exception is thrown if these values are encountered. This options defaults to false.
-		// max_nesting: The maximum depth of nesting allowed in the data structures from which JSON is to be generated. Disable depth checking with :max_nesting => false, it defaults to 100.
-
-		//mrb.Define_class_func(jsonModule,  "load", mrb_json_stringify, ARGS_REQ(1)); // load(source, proc = nil, options = {})
 		jsonModule.DefineClassMethod("parse", mrbJSONParse, mrb.ArgsArg(1, 1))  // parse(source, opts = {})
 		jsonModule.DefineClassMethod("parse!", mrbJSONParse, mrb.ArgsArg(1, 1)) // parse(source, opts = {})
-
-		// max_nesting:      The maximum depth of nesting allowed in the parsed data structures. Disable depth checking with :max_nesting => false. It defaults to 100.
-		// allow_nan:        If set to true, allow NaN, Infinity and -Infinity in defiance of RFC 4627 to be parsed by the Parser. This option defaults to false.
-		// symbolize_names:  If set to true, returns symbols for the names (keys) in a JSON object. Otherwise strings are returned. Strings are the default.
-		// create_additions: If set to false, the Parser doesn't create additions even if a matching class and ::create_id was found. This option defaults to true.
-		// object_class:     Defaults to Hash
-		// array_class:      Defaults to Array
-		// max_nesting: The maximum depth of nesting allowed in the parsed data structures. Enable depth checking with :max_nesting => anInteger. The parse! methods defaults to not doing max depth checking: This can be dangerous if someone wants to fill up your stack.
-		// allow_nan: If set to true, allow NaN, Infinity, and -Infinity in defiance of RFC 4627 to be parsed by the Parser. This option defaults to true.
-		// create_additions: If set to false, the Parser doesn't create additions even if a matching class and ::create_id was found. This option defaults to true.
 		return nil
 	})
 }
@@ -44,50 +26,61 @@ func mrbJSONStringify(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrbJSONGenerate(mrb, self)
 }
 
-func scan(mrb *oruby.MrbState, v oruby.MrbValue, in interface{}) (interface{}, error) {
-	if err := mrb.Scan(v, in); err != nil {
-		return nil, err
-	}
-	return in, nil
-}
-
 func scanValue(mrb *oruby.MrbState, v oruby.MrbValue) (interface{}, error) {
 	if v.IsNil() {
 		return nil, nil
-	} else if v.Type() == oruby.MrbTTFalse || v.Type() == oruby.MrbTTTrue {
-		in := false
-		return scan(mrb, v, &in)
-	} else if v.Type() == oruby.MrbTTUndef || v.Type() == oruby.MrbTTFree {
-		var in interface{}
-		return scan(mrb, v, &in)
-	} else if v.Type() == oruby.MrbTTSymbol {
-		in := ""
-		v2 := mrb.SymStr(mrb.ObjToSym(v))
-		return scan(mrb, v2, &in)
-	} else if v.Type() == oruby.MrbTTArray {
-		var in interface{}
-		return scan(mrb, v, &in)
-	} else if v.Type() < oruby.MrbTTHasBasic {
-		in := ""
-		return scan(mrb, v, &in)
-	} else if v.Type() == oruby.MrbTTHash {
+	}
+	val := v.Value()
+	switch val.Type() {
+	case oruby.MrbTTFalse:
+		return false, nil
+	case oruby.MrbTTTrue:
+		return true, nil
+	case oruby.MrbTTInteger:
+		return val.Int(), nil
+	case oruby.MrbTTFloat:
+		return val.Float64(), nil
+	case oruby.MrbTTSymbol:
+		return mrb.SymName(val.Symbol()), nil
+	case oruby.MrbTTString:
+		return val.String(), nil
+	case oruby.MrbTTArray:
+		cnt := oruby.RArrayLen(val)
+		arr := make([]interface{}, cnt)
+		for i := 0; i < cnt; i++ {
+			elem := mrb.AryRef(val, i)
+			elemVal, err := scanValue(mrb, elem)
+			if err != nil {
+				return nil, err
+			}
+			arr[i] = elemVal
+		}
+		return arr, nil
+	case oruby.MrbTTHash:
 		in := make(map[string]interface{})
-		keys := mrb.HashKeys(v)
+		keys := mrb.HashKeys(val)
 		kcnt := oruby.RArrayLen(keys)
 		for i := 0; i < kcnt; i++ {
 			key := mrb.AryRef(keys, i)
-			val := mrb.HashGet(v, key)
-			if key.Type() != oruby.MrbTTString {
-				in[mrb.StringCstr(mrb.ObjAsString(key))] = mrb.Intf(val)
-			} else {
-				in[mrb.StringCstr(key)] = mrb.Intf(val)
+			hashVal := mrb.HashGet(val, key)
+			vVal, err := scanValue(mrb, hashVal)
+			if err != nil {
+				return nil, err
 			}
+			var keyStr string
+			if key.Type() == oruby.MrbTTString {
+				keyStr = key.String()
+			} else if key.Type() == oruby.MrbTTSymbol {
+				keyStr = mrb.SymName(key.Symbol())
+			} else {
+				keyStr = mrb.ObjAsString(key).String()
+			}
+			in[keyStr] = vVal
 		}
 		return in, nil
+	default:
+		return mrb.Intf(v), nil
 	}
-
-	in := make(map[string]interface{})
-	return scan(mrb, v, in)
 }
 
 func mrbJSONGenerate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -97,7 +90,7 @@ func mrbJSONGenerate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.Raisef(mrb.EArgumentError(), "JSON::generate scan - %v", err)
 	}
-	ret, err := json.Marshal(in)
+	ret, err := json.Marshal(in, json.Deterministic(true), jsontext.EscapeForHTML(true))
 	if err != nil {
 		return mrb.Raisef(mrb.EArgumentError(), "JSON::generate - %v", err)
 	}
@@ -112,12 +105,44 @@ func mrbJSONPrettyGenerate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue
 	if err != nil {
 		return mrb.Raisef(mrb.EArgumentError(), "JSON::generate scan - %v", err)
 	}
-	ret, err := json.MarshalIndent(in, "", "  ")
+	ret, err := json.Marshal(in, json.Deterministic(true), jsontext.EscapeForHTML(true), jsontext.WithIndent("  "))
 	if err != nil {
 		return mrb.Raisef(mrb.EArgumentError(), "JSON::generate - %v", err)
 	}
 
 	return mrb.Value(string(ret))
+}
+
+func goToValue(mrb *oruby.MrbState, v interface{}) oruby.Value {
+	if v == nil {
+		return mrb.NilValue()
+	}
+	switch val := v.(type) {
+	case bool:
+		return mrb.BoolValue(val)
+	case int:
+		return mrb.FixnumValue(val)
+	case int64:
+		return mrb.FixnumValue(int(val))
+	case float64:
+		return mrb.FloatValue(val)
+	case string:
+		return mrb.StrNew(val)
+	case []interface{}:
+		arr := mrb.AryNewCapa(len(val))
+		for _, item := range val {
+			mrb.AryPush(arr, goToValue(mrb, item))
+		}
+		return arr.Value()
+	case map[string]interface{}:
+		h := mrb.HashNewCapa(len(val))
+		for k, v := range val {
+			mrb.HashSet(h, mrb.StrNew(k), goToValue(mrb, v))
+		}
+		return h.Value()
+	default:
+		return mrb.Value(v)
+	}
 }
 
 func mrbJSONParse(mrb *oruby.MrbState, salf oruby.Value) oruby.MrbValue {
@@ -129,9 +154,9 @@ func mrbJSONParse(mrb *oruby.MrbState, salf oruby.Value) oruby.MrbValue {
 		return mrb.Raise(mrb.EArgumentError(), "JSON::parse - string argument expected")
 	}
 
-	if err := json.Unmarshal(([]byte)(in), &out); err != nil {
+	if err := json.Unmarshal([]byte(in), &out); err != nil {
 		return mrb.Raisef(mrb.EArgumentError(), "JSON::parse - %v", err)
 	}
 
-	return mrb.Value(out)
+	return goToValue(mrb, out)
 }

@@ -37,6 +37,7 @@ extern "C" {
 #include "mruby/presym.h"
 #include "mruby/internal.h"
 #include "mruby/version.h"
+#include "mruby/opcode.h"
 
 static char* _MRUBY_COPYRIGHT()  { return MRUBY_COPYRIGHT; }
 static char* _MRUBY_DESCRIPTION()  { return MRUBY_DESCRIPTION; }
@@ -142,6 +143,12 @@ static mrb_bool _mrb_is_nil(mrb_value o)    {
 static int  _MRB_RHASH_PROCDEFAULT_P(mrb_value h) { return MRB_RHASH_PROCDEFAULT_P(h); }
 
 // Env, Proc
+static inline const struct RProc* _mrb_current_proc(mrb_state *mrb) {
+  if (mrb && mrb->c && mrb->c->ci) {
+    return mrb->c->ci->proc;
+  }
+  return NULL;
+}
 static void _set_last_stack_value(mrb_state *mrb, mrb_value v) { *(mrb->c->ci->stack + 1) = v; }
 static void _MRB_ENV_SET_LEN(struct REnv *e, mrb_int len) { MRB_ENV_SET_LEN(e, len); }
 static mrb_int _MRB_ENV_LEN(struct REnv *e) { return MRB_ENV_LEN(e); }
@@ -564,6 +571,12 @@ static void _mrb_pool_value_migrate(mrb_irep_pool *v) {
     v->u.str = (const char*)p;
   }
 }
+
+static const char* _mrb_pool_str(const mrb_irep_pool *v) { return v->u.str; }
+static uint32_t _mrb_pool_len(const mrb_irep_pool *v) { return v->tt >> 2; }
+static int32_t _mrb_pool_i32(const mrb_irep_pool *v) { return v->u.i32; }
+static int64_t _mrb_pool_i64(const mrb_irep_pool *v) { return v->u.i64; }
+static double _mrb_pool_float(const mrb_irep_pool *v) { return (double)v->u.f; }
 
 // Callbacks
 extern int  go_partial_hook_callback(struct mrb_parser_state *p);

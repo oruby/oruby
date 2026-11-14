@@ -31,6 +31,9 @@ type MrbIrepPool struct {
 }
 
 func (pv MrbIrepPool) Type() IrepPoolType {
+	if (pv.v.tt & IrepTtNflag) == 0 {
+		return IrepPoolType(uint32(pv.v.tt) & 3)
+	}
 	return IrepPoolType(uint32(pv.v.tt) & 7)
 }
 
@@ -49,6 +52,57 @@ func (pv MrbIrepPool) IsSStr() bool {
 
 func (pv MrbIrepPool) Migrate() {
 	C._mrb_pool_value_migrate(pv.v)
+}
+
+func (pv MrbIrepPool) Str() string {
+	if pv.v == nil {
+		return ""
+	}
+	length := C._mrb_pool_len(pv.v)
+	ptr := C._mrb_pool_str(pv.v)
+	if ptr == nil {
+		return ""
+	}
+	return C.GoStringN(ptr, C.int(length))
+}
+
+func (pv MrbIrepPool) Int32() int32 {
+	if pv.v == nil {
+		return 0
+	}
+	return int32(C._mrb_pool_i32(pv.v))
+}
+
+func (pv MrbIrepPool) Int64() int64 {
+	if pv.v == nil {
+		return 0
+	}
+	return int64(C._mrb_pool_i64(pv.v))
+}
+
+func (pv MrbIrepPool) Float() float64 {
+	if pv.v == nil {
+		return 0
+	}
+	return float64(C._mrb_pool_float(pv.v))
+}
+
+func (pv MrbIrepPool) Value() interface{} {
+	if pv.v == nil {
+		return nil
+	}
+	switch pv.Type() {
+	case IrepTtStr, IrepTtSstr:
+		return pv.Str()
+	case IrepTtInt32:
+		return pv.Int32()
+	case IrepTtInt64:
+		return pv.Int64()
+	case IrepTtFloat:
+		return pv.Float()
+	default:
+		return nil
+	}
 }
 
 // mrb_catch_type
@@ -255,7 +309,7 @@ func (irep MrbIrep) Pool(index int) MrbIrepPool {
 
 // ILen returns number of ISeq MrbCode items
 func (irep MrbIrep) ILen() int {
-	return int(irep.p.plen)
+	return int(irep.p.ilen)
 }
 
 // ISeq returns MrbCode at index
@@ -301,7 +355,7 @@ func (irep MrbIrep) SLen() int {
 
 // Syms returns MrbSym at index
 func (irep MrbIrep) Syms(index int) MrbSym {
-	if index < 0 || index >= irep.ILen() {
+	if index < 0 || index >= irep.SLen() {
 		return MrbSym(0)
 	}
 

@@ -25,6 +25,7 @@ all : libmruby.a $(DYN_LIB)
 
 test:
 	go test
+	(cd compiler && go test)
 	(cd gem/assert && go test)
 	(cd gem/base64 && go test)
 	(cd gem/bigint && go test)
@@ -33,6 +34,7 @@ test:
 	(cd gem/database && go test)
 	(cd gem/env && go test)
 	(cd gem/fullcore && go test)
+	(cd gem/http && go test)
 	(cd gem/io && go test)
 	(cd gem/io/file && go test)
 	(cd gem/io/popen && go test)
