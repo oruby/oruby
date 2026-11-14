@@ -106,6 +106,7 @@ func (mrb *MrbState) DefineMethodRaw(c RClass, id MrbSym, methodID MrbMethodT) {
 // DefineMethodID define method via symbol and function type
 func (mrb *MrbState) DefineMethodID(c RClass, mid MrbSym, f MrbFuncT, aspec MrbAspec) {
 	idx := mrb.registerFuncIndex(f)
+	mrb.registerGoMethod(uintptr(unsafe.Pointer(c.p)), mid, f)
 	C._mrb_method_new_cfunc(mrb.p, c.p, C.mrb_sym(mid), C.int(idx), C.mrb_aspec(aspec))
 }
 

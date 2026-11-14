@@ -137,6 +137,9 @@ func (mrb *MrbState) GetArgs3(defaults ...interface{}) (Value, Value, Value) {
 
 // Args returns all arguments passed to MrbFuncT function as array of values
 func (mrb *MrbState) Args() []Value {
+	if mrb.hasFastArgs {
+		return mrb.fastArgs
+	}
 	argc := int(C.mrb_get_argc(mrb.p))
 	args := C.mrb_get_argv(mrb.p)
 	items := make([]Value, argc)
@@ -149,6 +152,18 @@ func (mrb *MrbState) Args() []Value {
 // GetArgs returns all arguments passed to MrbFuncT function
 // as RArray type
 func (mrb *MrbState) GetArgs(defaults ...interface{}) RArgs {
+	if mrb.hasFastArgs {
+		if len(defaults) == 0 {
+			return RArgs{mrb.fastArgs}
+		}
+		items := make([]Value, len(mrb.fastArgs))
+		copy(items, mrb.fastArgs)
+		ret := RArgs{items}
+		for i := ret.Len(); i < len(defaults); i++ {
+			ret.items = append(ret.items, mrb.Value(defaults[i]))
+		}
+		return ret
+	}
 	argc := int(C.mrb_get_argc(mrb.p))
 	args := C.mrb_get_argv(mrb.p)
 	items := make([]Value, argc)
@@ -194,6 +209,12 @@ func (mrb *MrbState) GetArgs2(defaults ...interface{}) (Value, Value) {
 
 // GetArgsFirst returns first argument
 func (mrb *MrbState) GetArgsFirst() Value {
+	if mrb.hasFastArgs {
+		if len(mrb.fastArgs) > 0 {
+			return mrb.fastArgs[0]
+		}
+		return nilValue
+	}
 	return Value{C._mrb_get_args_first(mrb.p)}
 }
 
@@ -201,11 +222,19 @@ func (mrb *MrbState) GetArgsFirst() Value {
 // Raises ArgumentError unless the number of arguments is exactly one.
 // Correctly handles *splat arguments.
 func (mrb *MrbState) GetArg1() Value {
+	if mrb.hasFastArgs {
+		if len(mrb.fastArgs) == 1 {
+			return mrb.fastArgs[0]
+		}
+	}
 	return Value{C.mrb_get_arg1(mrb.p)}
 }
 
 // GetArgsCount returns numer of arguments passed to function
 func (mrb *MrbState) GetArgsCount() int {
+	if mrb.hasFastArgs {
+		return len(mrb.fastArgs)
+	}
 	return int(C.mrb_get_argc(mrb.p))
 }
 

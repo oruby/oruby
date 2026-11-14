@@ -52,20 +52,24 @@ type MrbState struct {
 	p *C.mrb_state
 
 	sync.Mutex
-	stack        int32
-	WaitGroup    sync.WaitGroup
-	mrbProcs     map[unsafe.Pointer]MrbFuncT
-	classmap     map[reflect.Type]unsafe.Pointer
-	hooks        map[unsafe.Pointer]interface{}
-	funcs        []interface{}
-	matrix       [][]interface{}
-	exitChan     chan struct{}
-	injectVMChan chan RProc
-	InjectChan   chan RProc
-	features     map[string]interface{} // features stash
-	callSym      MrbSym                 // cached mrb.Intern("call")
-	afterInitSym MrbSym                 // cached mrb.Intern("after_init")
-	symCache     map[string]MrbSym
+	stack          int32
+	WaitGroup      sync.WaitGroup
+	mrbProcs       map[unsafe.Pointer]MrbFuncT
+	classmap       map[reflect.Type]unsafe.Pointer
+	hooks          map[unsafe.Pointer]interface{}
+	funcs          []interface{}
+	matrix         [][]interface{}
+	exitChan       chan struct{}
+	injectVMChan   chan RProc
+	InjectChan     chan RProc
+	features       map[string]interface{} // features stash
+	callSym        MrbSym                 // cached mrb.Intern("call")
+	afterInitSym   MrbSym                 // cached mrb.Intern("after_init")
+	symCache       map[string]MrbSym
+	fastArgs       []Value
+	hasFastArgs    bool
+	goMethods      map[uintptr]map[MrbSym]MrbFuncT
+	goClassMethods map[uintptr]map[MrbSym]MrbFuncT
 }
 
 // NewCore create state is MrbState without gems,
@@ -93,6 +97,10 @@ func NewCore() (*MrbState, error) {
 		0,
 		0,
 		make(map[string]MrbSym),
+		nil,
+		false,
+		make(map[uintptr]map[MrbSym]MrbFuncT),
+		make(map[uintptr]map[MrbSym]MrbFuncT),
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
@@ -967,7 +975,11 @@ func go_mrb_func_env_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.m
 		return mrb.Raisef(mrb.ERuntimeError(), "go_mrb_func_env_callback: Function '%v' reference not found.", method).v
 	}
 
-	return fx(mrb, Value{self}).Value().v
+	prevHas := mrb.hasFastArgs
+	mrb.hasFastArgs = false
+	res := fx(mrb, Value{self}).Value().v
+	mrb.hasFastArgs = prevHas
+	return res
 }
 
 //export go_mrb_proc_callback
@@ -989,27 +1001,60 @@ func go_mrb_proc_callback(mrbidx C.mrb_int, self C.mrb_value) C.mrb_value {
 		return mrb.Raisef(mrb.ETypeError(), "go_mrb_proc_callback: Function '%v' reference not found.", method).v
 	}
 
-	return f(mrb, Value{self}).Value().v
+	prevHas := mrb.hasFastArgs
+	mrb.hasFastArgs = false
+	res := f(mrb, Value{self}).Value().v
+	mrb.hasFastArgs = prevHas
+	return res
+}
+
+func (mrb *MrbState) registerGoMethod(classPtr uintptr, sym MrbSym, f MrbFuncT) {
+	if classPtr == 0 {
+		return
+	}
+	m := mrb.goMethods[classPtr]
+	if m == nil {
+		m = make(map[MrbSym]MrbFuncT)
+		mrb.goMethods[classPtr] = m
+	}
+	m[sym] = f
+}
+
+func (mrb *MrbState) registerGoClassMethod(classPtr uintptr, sym MrbSym, f MrbFuncT) {
+	if classPtr == 0 {
+		return
+	}
+	m := mrb.goClassMethods[classPtr]
+	if m == nil {
+		m = make(map[MrbSym]MrbFuncT)
+		mrb.goClassMethods[classPtr] = m
+	}
+	m[sym] = f
 }
 
 // DefineMethod for class
 func (mrb *MrbState) DefineMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
 	// function reference is set as oruby function env
 	idx := mrb.registerFuncIndex(f)
-	C._mrb_method_new_cfunc(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
+	sym := mrb.Intern(name)
+	mrb.registerGoMethod(uintptr(unsafe.Pointer(klass.p)), sym, f)
+	C._mrb_method_new_cfunc(mrb.p, klass.p, C.mrb_sym(sym), C.int(idx), C.mrb_aspec(aspec))
 	// C.mrb_define_method() called through helper
 }
 
 // DefineClassMethod creates new oruby class method
 func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
 	idx := mrb.registerFuncIndex(f)
-	C._define_class_method(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
+	sym := mrb.Intern(name)
+	mrb.registerGoClassMethod(uintptr(unsafe.Pointer(klass.p)), sym, f)
+	C._define_class_method(mrb.p, klass.p, C.mrb_sym(sym), C.int(idx), C.mrb_aspec(aspec))
 	// C.mrb_define_class_method() called through helper
 }
 
 // DefineClassMethodID creates new oruby class method
 func (mrb *MrbState) DefineClassMethodID(klass RClass, name MrbSym, f MrbFuncT, aspec MrbAspec) {
 	idx := mrb.registerFuncIndex(f)
+	mrb.registerGoClassMethod(uintptr(unsafe.Pointer(klass.p)), name, f)
 	C._define_class_method(mrb.p, klass.p, C.mrb_sym(name), C.int(idx), C.mrb_aspec(aspec))
 	// C.mrb_define_class_method_id() called through helper
 }
@@ -1468,6 +1513,63 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 	return v, err
 	// Do not delete comment - function names are used for static API check
 	// C.mrb_funcall(), C.mrb_funcall_id(), C.mrb_funcall_argv() are never called
+}
+
+// FastCall dispatches directly in Go if the target method is a registered Go function,
+// falling back to C _mrb_funcall_with_block without interface{} boxing overhead.
+func (mrb *MrbState) FastCall(self Value, nameSym MrbSym, args ...Value) (Value, error) {
+	tt := self.Type()
+	var fn MrbFuncT
+	if tt == MrbTTModule || tt == MrbTTClass {
+		if methods := mrb.goClassMethods[self.Pointer()]; methods != nil {
+			fn = methods[nameSym]
+		}
+	} else if tt >= MrbTTObject {
+		if self.Pointer() > 65536 {
+			cPtr := *(*uintptr)(self.unsafePtr())
+			if methods := mrb.goMethods[cPtr]; methods != nil {
+				fn = methods[nameSym]
+			}
+		}
+	}
+	if fn != nil {
+		prevArgs := mrb.fastArgs
+		prevHas := mrb.hasFastArgs
+		mrb.fastArgs = args
+		mrb.hasFastArgs = true
+		res := fn(mrb, self)
+		mrb.fastArgs = prevArgs
+		mrb.hasFastArgs = prevHas
+		v := res.Value()
+		if mrb.p.exc != nil {
+			return v, fmt.Errorf("ruby exception")
+		}
+		return v, nil
+	}
+
+	l := len(args)
+	var aPtr *C.mrb_value
+	if l > 0 {
+		aPtr = (*C.mrb_value)(unsafe.Pointer(&args[0]))
+	}
+	v := Value{C._mrb_funcall_with_block(
+		mrb.p,
+		self.v,
+		C.mrb_sym(nameSym),
+		C.mrb_int(l),
+		aPtr,
+		C.mrb_nil_value(),
+	)}
+	var err error
+	if mrb.p.exc != nil || v.Type() == C.MRB_TT_EXCEPTION {
+		if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
+			desc := mrb.Call(v, "to_s")
+			mrb.p.exc = C._mrb_obj_ptr(v.v)
+			err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
+		}
+	}
+	runtime.KeepAlive(args)
+	return v, err
 }
 
 // FuncallWithBlock call function with arguments. Last argument passed should be block

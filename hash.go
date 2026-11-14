@@ -61,6 +61,32 @@ func (mrb *MrbState) HashNew() RHash {
 	}}
 }
 
+// RHashEntries returns the raw (key, val) entry slice for a C RHash without CGO calls.
+// Deleted entries have entry[0].Type() == MrbTTUndef.
+func RHashEntries(v Value) [][2]Value {
+	if v.Pointer() <= 65536 {
+		return nil
+	}
+	up := v.unsafePtr()
+	size := *(*uint32)(unsafe.Add(up, 12))
+	if size == 0 {
+		return nil
+	}
+	flags := (*(*uint32)(unsafe.Add(up, 8))) >> 12
+	nUsed := int(*(*uint32)(unsafe.Add(up, 28)))
+	eaPtr := *(*unsafe.Pointer)(unsafe.Add(up, 32))
+	if eaPtr == nil || nUsed <= 0 {
+		return nil
+	}
+	if (flags & (1 << 12)) != 0 { // MRB_HASH_HT
+		eaPtr = *(*unsafe.Pointer)(eaPtr)
+		if eaPtr == nil {
+			return nil
+		}
+	}
+	return unsafe.Slice((*[2]Value)(eaPtr), nUsed)
+}
+
 // HashSet sets a keys and values to hashes
 func (mrb *MrbState) HashSet(hash, key, val MrbValue) {
 	C.mrb_hash_set(mrb.p, hash.Value().v, key.Value().v, val.Value().v)
@@ -68,7 +94,46 @@ func (mrb *MrbState) HashSet(hash, key, val MrbValue) {
 
 // HashGet gets a value from a key. If the key is not found, the default of the hash is used
 func (mrb *MrbState) HashGet(hash, key MrbValue) Value {
-	return Value{C.mrb_hash_get(mrb.p, hash.Value().v, key.Value().v)}
+	hv := hash.Value()
+	if hv.Pointer() > 65536 {
+		up := hv.unsafePtr()
+		flags := (*(*uint32)(unsafe.Add(up, 8))) >> 12
+		if (flags & ((1 << 10) | (1 << 11) | (1 << 12))) == 0 {
+			size := *(*uint32)(unsafe.Add(up, 12))
+			if size == 0 {
+				return nilValue
+			}
+			nUsed := int(*(*uint32)(unsafe.Add(up, 28)))
+			eaPtr := *(*unsafe.Pointer)(unsafe.Add(up, 32))
+			if eaPtr != nil && nUsed > 0 {
+				entries := unsafe.Slice((*[2]Value)(eaPtr), nUsed)
+				kv := key.Value()
+				ktt := kv.Type()
+				if ktt == MrbTTString {
+					kp, kn := RStringMem(kv)
+					ks := unsafe.String(kp, kn)
+					for i := 0; i < len(entries); i++ {
+						ek := entries[i][0]
+						if ek.Type() == MrbTTString {
+							ep, en := RStringMem(ek)
+							if en == kn && (ep == kp || unsafe.String(ep, en) == ks) {
+								return entries[i][1]
+							}
+						}
+					}
+					return nilValue
+				} else if ktt == MrbTTSymbol || ktt == MrbTTInteger || ktt == MrbTTTrue || ktt == MrbTTFalse {
+					for i := 0; i < len(entries); i++ {
+						if entries[i][0] == kv {
+							return entries[i][1]
+						}
+					}
+					return nilValue
+				}
+			}
+		}
+	}
+	return Value{C.mrb_hash_get(mrb.p, hv.v, key.Value().v)}
 }
 
 // HashFetch gets a value from a key. If the key is not found, the default parameter is used

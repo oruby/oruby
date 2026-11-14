@@ -89,11 +89,35 @@ func (v Value) Int64() int64 {
 	return int64(v.Int())
 }
 
+func (v Value) unsafePtr() unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&v.v))
+}
+
+// RStringMem returns the raw byte pointer and length of a Ruby String value without CGO calls.
+func RStringMem(v Value) (*byte, int) {
+	if v.Pointer() <= 65536 {
+		return nil, 0
+	}
+	up := v.unsafePtr()
+	flags := (*(*uint32)(unsafe.Add(up, 8))) >> 12
+	if (flags & 8) != 0 { // MRB_STR_EMBED
+		n := int((flags >> 4) & 31)
+		return (*byte)(unsafe.Add(up, 12)), n
+	}
+	n := int(*(*int64)(unsafe.Add(up, 16)))
+	ptr := *(**byte)(unsafe.Add(up, 32))
+	return ptr, n
+}
+
 // String returns string from value
 func (v Value) String() string {
 	switch v.Type() {
 	case MrbTTString:
-		return C.GoStringN(C._RSTRING_PTR(v.v), C.int(C._RSTRING_LEN(v.v)))
+		ptr, n := RStringMem(v)
+		if n <= 0 || ptr == nil {
+			return ""
+		}
+		return string(unsafe.Slice(ptr, n))
 	case MrbTTFixnum:
 		return strconv.Itoa(v.Int())
 	case MrbTTFalse:
@@ -112,7 +136,13 @@ func (v Value) String() string {
 func (v Value) Bytes() []byte {
 	switch v.Type() {
 	case MrbTTString:
-		return C.GoBytes(unsafe.Pointer(C._RSTRING_PTR(v.v)), C.int(C._RSTRING_LEN(v.v)))
+		ptr, n := RStringMem(v)
+		if n <= 0 || ptr == nil {
+			return []byte{}
+		}
+		b := make([]byte, n)
+		copy(b, unsafe.Slice(ptr, n))
+		return b
 	case MrbTTFalse:
 		if v.IsNil() {
 			return nil
@@ -138,9 +168,9 @@ func (v Value) Uintptr() uintptr { return uintptr(C._mrb_cptr(v.Value().v)) }
 func (v Value) Float64() float64 {
 	switch v.Type() {
 	case MrbTTFloat:
-		return float64(C._mrb_float(v.v))
+		return *(*float64)(unsafe.Pointer(&v.v))
 	case MrbTTInteger:
-		return float64(C._mrb_fixnum(v.v))
+		return float64(*(*int64)(unsafe.Pointer(&v.v)))
 	case MrbTTFalse:
 		return 0.0
 	case MrbTTTrue:
@@ -153,7 +183,7 @@ func (v Value) Float64() float64 {
 // Symbol returns symbol from value
 func (v Value) Symbol() MrbSym {
 	checkType(v.Type(), MrbTTSymbol)
-	return MrbSym(C._mrb_symbol(v.v))
+	return MrbSym(*(*uint32)(unsafe.Pointer(&v.v)))
 }
 
 // Freeze sets value as frozen
@@ -300,7 +330,13 @@ func (mrb *MrbState) Test(v MrbValue) bool { return v.Type() != C.MRB_TT_FALSE }
 
 // FloatValue float to oruby value
 func (mrb *MrbState) FloatValue(f float64) Value {
-	return Value{C.mrb_float_value(mrb.p, C.mrb_float(f))}
+	if f != f {
+		return Value{C.mrb_float_value(mrb.p, C.mrb_float(f))}
+	}
+	var cv C.mrb_value
+	cv.tt = C.MRB_TT_FLOAT
+	*(*float64)(unsafe.Pointer(&cv)) = f
+	return Value{cv}
 }
 
 // StringValue float to oruby value
@@ -338,6 +374,22 @@ func MrbFixnumValue(i int) Value {
 	var cv C.mrb_value
 	cv.tt = C.MRB_TT_INTEGER
 	*(*int64)(unsafe.Pointer(&cv)) = int64(i)
+	return Value{cv}
+}
+
+// WrapSpecialObject wraps a lightweight Go object pool slot ID into a Value without CGO overhead
+func WrapSpecialObject(id uintptr) Value {
+	var cv C.mrb_value
+	cv.tt = C.MRB_TT_OBJECT
+	*(*uintptr)(unsafe.Pointer(&cv)) = id
+	return Value{cv}
+}
+
+// WrapSpecialHash wraps a lightweight Go hash pool slot ID into a Value without CGO overhead
+func WrapSpecialHash(id uintptr) Value {
+	var cv C.mrb_value
+	cv.tt = C.MRB_TT_HASH
+	*(*uintptr)(unsafe.Pointer(&cv)) = id
 	return Value{cv}
 }
 
@@ -425,6 +477,34 @@ var (
 	True     = Value{C.mrb_true_value()}
 	Undef    = Value{C.mrb_undef_value()}
 )
+
+// BatchOp represents a single RPN instruction for batch value construction in C.
+type BatchOp struct {
+	Op  uint32
+	Off uint32
+	I   int64
+	F   float64
+}
+
+// ExecBatchOps executes a batch of RPN value construction operations in a single CGO call.
+func (mrb *MrbState) ExecBatchOps(ops []BatchOp, strBuf []byte) Value {
+	if len(ops) == 0 {
+		return nilValue
+	}
+	var strPtr *C.char
+	if len(strBuf) > 0 {
+		strPtr = (*C.char)(unsafe.Pointer(&strBuf[0]))
+	}
+	v := Value{C._mrb_exec_batch_ops(
+		mrb.p,
+		(*C.mrb_batch_op)(unsafe.Pointer(&ops[0])),
+		C.mrb_int(len(ops)),
+		strPtr,
+	)}
+	runtime.KeepAlive(ops)
+	runtime.KeepAlive(strBuf)
+	return v
+}
 
 // Intentionally left unsuported
 // C.mrb_float_read()

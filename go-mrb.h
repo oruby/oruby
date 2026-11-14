@@ -607,6 +607,82 @@ static void _set_parser_s(struct mrb_parser_state *parser, char *str) {
     parser->send = str + strlen(str);
 };
 
+typedef struct mrb_batch_op {
+  uint32_t op;
+  uint32_t off;
+  int64_t  i;
+  double   f;
+} mrb_batch_op;
+
+static inline mrb_value _mrb_exec_batch_ops(mrb_state *mrb, const mrb_batch_op *ops, mrb_int nops, const char *str_buf) {
+  int ai = mrb_gc_arena_save(mrb);
+  mrb_value stack_buf[256];
+  mrb_value *stack = stack_buf;
+  mrb_int stack_cap = 256;
+  if (nops > stack_cap) {
+    stack_cap = nops;
+    stack = (mrb_value *)mrb_malloc(mrb, sizeof(mrb_value) * (size_t)stack_cap);
+  }
+  mrb_int sp = 0;
+  for (mrb_int k = 0; k < nops; k++) {
+    const mrb_batch_op *op = &ops[k];
+    switch (op->op) {
+    case 0:
+      stack[sp++] = mrb_nil_value();
+      break;
+    case 1:
+      stack[sp++] = mrb_false_value();
+      break;
+    case 2:
+      stack[sp++] = mrb_true_value();
+      break;
+    case 3:
+      stack[sp++] = mrb_fixnum_value((mrb_int)op->i);
+      break;
+    case 4:
+      stack[sp++] = mrb_float_value(mrb, (mrb_float)op->f);
+      break;
+    case 5:
+      stack[sp++] = mrb_str_new(mrb, str_buf + op->off, (mrb_int)op->i);
+      break;
+    case 6: {
+      mrb_int cnt = (mrb_int)op->i;
+      sp -= cnt;
+      stack[sp] = mrb_ary_new_from_values(mrb, cnt, &stack[sp]);
+      sp++;
+      mrb_gc_arena_restore(mrb, ai);
+      for (mrb_int s = 0; s < sp; s++) {
+        if (!mrb_immediate_p(stack[s])) mrb_gc_protect(mrb, stack[s]);
+      }
+      break;
+    }
+    case 7: {
+      mrb_int pairs = (mrb_int)op->i;
+      sp -= pairs * 2;
+      mrb_value h = mrb_hash_new_capa(mrb, pairs);
+      for (mrb_int j = 0; j < pairs; j++) {
+        mrb_hash_set(mrb, h, stack[sp + j*2], stack[sp + j*2 + 1]);
+      }
+      stack[sp++] = h;
+      mrb_gc_arena_restore(mrb, ai);
+      for (mrb_int s = 0; s < sp; s++) {
+        if (!mrb_immediate_p(stack[s])) mrb_gc_protect(mrb, stack[s]);
+      }
+      break;
+    }
+    }
+  }
+  mrb_value res = sp > 0 ? stack[0] : mrb_nil_value();
+  if (stack != stack_buf) {
+    mrb_free(mrb, stack);
+  }
+  mrb_gc_arena_restore(mrb, ai);
+  if (!mrb_immediate_p(res)) {
+    mrb_gc_protect(mrb, res);
+  }
+  return res;
+}
+
 #if defined(__cplusplus)
 }  /* extern "C" { */
 #endif

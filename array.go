@@ -2,6 +2,7 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
+import "unsafe"
 
 // RArray struct
 type RArray struct{ RValue }
@@ -19,23 +20,46 @@ func MrbAryValue(ary RArray) Value { return ary.Value() }
 
 func rarray(v Value) *C.struct_RArray { return (*C.struct_RArray)(C._mrb_ptr(v.v)) }
 
+// RArraySlice returns a direct slice view of a C RArray without CGO calls.
+func RArraySlice(v Value) []Value {
+	if v.Pointer() <= 65536 {
+		return nil
+	}
+	up := v.unsafePtr()
+	flags := (*(*uint32)(unsafe.Add(up, 8))) >> 12
+	var n int
+	var ptr *Value
+	if (flags & 7) != 0 {
+		n = int((flags & 7) - 1)
+		ptr = (*Value)(unsafe.Add(up, 16))
+	} else {
+		n = int(*(*int64)(unsafe.Add(up, 16)))
+		ptr = *(**Value)(unsafe.Add(up, 32))
+	}
+	if n <= 0 || ptr == nil {
+		return nil
+	}
+	return unsafe.Slice(ptr, n)
+}
+
 // RArrayLen returns len of array value
 func RArrayLen(a MrbValue) int {
-	return int(C._RARRAY_LEN(rarray(a.Value())))
+	return len(RArraySlice(a.Value()))
 }
 
 // RArrayCapa returns capacity of array
 func RArrayCapa(a MrbValue) int { return int(C._RARRAY_CAPA(rarray(a.Value()))) }
 
 // Len returns len of array as method
-func (a RArray) Len() int { return int(C._RARRAY_LEN(a.p())) }
+func (a RArray) Len() int { return len(RArraySlice(a.Value())) }
 
 // Capa returns len of array as method
 func (a RArray) Capa() int { return int(C._RARRAY_CAPA(a.p())) }
 
 // Item returns value item at index, or Nil if index is invalid
 func (a RArray) Item(index int) Value {
-	l := a.Len()
+	s := RArraySlice(a.Value())
+	l := len(s)
 
 	/* range check */
 	if index < 0 {
@@ -45,7 +69,7 @@ func (a RArray) Item(index int) Value {
 		return nilValue
 	}
 
-	return Value{C._ARY_ITEM(a.p(), C.mrb_int(index))}
+	return s[index]
 }
 
 // ItemDef returns value item at index, or default value if arg is nil
@@ -167,7 +191,18 @@ func (mrb *MrbState) AryPop(ary MrbValue) Value { return Value{C.mrb_ary_pop(mrb
 
 // AryRef returns a reference to an element of the array on the given index
 func (mrb *MrbState) AryRef(ary MrbValue, n int) Value {
-	return Value{C.mrb_ary_entry(ary.Value().v, C.mrb_int(n))}
+	v := ary.Value()
+	if v.Type() == MrbTTArray {
+		s := RArraySlice(v)
+		if n < 0 {
+			n += len(s)
+		}
+		if n < 0 || n >= len(s) {
+			return nilValue
+		}
+		return s[n]
+	}
+	return Value{C.mrb_ary_entry(v.v, C.mrb_int(n))}
 }
 
 // ArySet Sets a value on an array at the given index
