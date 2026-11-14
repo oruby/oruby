@@ -54,8 +54,12 @@ func (mrb *MrbState) ClassOf(v MrbValue) RClass {
 
 // ClassPtr returns class of value as RClass
 func (mrb *MrbState) ClassPtr(v Value) RClass {
-	if v.Type() == MrbTTClass || v.Type() == MrbTTModule || v.Type() == MrbTTSClass {
-		return RClass{(*C.struct_RClass)(C._mrb_ptr(v.Value().v)), mrb}
+	tt := v.Type()
+	if tt == MrbTTClass || tt == MrbTTModule || tt == MrbTTSClass {
+		return RClass{(*C.struct_RClass)(v.unsafePtr()), mrb}
+	}
+	if tt >= MrbTTObject && v.Pointer() > 65536 {
+		return RClass{*(**C.struct_RClass)(v.unsafePtr()), mrb}
 	}
 	return RClass{C.mrb_class(mrb.p, v.v), mrb}
 }

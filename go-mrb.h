@@ -683,6 +683,12 @@ static inline mrb_value _mrb_exec_batch_ops(mrb_state *mrb, const mrb_batch_op *
   return res;
 }
 
+static inline void _mrb_intern_batch(mrb_state *mrb, const char *buf, const uint32_t *offs, const uint32_t *lens, mrb_sym *out, mrb_int count) {
+  for (mrb_int i = 0; i < count; i++) {
+    out[i] = mrb_intern(mrb, buf + offs[i], (size_t)lens[i]);
+  }
+}
+
 #if defined(__cplusplus)
 }  /* extern "C" { */
 #endif

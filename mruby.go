@@ -1634,14 +1634,58 @@ func (mrb *MrbState) Sym(name string) MrbSym {
 			return sym
 		}
 	}
-	cname := C.CString(name)
+	var cname *C.char
+	if len(name) > 0 {
+		cname = (*C.char)(unsafe.Pointer(unsafe.StringData(name)))
+	}
 	sym := MrbSym(C.mrb_intern(mrb.p, cname, C.size_t(len(name))))
-	C.free(unsafe.Pointer(cname))
+	runtime.KeepAlive(name)
 	if mrb.symCache != nil {
 		mrb.symCache[name] = sym
 	}
 	return sym
 	// C.mrb_intern_cstr() is never called
+}
+
+// InternSymbols interns a slice of symbol names in a single CGO call and populates out.
+func (mrb *MrbState) InternSymbols(names []string, out []*MrbSym) {
+	n := len(names)
+	if n == 0 || len(out) < n {
+		return
+	}
+	totalLen := 0
+	for i := 0; i < n; i++ {
+		totalLen += len(names[i])
+	}
+	buf := make([]byte, 0, totalLen+1)
+	offs := make([]uint32, n)
+	lens := make([]uint32, n)
+	syms := make([]C.mrb_sym, n)
+	for i := 0; i < n; i++ {
+		offs[i] = uint32(len(buf))
+		lens[i] = uint32(len(names[i]))
+		buf = append(buf, names[i]...)
+	}
+	buf = append(buf, 0)
+	C._mrb_intern_batch(
+		mrb.p,
+		(*C.char)(unsafe.Pointer(&buf[0])),
+		(*C.uint32_t)(unsafe.Pointer(&offs[0])),
+		(*C.uint32_t)(unsafe.Pointer(&lens[0])),
+		&syms[0],
+		C.mrb_int(n),
+	)
+	for i := 0; i < n; i++ {
+		s := MrbSym(syms[i])
+		*out[i] = s
+		if mrb.symCache != nil {
+			mrb.symCache[names[i]] = s
+		}
+	}
+	runtime.KeepAlive(buf)
+	runtime.KeepAlive(offs)
+	runtime.KeepAlive(lens)
+	runtime.KeepAlive(syms)
 }
 
 // Intern converts string to oruby symbol. Alias for Sym(name)

@@ -19,6 +19,8 @@ type CodeGen struct {
 	opts              CodeGenOptions
 	isBundle          bool
 	compiledMethods   map[string]string
+	compiledArity     map[string]int
+	unitMethodName    map[string]string
 	compiledClassInit map[string]string
 	hasCompiledClass  map[string]bool
 	symMap            map[string]string
@@ -38,6 +40,8 @@ func NewCodeGen(opts CodeGenOptions) *CodeGen {
 	return &CodeGen{
 		opts:              opts,
 		compiledMethods:   make(map[string]string),
+		compiledArity:     make(map[string]int),
+		unitMethodName:    make(map[string]string),
 		compiledClassInit: make(map[string]string),
 		hasCompiledClass:  make(map[string]bool),
 		symMap:            make(map[string]string),
@@ -110,6 +114,8 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	isBundle := len(modules) > 1
 	g.isBundle = isBundle
 	g.compiledMethods = make(map[string]string)
+	g.compiledArity = make(map[string]int)
+	g.unitMethodName = make(map[string]string)
 	g.compiledClassInit = make(map[string]string)
 	g.hasCompiledClass = make(map[string]bool)
 	g.symMap = make(map[string]string)
@@ -189,6 +195,10 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 						if g.compiledMethods[sym] == "" {
 							g.compiledMethods[sym] = fn
 						}
+						g.unitMethodName[fn] = sym
+						if arity := unitFixedArity(childUnit); arity >= 0 {
+							g.compiledArity[fn] = arity
+						}
 					}
 				}
 				// Detect pure Ruby compiled classes (no custom C superclass)
@@ -236,6 +246,15 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	}
 
 	// 4. Emit runtime helpers and pre-interned symbol/string/constant tables
+	var symSysExit string
+	if g.opts.Standalone {
+		symSysExit = g.internSym("SystemExit")
+	}
+	if isBundle {
+		g.internSym("LoadError")
+		g.internSym("require")
+		g.internSym("require_relative")
+	}
 	g.emitHelpers(&buf)
 	g.emitSymbolTable(&buf)
 
@@ -265,7 +284,7 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		buf.WriteString("\tres, err := Run(mrb)\n")
 		buf.WriteString("\tif err != nil {\n")
 		buf.WriteString("\t\texc := mrb.Exc()\n")
-		buf.WriteString("\t\tif exc != nil && exc.IsKindOf(mrb.ClassGet(\"SystemExit\")) {\n")
+		buf.WriteString(fmt.Sprintf("\t\tif exc != nil && exc.IsKindOf(mrb.ClassGetID(%s)) {\n", symSysExit))
 		buf.WriteString("\t\t\treturn\n")
 		buf.WriteString("\t\t}\n")
 		buf.WriteString("\t\tfmt.Printf(\"Execution error: %v\\n\", err)\n")
@@ -294,7 +313,7 @@ func collectUnits(u *IRepUnit, list *[]*IRepUnit) {
 }
 
 func (g *CodeGen) emitSymbolTable(b *bytes.Buffer) {
-	if len(g.symList) > 0 {
+	if len(g.symList) > 0 || len(g.strList) > 0 || len(g.constList) > 0 {
 		b.WriteString("var (\n")
 		for i, s := range g.symList {
 			b.WriteString(fmt.Sprintf("\tsym_%d oruby.MrbSym // %q\n", i, s))
@@ -309,8 +328,14 @@ func (g *CodeGen) emitSymbolTable(b *bytes.Buffer) {
 	}
 
 	b.WriteString("func initSymbols(mrb *oruby.MrbState) {\n")
-	for i, s := range g.symList {
-		b.WriteString(fmt.Sprintf("\tsym_%d = mrb.Intern(%q)\n", i, s))
+	if len(g.symList) > 0 {
+		var names, ptrs []string
+		for i, s := range g.symList {
+			names = append(names, fmt.Sprintf("%q", s))
+			ptrs = append(ptrs, fmt.Sprintf("&sym_%d", i))
+		}
+		b.WriteString(fmt.Sprintf("\tmrb.InternSymbols([]string{%s}, []*oruby.MrbSym{%s})\n",
+			strings.Join(names, ", "), strings.Join(ptrs, ", ")))
 	}
 	for i, s := range g.strList {
 		b.WriteString(fmt.Sprintf("\tstr_%d = mrb.StrNewStatic(%q)\n", i, s))
@@ -597,7 +622,7 @@ func (g *CodeGen) emitRequireHooks(b *bytes.Buffer, modules []*ModuleUnit) {
 	}
 	b.WriteString("\t}\n}\n\n")
 
-	b.WriteString(`var compiledLoaded = make(map[string]bool)
+	b.WriteString(fmt.Sprintf(`var compiledLoaded = make(map[string]bool)
 
 func doCompiledRequire(mrb *oruby.MrbState, feature string) (oruby.Value, error) {
 	clean := strings.TrimPrefix(feature, "./")
@@ -625,29 +650,29 @@ func doCompiledRequire(mrb *oruby.MrbState, feature string) (oruby.Value, error)
 		return mrb.TrueValue(), nil
 	}
 
-	return mrb.NilValue(), fmt.Errorf("cannot load such file -- %s", feature)
+	return mrb.NilValue(), fmt.Errorf("cannot load such file -- %%s", feature)
 }
 
 func initCompiledRequire(mrb *oruby.MrbState) {
-	mrb.DefineGlobalFunction("require", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	mrb.DefineModuleFunctionID(mrb.KernelModule(), %s, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		feature := mrb.GetArgsFirst().String()
 		res, err := doCompiledRequire(mrb, feature)
 		if err != nil {
-			return mrb.Raisef(mrb.ClassGet("LoadError"), "%s", err.Error())
+			return mrb.Raisef(mrb.ClassGetID(%s), "%%s", err.Error())
 		}
 		return res
 	}, mrb.ArgsReq(1))
 
-	mrb.DefineGlobalFunction("require_relative", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	mrb.DefineModuleFunctionID(mrb.KernelModule(), %s, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		feature := mrb.GetArgsFirst().String()
 		res, err := doCompiledRequire(mrb, feature)
 		if err != nil {
-			return mrb.Raisef(mrb.ClassGet("LoadError"), "%s", err.Error())
+			return mrb.Raisef(mrb.ClassGetID(%s), "%%s", err.Error())
 		}
 		return res
 	}, mrb.ArgsReq(1))
 }
-`)
+`, g.internSym("require"), g.internSym("LoadError"), g.internSym("require_relative"), g.internSym("LoadError")))
 }
 
 func unitHasStrCat(unit *IRepUnit) bool {
@@ -675,6 +700,192 @@ func unitHasClosure(unit *IRepUnit) bool {
 		}
 	}
 	return false
+}
+
+func unitUsesUpvars(unit *IRepUnit) bool {
+	for _, ins := range unit.Instructions {
+		if ins.Op == OpGETUPVAR || ins.Op == OpSETUPVAR || ins.Op == OpBLOCK || ins.Op == OpLAMBDA {
+			return true
+		}
+	}
+	return false
+}
+
+func unitHasOpEnter(unit *IRepUnit) bool {
+	for _, ins := range unit.Instructions {
+		if ins.Op == OpENTER {
+			return true
+		}
+	}
+	return false
+}
+
+func unitFixedArity(unit *IRepUnit) int {
+	if len(unit.Instructions) == 0 || unitUsesUpvars(unit) {
+		return -1
+	}
+	first := unit.Instructions[0]
+	if first.Op != OpENTER {
+		if !unitHasOpEnter(unit) {
+			return 0
+		}
+		return -1
+	}
+	req := int((first.A >> 18) & 0x1f)
+	if first.A == uint32(req)<<18 && req >= 0 && req <= 3 {
+		return req
+	}
+	return -1
+}
+
+func canEmitIntSpecialized(unit *IRepUnit, methodName string, arity int) bool {
+	if arity < 1 || arity > 3 || methodName == "" || len(unit.Instructions) == 0 {
+		return false
+	}
+	jumpTargets := make(map[int]bool)
+	for _, ins := range unit.Instructions {
+		if ins.IsJump() && ins.Target >= 0 {
+			jumpTargets[ins.Target] = true
+		}
+	}
+	for idx := 0; idx < len(unit.Instructions); idx++ {
+		ins := unit.Instructions[idx]
+		switch ins.Op {
+		case OpNOP, OpENTER, OpMOVE, OpLOADSELF,
+			OpLOADI8, OpLOADINEG, OpLOADI__1,
+			OpLOADI_0, OpLOADI_1, OpLOADI_2, OpLOADI_3, OpLOADI_4, OpLOADI_5, OpLOADI_6, OpLOADI_7,
+			OpLOADI16, OpLOADI32,
+			OpADD, OpADDI, OpADDILV, OpSUB, OpSUBI, OpSUBILV, OpMUL,
+			OpJMP, OpRETURN:
+		case OpLOADL:
+			if int(ins.B) >= len(unit.Pool) {
+				return false
+			}
+			switch unit.Pool[ins.B].(type) {
+			case int32, int64:
+			default:
+				return false
+			}
+		case OpEQ, OpLT, OpLE, OpGT, OpGE:
+			if idx+1 >= len(unit.Instructions) {
+				return false
+			}
+			nextIns := unit.Instructions[idx+1]
+			if jumpTargets[nextIns.Offset] || (nextIns.Op != OpJMPNOT && nextIns.Op != OpJMPIF) || nextIns.A != ins.A {
+				return false
+			}
+			idx++
+		case OpSEND, OpSSEND:
+			if int(ins.B) >= len(unit.Syms) || unit.Syms[ins.B] != methodName || int(ins.C&0xf) != arity {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName string, arity int) {
+	jumpTargets := make(map[int]bool)
+	for _, ins := range unit.Instructions {
+		if ins.IsJump() && ins.Target >= 0 {
+			jumpTargets[ins.Target] = true
+		}
+	}
+	nregs := unit.NRegs
+	if nregs < 2 {
+		nregs = 2
+	}
+	var params []string
+	for i := 0; i < arity; i++ {
+		params = append(params, fmt.Sprintf("_a%d int64", i+1))
+	}
+	b.WriteString(fmt.Sprintf("func %s_int(%s) int64 {\n", fnName, strings.Join(params, ", ")))
+	b.WriteString(fmt.Sprintf("\tvar r [%d]int64\n\t_ = r\n", nregs))
+	hasReturn := false
+	for idx := 0; idx < len(unit.Instructions); idx++ {
+		ins := unit.Instructions[idx]
+		if jumpTargets[ins.Offset] {
+			b.WriteString(fmt.Sprintf("L_%04d:\n", ins.Offset))
+		}
+		switch ins.Op {
+		case OpENTER:
+			for i := 0; i < arity; i++ {
+				b.WriteString(fmt.Sprintf("\tr[%d] = _a%d\n", i+1, i+1))
+			}
+		case OpMOVE:
+			b.WriteString(fmt.Sprintf("\tr[%d] = r[%d]\n", ins.A, ins.B))
+		case OpLOADL:
+			switch v := unit.Pool[ins.B].(type) {
+			case int32:
+				b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, v))
+			case int64:
+				b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, v))
+			}
+		case OpLOADI8:
+			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, ins.B))
+		case OpLOADINEG:
+			b.WriteString(fmt.Sprintf("\tr[%d] = -%d\n", ins.A, ins.B))
+		case OpLOADI__1:
+			b.WriteString(fmt.Sprintf("\tr[%d] = -1\n", ins.A))
+		case OpLOADI_0, OpLOADI_1, OpLOADI_2, OpLOADI_3, OpLOADI_4, OpLOADI_5, OpLOADI_6, OpLOADI_7:
+			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, int(ins.Op-OpLOADI_0)))
+		case OpLOADI16:
+			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, int16(ins.B)))
+		case OpLOADI32:
+			val := int32(uint32(ins.B)<<16 | uint32(ins.C))
+			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, val))
+		case OpADD:
+			b.WriteString(fmt.Sprintf("\tr[%d] += r[%d]\n", ins.A, ins.A+1))
+		case OpADDI:
+			b.WriteString(fmt.Sprintf("\tr[%d] += %d\n", ins.A, ins.B))
+		case OpADDILV:
+			b.WriteString(fmt.Sprintf("\tr[%d] += %d\n", ins.A, ins.C))
+		case OpSUB:
+			b.WriteString(fmt.Sprintf("\tr[%d] -= r[%d]\n", ins.A, ins.A+1))
+		case OpSUBI:
+			b.WriteString(fmt.Sprintf("\tr[%d] -= %d\n", ins.A, ins.B))
+		case OpSUBILV:
+			b.WriteString(fmt.Sprintf("\tr[%d] -= %d\n", ins.A, ins.C))
+		case OpMUL:
+			b.WriteString(fmt.Sprintf("\tr[%d] *= r[%d]\n", ins.A, ins.A+1))
+		case OpEQ, OpLT, OpLE, OpGT, OpGE:
+			nextIns := unit.Instructions[idx+1]
+			opStr := "=="
+			switch ins.Op {
+			case OpLT:
+				opStr = "<"
+			case OpLE:
+				opStr = "<="
+			case OpGT:
+				opStr = ">"
+			case OpGE:
+				opStr = ">="
+			}
+			if nextIns.Op == OpJMPNOT {
+				b.WriteString(fmt.Sprintf("\tif !(r[%d] %s r[%d]) { goto L_%04d }\n", ins.A, opStr, ins.A+1, nextIns.Target))
+			} else {
+				b.WriteString(fmt.Sprintf("\tif r[%d] %s r[%d] { goto L_%04d }\n", ins.A, opStr, ins.A+1, nextIns.Target))
+			}
+			idx++
+		case OpJMP:
+			b.WriteString(fmt.Sprintf("\tgoto L_%04d\n", ins.Target))
+		case OpSEND, OpSSEND:
+			var args []string
+			for i := 1; i <= arity; i++ {
+				args = append(args, fmt.Sprintf("r[%d]", ins.A+uint32(i)))
+			}
+			b.WriteString(fmt.Sprintf("\tr[%d] = %s_int(%s)\n", ins.A, fnName, strings.Join(args, ", ")))
+		case OpRETURN:
+			b.WriteString(fmt.Sprintf("\treturn r[%d]\n", ins.A))
+			hasReturn = true
+		}
+	}
+	if !hasReturn {
+		b.WriteString("\treturn r[0]\n")
+	}
+	b.WriteString("}\n\n")
 }
 
 func unitHasBackJump(unit *IRepUnit) bool {
@@ -721,8 +932,44 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 	}
 
 	fnName := fmt.Sprintf("%sIRep_%d", prefix, unit.Index)
+	methodName := g.unitMethodName[fnName]
+	fixedArity := -1
+	if arity, ok := g.compiledArity[fnName]; ok {
+		fixedArity = arity
+	}
+
 	b.WriteString(fmt.Sprintf("// %s implements compiled irep block %d\n", fnName, unit.Index))
-	b.WriteString(fmt.Sprintf("func %s(mrb *oruby.MrbState, self oruby.Value, args []oruby.Value, upvalues ...[]oruby.Value) (oruby.Value, error) {\n", fnName))
+	if fixedArity >= 0 {
+		if canEmitIntSpecialized(unit, methodName, fixedArity) {
+			emitIntSpecializedUnit(b, unit, fnName, fixedArity)
+		}
+		b.WriteString(fmt.Sprintf("func %s(mrb *oruby.MrbState, self oruby.Value, args []oruby.Value, upvalues ...[]oruby.Value) (oruby.Value, error) {\n", fnName))
+		var callArgs []string
+		callArgs = append(callArgs, "mrb", "self")
+		for i := 0; i < fixedArity; i++ {
+			b.WriteString(fmt.Sprintf("\tvar _a%d oruby.Value\n\tif len(args) > %d { _a%d = args[%d] }\n", i+1, i, i+1, i))
+			callArgs = append(callArgs, fmt.Sprintf("_a%d", i+1))
+		}
+		b.WriteString(fmt.Sprintf("\treturn %s_f%d(%s)\n}\n\n", fnName, fixedArity, strings.Join(callArgs, ", ")))
+
+		var fnParams []string
+		fnParams = append(fnParams, "mrb *oruby.MrbState", "self oruby.Value")
+		for i := 0; i < fixedArity; i++ {
+			fnParams = append(fnParams, fmt.Sprintf("_a%d oruby.Value", i+1))
+		}
+		b.WriteString(fmt.Sprintf("func %s_f%d(%s) (oruby.Value, error) {\n", fnName, fixedArity, strings.Join(fnParams, ", ")))
+		if canEmitIntSpecialized(unit, methodName, fixedArity) {
+			var conds, intArgs []string
+			for i := 0; i < fixedArity; i++ {
+				conds = append(conds, fmt.Sprintf("_a%d.Type() == oruby.MrbTTInteger", i+1))
+				intArgs = append(intArgs, fmt.Sprintf("*(*int64)(unsafe.Pointer(&_a%d))", i+1))
+			}
+			b.WriteString(fmt.Sprintf("\tif %s {\n\t\treturn mrb.FixnumValue(int(%s_int(%s))), nil\n\t}\n",
+				strings.Join(conds, " && "), fnName, strings.Join(intArgs, ", ")))
+		}
+	} else {
+		b.WriteString(fmt.Sprintf("func %s(mrb *oruby.MrbState, self oruby.Value, args []oruby.Value, upvalues ...[]oruby.Value) (oruby.Value, error) {\n", fnName))
+	}
 	if hasClosure {
 		b.WriteString(fmt.Sprintf("\tr := make([]oruby.Value, %d)\n", nregs))
 	} else {
@@ -742,6 +989,48 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 		ins := unit.Instructions[idx]
 		if jumpTargets[ins.Offset] {
 			b.WriteString(fmt.Sprintf("L_%04d:\n", ins.Offset))
+		}
+
+		// Peephole 3: Fused comparison + conditional branch (OpEQ/OpLT/OpLE/OpGT/OpGE followed by OpJMPNOT/OpJMPIF)
+		if (ins.Op == OpEQ || ins.Op == OpLT || ins.Op == OpLE || ins.Op == OpGT || ins.Op == OpGE) && idx+1 < len(unit.Instructions) {
+			nextIns := unit.Instructions[idx+1]
+			if !jumpTargets[nextIns.Offset] && (nextIns.Op == OpJMPNOT || nextIns.Op == OpJMPIF) && nextIns.A == ins.A {
+				opStr := "=="
+				helperFn := "fastEq"
+				switch ins.Op {
+				case OpLT:
+					opStr = "<"
+					helperFn = "fastLt"
+				case OpLE:
+					opStr = "<="
+					helperFn = "fastLe"
+				case OpGT:
+					opStr = ">"
+					helperFn = "fastGt"
+				case OpGE:
+					opStr = ">="
+					helperFn = "fastGe"
+				}
+				arenaRestore := ""
+				if nextIns.Target < nextIns.Offset {
+					arenaRestore = "mrb.GCArenaRestore(_ai); "
+				}
+				if nextIns.Op == OpJMPNOT {
+					b.WriteString(fmt.Sprintf("\tif r[%d].Type() == oruby.MrbTTInteger && r[%d].Type() == oruby.MrbTTInteger {\n", ins.A, ins.A+1))
+					b.WriteString(fmt.Sprintf("\t\tif !(*(*int64)(unsafe.Pointer(&r[%d])) %s *(*int64)(unsafe.Pointer(&r[%d]))) { r[%d] = mrb.FalseValue(); %sgoto L_%04d }\n",
+						ins.A, opStr, ins.A+1, ins.A, arenaRestore, nextIns.Target))
+					b.WriteString(fmt.Sprintf("\t} else if !%s(mrb, r[%d], r[%d]).Bool() {\n", helperFn, ins.A, ins.A+1))
+					b.WriteString(fmt.Sprintf("\t\tr[%d] = mrb.FalseValue(); %sgoto L_%04d\n\t}\n", ins.A, arenaRestore, nextIns.Target))
+				} else {
+					b.WriteString(fmt.Sprintf("\tif r[%d].Type() == oruby.MrbTTInteger && r[%d].Type() == oruby.MrbTTInteger {\n", ins.A, ins.A+1))
+					b.WriteString(fmt.Sprintf("\t\tif *(*int64)(unsafe.Pointer(&r[%d])) %s *(*int64)(unsafe.Pointer(&r[%d])) { r[%d] = mrb.TrueValue(); %sgoto L_%04d }\n",
+						ins.A, opStr, ins.A+1, ins.A, arenaRestore, nextIns.Target))
+					b.WriteString(fmt.Sprintf("\t} else if %s(mrb, r[%d], r[%d]).Bool() {\n", helperFn, ins.A, ins.A+1))
+					b.WriteString(fmt.Sprintf("\t\tr[%d] = mrb.TrueValue(); %sgoto L_%04d\n\t}\n", ins.A, arenaRestore, nextIns.Target))
+				}
+				idx++
+				continue
+			}
 		}
 
 		// Peephole 1: Fused OpARRAY + OpBLOCK + OpSENDB("each") when array register is overwritten immediately after
@@ -812,20 +1101,26 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 			// No-op
 
 		case OpENTER:
-			req := int((ins.A >> 18) & 0x1f)
-			if ins.A == uint32(req)<<18 && req <= 4 && req+1 <= nregs {
-				if req > 0 {
-					b.WriteString(fmt.Sprintf("\tif len(args) >= %d {\n", req))
-					for i := 0; i < req; i++ {
-						b.WriteString(fmt.Sprintf("\t\tr[%d] = args[%d]\n", i+1, i))
-					}
-					b.WriteString("\t}\n")
+			if fixedArity >= 0 {
+				for i := 0; i < fixedArity; i++ {
+					b.WriteString(fmt.Sprintf("\tr[%d] = _a%d\n", i+1, i+1))
 				}
 			} else {
-				// Unpack arguments from args slice into registers r[1...]
-				b.WriteString("\tfor i := 0; i < len(args) && i+1 < len(r); i++ {\n")
-				b.WriteString("\t\tr[i+1] = args[i]\n")
-				b.WriteString("\t}\n")
+				req := int((ins.A >> 18) & 0x1f)
+				if ins.A == uint32(req)<<18 && req <= 4 && req+1 <= nregs {
+					if req > 0 {
+						b.WriteString(fmt.Sprintf("\tif len(args) >= %d {\n", req))
+						for i := 0; i < req; i++ {
+							b.WriteString(fmt.Sprintf("\t\tr[%d] = args[%d]\n", i+1, i))
+						}
+						b.WriteString("\t}\n")
+					}
+				} else {
+					// Unpack arguments from args slice into registers r[1...]
+					b.WriteString("\tfor i := 0; i < len(args) && i+1 < len(r); i++ {\n")
+					b.WriteString("\t\tr[i+1] = args[i]\n")
+					b.WriteString("\t}\n")
+				}
 			}
 
 		case OpMOVE:
@@ -1130,8 +1425,13 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 				targetFn = g.compiledMethods[symName]
 			}
 			if targetFn != "" && symName != "require" && symName != "require_relative" && symName != "puts" && symName != "print" && symName != "p" && symName != "new" {
-				b.WriteString(fmt.Sprintf("\tr[%d], _ = %s(mrb, %s, []oruby.Value{%s})\n",
-					ins.A, targetFn, recv, strings.TrimPrefix(argsJoined, ", ")))
+				if arity, ok := g.compiledArity[targetFn]; ok && arity == numArgs {
+					b.WriteString(fmt.Sprintf("\tr[%d], _ = %s_f%d(mrb, %s%s)\n",
+						ins.A, targetFn, arity, recv, argsJoined))
+				} else {
+					b.WriteString(fmt.Sprintf("\tr[%d], _ = %s(mrb, %s, []oruby.Value{%s})\n",
+						ins.A, targetFn, recv, strings.TrimPrefix(argsJoined, ", ")))
+				}
 				break
 			}
 
@@ -1159,8 +1459,13 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 				targetFn = g.compiledMethods[symName]
 			}
 			if targetFn != "" && symName != "require" && symName != "require_relative" && symName != "puts" && symName != "print" && symName != "p" && symName != "new" {
-				b.WriteString(fmt.Sprintf("\tr[%d], _ = %s(mrb, %s, nil)\n",
-					ins.A, targetFn, recv))
+				if arity, ok := g.compiledArity[targetFn]; ok && arity == 0 {
+					b.WriteString(fmt.Sprintf("\tr[%d], _ = %s_f0(mrb, %s)\n",
+						ins.A, targetFn, recv))
+				} else {
+					b.WriteString(fmt.Sprintf("\tr[%d], _ = %s(mrb, %s, nil)\n",
+						ins.A, targetFn, recv))
+				}
 				break
 			}
 
@@ -1175,7 +1480,7 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 			}
 			symVar := g.internSym(symName)
 			symCall := g.internSym("call")
-			b.WriteString(fmt.Sprintf("\tmrb.DefineMethod(mrb.ClassPtr(r[%d]), %q, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {\n", ins.A, symName))
+			b.WriteString(fmt.Sprintf("\tmrb.DefineMethodID(mrb.ClassPtr(r[%d]), %s, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {\n", ins.A, symVar))
 			b.WriteString("\t\targs := mrb.GetArgs().Slice()\n")
 			b.WriteString(fmt.Sprintf("\t\tres, _ := fastCall(mrb, r[%d], %s, args...)\n", ins.A+1, symCall))
 			b.WriteString("\t\treturn res\n")
@@ -1193,7 +1498,7 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 			childUnit := unit.Children[childIdx]
 			childFnName := fmt.Sprintf("%sIRep_%d", prefix, childUnit.Index)
 
-			b.WriteString(fmt.Sprintf("\tmrb.DefineMethod(mrb.ClassPtr(self), %q, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {\n", symName))
+			b.WriteString(fmt.Sprintf("\tmrb.DefineMethodID(mrb.ClassPtr(self), %s, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {\n", symVar))
 			b.WriteString("\t\targs := mrb.GetArgs().Slice()\n")
 			b.WriteString(fmt.Sprintf("\t\tres, _ := %s(mrb, self, args)\n", childFnName))
 			b.WriteString("\t\treturn res\n")
@@ -1210,7 +1515,7 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 			childUnit := unit.Children[childIdx]
 			childFnName := fmt.Sprintf("%sIRep_%d", prefix, childUnit.Index)
 
-			b.WriteString(fmt.Sprintf("\tmrb.DefineMethod(mrb.SingletonClass(r[%d]), %q, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {\n", ins.A, symName))
+			b.WriteString(fmt.Sprintf("\tmrb.DefineMethodID(mrb.SingletonClass(r[%d]), %s, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {\n", ins.A, symVar))
 			b.WriteString("\t\targs := mrb.GetArgs().Slice()\n")
 			b.WriteString(fmt.Sprintf("\t\tres, _ := %s(mrb, self, args)\n", childFnName))
 			b.WriteString("\t\treturn res\n")

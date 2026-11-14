@@ -393,18 +393,31 @@ func WrapSpecialHash(id uintptr) Value {
 	return Value{cv}
 }
 
-// MrbSymbolValue MigrateTo from symbol
-func MrbSymbolValue(i MrbSym) Value { return Value{C.mrb_symbol_value(C.mrb_sym(i))} }
+// MrbSymbolValue MigrateTo from symbol without CGO overhead
+func MrbSymbolValue(i MrbSym) Value {
+	var cv C.mrb_value
+	cv.tt = C.MRB_TT_SYMBOL
+	*(*uint32)(unsafe.Pointer(&cv)) = uint32(i)
+	return Value{cv}
+}
 
-// SymbolValue converts MrbSym to Value
-func (mrb *MrbState) SymbolValue(sym MrbSym) Value { return Value{C.mrb_symbol_value(C.mrb_sym(sym))} }
+// SymbolValue converts MrbSym to Value without CGO overhead
+func (mrb *MrbState) SymbolValue(sym MrbSym) Value {
+	var cv C.mrb_value
+	cv.tt = C.MRB_TT_SYMBOL
+	*(*uint32)(unsafe.Pointer(&cv)) = uint32(sym)
+	return Value{cv}
+}
 
-// SymbolValue converts MrbSym to Value
+// mrbObjValue converts C object pointer to Value without CGO overhead
 func mrbObjValue(p unsafe.Pointer) Value {
 	if p == nil {
 		return nilValue
 	}
-	return Value{C.mrb_obj_value(p)}
+	var cv C.mrb_value
+	cv.tt = C.enum_mrb_vtype(*(*uint8)(unsafe.Add(p, 8)))
+	*(*unsafe.Pointer)(unsafe.Pointer(&cv)) = p
+	return Value{cv}
 }
 
 // MrbObjValue value form oruby object. In Go object must provide MrbValue interface,
