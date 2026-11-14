@@ -52,7 +52,7 @@ func Test_ioSSysopen(t *testing.T) {
 
 	v, err := mrb.Eval(`IO.sysopen "testdata/test.txt"`)
 	assert.NilError(t, err)
-	assert.Equal(t, v.Type(), oruby.MrbTTCptr)
+	assert.Equal(t, v.Type(), oruby.MrbTTFixnum)
 }
 
 func Test_fileOpenIO(t *testing.T) {

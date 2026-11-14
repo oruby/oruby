@@ -13,7 +13,7 @@ func initPlatformConsts(consts oruby.RClass) {
 	consts.Const("DSYNC", syscall.O_DSYNC)
 	consts.Const("NOFOLLOW", syscall.O_NOFOLLOW)
 	//consts.Const("BINARY", syscall.O_BINARY)
-	//consts.Const("SHARE_DELETE", syscall.O_SHARE_DELETE)
+	consts.Const("SHARE_DELETE", 0x0004)
 	//consts.Const("RSYNC", syscall.O_RSYNC)
 	//consts.Const("NOATIME",  syscall.O_NOATIME)
 	//consts.Const("DIRECT", syscall.O_DIRECT)

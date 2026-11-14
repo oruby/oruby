@@ -112,22 +112,11 @@ func (mrb *MrbState) DefineMethodID(c RClass, mid MrbSym, f MrbFuncT, aspec MrbA
 // DefineMethodFuncID Define method as oruby func
 func (mrb *MrbState) DefineMethodFuncID(c RClass, mid MrbSym, f interface{}) {
 	var env int // C.mrb_value
-	aspec := ArgsNone()
+	aspec := ArgsAny()
 	v := reflect.ValueOf(f)
 
 	if v.Kind() == reflect.Func {
 		env = mrb.registerFuncIndex(f)
-		t := v.Type()
-
-		opt := 0
-		for i := t.NumIn() - 1; i >= 0; i-- {
-			if t.In(i).Kind() != reflect.Ptr {
-				break
-			}
-			opt++
-		}
-
-		aspec = mrb.ArgsArg(uint32(t.NumIn()-opt), uint32(opt))
 	} else {
 		env = mrb.registerFuncIndex(func() interface{} { return f })
 	}

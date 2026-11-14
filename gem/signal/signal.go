@@ -105,13 +105,14 @@ func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
 				signal.Stop(handlers.c)
 				close(handlers.c)
 				// zero signal handler, executed at MrbState closing
-				if !handlers.exitHandler.IsNil() {
+				if mrb.InjectChan != nil && !handlers.exitHandler.IsNil() {
 					mrb.InjectChan <- mrb.RProc(handlers.exitHandler)
+					mrb.InjectChan <- mrb.WaitGroupDone()
+				} else {
+					mrb.WaitGroup.Done()
 				}
 
 				handlers.current = nil
-				// WaitGroupDone() helper is used to ensure execution after exitHandler
-				mrb.InjectChan <- mrb.WaitGroupDone()
 				return
 			}
 		}

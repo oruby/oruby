@@ -91,7 +91,7 @@ func Test_statComp(t *testing.T) {
 	ret, err := mrb.Eval(`$f1.stat <=> $f2.stat`)
 	assert.NilError(t, err)
 	assert.Equal(t, ret.Type(), oruby.MrbTTFixnum)
-	assert.Equal(t, ret.Int(), 1)
+	assert.Equal(t, ret.Int(), -1)
 }
 
 func Test_statAtime(t *testing.T) {
@@ -394,7 +394,7 @@ func Test_statMode(t *testing.T) {
 
 	ret, err = mrb.Eval("$f.stat.mode")
 	assert.NilError(t, err)
-	assert.Equal(t, ret.Int(), 0777)
+	assert.Equal(t, ret.Int()&0777, 0777)
 }
 
 func Test_statMtime(t *testing.T) {

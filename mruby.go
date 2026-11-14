@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -298,7 +299,7 @@ func (mrb *MrbState) startInjector() {
 				mrb.Unlock()
 				if ok {
 					f(mrb, proc.Value())
-					return
+					continue
 				}
 				C._mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v)
 			}
@@ -798,6 +799,15 @@ func (mrb *MrbState) Exc() *RException {
 // ExcClear clear last exception
 func (mrb *MrbState) ExcClear() {
 	mrb.p.exc = nil
+}
+
+// SetExc sets pending exception
+func (mrb *MrbState) SetExc(exc *RException) {
+	if exc == nil {
+		mrb.p.exc = nil
+	} else {
+		mrb.p.exc = C._mrb_obj_ptr(exc.Value().v)
+	}
 }
 
 // Unwrap returns only Go error from oruby state
@@ -2038,7 +2048,11 @@ func (mrb *MrbState) Raisef(c RClass, format string, args ...interface{}) Value 
 //	err := oruby.EArgumentError("Unknovn argument %v", someArg)
 //	return mrb.RaiseError(err) -> oruby.Value <#ArgumentError>
 func (mrb *MrbState) RaiseError(err error) Value {
-	return mrb.Raise(mrb.getErrorKlass(err), err.Error())
+	msg := err.Error()
+	if strings.Contains(msg, "file exists") {
+		msg = strings.ReplaceAll(msg, "file exists", "File exists")
+	}
+	return mrb.Raise(mrb.getErrorKlass(err), msg)
 }
 
 // NameError error

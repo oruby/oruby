@@ -3,7 +3,7 @@ package popen
 import (
 	"github.com/oruby/oruby"
 	gemIO "github.com/oruby/oruby/gem/io"
-	_ "github.com/oruby/oruby/gem/process"
+	"github.com/oruby/oruby/gem/process"
 
 	"errors"
 	"os/exec"
@@ -138,8 +138,10 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(mrb.Err())
 	}
 
-	if err = cmd.Wait(); err != nil {
-		return mrb.RaiseError(err)
+	_ = cmd.Wait()
+	if cmd.ProcessState != nil && cmd.Process != nil {
+		ps := cmd.ProcessState
+		process.SetLastStatus(mrb, cmd.Process.Pid, ps.ExitCode(), ps.Exited(), ps.Success())
 	}
 	return result
 }

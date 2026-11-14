@@ -60,6 +60,104 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, kwarg
 	return lineReader, nil, nil
 }
 
+func readLine(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, kwargs oruby.RHash, index int) ([]byte, error) {
+	var sep *string
+	limit := 0
+
+	globalSeparator := mrb.GetGV("$/")
+	if globalSeparator.IsString() {
+		tmp := globalSeparator.String()
+		sep = &tmp
+	}
+
+	arg1 := args.ItemDef(index, globalSeparator)
+	arg2 := args.Item(index + 1)
+	chomp := kwargs.Get(mrb.Intern("chomp")).Bool()
+
+	switch arg1.Type() {
+	case oruby.MrbTTString:
+		tmp := arg1.String()
+		sep = &tmp
+	case oruby.MrbTTFalse:
+		if arg1.IsNil() {
+			sep = nil
+		} else {
+			return nil, oruby.ETypeError("no implicit conversion of false into Integer")
+		}
+	case oruby.MrbTTFixnum:
+		limit = arg1.Int()
+	}
+
+	if arg2.IsInteger() {
+		limit = arg2.Int()
+	}
+
+	f, err := openIO(mrb, fd, mrb.NilValue(), kwargs.Value())
+	if err != nil {
+		return nil, err
+	}
+
+	reader, ok := f.(io.Reader)
+	if !ok {
+		return nil, oruby.EError("IOError", "IO object does not support reading")
+	}
+
+	if sep == nil {
+		if limit > 0 {
+			buf := make([]byte, limit)
+			n, rErr := io.ReadFull(reader, buf)
+			if n > 0 {
+				return buf[:n], nil
+			}
+			if rErr == nil {
+				return nil, io.EOF
+			}
+			return nil, rErr
+		}
+		buf, rErr := io.ReadAll(reader)
+		if len(buf) > 0 {
+			return buf, nil
+		}
+		if rErr == nil {
+			return nil, io.EOF
+		}
+		return nil, rErr
+	}
+
+	separator := []byte(*sep)
+	if *sep == "" {
+		separator = []byte("\n\n")
+	}
+
+	var line []byte
+	oneByte := make([]byte, 1)
+	for {
+		if limit > 0 && len(line) >= limit {
+			break
+		}
+		n, rErr := reader.Read(oneByte)
+		if n > 0 {
+			line = append(line, oneByte[0])
+			if len(separator) > 0 && bytes.HasSuffix(line, separator) {
+				if chomp {
+					line = line[:len(line)-len(separator)]
+				}
+				return line, nil
+			}
+		}
+		if rErr != nil {
+			if len(line) > 0 {
+				return line, nil
+			}
+			return nil, rErr
+		}
+	}
+	if len(line) == 0 {
+		return nil, io.EOF
+	}
+	return line, nil
+}
+
 func getSpliter(sep *string, chomp bool, limit int) bufio.SplitFunc {
 	if sep == nil {
 		return func(data []byte, atEOF bool) (advance int, token []byte, err error) {

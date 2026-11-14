@@ -5,6 +5,7 @@ import (
 	"github.com/oruby/oruby/gem/assert"
 	"io/ioutil"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -191,11 +192,10 @@ func Test_fileExpandPath(t *testing.T) {
 		return ret.String()
 	}
 
-	home, err := os.UserHomeDir()
+	u, err := user.Current()
 	assert.NilError(t, err)
 
-	assert.Equal(t, expandPath("~oracle/bin", ""), home+"/oracle/bin")
-	assert.Equal(t, expandPath(":~oracle/bin", ""), ":"+home+"/oracle/bin")
+	assert.Equal(t, expandPath("~"+u.Username+"/bin", ""), u.HomeDir+"/bin")
 	assert.Equal(t, expandPath("ruby", "/usr/bin"), "/usr/bin/ruby")
 
 	//file, err := mrb.Eval("__FILE__")

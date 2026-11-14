@@ -37,6 +37,7 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 			Stderr: os.Stderr,
 		},
 		closeOthers: true,
+		cleanup:     func() {},
 	}
 
 	mrb.HashValueForEach(options, func(key, val oruby.Value) int {
@@ -252,11 +253,9 @@ func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {
 		// Error ignoead as it can be only "Wait already called", in which case
 		// ProcessState exists
 		err = runner.cmd.Wait()
-		if err != nil {
+		if err != nil && runner.cmd.ProcessState == nil {
 			mrb.SetGV("$?", nil)
-			if runner.cmd.ProcessState == nil {
-				return mrb.ERuntimeError().RaiseError(err), lastState
-			}
+			return mrb.ERuntimeError().RaiseError(err), lastState
 		}
 		state := runner.cmd.ProcessState
 		ret = pid
@@ -278,7 +277,7 @@ func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {
 
 	mrb.SetGV("$?", mrb.Value(lastState))
 
-	if err != nil {
+	if err != nil && runner.cmd != nil && runner.cmd.ProcessState == nil {
 		return mrb.ERuntimeError().RaiseError(err), lastState
 	}
 

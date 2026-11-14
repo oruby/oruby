@@ -176,11 +176,14 @@ func (mrb *MrbState) GetAllArgs(defaults ...interface{}) (RArgs, RHash, RProc) {
 
 // KeywordArgs returns provided keyword args as RHash
 func (mrb *MrbState) KeywordArgs() RHash {
-	args := RValue{C._mrb_get_args_kw(mrb.p), mrb}
-	if args.IsNil() {
+	raw := Value{C._mrb_get_args_kw(mrb.p)}
+	if raw.IsNil() {
 		return mrb.HashNew()
 	}
-	return RHash{args}
+	if !raw.IsHash() {
+		return mrb.EnsureHashType(raw)
+	}
+	return RHash{RValue{raw.v, mrb}}
 }
 
 // GetArgs2 return two function arguments

@@ -20,7 +20,7 @@ func modestrToFlags(mode string) (int, error) {
 	case 'a':
 		flags = os.O_WRONLY | os.O_CREATE | os.O_APPEND
 	default:
-		return 0, oruby.EArgumentError("illegal access mode %v", mode)
+		return 0, oruby.EArgumentError("invalid access mode %v", mode)
 	}
 
 	if len(mode) == 1 {
@@ -37,14 +37,14 @@ func modestrToFlags(mode string) (int, error) {
 			flags = (flags & ^(os.O_RDONLY | os.O_WRONLY | os.O_RDWR)) | os.O_RDWR
 		case 'x':
 			if mode[0] != 'w' {
-				return 0, oruby.EArgumentError("illegal access mode %v", mode)
+				return 0, oruby.EArgumentError("invalid access mode %v", mode)
 			}
 			flags |= os.O_EXCL
 		case ':':
 			// ignore BOM
 			goto end
 		default:
-			return 0, oruby.EArgumentError("illegal access mode %v", mode)
+			return 0, oruby.EArgumentError("invalid access mode %v", mode)
 		}
 	}
 
@@ -67,17 +67,21 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 
 	} else if mode.IsHash() {
 		// mode: 'rw+', flags: File::EXCL
+		mFlags := 0
 		optMode := mrb.HashFetch(mode, mrb.Intern("mode"), mrb.NilValue())
-		mFlags, err := modestrToFlags(optMode.String())
-		if err != nil {
-			return 0, err
+		if !optMode.IsNil() {
+			var err error
+			mFlags, err = modestrToFlags(optMode.String())
+			if err != nil {
+				return 0, err
+			}
 		}
 
 		fFlags := mrb.HashFetch(mode, mrb.Intern("flags"), oruby.Int(0)).Int()
 		return mFlags | fFlags, nil
 
 	} else {
-		return 0, oruby.EArgumentError("illegal access mode %v", mrb.Inspect(mode))
+		return 0, oruby.EArgumentError("invalid access mode %v", mrb.Inspect(mode))
 	}
 }
 

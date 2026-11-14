@@ -209,36 +209,21 @@ func (m *MatchData) Offset(idx int) ([]interface{}, error) {
 
 // PostMatch returns string after match
 func (m *MatchData) PostMatch() string {
-	last := len(m.s) - 1
-	for i := len(m.result) - 1; i >= 0; i-- {
-		if m.result[i] >= 0 {
-			last = m.result[i]
-			break
-		}
-	}
-
-	if last >= len(m.s)-1 {
+	if len(m.result) < 2 || m.result[1] < 0 || m.result[1] >= len(m.s) {
 		return ""
 	}
-
-	return m.s[last+1:]
+	return m.s[m.result[1]:]
 }
 
 // PreMatch returns string before match
 func (m *MatchData) PreMatch() string {
-	first := 0
-	for i := 0; i < len(m.result); i++ {
-		if m.result[i] >= 0 {
-			first = m.result[i]
-			break
-		}
-	}
-
-	if first == 0 {
+	if len(m.result) < 2 || m.result[0] <= 0 {
 		return ""
 	}
-
-	return m.s[:first-1]
+	if m.result[0] > len(m.s) {
+		return m.s
+	}
+	return m.s[:m.result[0]]
 }
 
 // Regexp returns underlyng Regexp object

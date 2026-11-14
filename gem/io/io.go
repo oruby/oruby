@@ -28,7 +28,24 @@ func init() {
 		// Not implemented: select and popen with fork command '-')
 		cIO.DefineClassMethod("copy_stream", ioCopyStream, mrb.ArgsArg(2, 2))
 		cIO.DefineClassMethod("foreach", ioForeach, mrb.ArgsArg(2, 3)|mrb.ArgsBlock())
-		cIO.DefineClassMethod("pipe", ioPipe, mrb.ArgsOpt(3)|mrb.ArgsBlock())
+		cIO.DefineClassMethod("_pipe", ioPipe, mrb.ArgsOpt(3))
+		mrb.Eval(`
+class IO
+  def self.pipe(*args, &block)
+    r, w = _pipe(*args)
+    if block
+      begin
+        yield r, w
+      ensure
+        r.close rescue nil
+        w.close rescue nil
+      end
+    else
+      [r, w]
+    end
+  end
+end
+`)
 		cIO.DefineClassMethod("readlines", ioSReadlines, mrb.ArgsArg(1, 3)|mrb.ArgsKey(0, 1))
 		cIO.DefineClassMethod("select", mrb.NotImplemented, mrb.ArgsArg(1, 3))
 		cIO.DefineClassMethod("try_convert", ioTryConvert, mrb.ArgsReq(1))
@@ -59,7 +76,8 @@ func init() {
 		cIO.DefineAlias("codepoints", "each_codepoint")
 		cIO.DefineMethod("eof?", ioIsEof, mrb.ArgsNone())
 		cIO.DefineAlias("eof", "eof?")
-		//cIO.DefineMethod("external_encoding", ioExternalEncoding, mrb.ArgsNone())
+		cIO.DefineMethod("external_encoding", ioExternalEncoding, mrb.ArgsNone())
+		cIO.DefineMethod("internal_encoding", ioInternalEncoding, mrb.ArgsNone())
 		cIO.DefineMethod("fcntl", mrb.NotImplemented, mrb.ArgsReq(2))
 		cIO.DefineMethod("fdatasync", ioFsync, mrb.ArgsNone())
 		cIO.DefineMethod("fileno", ioFileno, mrb.ArgsNone())
@@ -276,17 +294,18 @@ func ioOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return obj
 }
 
-// ioPipe internally opens io.Pipe, which return io.PipeReader and io.PipeWriter
+// ioPipe internally opens os.Pipe, returning os.File for reader and writer
 func ioPipe(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	block := mrb.GetArgsBlock()
-
-	r, w := io.Pipe()
-
-	if !block.IsNil() {
-		return mrb.YieldCont(block, self, r, w)
+	r, w, err := os.Pipe()
+	if err != nil {
+		return mrb.SysFail(err)
 	}
 
-	return mrb.AryNewFromValues(mrb.DataValue(r), mrb.DataValue(w))
+	cIO := mrb.ClassGet("IO")
+	rVal := mrb.DataWrapInterface(cIO, r).Value()
+	wVal := mrb.DataWrapInterface(cIO, w).Value()
+
+	return mrb.AryNewFromValues(rVal, wVal)
 }
 
 func ioSReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

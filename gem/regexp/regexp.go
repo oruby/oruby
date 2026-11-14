@@ -229,8 +229,14 @@ func matchGoValuesAt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func regexToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	obj := mrb.RValue(self)
-	source := obj.GetIV("@source").String()
-	options := obj.GetIV("@options").Int()
+	source := ""
+	if src := obj.GetIV("@source"); !src.IsNil() {
+		source = src.String()
+	}
+	options := 0
+	if opt := obj.GetIV("@options"); !opt.IsNil() {
+		options = opt.Int()
+	}
 
 	y := ""
 	n := "-"
@@ -265,8 +271,14 @@ func regexToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func regexInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	obj := mrb.RValue(self)
-	source := obj.GetIV("@source").String()
-	options := obj.GetIV("@options").Int()
+	source := ""
+	if src := obj.GetIV("@source"); !src.IsNil() {
+		source = src.String()
+	}
+	options := 0
+	if opt := obj.GetIV("@options"); !opt.IsNil() {
+		options = opt.Int()
+	}
 
 	y := ""
 	if options&Multiline > 0 {

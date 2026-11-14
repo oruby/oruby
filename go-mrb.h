@@ -133,13 +133,9 @@ static struct RObject* _mrb_obj_ptr(mrb_value v) { return mrb_obj_ptr(v); }
 static mrb_value _mrb_uintptr_value(mrb_state *mrb, uintptr_t p) { return mrb_cptr_value(mrb, (void *)p); }
 static mrb_value _mrb_ptr_to_str(mrb_state *mrb, uintptr_t p) { return mrb_ptr_to_str(mrb, (void *)p); }
 
-// _mrb_is_nil returns true if mrb_value is nil value,
-// or RBasic object with NIL pointer
+// _mrb_is_nil returns true if mrb_value is nil value
 static mrb_bool _mrb_is_nil(mrb_value o)    {
-	if (mrb_nil_p(o) || (mrb_immediate_p(o) && (mrb_ptr(o) == NULL))) {
-		return TRUE;
-	}
-	return FALSE;
+	return mrb_nil_p(o);
 }
 
 // Hash

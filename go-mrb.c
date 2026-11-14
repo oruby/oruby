@@ -49,6 +49,7 @@ void _mrb_proc_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, 
   int ai = mrb_gc_arena_save(mrb);    
   mrb_value at = mrb_fixnum_value(idx);
   struct RProc *proc = mrb_proc_new_cfunc_with_env(mrb, set_gofunc_callback, 1, &at);
+  mrb_proc_set_cfunc_aspec(proc, aspec);
 
   MRB_METHOD_FROM_PROC(m, proc);
   mrb_define_method_raw(mrb, c, id, m);
@@ -60,6 +61,7 @@ void _mrb_method_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx
   int ai = mrb_gc_arena_save(mrb);    
   mrb_value at = mrb_fixnum_value(idx);
   struct RProc *proc = mrb_proc_new_cfunc_with_env(mrb, set_mrb_env_callback, 1, &at);
+  mrb_proc_set_cfunc_aspec(proc, aspec);
 
   MRB_METHOD_FROM_PROC(m, proc);
   mrb_define_method_raw(mrb, c, id, m);
@@ -83,6 +85,7 @@ void _mrb_proc_new_module_function(mrb_state *mrb, struct RClass *c, mrb_sym id,
   int ai = mrb_gc_arena_save(mrb);    
   mrb_value at = mrb_fixnum_value(idx);
   struct RProc *proc = mrb_proc_new_cfunc_with_env(mrb, set_gofunc_callback, 1, &at);
+  mrb_proc_set_cfunc_aspec(proc, aspec);
 
   MRB_METHOD_FROM_PROC(m, proc);
   struct RClass* sclass = mrb_singleton_class_ptr(mrb, mrb_obj_value(c));

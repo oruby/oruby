@@ -50,7 +50,6 @@ func initDir(mrb *oruby.MrbState) {
 	dirClass.DefineClassMethod("glob", dirGlob, mrb.ArgsArg(1, 2))
 	dirClass.DefineClassMethod("[]", dirAref, mrb.ArgsReq(1)|mrb.ArgsRest())
 	dirClass.DefineClassMethod("exist?", dirExist, mrb.ArgsReq(1))
-	dirClass.DefineClassMethod("exists?", dirExist, mrb.ArgsReq(1))
 	dirClass.DefineClassMethod("empty?", dirIsEmpty, mrb.ArgsReq(1))
 }
 

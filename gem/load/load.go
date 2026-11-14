@@ -13,6 +13,11 @@ import (
 func init() {
 	oruby.Gem("load", func(mrb *oruby.MrbState) interface{} {
 		loadPath := mrb.AryNew()
+		if rl := os.Getenv("RUBYLIB"); rl != "" {
+			for _, p := range filepath.SplitList(rl) {
+				loadPath.Push(mrb.StrNew(p))
+			}
+		}
 		mrb.SetGV("$LOAD_PATH", loadPath)
 		mrb.SetGV("$:", loadPath)
 		mrb.SetGV("$-I", loadPath)
@@ -204,7 +209,13 @@ func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
 
 func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	// If there is implemented Go feature
-	if _, err := mrb.Resolve(feature); err == nil {
+	if loaded, err := mrb.Resolve(feature); err == nil {
+		if loaded {
+			loadedFeatures := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
+			mrb.AryPush(loadedFeatures, mrb.StrNew(feature))
+			mrb.FeatureAdd(feature)
+			return mrb.TrueValue()
+		}
 		return mrb.FalseValue()
 	}
 

@@ -51,7 +51,18 @@ func statIsExecutable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func statIsGrpowned(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
 	ext := getExtendedStat(stat)
-	return oruby.Bool(ext.gid == os.Getegid())
+	if ext.gid == os.Getegid() {
+		return oruby.True
+	}
+	groups, err := os.Getgroups()
+	if err == nil {
+		for _, g := range groups {
+			if g == ext.gid {
+				return oruby.True
+			}
+		}
+	}
+	return oruby.False
 }
 
 func major(dev uint64) uint32 {

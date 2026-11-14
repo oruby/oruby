@@ -11,6 +11,7 @@ func getExtendedStat(stat os.FileInfo) extendedStat {
 	return extendedStat{
 		ino:     s.Ino,
 		dev:     uint64(s.Dev),
+		mode:    uint32(s.Mode),
 		nlink:   uint64(s.Nlink),
 		uid:     int(s.Uid),
 		gid:     int(s.Gid),

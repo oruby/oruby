@@ -68,46 +68,35 @@ func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return result
 	}
 
-	start := 0
-	end := 0
-	var lastMatch *MatchData
+	matches := re.FindAllStringSubmatchIndex(s, -1)
+	if len(matches) == 0 {
+		result.PushString(s)
+		return result
+	}
 
-	matchValue := doMatch(mrb, re, s, start)
-	for !matchValue.IsNil() {
-		m := mrb.Data(matchValue).(*MatchData)
-
+	lastEnd := 0
+	for _, m := range matches {
 		if limited && (limit-result.Len() <= 1) {
 			break
 		}
+		matchStart := m[0]
+		matchEnd := m[1]
 
-		if (m.ToS() != "") || (m.result[0] != end) {
-			result.PushString(s[end:])
-			for i := 1; i < m.Size(); i++ {
-				str, _ := m.toString(i)
-				result.Push(mrb.StringValue(str))
+		result.PushString(s[lastEnd:matchStart])
+
+		for i := 2; i < len(m); i += 2 {
+			if m[i] >= 0 {
+				result.PushString(s[m[i]:m[i+1]])
+			} else {
+				result.Push(mrb.NilValue())
 			}
 		}
 
-		if m.ToS() == "" {
-			start++
-		} else if lastMatch != nil && lastMatch.ToS() == "" {
-			start = m.allEnd() + 1
-		} else {
-			start = m.allEnd()
-		}
-
-		lastMatch = m
-		end = m.allEnd()
-
-		if len(s) <= start {
-			break
-		}
-
-		matchValue = doMatch(mrb, re, mrb.String(self), start)
+		lastEnd = matchEnd
 	}
 
-	if lastMatch != nil {
-		result.PushString(lastMatch.PostMatch())
+	if lastEnd <= len(s) {
+		result.PushString(s[lastEnd:])
 	}
 
 	for limit == 0 && result.Len() > 0 && result.Item(-1).Len() == 0 {
@@ -119,11 +108,14 @@ func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	pattern := args.Item(0)
-	capture := args.ItemDef(1, mrb.NilValue())
 	r := getRegexp(mrb, pattern)
 	if r == nil {
-		return mrb.Call(self, "old_slice", pattern, capture)
+		if args.Len() == 1 {
+			return mrb.Call(self, "old_slice", pattern)
+		}
+		return mrb.Call(self, "old_slice", args.Item(0), args.Item(1))
 	}
+	capture := args.ItemDef(1, mrb.NilValue())
 	matchData := doMatch(mrb, r, mrb.String(self), 0)
 	if matchData.IsNil() {
 		return matchData

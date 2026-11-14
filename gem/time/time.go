@@ -147,8 +147,14 @@ func timeCreate(mrb *oruby.MrbState, args oruby.RArgs, loc *time.Location) (time
 			ss = ssV.Int()
 			if msV.IsInteger() {
 				ns = msV.Int64() * 1000
-			} else {
+			} else if msV.IsFloat() {
 				ms := msV.Float64()
+				if math.IsNaN(ms) || math.IsInf(ms, 0) {
+					return time.Time{}, oruby.EFloatDomainError("value out of range")
+				}
+				ns = int64(ms*1000) - int64(ms)*1000
+			} else if fl, err := mrb.Float(msV); err == nil {
+				ms := fl.Float64()
 				if math.IsNaN(ms) || math.IsInf(ms, 0) {
 					return time.Time{}, oruby.EFloatDomainError("value out of range")
 				}

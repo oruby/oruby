@@ -29,6 +29,7 @@ func init() {
 		mrb.DefineSingletonMethod(env, "size", envSize, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "clear", envClear, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "__delete", envDelete, mrb.ArgsReq(1))
+		mrb.DefineSingletonMethod(env, "delete", envDelete, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "to_s", envToS, mrb.ArgsNone())
 
 		mrb.ConstSet(mrb.KernelModule(), mrb.Sym("ENV"), env)

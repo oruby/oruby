@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"syscall"
 
 	"github.com/oruby/oruby"
 )
@@ -50,6 +51,9 @@ func ioWriteString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	_, err = w.Write(s.Bytes())
 	if err != nil {
+		if errors.Is(err, syscall.EBADF) {
+			return RaiseIOError(mrb, "not opened for writing")
+		}
 		return mrb.RaiseError(err)
 	}
 
@@ -57,11 +61,17 @@ func ioWriteString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioSetAutosclose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.NotImplemented(mrb, self)
+	arg := mrb.GetArgsFirst()
+	mrb.SetIV(self, "@autoclose", arg)
+	return arg
 }
 
 func ioIsAutoclose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return oruby.True
+	v := mrb.GetIV(self, "@autoclose")
+	if v.IsNil() {
+		return oruby.True
+	}
+	return v
 }
 
 func ioBinmode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -72,7 +82,47 @@ func ioIsBinbode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.True
 }
 
+func ioExternalEncoding(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	v := mrb.GetIV(self, "@external_encoding")
+	if !v.IsNil() {
+		return v
+	}
+	encMod := mrb.ModuleGet("Encoding")
+	if !encMod.IsNil() && mrb.RespondTo(encMod, mrb.Intern("default_external")) {
+		defExt, err := mrb.Funcall(encMod, mrb.Intern("default_external"))
+		if err == nil && !defExt.IsNil() {
+			return defExt
+		}
+	}
+	return mrb.NilValue()
+}
+
+func ioInternalEncoding(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.GetIV(self, "@internal_encoding")
+}
+
+func isClosed(mrb *oruby.MrbState, self oruby.Value) bool {
+	v := mrb.GetIV(self, "@closed")
+	if !v.IsNil() && v.Bool() {
+		return true
+	}
+	f := mrb.Data(self)
+	if f == nil {
+		return true
+	}
+	if file, ok := f.(*os.File); ok {
+		if file.Fd() == ^uintptr(0) {
+			return true
+		}
+	}
+	return false
+}
+
 func ioClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if isClosed(mrb, self) {
+		return mrb.NilValue()
+	}
+	mrb.SetIV(self, "@closed", mrb.TrueValue())
 	f := mrb.Data(self)
 	if closer, ok := f.(io.Closer); ok {
 		_ = closer.Close()
@@ -93,61 +143,33 @@ func ioCloseWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioIsClosed(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	f := mrb.Data(self)
-	zeroBuf := []byte{}
-
-	//if sp, ok := f.(*superPipe); ok {
-	//	_,err1 := sp.Read(zeroBuf)
-	//	_,err2 := sp.Write(zeroBuf)
-	//	return oruby.Bool(errors.Is(err1, os.ErrClosed) && errors.Is(err2, os.ErrClosed))
-	//}
-
-	r, ok := f.(io.Reader)
-	if !ok {
-		return mrb.FalseValue()
-	}
-	w, ok := f.(io.Writer)
-	if !ok {
-		return mrb.FalseValue()
-	}
-	_, err1 := r.Read(zeroBuf)
-	_, err2 := w.Write(zeroBuf)
-
-	return oruby.Bool(err1 == err2) //&& (err1 == poll.ErrFileClosing || err1 == poll.ErrNetClosing))
+	return oruby.Bool(isClosed(mrb, self))
 }
 
 func ioEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a, kwargs, block := mrb.GetAllArgs()
-	reader, closer, err := openLineReader(mrb, self, a, kwargs, 0)
-	if err != nil {
-		return mrb.RaiseError(err)
+	if block.IsNil() {
+		return mrb.Call(self, "to_enum", mrb.Intern("each_line"))
 	}
 
-	lines := mrb.AryNewCapa(15)
-	for reader.Scan() {
-		if !block.IsNil() {
-			_ = mrb.YieldArgv(block, reader.Text())
-			if mrb.Exc() != nil {
-				return mrb.RaiseError(mrb.Err())
+	for {
+		line, err := readLine(mrb, self, a, kwargs, 0)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
 			}
-			continue
+			if errors.Is(err, syscall.EBADF) {
+				return RaiseIOError(mrb, "not opened for reading")
+			}
+			return RaiseIOError(mrb, err.Error())
 		}
-		lines.PushString(reader.Text())
+		v := setLastLine(mrb, self, string(line))
+		_ = mrb.YieldArgv(block, v)
+		if mrb.Exc() != nil {
+			return mrb.RaiseError(mrb.Err())
+		}
 	}
-	if closer != nil {
-		_ = closer.Close()
-	}
-
-	if !block.IsNil() {
-		return mrb.NilValue()
-	}
-
-	ret, err := mrb.FuncallWithBlock(lines, mrb.Intern("to_enum"))
-	if err != nil {
-		return mrb.RaiseError(err)
-	}
-
-	return ret
+	return self
 }
 
 func ioEachByte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -240,12 +262,32 @@ func ioEachCodepoint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioIsEof(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	r, ok := mrb.Data(self).(io.Reader)
+	data := mrb.Data(self)
+	if data == nil {
+		return RaiseIOError(mrb, "closed stream")
+	}
+	if f, ok := data.(*os.File); ok {
+		pos, err := f.Seek(0, io.SeekCurrent)
+		if err == nil {
+			stat, err := f.Stat()
+			if err == nil {
+				return oruby.Bool(pos >= stat.Size())
+			}
+		}
+	}
+	r, ok := data.(io.Reader)
 	if !ok {
 		return RaiseIOError(mrb, "stream not open for reading")
 	}
 
-	_, err := r.Read([]byte{})
+	buf := make([]byte, 1)
+	n, err := r.Read(buf)
+	if n > 0 {
+		if seeker, ok := data.(io.Seeker); ok {
+			_, _ = seeker.Seek(-int64(n), io.SeekCurrent)
+		}
+		return oruby.False
+	}
 	return oruby.Bool(err == io.EOF)
 }
 
@@ -345,21 +387,19 @@ func setLineNo(mrb *oruby.MrbState, self oruby.Value, v int) {
 }
 
 func ioGets(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
+	line, err := readLine(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
 	if err != nil {
-		return mrb.RaiseError(err)
-	}
-
-	reader.Scan()
-	if errors.Is(reader.Err(), io.EOF) {
-		return mrb.NilValue()
-	}
-	if reader.Err() != nil {
 		mrb.SetGV("$_", mrb.NilValue())
-		return RaiseIOError(mrb, reader.Err().Error())
+		if errors.Is(err, io.EOF) {
+			return mrb.NilValue()
+		}
+		if errors.Is(err, syscall.EBADF) {
+			return RaiseIOError(mrb, "not opened for reading")
+		}
+		return RaiseIOError(mrb, err.Error())
 	}
 
-	return setLastLine(mrb, self, reader.Text())
+	return setLastLine(mrb, self, string(line))
 }
 
 func ioInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -371,7 +411,7 @@ func ioInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.StrNew(fmt.Sprintf("<IO:STDIN>"))
 	} else if f == os.Stderr {
 		return mrb.StrNew(fmt.Sprintf("<IO:STERR>"))
-	} else if f, ok := f.(*os.File); ok {
+	} else if f, ok := f.(*os.File); ok && f != nil {
 		return mrb.StrNew(fmt.Sprintf("<File:%v>", f.Name()))
 	}
 
@@ -594,7 +634,13 @@ func ioPuts(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 	if argc == 0 {
-		_, _ = io.WriteString(w, "\n")
+		_, err := w.Write([]byte{'\n'})
+		if err != nil {
+			if errors.Is(err, syscall.EBADF) {
+				return RaiseIOError(mrb, "not opened for writing")
+			}
+			return mrb.RaiseError(err)
+		}
 		return mrb.NilValue()
 	}
 
@@ -614,11 +660,17 @@ func ioPuts(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 		_, err = w.Write(s.Bytes())
 		if err != nil {
+			if errors.Is(err, syscall.EBADF) {
+				return RaiseIOError(mrb, "not opened for writing")
+			}
 			return mrb.RaiseError(err)
 		}
 
 		_, err = w.Write([]byte{'\n'})
 		if err != nil {
+			if errors.Is(err, syscall.EBADF) {
+				return RaiseIOError(mrb, "not opened for writing")
+			}
 			return mrb.RaiseError(err)
 		}
 	}
@@ -660,40 +712,104 @@ func ioPwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return RaiseIOError(mrb, "IO Stream does not suport writing")
 }
 
+func binaryStringValue(mrb *oruby.MrbState, buf []byte) oruby.Value {
+	v := mrb.BytesValue(buf)
+	if mrb.RespondTo(v, mrb.Intern("force_encoding")) {
+		modEnc := mrb.ModuleGet("Encoding")
+		if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
+			binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
+			mrb.Funcall(v, mrb.Intern("force_encoding"), binEnc)
+		} else {
+			mrb.Funcall(v, mrb.Intern("force_encoding"), mrb.StringValue("ASCII-8BIT"))
+		}
+	}
+	return v
+}
+
 func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	var length int64
 	var buf []byte
 	var err error
 	l, outbuf := mrb.GetArgs2()
 
-	r, ok := mrb.Data(self).(io.Reader)
+	data := mrb.Data(self)
+	if data == nil {
+		return RaiseIOError(mrb, "closed stream")
+	}
+
+	r, ok := data.(io.Reader)
 	if !ok || r == nil {
 		return RaiseIOError(mrb, "IO Stream does not suport reading")
 	}
 
-	// length: 0, nil, omitted or positive integer
-	if l.IsNil() {
-		//
-	} else if l.IsInteger() {
+	if !l.IsNil() {
+		if !l.IsInteger() {
+			if mrb.RespondTo(l, mrb.Intern("to_int")) {
+				res, err := mrb.Funcall(l, mrb.Intern("to_int"))
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+				if !res.IsInteger() {
+					return mrb.Raisef(mrb.ETypeError(), "can't convert %v into Integer (%v#to_int gives %v)", mrb.TypeName(l), mrb.TypeName(l), mrb.TypeName(res))
+				}
+				l = res.Value()
+			} else {
+				return mrb.Raisef(mrb.ETypeError(), "no implicit conversion of %v into Integer", mrb.TypeName(l))
+			}
+		}
 		length = l.Int64()
+		if length < 0 {
+			return mrb.EArgumentError().Raise(fmt.Sprintf("negative length %d given", length))
+		}
+	}
+
+	if !outbuf.IsNil() {
+		if !outbuf.IsString() && mrb.RespondTo(outbuf, mrb.Intern("to_str")) {
+			res, err := mrb.Funcall(outbuf, mrb.Intern("to_str"))
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+			outbuf = res.Value()
+		}
+		if !outbuf.IsString() {
+			return mrb.Raise(mrb.ETypeError(), "no implicit conversion into String")
+		}
+		if err := mrb.CheckFrozen(outbuf); err != nil {
+			return mrb.RaiseError(err)
+		}
+	}
+
+	if !l.IsNil() {
 		if length == 0 {
-			return mrb.StrNew("")
-		} else if length < 0 {
-			return mrb.EArgumentError().Raise("length must be nil or positive integer")
+			if outbuf.IsString() {
+				mrb.StrResize(outbuf, 0)
+				return outbuf
+			}
+			return binaryStringValue(mrb, []byte(""))
 		}
 		r = io.LimitReader(r, length)
-	} else {
-		return mrb.EArgumentError().Raise("length must be nil or positive integer")
 	}
 
 	buf, err = ioutil.ReadAll(r)
 	if err != nil {
+		if errors.Is(err, syscall.EBADF) {
+			return RaiseIOError(mrb, "not opened for reading")
+		}
 		return mrb.RaiseError(err)
 	}
 
 	if outbuf.IsString() {
 		mrb.StrResize(outbuf, 0)
 		mrb.StrCatBytes(outbuf, buf)
+		if l.IsNil() {
+			extEnc := ioExternalEncoding(mrb, self)
+			if !extEnc.IsNil() && mrb.RespondTo(outbuf, mrb.Intern("force_encoding")) {
+				mrb.Funcall(outbuf, mrb.Intern("force_encoding"), extEnc)
+			}
+		}
+		if len(buf) == 0 && !l.IsNil() {
+			return mrb.NilValue()
+		}
 		return outbuf
 	}
 
@@ -701,7 +817,22 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 
-	return mrb.BytesValue(buf)
+	ret := mrb.BytesValue(buf)
+	if l.IsNil() {
+		extEnc := ioExternalEncoding(mrb, self)
+		if !extEnc.IsNil() && mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
+			mrb.Funcall(ret, mrb.Intern("force_encoding"), extEnc)
+		}
+	} else {
+		if mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
+			modEnc := mrb.ModuleGet("Encoding")
+			if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
+				binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
+				mrb.Funcall(ret, mrb.Intern("force_encoding"), binEnc)
+			}
+		}
+	}
+	return ret
 }
 
 func ioReadbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -737,35 +868,38 @@ func ioReadchar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioReadline(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
+	line, err := readLine(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
 	if err != nil {
-		return mrb.RaiseError(err)
-	}
-
-	reader.Scan()
-	if reader.Err() != nil {
 		mrb.SetGV("$_", mrb.NilValue())
-		if errors.Is(reader.Err(), io.EOF) {
-			RaiseEOF(mrb)
+		if errors.Is(err, io.EOF) {
+			return RaiseEOF(mrb)
 		}
-		return RaiseIOError(mrb, reader.Err().Error())
+		if errors.Is(err, syscall.EBADF) {
+			return RaiseIOError(mrb, "not opened for reading")
+		}
+		return RaiseIOError(mrb, err.Error())
 	}
 
-	return setLastLine(mrb, self, reader.Text())
+	return setLastLine(mrb, self, string(line))
 }
 
 func ioReadlines(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	reader, _, err := openLineReader(mrb, self, mrb.GetArgs(), mrb.KeywordArgs(), 0)
-	if err != nil {
-		return mrb.RaiseError(err)
-	}
-
+	a := mrb.GetArgs()
+	kwargs := mrb.KeywordArgs()
 	lines := mrb.AryNewCapa(15)
-	for reader.Scan() {
-		lines.PushString(reader.Text())
-	}
-	if reader.Err() != nil && reader.Err() != io.EOF {
-		return mrb.RaiseError(reader.Err())
+	for {
+		line, err := readLine(mrb, self, a, kwargs, 0)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if errors.Is(err, syscall.EBADF) {
+				return RaiseIOError(mrb, "not opened for reading")
+			}
+			return RaiseIOError(mrb, err.Error())
+		}
+		setLastLine(mrb, self, string(line))
+		lines.PushString(string(line))
 	}
 	return lines
 }
@@ -894,7 +1028,12 @@ func ioUngetc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 
-	w, ok := mrb.Data(self).(io.Writer)
+	data := mrb.Data(self)
+	if data == nil {
+		return RaiseIOError(mrb, "closed stream")
+	}
+
+	w, ok := data.(io.Writer)
 	if !ok || w == nil {
 		return RaiseIOError(mrb, "IO object does not support writing")
 	}
@@ -907,6 +1046,9 @@ func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 		n, err := w.Write(s.Bytes())
 		if err != nil {
+			if errors.Is(err, syscall.EBADF) {
+				return RaiseIOError(mrb, "not opened for writing")
+			}
 			return mrb.RaiseError(err)
 		}
 		cnt += int64(n)

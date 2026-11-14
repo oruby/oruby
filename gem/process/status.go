@@ -41,6 +41,18 @@ func (s *status) Inspect() string {
 	return s.ToS()
 }
 
+// SetLastStatus sets $? (Process.last_status)
+func SetLastStatus(mrb *oruby.MrbState, pid, exitCode int, exited, success bool) {
+	st := &status{
+		Pid:        pid,
+		Exitstatus: exitCode,
+		ToI:        uint32(exitCode),
+		IsExited:   exited,
+		IsSucess:   success,
+	}
+	mrb.SetGV("$?", mrb.Value(st))
+}
+
 func initStatus(mProc oruby.RClass) {
 	mrb := mProc.Mrb()
 	cProcessStatus := mProc.DefineClassUnder("Status", mrb.ObjectClass())
@@ -49,4 +61,8 @@ func initStatus(mProc oruby.RClass) {
 	cProcessStatus.DefineAlias("==", "equal")
 	cProcessStatus.DefineAlias("&", "bit_and")
 	cProcessStatus.DefineAlias(">>", "r_shift")
+	cProcessStatus.DefineAlias("exited?", "is_exited")
+	cProcessStatus.DefineAlias("signaled?", "is_signaled")
+	cProcessStatus.DefineAlias("stopped?", "is_stopped")
+	cProcessStatus.DefineAlias("success?", "is_sucess")
 }

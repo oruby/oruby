@@ -37,7 +37,7 @@ func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) oruby.RClass {
 
 	consts.Const("Separator", "/")
 	consts.Const("SEPARATOR", "/")
-	consts.Const("PATH_SEPARATOR", os.PathListSeparator)
+	consts.Const("PATH_SEPARATOR", string(os.PathListSeparator))
 
 	consts.Const("NULL", os.DevNull)
 

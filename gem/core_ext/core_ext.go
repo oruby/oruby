@@ -1,6 +1,10 @@
 package core_ext
 
 import (
+	"fmt"
+	"math"
+	"runtime"
+
 	"github.com/oruby/oruby"
 )
 
@@ -21,12 +25,18 @@ module Encoding
       to_s == other.to_s || (other.respond_to?(:name) && @name == other.name)
     end
     def ascii_compatible?
-      !%w[UTF-16BE UTF-16LE UTF-32 UTF-32BE UTF-32LE].include?(@name)
+      !%w[UTF_16BE UTF_16LE UTF_32 UTF_32BE UTF_32LE].include?(@name.to_s.upcase.tr('-', '_'))
+    end
+    def dummy?
+      false
     end
   end
 end
 
 class << Encoding
+  def list
+    [find("UTF-8"), find("US-ASCII"), find("ASCII-8BIT"), find("UTF-16BE"), find("UTF-16LE")]
+  end
   def default_external
     @default_external ||= (const_defined?(:UTF_8) ? const_get(:UTF_8) : "UTF-8")
   end
@@ -41,9 +51,11 @@ class << Encoding
   end
 
   def find(name)
+    @cache ||= {}
     s = name.to_s.upcase.tr('-', '_')
-    case s
-    when 'UTF_8', 'UTF8'
+    return @cache[s] if @cache.key?(s)
+    enc = case s
+    when 'UTF_8', 'UTF8', 'FILESYSTEM', 'LOCALE'
       const_defined?(:UTF_8) ? const_get(:UTF_8) : Encoding::Dummy.new("UTF-8")
     when 'US_ASCII', 'ASCII'
       Encoding::Dummy.new("US-ASCII")
@@ -54,8 +66,25 @@ class << Encoding
     when 'UTF_16LE', 'UTF16LE'
       Encoding::Dummy.new("UTF-16LE")
     else
-      Encoding::Dummy.new(name.to_s)
+      if s.start_with?("ISO_8859_")
+        Encoding::Dummy.new("ISO-8859-" + s[9..-1])
+      elsif s.start_with?("ISO8859")
+        Encoding::Dummy.new("ISO-8859-" + s[7..-1])
+      else
+        Encoding::Dummy.new(name.to_s.upcase.tr('_', '-'))
+      end
     end
+    @cache[s] = enc
+    enc
+  end
+
+  def const_missing(sym)
+    enc = find(sym.to_s) rescue nil
+    if enc
+      const_set(sym, enc)
+      return enc
+    end
+    super
   end
 end
 
@@ -64,6 +93,14 @@ Encoding::UTF_16BE = Encoding::Dummy.new("UTF-16BE")
 Encoding::UTF_16LE = Encoding::Dummy.new("UTF-16LE")
 
 class String
+  def ascii_compatible?
+    !%w[UTF_16BE UTF_16LE UTF_32 UTF_32BE UTF_32LE].include?(to_s.upcase.tr('-', '_'))
+  end
+
+  def dummy?
+    false
+  end
+
   def name
     self
   end
@@ -128,6 +165,62 @@ class Float
   end
 end
 
+class Range
+  def step(n = 1, &block)
+    raise ArgumentError, "step can't be 0" if n == 0
+    if block_given?
+      cur = self.begin
+      last = self.end
+      excl = self.exclude_end?
+      if n > 0
+        while last.nil? || (excl ? cur < last : cur <= last)
+          yield cur
+          cur += n
+        end
+      else
+        while last.nil? || (excl ? cur > last : cur >= last)
+          yield cur
+          cur += n
+        end
+      end
+      self
+    else
+      Enumerator::ArithmeticSequence.new(self, n)
+    end
+  end
+  alias % step
+end
+
+class Enumerator
+  class ArithmeticSequence < Enumerator
+    attr_reader :begin, :end, :step
+    def initialize(range, step)
+      @range = range
+      @begin = range.begin
+      @end = range.end
+      @step = step
+      @exclude_end = range.exclude_end?
+    end
+    def exclude_end?
+      @exclude_end
+    end
+    def ==(other)
+      return false unless other.is_a?(Enumerator::ArithmeticSequence)
+      @begin == other.begin && @end == other.end && @step == other.step && @exclude_end == other.exclude_end?
+    end
+    alias eql? ==
+    def hash
+      [@begin, @end, @step, @exclude_end].hash
+    end
+    def inspect
+      "((#{@range.inspect}).step(#{@step}))"
+    end
+    def each(&block)
+      @range.step(@step, &block)
+    end
+  end
+end
+
 EncodingError = Class.new(StandardError) unless Object.const_defined?(:EncodingError)
 
 # Thread extensions for local storage
@@ -151,8 +244,52 @@ class Thread
 end
 
 # Helpers for specs
+$VERBOSE = false if $VERBOSE.nil?
+
+module Enumerable
+  alias __orig_all? all?
+  def all?(*args, &block)
+    warn "warning: given block not used", uplevel: 1 if !args.empty? && block
+    __orig_all?(*args, &block)
+  end
+
+  alias __orig_any? any?
+  def any?(*args, &block)
+    warn "warning: given block not used", uplevel: 1 if !args.empty? && block
+    __orig_any?(*args, &block)
+  end
+
+  alias __orig_none? none?
+  def none?(*args, &block)
+    warn "warning: given block not used", uplevel: 1 if !args.empty? && block
+    __orig_none?(*args, &block)
+  end
+
+  alias __orig_one? one?
+  def one?(*args, &block)
+    warn "warning: given block not used", uplevel: 1 if !args.empty? && block
+    __orig_one?(*args, &block)
+  end
+
+  alias __orig_find find
+  def find(*args, &block)
+    if block_given?
+      __orig_find(*args, &block)
+    else
+      to_enum(:find, *args) { nil }
+    end
+  end
+  alias detect find
+end
+
 module Kernel
-  def warn(*msg)
+  def warn(*msg, uplevel: nil, category: nil)
+    return if $VERBOSE.nil?
+    if uplevel
+      loc = (caller(uplevel + 1, 1) || [])[0]
+      loc = loc.sub(/:in .*$/, "") if loc
+      msg = msg.map { |m| loc ? "#{loc}: warning: #{m.to_s.sub(/^warning:\s*/, "")}" : m }
+    end
     $stderr.puts(*msg)
   end
 
@@ -205,6 +342,14 @@ end
 
 # Array extensions
 class Array
+  if method_defined?(:pack)
+    alias __orig_pack pack
+    def pack(*args)
+      res = __orig_pack(*args)
+      res.force_encoding(Encoding::BINARY) if defined?(Encoding::BINARY) && res.respond_to?(:force_encoding)
+      res
+    end
+  end
   def instance_variable_set(name, val)
     $__array_ivars ||= {}
     ($__array_ivars[object_id] ||= {})[name.to_s] = val
@@ -320,14 +465,9 @@ class Array
 
   def self.__coerce_to_ary(obj)
     return obj if obj.is_a?(Array)
-    if obj.respond_to?(:to_ary)
-      val = obj.to_ary
-      return nil if val.nil?
-      raise TypeError, "can't convert #{obj.class} to Array (#{obj.class}#to_ary gives #{val.class})" unless val.is_a?(Array)
-      val
-    else
-      raise TypeError, "no implicit conversion of #{obj.class} into Array"
-    end
+    val = __check_to_ary(obj)
+    return val if val
+    raise TypeError, "no implicit conversion of #{obj.class} into Array"
   end
 
   def self.__coerce_to_str(obj)
@@ -396,9 +536,9 @@ class Array
     end
   end
 
-  def __wrap_subclass(res)
-    if res.is_a?(Array) && self.class != Array
-      self.class.allocate.replace(res)
+  def __ensure_array(res)
+    if res.is_a?(Array) && res.class != Array
+      [].replace(res)
     else
       res
     end
@@ -419,17 +559,103 @@ class Array
     __orig_at(idx)
   end
 
+  def __slice_arith_seq(seq)
+    len = self.length
+    step = seq.step || 1
+    raise ArgumentError, "slice step cannot be zero" if step == 0
+
+    b = seq.begin
+    e = seq.end
+    excl = seq.exclude_end?
+
+    if step < 0
+      if excl && !e.nil?
+        e = e + 1
+        excl = false
+      end
+      b, e = e, b
+    end
+
+    beg = b.nil? ? 0 : Array.__coerce_to_int(b)
+    fin = e.nil? ? -1 : Array.__coerce_to_int(e)
+    excl = false if e.nil?
+
+    if beg < 0
+      beg += len
+      if beg < 0
+        if step.abs != 1
+          raise RangeError, "#{seq.inspect} out of range"
+        else
+          return nil
+        end
+      end
+    end
+
+    if fin < 0
+      fin += len
+    end
+
+    if !excl
+      fin += 1
+    end
+
+    if step == 1 || step == -1
+      if beg > len
+        return nil
+      end
+      fin = len if fin > len
+      slen = fin > beg ? fin - beg : 0
+    else
+      slen = fin > beg ? fin - beg : 0
+      if beg > len || slen > len
+        raise RangeError, "#{seq.inspect} out of range"
+      end
+    end
+
+    if beg + slen > len
+      slen = len - beg
+    end
+    return [] if slen <= 0
+
+    if step == 1
+      res = self[beg, slen]
+      return __ensure_array(res)
+    end
+
+    orig_len = slen
+    if step > 0 && step >= slen
+      return [self[beg]]
+    elsif step < 0 && step < -slen
+      step = -slen
+    end
+
+    ustep = step.abs
+    count = (slen + ustep - 1) / ustep
+
+    j = beg + (step > 0 ? 0 : (orig_len - 1))
+    res = []
+    count.times do
+      res << self[j]
+      j += step
+    end
+    res
+  end
+
   alias __orig_aref []
   def [](arg, *rest)
     if rest.empty?
+      if defined?(Enumerator::ArithmeticSequence) && arg.is_a?(Enumerator::ArithmeticSequence)
+        return __slice_arith_seq(arg)
+      end
       if arg.is_a?(Range)
         b = arg.begin
         e = arg.end
         b = Array.__coerce_to_int(b) if b
         e = Array.__coerce_to_int(e) if e
-        rng = Range.new(b, e, arg.exclude_end?)
+        excl = e.nil? ? false : arg.exclude_end?
+        rng = Range.new(b, e, excl)
         res = __orig_aref(rng)
-        return __wrap_subclass(res)
+        return __ensure_array(res)
       end
       idx = Array.__coerce_to_int(arg)
       __orig_aref(idx)
@@ -437,7 +663,7 @@ class Array
       start = Array.__coerce_to_int(arg)
       len = Array.__coerce_to_int(rest[0])
       res = __orig_aref(start, len)
-      __wrap_subclass(res)
+      __ensure_array(res)
     else
       raise ArgumentError, "wrong number of arguments (given #{rest.size + 1}, expected 1..2)"
     end
@@ -489,7 +715,7 @@ class Array
   alias __orig_index index
   def index(*args, &block)
     if args.size == 1
-      warn "warning: given block not used" if block
+      warn "warning: given block not used", uplevel: 1 if block
       __orig_index(args[0])
     elsif args.empty?
       if block
@@ -506,7 +732,7 @@ class Array
   alias __orig_rindex rindex
   def rindex(*args, &block)
     if args.size == 1
-      warn "warning: given block not used" if block
+      warn "warning: given block not used", uplevel: 1 if block
       __orig_rindex(args[0])
     elsif args.empty?
       if block
@@ -539,11 +765,11 @@ class Array
         arg = args[0]
         if arg.is_a?(Range)
           b = arg.begin ? Array.__coerce_to_int(arg.begin) : 0
-          e = arg.end ? Array.__coerce_to_int(arg.end) : -1
+          e = arg.end ? Array.__coerce_to_int(arg.end) : (size - 1)
           b = size + b if b < 0
           raise RangeError, "#{b} out of range" if b < 0
           e = size + e if e < 0
-          e -= 1 if arg.exclude_end?
+          e -= 1 if arg.exclude_end? && !arg.end.nil?
           (b..e).each { |i| self[i] = yield(i) }
         else
           start = arg.nil? ? 0 : Array.__coerce_to_int(arg)
@@ -571,11 +797,11 @@ class Array
         arg = args[1]
         if arg.is_a?(Range)
           b = arg.begin ? Array.__coerce_to_int(arg.begin) : 0
-          e = arg.end ? Array.__coerce_to_int(arg.end) : -1
+          e = arg.end ? Array.__coerce_to_int(arg.end) : (size - 1)
           b = size + b if b < 0
           raise RangeError, "#{b} out of range" if b < 0
           e = size + e if e < 0
-          e -= 1 if arg.exclude_end?
+          e -= 1 if arg.exclude_end? && !arg.end.nil?
           (b..e).each { |i| self[i] = filler }
         else
           start = arg.nil? ? 0 : Array.__coerce_to_int(arg)
@@ -645,7 +871,19 @@ class Array
     elsif !rest.empty?
       rest.first
     else
-      raise IndexError, "index #{c_idx} outside of array bounds: -#{len}...#{len}"
+      bounds = len == 0 ? "0...0" : "-#{len}...#{len}"
+      raise IndexError, "index #{c_idx} outside of array bounds: #{bounds}"
+    end
+  end
+
+  def fetch_values(*indices, &block)
+    indices.map do |idx|
+      c_idx = Array.__coerce_to_int(idx)
+      if block_given?
+        fetch(c_idx) { block.call(idx) }
+      else
+        fetch(c_idx)
+      end
     end
   end
 
@@ -743,11 +981,13 @@ class Array
   def cycle(nv = nil, &block)
     unless block_given?
       return to_enum(:cycle, nv) do
-        if nv.nil?
+        if empty?
+          0
+        elsif nv.nil?
           Float::INFINITY
         else
           c = Array.__coerce_to_int(nv)
-          c <= 0 || empty? ? 0 : size * c
+          c <= 0 ? 0 : size * c
         end
       end
     end
@@ -846,19 +1086,32 @@ class Array
         e = arg.end
         b = Array.__coerce_to_int(b) if b
         e = Array.__coerce_to_int(e) if e
-        len = length
-        b_idx = (b && b < 0) ? len + b : (b || 0)
-        e_idx = (e && e < 0) ? len + e : (e || -1)
-        if b_idx < 0 || (b && e && b >= 0 && e >= 0 && b > e)
-          next
-        end
-        rng = Range.new(b_idx, e_idx, arg.exclude_end?)
-        rng.each do |i|
-          res << self[i]
+        olen = length
+        beg = b.nil? ? 0 : b
+        fin = e.nil? ? -1 : e
+        excl = e.nil? ? false : arg.exclude_end?
+
+        beg += olen if beg < 0
+        raise RangeError, "#{arg.inspect} out of range" if beg < 0
+
+        fin += olen if fin < 0
+        fin += 1 unless excl
+
+        slen = fin > beg ? fin - beg : 0
+        if slen > 0
+          end_pos = beg + slen
+          if beg < olen
+            copy_len = end_pos > olen ? (olen - beg) : slen
+            (beg...(beg + copy_len)).each { |i| res << self[i] }
+          end
+          if end_pos > olen
+            nil_count = beg > olen ? slen : (end_pos - olen)
+            nil_count.times { res << nil }
+          end
         end
       else
         idx = Array.__coerce_to_int(arg)
-        res << self[idx]
+        res << at(idx)
       end
     end
     res
@@ -894,12 +1147,14 @@ class Array
 
   alias __orig_join join
   def join(sep = nil)
+    if sep.nil? && $,
+      warn "warning: $, is set to non-nil value", uplevel: 1
+    end
     if empty?
       res = ""
       res.force_encoding(Encoding::US_ASCII) if defined?(Encoding::US_ASCII)
       return res
     end
-
     sep = $, if sep.nil?
     if sep.nil?
       sep_str = ""
@@ -947,7 +1202,7 @@ class Array
   def flatten(level = nil)
     res = dup.flatten!(level)
     res = res ? res : dup
-    __wrap_subclass(res)
+    __ensure_array(res)
   end
 
   def flatten!(level = nil)
@@ -1160,7 +1415,8 @@ class Array
       if arg.is_a?(Range)
         b = arg.begin ? Array.__coerce_to_int(arg.begin) : 0
         e = arg.end ? Array.__coerce_to_int(arg.end) : -1
-        res = __orig_slice_bang(Range.new(b, e, arg.exclude_end?))
+        excl = arg.end.nil? ? false : arg.exclude_end?
+        res = __orig_slice_bang(Range.new(b, e, excl))
         return (res && res.class != Array) ? Array.new(res) : res
       end
       idx = Array.__coerce_to_int(arg)
@@ -1238,10 +1494,10 @@ class Array
       n = arg.to_int
       raise TypeError, "can't convert #{arg.class} to Integer" unless n.is_a?(Integer)
       raise ArgumentError, "negative argument" if n < 0
-      __wrap_subclass(__orig_mul(n))
+      __ensure_array(__orig_mul(n))
     elsif arg.is_a?(Integer)
       raise ArgumentError, "negative argument" if arg < 0
-      __wrap_subclass(__orig_mul(arg))
+      __ensure_array(__orig_mul(arg))
     elsif arg.is_a?(String)
       join(arg)
     else
@@ -1297,7 +1553,7 @@ class Array
         res << x
       end
     end
-    self.class == Array ? res : self.class.allocate.replace(res)
+    res
   end
 
   def uniq!(&block)
@@ -1315,6 +1571,7 @@ class Array
   def initialize(*args, &block)
     raise FrozenError, "can't modify frozen Array" if frozen?
     if args.empty?
+      warn "warning: given block not used", uplevel: 1 if block_given?
       self.clear
     elsif args.size == 1
       arg = args[0]
@@ -1341,7 +1598,7 @@ class Array
       raise ArgumentError, "array size too big" if size > 100_000_000
       self.clear
       if block_given?
-        warn "warning: block supersedes default value argument" if $-w || $VERBOSE || (Thread.current[:in_mspec_complain_matcher] rescue false)
+        warn "warning: block supersedes default value argument"
         size.times { |i| self << yield(i) }
       else
         size.times { self << default_obj }
@@ -1354,39 +1611,287 @@ class Array
 
   alias __orig_difference difference
   def difference(*others)
-    coerced = others.map { |o| Array.__coerce_to_ary(o) }
-    __orig_difference(*coerced)
+    others = others.map { |o| Array.__coerce_to_ary(o) }
+    if length <= 16 || others.any? { |o| o.length <= 16 }
+      res = []
+      each do |x|
+        unless others.any? { |ary| ary.any? { |y| (x.equal?(y) rescue false) || (x.eql?(y) rescue false) } }
+          res << x
+        end
+      end
+      res
+    else
+      __orig_difference(*others)
+    end
   end
-
-  alias __orig_minus -
-  def -(other)
-    __orig_minus(Array.__coerce_to_ary(other))
-  end
-
-  alias __orig_union union
-  def union(*others)
-    coerced = others.map { |o| Array.__coerce_to_ary(o) }
-    __orig_union(*coerced)
-  end
-
-  alias __orig_or |
-  def |(other)
-    __orig_or(Array.__coerce_to_ary(other))
-  end
+  alias - difference
 
   alias __orig_intersection intersection
   def intersection(*others)
-    coerced = others.map { |o| Array.__coerce_to_ary(o) }
-    __orig_intersection(*coerced)
+    others = others.map { |o| Array.__coerce_to_ary(o) }
+    if length <= 16 && others.all? { |o| o.length <= 16 }
+      res = []
+      each do |x|
+        if others.all? { |ary| ary.any? { |y| (x.equal?(y) rescue false) || (x.eql?(y) rescue false) } }
+          unless res.any? { |y| (x.equal?(y) rescue false) || (x.eql?(y) rescue false) }
+            res << x
+          end
+        end
+      end
+      res
+    else
+      __orig_intersection(*others)
+    end
+  end
+  alias & intersection
+
+  alias __orig_union union
+  def union(*others)
+    others = others.map { |o| Array.__coerce_to_ary(o) }
+    total_len = length + others.map(&:length).inject(0, :+)
+    if total_len <= 16
+      res = []
+      ([self] + others).each do |ary|
+        ary.each do |x|
+          unless res.any? { |y| (x.equal?(y) rescue false) || (x.eql?(y) rescue false) }
+            res << x
+          end
+        end
+      end
+      res
+    else
+      __orig_union(*others)
+    end
+  end
+  alias | union
+
+  alias __orig_intersect_p intersect?
+  def intersect?(other)
+    other = Array.__coerce_to_ary(other)
+    __orig_intersect_p(other)
   end
 
-  alias __orig_and &
-  def &(other)
-    __orig_and(Array.__coerce_to_ary(other))
+  alias detect find
+
+  alias __orig_assoc assoc
+  def assoc(obj)
+    each do |elem|
+      ary = elem.is_a?(Array) ? elem : (elem.respond_to?(:to_ary) ? elem.to_ary : nil)
+      if ary.is_a?(Array) && ary.size > 0 && ary[0] == obj
+        return ary
+      end
+    end
+    nil
+  end
+
+  alias __orig_rassoc rassoc
+  def rassoc(obj)
+    each do |elem|
+      ary = elem.is_a?(Array) ? elem : (elem.respond_to?(:to_ary) ? elem.to_ary : nil)
+      if ary.is_a?(Array) && ary.size > 1 && ary[1] == obj
+        return ary
+      end
+    end
+    nil
+  end
+
+  alias __orig_count count
+  def count(*args, &block)
+    if !args.empty? && block_given?
+      warn "warning: given block not used", uplevel: 1
+      return __orig_count(*args)
+    end
+    __orig_count(*args, &block)
+  end
+
+  def find(ifnone = nil, &block)
+    unless block_given?
+      return to_enum(:find, ifnone) { nil }
+    end
+    i = 0
+    while i < size
+      elem = self[i]
+      return elem if yield(elem)
+      i += 1
+    end
+    ifnone ? ifnone.call : nil
+  end
+  alias detect find
+
+  def rfind(ifnone = nil, &block)
+    unless block_given?
+      return to_enum(:rfind, ifnone) { nil }
+    end
+    i = size - 1
+    while i >= 0 && i < size
+      elem = self[i]
+      return elem if yield(elem)
+      i = [i - 1, size - 1].min
+    end
+    ifnone ? ifnone.call : nil
+  end
+
+  alias __orig_map_bang map!
+  def map!(&block)
+    return to_enum(:map!) { size } unless block_given?
+    raise FrozenError, "can't modify frozen Array" if frozen?
+    i = 0
+    while i < size
+      self[i] = yield(self[i])
+      i += 1
+    end
+    self
+  end
+  alias collect! map!
+
+  alias __orig_select_bang select!
+  def select!(&block)
+    return to_enum(:select!) { size } unless block_given?
+    raise FrozenError, "can't modify frozen Array" if frozen?
+    i = 0
+    j = 0
+    changed = false
+    begin
+      while i < size
+        elem = self[i]
+        matched = yield(elem)
+        if matched
+          if i != j
+            self[j] = elem
+          end
+          j += 1
+        else
+          changed = true
+        end
+        i += 1
+      end
+    ensure
+      if i < size
+        rem = self[i...size]
+        rem.each do |x|
+          self[j] = x
+          j += 1
+        end
+      end
+      if j < size
+        self.slice!(j..-1)
+      end
+    end
+    changed ? self : nil
+  end
+  alias filter! select!
+
+  alias __orig_keep_if keep_if
+  def keep_if(&block)
+    return to_enum(:keep_if) { size } unless block_given?
+    select!(&block)
+    self
+  end
+
+  alias __orig_reject_bang reject!
+  def reject!(&block)
+    return to_enum(:reject!) { size } unless block_given?
+    raise FrozenError, "can't modify frozen Array" if frozen?
+    i = 0
+    j = 0
+    changed = false
+    begin
+      while i < size
+        elem = self[i]
+        matched = yield(elem)
+        if !matched
+          if i != j
+            self[j] = elem
+          end
+          j += 1
+        else
+          changed = true
+        end
+        i += 1
+      end
+    ensure
+      if i < size
+        rem = self[i...size]
+        rem.each do |x|
+          self[j] = x
+          j += 1
+        end
+      end
+      if j < size
+        self.slice!(j..-1)
+      end
+    end
+    changed ? self : nil
+  end
+
+  alias __orig_delete_if delete_if
+  def delete_if(&block)
+    return to_enum(:delete_if) { size } unless block_given?
+    reject!(&block)
+    self
+  end
+
+  alias __orig_sum sum
+  def sum(init = 0, &block)
+    sum = init
+    c = 0.0
+    has_float = init.is_a?(Float)
+    each do |x|
+      x = yield(x) if block_given?
+      if x.is_a?(Float) || has_float
+        has_float = true
+        sum = sum.to_f unless sum.is_a?(Float)
+        x = x.to_f unless x.is_a?(Float)
+        if (sum.respond_to?(:infinite?) && sum.infinite?) || (x.respond_to?(:infinite?) && x.infinite?) || (sum.respond_to?(:nan?) && sum.nan?) || (x.respond_to?(:nan?) && x.nan?)
+          sum = sum + x
+        else
+          t = sum + x
+          if sum.abs >= x.abs
+            c += (sum - t) + x
+          else
+            c += (x - t) + sum
+          end
+          sum = t
+        end
+      else
+        sum = sum + x
+      end
+    end
+    has_float && !((sum.respond_to?(:infinite?) && sum.infinite?) || (sum.respond_to?(:nan?) && sum.nan?)) ? sum + c : sum
+  end
+
+
+end
+
+module Kernel
+  def __dir__
+    loc = (caller(1, 1) || [])[0]
+    return nil unless loc
+    file = loc.sub(/:\d+.*$/, "")
+    return nil if file == "-e" || file.empty?
+    begin
+      File.dirname(File.realpath(file))
+    rescue
+      File.dirname(file)
+    end
+  end
+end
+
+class Module
+  def deprecate_constant(*names)
+    self
   end
 end
 
 class Hash
+  def compare_by_identity
+    self
+  end
+
+  def compare_by_identity?
+    false
+  end
+
   alias __orig_hash hash
   def hash
     Thread.current[:__hash_hash_stack] ||= []
@@ -1420,7 +1925,32 @@ end
 `
 
 func init() {
+	oruby.Gem("rbconfig", func(mrb *oruby.MrbState) interface{} {
+		mrb.Eval(fmt.Sprintf(`
+module RbConfig
+  CONFIG = {
+    'host_os' => '%s',
+    'EXEEXT' => '',
+    'ruby_version' => (defined?(RUBY_VERSION) ? RUBY_VERSION : '3.0.0'),
+    'bindir' => '',
+    'ruby_install_name' => 'oruby'
+  }
+end
+`, runtime.GOOS))
+		return nil
+	})
+
 	oruby.Gem("core_ext", func(mrb *oruby.MrbState) interface{} {
+		floatClass := mrb.FloatClass()
+		mrb.DefineMethod(floatClass, "prev_float", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			f := self.Float64()
+			return mrb.FloatValue(math.Nextafter(f, math.Inf(-1)))
+		}, oruby.ArgsNone())
+		mrb.DefineMethod(floatClass, "next_float", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			f := self.Float64()
+			return mrb.FloatValue(math.Nextafter(f, math.Inf(1)))
+		}, oruby.ArgsNone())
+
 		_, err := mrb.Eval(rubyCoreExt)
 		if err != nil {
 			panic("core_ext init error: " + err.Error())

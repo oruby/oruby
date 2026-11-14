@@ -229,7 +229,39 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 			return mrb.getErrnoClass("EPIPE")
 		case syscall.ESRCH:
 			return mrb.getErrnoClass("ESRCH")
+		case syscall.ELOOP:
+			return mrb.getErrnoClass("ELOOP")
+		case syscall.EMFILE:
+			return mrb.getErrnoClass("EMFILE")
+		case syscall.ENFILE:
+			return mrb.getErrnoClass("ENFILE")
+		case syscall.EFBIG:
+			return mrb.getErrnoClass("EFBIG")
+		case syscall.EROFS:
+			return mrb.getErrnoClass("EROFS")
+		case syscall.ENAMETOOLONG:
+			return mrb.getErrnoClass("ENAMETOOLONG")
+		case syscall.ENODEV:
+			return mrb.getErrnoClass("ENODEV")
+		case syscall.ESPIPE:
+			return mrb.getErrnoClass("ESPIPE")
+		case syscall.EAGAIN:
+			return mrb.getErrnoClass("EAGAIN")
+		case syscall.EFAULT:
+			return mrb.getErrnoClass("EFAULT")
+		case syscall.ECONNREFUSED:
+			return mrb.getErrnoClass("ECONNREFUSED")
+		case syscall.ECONNRESET:
+			return mrb.getErrnoClass("ECONNRESET")
+		case syscall.ECONNABORTED:
+			return mrb.getErrnoClass("ECONNABORTED")
+		case syscall.ETIMEDOUT:
+			return mrb.getErrnoClass("ETIMEDOUT")
 		}
+	}
+
+	if strings.Contains(err.Error(), "too many links") {
+		return mrb.getErrnoClass("ELOOP")
 	}
 
 	if os.IsNotExist(err) {

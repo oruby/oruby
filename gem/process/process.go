@@ -1,6 +1,7 @@
 package process
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"os"
@@ -50,6 +51,8 @@ func init() {
 		//mrb.DefineGlobalFunction("fork", procFork, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("exit!", procExit, mrb.ArgsOpt(1))
 		mrb.DefineGlobalFunction("system", procSystem, mrb.ArgsAny())
+		mrb.DefineGlobalFunction("`", procBacktick, mrb.ArgsAny())
+		mrb.DefineModuleFunction(mrb.KernelModule(), "`", procBacktick, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
 		mrb.DefineGlobalFunction("sleep", procSleep, mrb.ArgsOpt(1))
 		mrb.DefineGlobalFunction("exit", procExit, mrb.ArgsOpt(1))
@@ -246,7 +249,43 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 
+	if state.Exitstatus == 127 {
+		return mrb.NilValue()
+	}
 	return mrb.BoolValue(state.Exitstatus == 0)
+}
+
+func procBacktick(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	runner := parseArgs(mrb, mrb.GetArgs())
+	defer runner.cleanup()
+
+	var stdout bytes.Buffer
+	runner.cmd.Stdout = &stdout
+	shell := platformGetShell()
+	runner.cmd.Path = shell
+
+	pid, err := runner.run()
+	if err != nil {
+		setStatus(mrb, errorState(err))
+		return mrb.ERuntimeError().RaiseError(err)
+	}
+
+	ret, _ := runner.Wait(pid, 0)
+
+	// Error
+	if !ret.IsInteger() {
+		if runner.exception {
+			setStatus(mrb, errorState(runner.err))
+			return mrb.NilValue()
+		}
+		if mrb.Exc() != nil {
+			setStatus(mrb, errorState(mrb.Err()))
+			mrb.ExcClear()
+		}
+		return mrb.NilValue()
+	}
+
+	return mrb.StrNew(stdout.String())
 }
 
 func procGetCmd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

@@ -28,15 +28,24 @@ func (mrb *MrbState) HashNewCapa(capa int) RHash {
 
 // EnsureHashType new hash with capacity capa
 func (mrb *MrbState) EnsureHashType(hash MrbValue) RHash {
-	if !hash.Value().IsHash() {
-		panic(mrb.TypeName(hash) + " cannot be converted to Hash")
+	v := hash.Value()
+	if !v.IsHash() {
+		if mrb.RespondTo(v, mrb.Intern("to_hash")) {
+			h, err := mrb.Funcall(v, mrb.Intern("to_hash"))
+			if err == nil && h.IsHash() {
+				return RHash{RValue{h.v, mrb}}
+			}
+		}
+		return RHash{RValue{
+			C.mrb_ensure_hash_type(mrb.p, v.v),
+			mrb,
+		}}
 	}
 
 	return RHash{RValue{
-		hash.Value().v,
+		v.v,
 		mrb,
 	}}
-	// C.mrb_ensure_hash_type() is never called
 }
 
 // CheckHashType new hash with capacity capa

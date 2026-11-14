@@ -18,6 +18,18 @@ func fileMkfifio(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.NotImplemented()
 }
 
+func fileLutime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return fileUtime(mrb, self)
+}
+
+func fileLchmod(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.NotImplemented()
+}
+
+func checkFdMode(fd int, flags int) error {
+	return nil
+}
+
 func platformDup(f *os.File) (*os.File, error) {
 	name := f.Name()
 	stat, err := f.Stat()
