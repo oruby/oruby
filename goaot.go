@@ -91,6 +91,19 @@ func (mrb *MrbState) AotErr() error {
 	return &AotError{mrb, Value{C.mrb_obj_value(unsafe.Pointer(mrb.p.exc))}}
 }
 
+// AotBoundaryErr snapshots a pending exception at the public compiled-program
+// boundary. Internal generated frames continue to use AotErr for dispatch.
+func (mrb *MrbState) AotBoundaryErr() error {
+	if mrb.p.exc == nil {
+		return errors.New("compiled Ruby call failed without a pending exception")
+	}
+	value := Value{C.mrb_obj_value(unsafe.Pointer(mrb.p.exc))}
+	if value.Type() == MrbTTBreak {
+		return &rubyControlFlow{state: mrb, value: value}
+	}
+	return mrb.exceptionError(value)
+}
+
 // HasExc returns true if exception is pending
 func (mrb *MrbState) HasExc() bool { return mrb.p.exc != nil }
 
@@ -515,11 +528,10 @@ type aotBlockData struct {
 
 //export go_aot_handle_free
 func go_aot_handle_free(stateIdx C.mrb_int, id C.mrb_int) {
-	idx := int(stateIdx)
-	if idx <= 0 || idx >= len(states) || states[idx] == nil {
+	mrb := lookupMrbStateIndex(int(stateIdx))
+	if mrb == nil {
 		return
 	}
-	mrb := states[idx]
 	if mrb.aot != nil {
 		delete(mrb.aot.blocks, int64(id))
 	}

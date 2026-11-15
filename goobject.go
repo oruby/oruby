@@ -79,8 +79,7 @@ func (obj RValue) IsInstanceOf(klass RClass) bool {
 	return C.mrb_obj_is_instance_of(obj.mrb.p, obj.v, klass.p) != false
 }
 
-// Call oruby function, return Go interface,
-// in case of error, Call returns NilValue and the error is in mrb.Err()
+// Call invokes a Ruby method; a failure is returned as the pending exception.
 func (obj RValue) Call(name string, args ...interface{}) RValue {
 	return RValue{obj.mrb.Call(obj, name, args...).v, obj.mrb}
 }

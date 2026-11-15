@@ -175,7 +175,12 @@ func (p RProc) TargetClass() RClass {
 
 // Load procedure
 func (p RProc) Load() Value {
-	return Value{C._mrb_load_proc(p.mrb.p, p.p)}
+	return p.mrb.LoadProc(p)
+}
+
+// LoadE loads and executes the procedure, returning any Ruby failure as an error.
+func (p RProc) LoadE() (Value, error) {
+	return p.mrb.LoadProcE(p)
 }
 
 // MrbAspecReq required
@@ -336,7 +341,19 @@ func (mrb *MrbState) ProcNewGofuncWithEnv(f interface{}, env ...interface{}) (RP
 
 // LoadProc loads and executes proc
 func (mrb *MrbState) LoadProc(proc RProc) Value {
-	return Value{C._mrb_load_proc(mrb.p, proc.p)}
+	v, err := mrb.LoadProcE(proc)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return v
+}
+
+// LoadProcE loads and executes proc, returning any Ruby failure as an error.
+func (mrb *MrbState) LoadProcE(proc RProc) (Value, error) {
+	var result C.mrb_value
+	status := C._mrb_load_proc(mrb.p, proc.p, &result)
+	v := Value{result}
+	return mrb.protectedResult(v, status)
 }
 
 // ProcSet sets proc on call info

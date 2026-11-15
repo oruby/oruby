@@ -38,6 +38,7 @@ test:
 	(cd gem/io && go test)
 	(cd gem/io/file && go test)
 	(cd gem/io/popen && go test)
+	(cd gem/isolated_worker && go test)
 	(cd gem/json && go test)
 	(cd gem/load && go test)
 	(cd gem/process && go test)

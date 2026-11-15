@@ -1,11 +1,14 @@
 package compiler
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oruby/oruby"
 )
@@ -132,6 +135,227 @@ replace github.com/oruby/oruby => ` + repoRoot + "\n"
 	// fib(10) == 55
 	if resultStr != "55" {
 		t.Errorf("Expected fib(10) output 55, got: %q", resultStr)
+	}
+}
+
+type exceptionOutcome struct {
+	Kind    string
+	Class   string
+	Message string
+	Trace   string
+	Pending bool
+}
+
+func interpretedExceptionOutcome(mrb *oruby.MrbState, value oruby.MrbValue, err error) exceptionOutcome {
+	out := exceptionOutcome{Kind: "return", Trace: mrb.String(mrb.GetGV("$trace")), Pending: mrb.Exc() != nil}
+	if err != nil {
+		out.Kind = "raise"
+		if exc := mrb.Exc(); exc != nil {
+			value = exc
+		} else {
+			out.Message = err.Error()
+			return out
+		}
+	}
+	out.Class = mrb.ObjClassname(value)
+	if value.Type() == oruby.MrbTTException {
+		mrb.GCProtect(value)
+		mrb.ExcClear()
+		message, err := mrb.Funcall(value, mrb.Intern("message"))
+		if err != nil {
+			out.Message = "message failed: " + err.Error()
+		} else {
+			out.Message = mrb.String(message)
+		}
+	} else {
+		out.Message = mrb.String(value)
+	}
+	return out
+}
+
+func compiledExceptionOutcome(t *testing.T, source string) exceptionOutcome {
+	t.Helper()
+	tmpDir := t.TempDir()
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goMod := "module exception_parity\n\ngo 1.27\n\nrequire github.com/oruby/oruby v0.0.0\n\nreplace github.com/oruby/oruby => " + repoRoot + "\n"
+	mainSrc := `package main
+
+import (
+	"encoding/json"
+	"os"
+
+	"github.com/oruby/oruby"
+)
+
+func main() {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	value, err := Run(mrb)
+	out := struct { Kind, Class, Message, Trace string; Pending bool }{Kind: "return", Trace: mrb.String(mrb.GetGV("$trace")), Pending: mrb.Exc() != nil}
+	if err != nil {
+		out.Kind = "raise"
+		if exc := mrb.Exc(); exc != nil {
+			value = exc.Value()
+		} else {
+			out.Message = err.Error()
+			json.NewEncoder(os.Stdout).Encode(out)
+			return
+		}
+	}
+	out.Class = mrb.ObjClassname(value)
+	if value.Type() == oruby.MrbTTException {
+		mrb.GCProtect(value)
+		mrb.ExcClear()
+		message, err := mrb.Funcall(value, mrb.Intern("message"))
+		if err != nil {
+			out.Message = "message failed: " + err.Error()
+		} else {
+			out.Message = mrb.String(message)
+		}
+	} else {
+		out.Message = mrb.String(value)
+	}
+	json.NewEncoder(os.Stdout).Encode(out)
+}
+`
+	for name, content := range map[string]string{"go.mod": goMod, "compiled.go": source, "main.go": mainSrc} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	build := exec.Command("go", "build", "-mod=mod", "-o", "compiled_app", ".")
+	build.Dir = tmpDir
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build generated program: %v\n%s", err, output)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	run := exec.CommandContext(ctx, filepath.Join(tmpDir, "compiled_app"))
+	run.Dir = tmpDir
+	output, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run generated program: %v (context: %v)\n%s", err, ctx.Err(), output)
+	}
+	var out exceptionOutcome
+	if err := json.Unmarshal(output, &out); err != nil {
+		t.Fatalf("decode generated program output: %v\n%s", err, output)
+	}
+	return out
+}
+
+func TestCompiler_ExceptionParity(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want exceptionOutcome
+	}{
+		{
+			name: "nested_rescue_and_ensure",
+			code: `$trace = ""
+begin
+  begin
+    $trace += "body;"
+    raise ArgumentError, "inner"
+  rescue ArgumentError => e
+    $trace += "inner rescue;"
+    raise RuntimeError, e.message + " rethrown"
+  ensure
+    $trace += "inner ensure;"
+  end
+rescue RuntimeError => e
+  $trace += "outer rescue;"
+  result = e.message
+ensure
+  $trace += "outer ensure;"
+end
+result`,
+			want: exceptionOutcome{Kind: "return", Class: "String", Message: "inner rethrown", Trace: "body;inner rescue;inner ensure;outer rescue;outer ensure;"},
+		},
+		{
+			name: "reraise_through_nested_ensures",
+			code: `$trace = ""
+begin
+  begin
+    raise ArgumentError, "original"
+  rescue ArgumentError => e
+    $trace += "rescue;"
+    raise e
+  ensure
+    $trace += "inner ensure;"
+  end
+ensure
+  $trace += "outer ensure;"
+end`,
+			want: exceptionOutcome{Kind: "raise", Class: "ArgumentError", Message: "original", Trace: "rescue;inner ensure;outer ensure;", Pending: true},
+		},
+		{
+			name: "ensure_on_return",
+			code: `$trace = ""
+def result_with_ensure
+  begin
+    begin
+      return "returned"
+    ensure
+      $trace += "inner ensure;"
+    end
+  ensure
+    $trace += "outer ensure;"
+  end
+end
+result_with_ensure`,
+			want: exceptionOutcome{Kind: "return", Class: "String", Message: "returned", Trace: "inner ensure;outer ensure;"},
+		},
+		{
+			name: "ensure_replaces_exception",
+			code: `$trace = ""
+begin
+  begin
+    raise ArgumentError, "original"
+  ensure
+    $trace += "inner ensure;"
+    raise RuntimeError, "replacement"
+  end
+ensure
+  $trace += "outer ensure;"
+end`,
+			want: exceptionOutcome{Kind: "raise", Class: "RuntimeError", Message: "replacement", Trace: "inner ensure;outer ensure;", Pending: true},
+		},
+		{
+			name: "returned_exception_value",
+			code: `$trace = ""
+begin
+  ArgumentError.new("not raised")
+ensure
+  $trace += "ensure;"
+end`,
+			want: exceptionOutcome{Kind: "return", Class: "ArgumentError", Message: "not raised", Trace: "ensure;"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mrb := oruby.MrbOpen()
+			defer mrb.Close()
+			value, err := mrb.Eval(tt.code)
+			interpreted := interpretedExceptionOutcome(mrb, value, err)
+			if interpreted != tt.want {
+				t.Errorf("interpreted outcome = %+v, want %+v", interpreted, tt.want)
+			}
+
+			compilerState := oruby.MrbOpen()
+			defer compilerState.Close()
+			comp := New(Options{PackageName: "main"})
+			source, err := comp.CompileRuby(compilerState, tt.code)
+			if err != nil {
+				t.Fatalf("CompileRuby: %v", err)
+			}
+			compiled := compiledExceptionOutcome(t, source)
+			if compiled != interpreted {
+				t.Errorf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+			}
+		})
 	}
 }
 

@@ -16,5 +16,5 @@ func platformDup(f *os.File) (*os.File, error) {
 }
 
 func platformIsatty(f *os.File) bool {
-	return C.isatty(C.int(f.Fd())) != 0
+	return C.isatty(C.int(RawFd(f))) != 0
 }

@@ -140,10 +140,12 @@ class String
     end
   end
 
-  def encode(enc)
+  def encode(enc = nil, src = nil, **opts)
+    return dup if enc.nil?
     dup.force_encoding(enc)
   end
-  def encode!(enc)
+  def encode!(enc = nil, src = nil, **opts)
+    return self if enc.nil?
     force_encoding(enc)
   end
 end

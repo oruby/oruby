@@ -1,4 +1,4 @@
-package thread
+package isolated_worker
 
 import (
 	"fmt"
@@ -19,6 +19,7 @@ type Context struct {
 	proc         oruby.RProc
 	f            ThreadFuncT
 	result       oruby.Value
+	excValue     oruby.Value
 	err          error
 	resultCaller oruby.Value
 	alive        bool
@@ -29,6 +30,11 @@ type Context struct {
 var activeContexts sync.Map
 
 func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.Raise(mrb.ENotImplementedError(), "legacy isolated worker launch is unsafe")
+}
+
+// legacyNewThread is retained for research and must not be registered.
+func legacyNewThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, proc := mrb.GetArgsWithBlock()
 
 	if proc.IsNil() {
@@ -48,6 +54,7 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		proc,
 		nil,
 		mrb.NilValue(),
+		oruby.Nil,
 		nil,
 		mrb.NilValue(),
 		false,
@@ -55,6 +62,7 @@ func newThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		make(chan struct{}),
 	}
 
+	mrb.CopyLazyFeatures(c.mrb)
 	err := c.migrateState()
 	if err != nil {
 		c.result = mrb.NilValue()
@@ -94,6 +102,7 @@ func threadCurrent(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		oruby.RProc{},
 		nil,
 		mrb.NilValue(),
+		oruby.Nil,
 		nil,
 		mrb.NilValue(),
 		true,
@@ -107,6 +116,11 @@ func threadCurrent(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 // goThread creates lightweight thread based go function executed via goroutine
 func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.Raise(mrb.ENotImplementedError(), "direct Go callbacks are unsupported in isolated workers")
+}
+
+// legacyGoThread is retained for research and must not be registered.
+func legacyGoThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, proc := mrb.GetArgsWithBlock()
 
 	if proc.IsNil() {
@@ -125,6 +139,7 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		proc,
 		nil,
 		mrb.NilValue(),
+		oruby.Nil,
 		nil,
 		mrb.NilValue(),
 		true,
@@ -132,6 +147,7 @@ func goThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		make(chan struct{}),
 	}
 
+	mrb.CopyLazyFeatures(c.mrb)
 	switch f := proc.Data().(type) {
 	case oruby.MrbFuncT:
 		c.proc = proc
@@ -154,6 +170,10 @@ func (c *Context) worker() {
 
 	c.result = c.mrb.YieldWithClass(c.proc, c.mrb.NilValue(), c.mrb.ObjectClass(), c.args.SliceIntf()...)
 	c.err = c.mrb.Err()
+	if exc := c.mrb.Exc(); exc != nil {
+		c.excValue = exc.Value()
+		c.mrb.GCProtect(c.excValue)
+	}
 	c.mrb.GCProtect(c.result)
 
 	c.mrb.WaitGroup.Done()
@@ -171,7 +191,10 @@ func (c *Context) worker() {
 // [-] (so the exception has not yet been processed), it will be processed at this time.
 // a = Thread.new { print "a"; sleep(10); print "b"; print "c" }
 func (c *Context) Join(limit ...int) (interface{}, error) {
-	if !c.IsAlive() {
+	c.Lock()
+	finished := c.mrb == nil
+	c.Unlock()
+	if finished {
 		return c.resultCaller, c.err
 	}
 
@@ -197,12 +220,21 @@ func (c *Context) Join(limit ...int) (interface{}, error) {
 
 	c.Lock()
 	defer c.Unlock()
+	if c.mrb == nil {
+		return c.resultCaller, c.err
+	}
 
 	v, err := migrateValue(c.mrb, c.mrbCaller, c.result)
 	if err != nil {
 		return nil, err
 	}
 	c.resultCaller = v.Value()
+	if c.err != nil && c.excValue.Type() == oruby.MrbTTException {
+		if ev, err := migrateValue(c.mrb, c.mrbCaller, c.excValue); err == nil && ev.Value().Type() == oruby.MrbTTException {
+			c.mrbCaller.GCProtect(ev)
+			c.err = &oruby.ExcValueError{Exc: ev.Value(), Msg: c.err.Error()}
+		}
+	}
 	c.mrb.Close()
 	c.mrb = nil
 

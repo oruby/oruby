@@ -11,19 +11,16 @@ import (
 func init() {
 	oruby.Gem("thread", func(mrb *oruby.MrbState) interface{} {
 		threadClass := mrb.DefineClass("Thread", mrb.ObjectClass())
-		threadClass.RegisterGoClass(func() *Context { return &Context{} })
-		threadClass.Populate()
-		threadClass.Const("COPY_VALUES", true)
-
-		threadClass.DefineMethod("initialize", newThread, mrb.ArgsBlock())
+		threadClass.DefineMethod("initialize", unsupportedThread, mrb.ArgsAny()|mrb.ArgsBlock())
+		threadClass.DefineMethod("kill", unsupportedThread, mrb.ArgsNone())
 		threadClass.DefineAlias("terminate", "kill")
-		threadClass.DefineModuleFunction("start", newThread, mrb.ArgsAny()+mrb.ArgsBlock())
-		threadClass.DefineModuleFunction("go", goThread, mrb.ArgsAny()+mrb.ArgsBlock())
+		threadClass.DefineClassMethod("start", unsupportedThread, mrb.ArgsAny()|mrb.ArgsBlock())
+		threadClass.DefineClassMethod("go", unsupportedThread, mrb.ArgsAny()|mrb.ArgsBlock())
 		threadClass.DefineClassMethod("current", threadCurrent, mrb.ArgsNone())
 		threadClass.DefineClassMethod("main", threadMain, mrb.ArgsNone())
-		threadClass.DefineClassMethod("kill", threadKill, mrb.ArgsReq(1))
+		threadClass.DefineClassMethod("kill", unsupportedThread, mrb.ArgsReq(1))
 		threadClass.DefineClassMethod("pass", threadPass, mrb.ArgsNone())
-		threadClass.DefineClassMethod("stop", threadStop, mrb.ArgsNone())
+		threadClass.DefineClassMethod("stop", unsupportedThread, mrb.ArgsNone())
 
 		mutexClass := mrb.DefineGoClass("Mutex", newMutex)
 		mutexClass.DefineMethod("sleep", mutexSleep, mrb.ArgsReq(1))
@@ -54,7 +51,22 @@ func init() {
 }
 
 func threadMain(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.CVGet(mrb.ClassOf(self), mrb.Intern("@@main"))
+	return threadCurrent(mrb, self)
+}
+
+func threadCurrent(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	klass := mrb.ClassGet("Thread")
+	key := mrb.Intern("@__main_thread")
+	current := mrb.IVGet(klass, key)
+	if current.IsNil() {
+		current = mrb.ObjAlloc(oruby.MrbTTObject, klass).Value()
+		mrb.IVSet(klass, key, current)
+	}
+	return current
+}
+
+func unsupportedThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.Raise(mrb.ENotImplementedError(), "Ruby Thread creation and control are not supported")
 }
 
 func threadPass(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -71,58 +83,13 @@ func threadSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		duration = time.Duration(int64(t.Float64() * float64(time.Second)))
 	}
 
-	var c *Context
-	if val, ok := activeContexts.Load(mrb); ok {
-		c = val.(*Context)
-	}
-
-	if c != nil {
-		c.Lock()
-		c.sleeping = true
-		c.Unlock()
-
-		defer func() {
-			c.Lock()
-			c.sleeping = false
-			c.Unlock()
-		}()
-	}
-
 	start := time.Now()
-	if c != nil && c.mrbCaller != nil {
-		select {
-		case <-mrb.ExitChan():
-		case <-c.mrbCaller.ExitChan():
-		case <-time.After(duration):
-		}
-	} else {
-		select {
-		case <-mrb.ExitChan():
-		case <-time.After(duration):
-		}
+	select {
+	case <-mrb.ExitChan():
+	case <-time.After(duration):
 	}
 
 	return mrb.FloatValue(float64(time.Since(start)) / float64(time.Second))
-}
-
-func threadKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	ret := mrb.GetArgsFirst()
-	thr, ok := mrb.Intf(ret).(*Context)
-	if !ok {
-		return mrb.Raisef(mrb.ETypeError(), "wrong argument type %v (expected VM/thread)", mrb.TypeName(ret))
-	}
-	thr.Kill()
-	return ret
-}
-
-func threadStop(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	current := mrb.CVGet(mrb.ClassOf(self), mrb.Intern("@@current"))
-	thr, ok := mrb.Intf(current).(*Context)
-	if !ok {
-		return mrb.Raisef(mrb.ETypeError(), "wrong argument type %v (expected VM/thread)", mrb.TypeName(current))
-	}
-	thr.Stop()
-	return oruby.Nil
 }
 
 func mutexSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

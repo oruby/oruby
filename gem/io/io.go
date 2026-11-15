@@ -3,18 +3,26 @@ package io
 import "C"
 import (
 	"bufio"
+	_ "embed"
 	"errors"
 	"io"
 	"os"
 	"syscall"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 )
 
 type IoData struct {
 	GetStream func(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}, error)
 	OpenIO    func(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
 }
+
+//go:embed io_nonblock.rb
+var ioNonblockRb []byte
+
+// platformInit adds IO.select and non-blocking IO where supported
+var platformInit func(mrb *oruby.MrbState, cIO oruby.RClass)
 
 func init() {
 	oruby.Gem("io", func(mrb *oruby.MrbState) interface{} {
@@ -49,7 +57,6 @@ class IO
 end
 `)
 		cIO.DefineClassMethod("readlines", ioSReadlines, mrb.ArgsArg(1, 3)|mrb.ArgsKey(0, 1))
-		cIO.DefineClassMethod("select", mrb.NotImplemented, mrb.ArgsArg(1, 3))
 		cIO.DefineClassMethod("try_convert", ioTryConvert, mrb.ArgsReq(1))
 		cIO.DefineClassMethod("open", ioOpen, mrb.ArgsArg(1, 2)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("for_fd", ioNew, mrb.ArgsArg(1, 2))
@@ -128,13 +135,13 @@ end
 		cIO.DefineMethod("ungetc", ioUngetc, mrb.ArgsReq(1))
 		cIO.DefineMethod("write", ioWrite, mrb.ArgsAny())
 
-		cIO.DefineMethod("readNonblock", mrb.NotImplemented, mrb.ArgsArg(1, 2))
-		cIO.DefineMethod("writeNonblock", mrb.NotImplemented, mrb.ArgsArg(1, 1))
-
 		ioError := mrb.DefineClass("IOError", mrb.EStandardErrorClass())
 		mrb.DefineClass("EOFError", ioError)
-
-		initStringIO(mrb, cIO)
+		if platformInit != nil {
+			platformInit(mrb, cIO)
+			rb.LoadRuby(mrb, "io_nonblock.rb", ioNonblockRb)
+		}
+		// StringIO is provided by stdlib gem (require "stringio")
 
 		return &IoData{getStream, openIO}
 	})

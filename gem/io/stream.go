@@ -113,7 +113,7 @@ func isClosed(mrb *oruby.MrbState, self oruby.Value) bool {
 		return true
 	}
 	if file, ok := f.(*os.File); ok {
-		if file.Fd() == ^uintptr(0) {
+		if RawFd(file) < 0 {
 			return true
 		}
 	}
@@ -299,7 +299,7 @@ func ioFileno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 
-	return oruby.Int(int(f.Fd()))
+	return oruby.Int(RawFd(f))
 }
 
 func ioIsTty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -1091,4 +1091,19 @@ func ioWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	return oruby.Int64(cnt)
+}
+
+// RawFd returns the descriptor of f without switching it to blocking mode
+// (os.File.Fd does that for pollable files such as non-blocking sockets).
+// Returns -1 for a closed file.
+func RawFd(f *os.File) int {
+	fd := -1
+	sc, err := f.SyscallConn()
+	if err != nil {
+		return -1
+	}
+	if err := sc.Control(func(p uintptr) { fd = int(p) }); err != nil {
+		return -1
+	}
+	return fd
 }

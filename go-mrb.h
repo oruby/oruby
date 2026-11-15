@@ -339,76 +339,117 @@ static int _MRB_FUNCALL_ARGC_MAX() {
 // Error formatting using go fmt
 static void _mrb_name_error(mrb_state *mrb, mrb_sym id, const char *msg) { mrb_name_error(mrb, id, msg); }
 
-static mrb_value
-_mrb_funcall_with_block(mrb_state *mrb, mrb_value b, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value block) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_funcall_with_block(mrb, b, mid, argc, argv, block);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);    
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+enum go_mrb_outcome {
+  GO_MRB_OUTCOME_SUCCESS = 0,
+  GO_MRB_OUTCOME_EXCEPTION = 1,
+  GO_MRB_OUTCOME_CONTROL = 2
+};
 
-  return result;
+static int
+_go_mrb_protect(mrb_state *mrb, mrb_protect_error_func *body, void *data, mrb_value *result) {
+  struct RObject *previous_exc = mrb->exc;
+  if (previous_exc) {
+    mrb_gc_protect(mrb, mrb_obj_value(previous_exc));
+  }
+  mrb->exc = NULL;
+
+  mrb_bool raised = FALSE;
+  *result = mrb_protect_error(mrb, body, data, &raised);
+  if (!raised && mrb->exc) {
+    *result = mrb_obj_value(mrb->exc);
+    raised = TRUE;
+  }
+  mrb_gc_protect(mrb, *result);
+  mrb->exc = previous_exc;
+
+  if (raised) {
+    return mrb_type(*result) == MRB_TT_BREAK ? GO_MRB_OUTCOME_CONTROL : GO_MRB_OUTCOME_EXCEPTION;
+  }
+  if (mrb_type(*result) == MRB_TT_BREAK) {
+    return GO_MRB_OUTCOME_CONTROL;
+  }
+  return GO_MRB_OUTCOME_SUCCESS;
+}
+
+typedef struct {
+  mrb_value receiver;
+  mrb_sym mid;
+  mrb_int argc;
+  const mrb_value *argv;
+  mrb_value block;
+} _go_mrb_call_data;
+
+mrb_value set_gofunc_callback(mrb_state *mrb, mrb_value self);
+
+static mrb_value
+_go_mrb_funcall_body(mrb_state *mrb, void *data) {
+  _go_mrb_call_data *call = (_go_mrb_call_data *)data;
+  if (mrb_proc_p(call->receiver) && call->mid == MRB_SYM(call) && mrb_nil_p(call->block)) {
+    struct RProc *proc = mrb_proc_ptr(call->receiver);
+    if (MRB_PROC_CFUNC_P(proc) && MRB_PROC_CFUNC(proc) == set_gofunc_callback) {
+      return mrb_yield_argv(mrb, call->receiver, call->argc, call->argv);
+    }
+  }
+  return mrb_funcall_with_block(mrb, call->receiver, call->mid, call->argc, call->argv, call->block);
+}
+
+static int
+_mrb_funcall_with_block(mrb_state *mrb, mrb_value receiver, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value block, mrb_value *result) {
+  _go_mrb_call_data call = { receiver, mid, argc, argv, block };
+  return _go_mrb_protect(mrb, _go_mrb_funcall_body, &call, result);
+}
+
+typedef struct { mrb_value block; mrb_value arg; } _go_mrb_yield_data;
+typedef struct { mrb_value block; mrb_int argc; const mrb_value *argv; } _go_mrb_yield_argv_data;
+typedef struct { mrb_value block; mrb_int argc; const mrb_value *argv; mrb_value self; struct RClass *klass; } _go_mrb_yield_class_data;
+typedef struct { mrb_value block; mrb_value self; mrb_int argc; const mrb_value *argv; } _go_mrb_yield_cont_data;
+
+static mrb_value
+_go_mrb_yield_body(mrb_state *mrb, void *data) {
+  _go_mrb_yield_data *yield = (_go_mrb_yield_data *)data;
+  return mrb_yield(mrb, yield->block, yield->arg);
+}
+
+static int
+_mrb_yield(mrb_state *mrb, mrb_value block, mrb_value arg, mrb_value *result) {
+  _go_mrb_yield_data yield = { block, arg };
+  return _go_mrb_protect(mrb, _go_mrb_yield_body, &yield, result);
 }
 
 static mrb_value
-_mrb_yield(mrb_state *mrb, mrb_value b, mrb_value arg) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_yield(mrb, b, arg);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+_go_mrb_yield_argv_body(mrb_state *mrb, void *data) {
+  _go_mrb_yield_argv_data *yield = (_go_mrb_yield_argv_data *)data;
+  return mrb_yield_argv(mrb, yield->block, yield->argc, yield->argv);
+}
 
-  return result;
+static int
+_mrb_yield_argv(mrb_state *mrb, mrb_value block, mrb_int argc, const mrb_value *argv, mrb_value *result) {
+  _go_mrb_yield_argv_data yield = { block, argc, argv };
+  return _go_mrb_protect(mrb, _go_mrb_yield_argv_body, &yield, result);
 }
 
 static mrb_value
-_mrb_yield_argv(mrb_state *mrb, mrb_value b, mrb_int argc, const mrb_value *argv) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_yield_argv(mrb, b, argc, argv);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+_go_mrb_yield_with_class_body(mrb_state *mrb, void *data) {
+  _go_mrb_yield_class_data *yield = (_go_mrb_yield_class_data *)data;
+  return mrb_yield_with_class(mrb, yield->block, yield->argc, yield->argv, yield->self, yield->klass);
+}
 
-  return result;
+static int
+_mrb_yield_with_class(mrb_state *mrb, mrb_value block, mrb_int argc, const mrb_value *argv, mrb_value self, struct RClass *klass, mrb_value *result) {
+  _go_mrb_yield_class_data yield = { block, argc, argv, self, klass };
+  return _go_mrb_protect(mrb, _go_mrb_yield_with_class_body, &yield, result);
 }
 
 static mrb_value
-_mrb_yield_with_class(mrb_state *mrb, mrb_value b, mrb_int argc, const mrb_value *argv, mrb_value self, struct RClass *c) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_yield_with_class(mrb, b, argc, argv, self, c);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+_go_mrb_yield_cont_body(mrb_state *mrb, void *data) {
+  _go_mrb_yield_cont_data *yield = (_go_mrb_yield_cont_data *)data;
+  return mrb_yield_cont(mrb, yield->block, yield->self, yield->argc, yield->argv);
+}
 
-  return result;
+static int
+_mrb_yield_cont(mrb_state *mrb, mrb_value block, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value *result) {
+  _go_mrb_yield_cont_data yield = { block, self, argc, argv };
+  return _go_mrb_protect(mrb, _go_mrb_yield_cont_body, &yield, result);
 }
 
 static mrb_value
@@ -423,94 +464,169 @@ _mrb_caller_receiver(mrb_state *mrb) {
 }
 
 
-static mrb_value
-_mrb_load_nstring_cxt(mrb_state *mrb, const char *s, size_t len, mrb_ccontext *c) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_load_nstring_cxt(mrb, s, len, c);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+typedef struct { const char *source; size_t length; mrb_ccontext *context; } _go_mrb_load_string_data;
+typedef struct { struct mrb_parser_state *parser; mrb_ccontext *context; } _go_mrb_load_exec_data;
+typedef struct { const void *buffer; size_t length; mrb_ccontext *context; } _go_mrb_load_irep_data;
+typedef struct { struct RProc *proc; } _go_mrb_load_proc_data;
+typedef struct { mrb_value exception; } _go_mrb_exception_data;
+typedef struct { mrb_value argument; } _go_mrb_raise_data;
 
-  return result;
+static mrb_value
+_go_mrb_load_nstring_body(mrb_state *mrb, void *data) {
+  _go_mrb_load_string_data *load = (_go_mrb_load_string_data *)data;
+  return mrb_load_nstring_cxt(mrb, load->source, load->length, load->context);
+}
+
+static int
+_mrb_load_nstring_cxt(mrb_state *mrb, const char *source, size_t length, mrb_ccontext *context, mrb_value *result) {
+  _go_mrb_load_string_data load = { source, length, context };
+  return _go_mrb_protect(mrb, _go_mrb_load_nstring_body, &load, result);
 }
 
 static mrb_value
-_mrb_load_string_cxt(mrb_state *mrb, const char *s, mrb_ccontext *c) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_load_string_cxt(mrb, s, c);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+_go_mrb_load_string_body(mrb_state *mrb, void *data) {
+  _go_mrb_load_string_data *load = (_go_mrb_load_string_data *)data;
+  return mrb_load_string_cxt(mrb, load->source, load->context);
+}
 
-  return result;
+static int
+_mrb_load_string_cxt(mrb_state *mrb, const char *source, mrb_ccontext *context, mrb_value *result) {
+  _go_mrb_load_string_data load = { source, 0, context };
+  return _go_mrb_protect(mrb, _go_mrb_load_string_body, &load, result);
 }
 
 static mrb_value
-_mrb_load_exec(mrb_state *mrb, struct mrb_parser_state *p, mrb_ccontext *c) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_load_exec(mrb, p, c);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+_go_mrb_load_exec_body(mrb_state *mrb, void *data) {
+  _go_mrb_load_exec_data *load = (_go_mrb_load_exec_data *)data;
+  return mrb_load_exec(mrb, load->parser, load->context);
+}
 
-  return result;
+static int
+_mrb_load_exec(mrb_state *mrb, struct mrb_parser_state *parser, mrb_ccontext *context, mrb_value *result) {
+  _go_mrb_load_exec_data load = { parser, context };
+  return _go_mrb_protect(mrb, _go_mrb_load_exec_body, &load, result);
 }
 
 static mrb_value
-_mrb_load_irep_buf_cxt(mrb_state *mrb, const void *buf, size_t buf_size, mrb_ccontext *c) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_load_irep_buf_cxt(mrb, buf, buf_size, c);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+_go_mrb_load_irep_body(mrb_state *mrb, void *data) {
+  _go_mrb_load_irep_data *load = (_go_mrb_load_irep_data *)data;
+  return mrb_load_irep_buf_cxt(mrb, load->buffer, load->length, load->context);
+}
 
-  return result;
+static int
+_mrb_load_irep_buf_cxt(mrb_state *mrb, const void *buffer, size_t length, mrb_ccontext *context, mrb_value *result) {
+  _go_mrb_load_irep_data load = { buffer, length, context };
+  return _go_mrb_protect(mrb, _go_mrb_load_irep_body, &load, result);
 }
 
 static mrb_value
-_mrb_load_proc(mrb_state *mrb, struct RProc *p) {
-  struct mrb_jmpbuf *prev_jmp = mrb->jmp;
-  struct mrb_jmpbuf c_jmp;
-  mrb_value result = mrb_nil_value();
-  MRB_TRY(&c_jmp) {
-    mrb->jmp = &c_jmp;
-    result = mrb_load_proc(mrb, p);
-    mrb->jmp = prev_jmp;
-    mrb_gc_protect(mrb, result);
-  } MRB_CATCH(&c_jmp) {
-    mrb->jmp = prev_jmp;
-    result = mrb_obj_value(mrb->exc);
-  } MRB_END_EXC(&c_jmp);
+_go_mrb_load_irep_body_no_context(mrb_state *mrb, void *data) {
+  _go_mrb_load_irep_data *load = (_go_mrb_load_irep_data *)data;
+  return mrb_load_irep_buf(mrb, load->buffer, load->length);
+}
 
-  return result;
+static int
+_mrb_load_irep_buf(mrb_state *mrb, const void *buffer, size_t length, mrb_value *result) {
+  _go_mrb_load_irep_data load = { buffer, length, NULL };
+  return _go_mrb_protect(mrb, _go_mrb_load_irep_body_no_context, &load, result);
+}
+
+static mrb_value
+_go_mrb_load_irep_body_empty(mrb_state *mrb, void *data) {
+  return mrb_load_irep(mrb, NULL);
+}
+
+static int
+_mrb_load_irep_empty(mrb_state *mrb, mrb_value *result) {
+  return _go_mrb_protect(mrb, _go_mrb_load_irep_body_empty, NULL, result);
+}
+
+static mrb_value
+_go_mrb_load_irep_body_empty_cxt(mrb_state *mrb, void *data) {
+  mrb_ccontext *context = (mrb_ccontext *)data;
+  return mrb_load_irep_cxt(mrb, NULL, context);
+}
+
+static int
+_mrb_load_irep_empty_cxt(mrb_state *mrb, mrb_ccontext *context, mrb_value *result) {
+  return _go_mrb_protect(mrb, _go_mrb_load_irep_body_empty_cxt, context, result);
+}
+
+static mrb_value
+_go_mrb_load_proc_body(mrb_state *mrb, void *data) {
+  _go_mrb_load_proc_data *load = (_go_mrb_load_proc_data *)data;
+  return mrb_load_proc(mrb, load->proc);
+}
+
+static int
+_mrb_load_proc(mrb_state *mrb, struct RProc *proc, mrb_value *result) {
+  _go_mrb_load_proc_data load = { proc };
+  return _go_mrb_protect(mrb, _go_mrb_load_proc_body, &load, result);
+}
+
+static mrb_value
+_go_mrb_exception_output_body(mrb_state *mrb, void *data) {
+  _go_mrb_exception_data *exception = (_go_mrb_exception_data *)data;
+  return mrb_exc_get_output(mrb, mrb_obj_ptr(exception->exception));
+}
+
+static int
+_mrb_exception_output(mrb_state *mrb, mrb_value exception, mrb_value *result) {
+  _go_mrb_exception_data data = { exception };
+  return _go_mrb_protect(mrb, _go_mrb_exception_output_body, &data, result);
+}
+
+static mrb_value
+_go_mrb_register_exception_body(mrb_state *mrb, void *data) {
+  _go_mrb_exception_data *exception = (_go_mrb_exception_data *)data;
+  mrb_gc_register(mrb, exception->exception);
+  return mrb_nil_value();
+}
+
+static int
+_mrb_register_exception(mrb_state *mrb, mrb_value exception) {
+  _go_mrb_exception_data data = { exception };
+  mrb_value result;
+  return _go_mrb_protect(mrb, _go_mrb_register_exception_body, &data, &result);
+}
+
+static mrb_value
+_go_mrb_exception_class_body(mrb_state *mrb, void *data) {
+  _go_mrb_exception_data *exception = (_go_mrb_exception_data *)data;
+  return mrb_str_new_cstr(mrb, mrb_obj_classname(mrb, exception->exception));
+}
+
+static int
+_mrb_exception_class(mrb_state *mrb, mrb_value exception, mrb_value *result) {
+  _go_mrb_exception_data data = { exception };
+  return _go_mrb_protect(mrb, _go_mrb_exception_class_body, &data, result);
+}
+
+typedef struct { mrb_value exception; int backtrace; } _go_mrb_exception_field_data;
+
+static mrb_value
+_go_mrb_exception_field_body(mrb_state *mrb, void *data) {
+  _go_mrb_exception_field_data *field = (_go_mrb_exception_field_data *)data;
+  mrb_sym method = field->backtrace ? mrb_intern_lit(mrb, "backtrace") : mrb_intern_lit(mrb, "message");
+  return mrb_funcall_with_block(mrb, field->exception, method, 0, NULL, mrb_nil_value());
+}
+
+static int
+_mrb_exception_field(mrb_state *mrb, mrb_value exception, int backtrace, mrb_value *result) {
+  _go_mrb_exception_field_data data = { exception, backtrace };
+  return _go_mrb_protect(mrb, _go_mrb_exception_field_body, &data, result);
+}
+
+static mrb_value
+_go_mrb_f_raise_body(mrb_state *mrb, void *data) {
+  _go_mrb_raise_data *raise = (_go_mrb_raise_data *)data;
+  return mrb_f_raise(mrb, raise->argument);
+}
+
+static int
+_mrb_f_raise_protected(mrb_state *mrb, mrb_value argument, mrb_value *result) {
+  _go_mrb_raise_data raise = { argument };
+  return _go_mrb_protect(mrb, _go_mrb_f_raise_body, &raise, result);
 }
 
 

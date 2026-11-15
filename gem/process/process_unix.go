@@ -52,8 +52,7 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	mrb.DefineModuleFunction(mProc, "daemon", mrb.NotImplemented, 0)
 	mrb.DefineModuleFunction(mProc, "times", procTimes, mrb.ArgsNone())
 
-	//mrb.DefineModuleFunction(mProc, "clock_gettime", rb_clock_gettime, -1)
-	//mrb.DefineModuleFunction(mProc, "clock_getres", rb_clock_getres, -1)
+	initClock(mrb, mProc)
 
 	//mrb.DefineModuleFunction(mProcUID, "change_privilege", p_uid_change_privilege, 1)
 	//mrb.DefineModuleFunction(mProcGID, "change_privilege", p_gid_change_privilege, 1)

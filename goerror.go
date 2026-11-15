@@ -112,6 +112,84 @@ func EError(name, format string, args ...interface{}) error {
 	return Raisef(errors.New(name), format, args...)
 }
 
+// ExcValueError is a legacy, unowned exception value. RaiseError rejects it;
+// use RubyError for a state-owned, retained exception instead.
+type ExcValueError struct {
+	Exc Value
+	Msg string
+}
+
+func (e *ExcValueError) Error() string { return e.Msg }
+
+// RubyError is a snapshot of a Ruby exception and a retained handle to its
+// original object. Release must be called on the owning state goroutine.
+// Its text and backtrace remain available after release or state close.
+type RubyError struct {
+	Class     string
+	Message   string
+	Backtrace []string
+
+	owner     *MrbState
+	exception Value
+}
+
+func (e *RubyError) Error() string {
+	return fmt.Sprintf("%s (%s)", e.Message, e.Class)
+}
+
+// Exception returns the retained exception only for its owning, open state.
+func (e *RubyError) Exception(mrb *MrbState) (Value, error) {
+	if e == nil || e.owner == nil || e.owner != mrb || mrb.p == nil {
+		return Nil, errors.New("Ruby exception is released, closed, or belongs to another state")
+	}
+	return e.exception, nil
+}
+
+// Release unroots the exception. It is idempotent and must not race with VM use.
+func (e *RubyError) Release() {
+	if e == nil || e.owner == nil {
+		return
+	}
+	mrb := e.owner
+	delete(mrb.rubyErrors, e)
+	C.mrb_gc_unregister(mrb.p, e.exception.v)
+	e.owner = nil
+	e.exception = Nil
+}
+
+func (mrb *MrbState) exceptionError(exception Value) error {
+	e := &RubyError{Class: "Exception", Message: "(message unavailable)"}
+	if C._mrb_register_exception(mrb.p, exception.v) == C.GO_MRB_OUTCOME_SUCCESS {
+		e.owner, e.exception = mrb, exception
+		mrb.rubyErrors[e] = struct{}{}
+	}
+	var result C.mrb_value
+	if C._mrb_exception_class(mrb.p, exception.v, &result) == C.GO_MRB_OUTCOME_SUCCESS {
+		v := Value{result}
+		if v.Type() == MrbTTString {
+			e.Class = v.String()
+		}
+	}
+	if C._mrb_exception_field(mrb.p, exception.v, 0, &result) == C.GO_MRB_OUTCOME_SUCCESS {
+		v := Value{result}
+		if v.Type() == MrbTTString {
+			e.Message = v.String()
+		}
+	}
+	if C._mrb_exception_field(mrb.p, exception.v, 1, &result) == C.GO_MRB_OUTCOME_SUCCESS {
+		v := Value{result}
+		if v.Type() == MrbTTArray {
+			for i := 0; i < RArrayLen(v); i++ {
+				line := mrb.AryEntry(v, i)
+				if line.Type() == MrbTTString {
+					e.Backtrace = append(e.Backtrace, line.String())
+				}
+			}
+		}
+	}
+	return e
+}
+
 // RaiseError containing error type and message
 type RaiseError struct {
 	err       error
@@ -257,6 +335,12 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 			return mrb.getErrnoClass("ECONNABORTED")
 		case syscall.ETIMEDOUT:
 			return mrb.getErrnoClass("ETIMEDOUT")
+		default:
+			// SystemCallError.new(nil, errno) resolves the Errno::EXXX class
+			if exc, err := mrb.Funcall(mrb.ESystemCallError().Value(), mrb.Intern("new"), nil, int(sysErr)); err == nil {
+				return mrb.ClassOf(exc)
+			}
+			mrb.ExcClear()
 		}
 	}
 

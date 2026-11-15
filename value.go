@@ -90,7 +90,7 @@ func (v Value) Int64() int64 {
 }
 
 func (v Value) unsafePtr() unsafe.Pointer {
-	return *(*unsafe.Pointer)(unsafe.Pointer(&v.v))
+	return C._mrb_ptr(v.v)
 }
 
 // RStringMem returns the raw byte pointer and length of a Ruby String value without CGO calls.
@@ -409,15 +409,12 @@ func (mrb *MrbState) SymbolValue(sym MrbSym) Value {
 	return Value{cv}
 }
 
-// mrbObjValue converts C object pointer to Value without CGO overhead
+// mrbObjValue converts a C object pointer to a Ruby value.
 func mrbObjValue(p unsafe.Pointer) Value {
 	if p == nil {
 		return nilValue
 	}
-	var cv C.mrb_value
-	cv.tt = C.enum_mrb_vtype(*(*uint8)(unsafe.Add(p, 8)))
-	*(*unsafe.Pointer)(unsafe.Pointer(&cv)) = p
-	return Value{cv}
+	return Value{C.mrb_obj_value(p)}
 }
 
 // MrbObjValue value form oruby object. In Go object must provide MrbValue interface,

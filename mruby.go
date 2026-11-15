@@ -76,6 +76,7 @@ type MrbState struct {
 	lastDebugIrep  uintptr
 	lastDebugLine  int
 	aot            *aotState // AOT compiled code runtime state (goaot.go)
+	rubyErrors     map[*RubyError]struct{}
 }
 
 // NewCore create state is MrbState without gems,
@@ -113,6 +114,7 @@ func NewCore() (*MrbState, error) {
 		0,
 		-1,
 		nil,
+		make(map[*RubyError]struct{}),
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
@@ -348,7 +350,8 @@ func (mrb *MrbState) startInjector() {
 					f(mrb, proc.Value())
 					continue
 				}
-				C._mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v)
+				var result C.mrb_value
+				C._mrb_funcall_with_block(mrb.p, C.mrb_obj_value(unsafe.Pointer(proc.p)), C.mrb_sym(mrb.callSym), C.mrb_int(0), nil, Nil.v, &result)
 			}
 		}
 	}()
@@ -390,13 +393,16 @@ func (mrb *MrbState) Close() {
 		}
 
 		mrb.RunAtExitHandlers()
+		for rubyErr := range mrb.rubyErrors {
+			rubyErr.owner = nil
+			rubyErr.exception = Nil
+		}
+		mrb.rubyErrors = nil
 
 		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
 
-		mu.Lock()
-		states[idx] = nil
-		mu.Unlock()
+		removeStateIndex(idx)
 
 		mrb.p = nil
 
@@ -420,9 +426,12 @@ func New() (*MrbState, error) {
 		mrb.features["print"] = initPrint(mrb)
 	}
 
-	// Init all Go gems
-	for k, geminit := range gems {
-		mrb.features[k] = geminit(mrb)
+	// Init all Go gems (sorted: gem initialization order is deterministic)
+	for _, k := range sortedGemNames() {
+		if _, done := mrb.features[k]; done {
+			continue // already initialized as dependency
+		}
+		mrb.features[k] = gems[k](mrb)
 	}
 
 	return mrb, nil
@@ -796,38 +805,15 @@ func (mrb *MrbState) Run(code string, args ...interface{}) RValue {
 
 // Eval evaluates code string and returns calculated result
 func (mrb *MrbState) Eval(code string) (result RValue, err error) {
-	//	defer errorHandler(&err)
-	mrb.ExcClear()
-
 	cxt := mrb.MrbCcontextNew()
 	cxt.SetCaptureErrors(true)
 	defer cxt.Free()
 
-	p, err := mrb.ParseString(code, cxt)
-	if err != nil {
-		return RValue{nilValue.v, mrb}, err
+	if len(code) == 0 {
+		return RValue{nilValue.v, mrb}, nil
 	}
-
-	result = RValue{C.mrb_load_exec(mrb.p, p.p, cxt.p), mrb}
-
-	// Check parse errors
-	//if p.NErr() > 0 {
-	//	estr := ""
-	//	for i := 0; i < p.NErr(); i++ {
-	//		e := p.ErrorBuffer(i)
-	//		estr += fmt.Sprintf("%s:%d:%d: %s\n", mrb.SymString(p.Filename()), e.LineNo, e.Column, e.Message)
-	//	}
-	//	return RValue{nilValue.v, mrb}, errors.New(estr)
-	//}
-	//
-	//proc := C.mrb_generate_code(mrb.p, p.p)
-	//if proc == nil {
-	//	return RValue{nilValue.v, mrb}, mrb.Err()
-	//}
-
-	//result = RValue{C.mrb_top_run(mrb.p, proc, C.mrb_top_self(mrb.p), 0), mrb}
-
-	return result, mrb.Err()
+	value, err := mrb.LoadStringCxt(code, cxt)
+	return RValue{value.v, mrb}, err
 }
 
 // procedure mrb_float_to_str(buf PChar, i mrb_float);
@@ -872,16 +858,48 @@ func (mrb *MrbState) Err() error {
 	if exc == nil {
 		return nil
 	}
-
-	// "message (ClassName)" - same format mruby uses for uncaught exceptions
-	r := Value{C.mrb_exc_get_output(mrb.p, mrb.p.exc)}
-	return errors.New(mrb.StrToCstr(r))
+	value := exc.Value()
+	if value.Type() == MrbTTBreak {
+		return &rubyControlFlow{state: mrb, value: value}
+	}
+	return mrb.exceptionError(value)
 }
 
 // loadResult returns v and nil error, or Nil and the pending exception as error
 func (mrb *MrbState) loadResult(v Value) (Value, error) {
 	if err := mrb.Err(); err != nil {
 		return Nil, err
+	}
+	return v, nil
+}
+
+type rubyControlFlow struct {
+	state *MrbState
+	value Value
+}
+
+func (*rubyControlFlow) Error() string { return "non-local Ruby control flow" }
+
+func (mrb *MrbState) protectedOutcomeError(v Value, status C.int) error {
+	switch status {
+	case C.GO_MRB_OUTCOME_SUCCESS:
+		return nil
+	case C.GO_MRB_OUTCOME_EXCEPTION:
+		return mrb.exceptionError(v)
+	case C.GO_MRB_OUTCOME_CONTROL:
+		return &rubyControlFlow{state: mrb, value: v}
+	default:
+		return fmt.Errorf("unknown Ruby call outcome %d", int(status))
+	}
+}
+
+func (mrb *MrbState) protectedResult(v Value, status C.int) (Value, error) {
+	err := mrb.protectedOutcomeError(v, status)
+	if err != nil {
+		if status == C.GO_MRB_OUTCOME_EXCEPTION || status == C.GO_MRB_OUTCOME_CONTROL {
+			mrb.RaiseObj(v)
+		}
+		return mrb.NilValue(), err
 	}
 	return v, nil
 }
@@ -979,9 +997,29 @@ func (mrb *MrbState) PrependModule(cla, prepend RClass) {
 	C.mrb_prepend_module(mrb.p, cla.p, prepend.p)
 }
 
+// recoverCallback converts a Go panic in a method implementation into a
+// pending Ruby exception, so the C trampoline raises it instead of the
+// panic unwinding through C frames.
+func (mrb *MrbState) recoverCallback(res *C.mrb_value) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	msg := fmt.Sprint(r)
+	cls := mrb.ERuntimeError()
+	if e, ok := r.(error); ok {
+		msg = e.Error()
+	}
+	if strings.Contains(msg, "conver") || strings.Contains(msg, "type") {
+		cls = mrb.ETypeError()
+	}
+	*res = mrb.Raise(cls, msg).v
+}
+
 //export go_mrb_func_env_callback
-func go_mrb_func_env_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.mrb_value {
-	mrb := states[int(mrbidx)]
+func go_mrb_func_env_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) (cres C.mrb_value) {
+	mrb := getMrbStateIndex(int(mrbidx))
+	defer mrb.recoverCallback(&cres)
 
 	fx := mrb.getMrbFuncT(uint(idx))
 	if fx == nil {
@@ -997,8 +1035,9 @@ func go_mrb_func_env_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.m
 }
 
 //export go_mrb_proc_callback
-func go_mrb_proc_callback(mrbidx C.mrb_int, self C.mrb_value, procPtr unsafe.Pointer) C.mrb_value {
-	mrb := states[int(mrbidx)]
+func go_mrb_proc_callback(mrbidx C.mrb_int, self C.mrb_value, procPtr unsafe.Pointer) (cres C.mrb_value) {
+	mrb := getMrbStateIndex(int(mrbidx))
+	defer mrb.recoverCallback(&cres)
 
 	mrb.Lock()
 	var f MrbFuncT
@@ -1458,10 +1497,19 @@ func (mrb *MrbState) GetMID() MrbSym {
 	return MrbSym(mrb.p.c.ci.mid)
 }
 
-// Call oruby function, return Go interface,
-// in case of error, Call returns nil and the error is in mrb.Err()
+// Call invokes a Ruby method. On failure it returns the pending exception or
+// control object; use Funcall to receive a checked Go error instead.
 func (mrb *MrbState) Call(self MrbValue, name string, args ...interface{}) Value {
-	result, _ := mrb.Funcall(self, mrb.Intern(name), args...)
+	result, err := mrb.Funcall(self, mrb.Intern(name), args...)
+	if err != nil {
+		var rubyErr *RubyError
+		if errors.As(err, &rubyErr) {
+			rubyErr.Release()
+		}
+		if mrb.p.exc != nil {
+			return Value{C.mrb_obj_value(unsafe.Pointer(mrb.p.exc))}
+		}
+	}
 	return result
 }
 
@@ -1472,24 +1520,7 @@ func (mrb *MrbState) CallerReceiver() Value {
 
 // Funcall call oruby function
 func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{}) (Value, error) {
-	var err error
-	var f reflect.Value
 	l := len(args)
-
-	//print("funcall ", mrb.ClassOf(self).Name(), ":", mrb.String(name), "(")
-
-	if (self.Type() == C.MRB_TT_PROC) && mrb.RProc(self).IsCFunc() && (nameSym == mrb.callSym) {
-		if C._mrb_proc_has_env(mrb.p, MrbProcPtr(self).p) != false {
-			fv := C._mrb_proc_env_get(mrb.p, MrbProcPtr(self).p, C.mrb_int(0))
-			ff, _ := mrb.getFunc(uint(C._mrb_fixnum(fv)))
-			f = reflect.ValueOf(ff)
-		}
-
-		if f.IsValid() {
-			result := mrb.callFunc(f, RInterfaceArgs{args})
-			return mrb.handleResults(result)
-		}
-	}
 
 	var stackBuf [8]C.mrb_value
 	var a []C.mrb_value
@@ -1506,25 +1537,20 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 		aPtr = &a[0]
 	}
 
-	v := Value{C._mrb_funcall_with_block(
+	var result C.mrb_value
+	status := C._mrb_funcall_with_block(
 		mrb.p,
 		self.Value().v,
 		C.mrb_sym(nameSym),
 		C.mrb_int(l),
 		aPtr,
 		C.mrb_nil_value(),
-	)}
-
-	if mrb.p.exc != nil || v.Type() == C.MRB_TT_EXCEPTION {
-		if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
-			desc := mrb.Call(v, "to_s")
-			mrb.p.exc = C._mrb_obj_ptr(v.v)
-			err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
-		}
-	}
+		&result,
+	)
+	v := Value{result}
 
 	runtime.KeepAlive(a)
-	return v, err
+	return mrb.protectedResult(v, status)
 	// Do not delete comment - function names are used for static API check
 	// C.mrb_funcall(), C.mrb_funcall_id(), C.mrb_funcall_argv() are never called
 }
@@ -1532,58 +1558,24 @@ func (mrb *MrbState) Funcall(self MrbValue, nameSym MrbSym, args ...interface{})
 // FastCall dispatches directly in Go if the target method is a registered Go function,
 // falling back to C _mrb_funcall_with_block without interface{} boxing overhead.
 func (mrb *MrbState) FastCall(self Value, nameSym MrbSym, args ...Value) (Value, error) {
-	tt := self.Type()
-	var fn MrbFuncT
-	if tt == MrbTTModule || tt == MrbTTClass {
-		if methods := mrb.goClassMethods[self.Pointer()]; methods != nil {
-			fn = methods[nameSym]
-		}
-	} else if tt >= MrbTTObject {
-		if self.Pointer() > 65536 {
-			cPtr := *(*uintptr)(self.unsafePtr())
-			if methods := mrb.goMethods[cPtr]; methods != nil {
-				fn = methods[nameSym]
-			}
-		}
-	}
-	if fn != nil {
-		prevArgs := mrb.fastArgs
-		prevHas := mrb.hasFastArgs
-		mrb.fastArgs = args
-		mrb.hasFastArgs = true
-		res := fn(mrb, self)
-		mrb.fastArgs = prevArgs
-		mrb.hasFastArgs = prevHas
-		v := res.Value()
-		if mrb.p.exc != nil {
-			return v, fmt.Errorf("ruby exception")
-		}
-		return v, nil
-	}
-
 	l := len(args)
 	var aPtr *C.mrb_value
 	if l > 0 {
 		aPtr = (*C.mrb_value)(unsafe.Pointer(&args[0]))
 	}
-	v := Value{C._mrb_funcall_with_block(
+	var result C.mrb_value
+	status := C._mrb_funcall_with_block(
 		mrb.p,
 		self.v,
 		C.mrb_sym(nameSym),
 		C.mrb_int(l),
 		aPtr,
 		C.mrb_nil_value(),
-	)}
-	var err error
-	if mrb.p.exc != nil || v.Type() == C.MRB_TT_EXCEPTION {
-		if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
-			desc := mrb.Call(v, "to_s")
-			mrb.p.exc = C._mrb_obj_ptr(v.v)
-			err = fmt.Errorf("%v: %v - %v", mrb.ClassOf(v).Name(), mrb.String(v), mrb.String(desc))
-		}
-	}
+		&result,
+	)
+	v := Value{result}
 	runtime.KeepAlive(args)
-	return v, err
+	return mrb.protectedResult(v, status)
 }
 
 // FuncallWithBlock call function with arguments. Last argument passed should be block
@@ -1616,29 +1608,20 @@ func (mrb *MrbState) FuncallWithBlock(self MrbValue, nameSym MrbSym, args ...int
 		aPtr = &a[0]
 	}
 
-	var err error
-	v := Value{C._mrb_funcall_with_block(
+	var result C.mrb_value
+	status := C._mrb_funcall_with_block(
 		mrb.p,
 		self.Value().v,
 		C.mrb_sym(nameSym),
 		C.mrb_int(argc),
 		aPtr,
 		block.v,
-	)}
-
-	if mrb.p.exc != nil || v.Type() == C.MRB_TT_EXCEPTION {
-		if mrb.ObjIsKindOf(v, mrb.EExceptionClass()) {
-			desc := mrb.Call(v, "to_s")
-			mrb.p.exc = C._mrb_obj_ptr(v.v)
-			err = fmt.Errorf("%v.%v -> %v (%v)",
-				mrb.ClassOf(self).Name(), mrb.SymName(nameSym), // ->
-				mrb.String(desc), mrb.ClassOf(v).Name(),
-			)
-		}
-	}
+		&result,
+	)
+	v := Value{result}
 
 	runtime.KeepAlive(a)
-	return v, err
+	return mrb.protectedResult(v, status)
 }
 
 // Sym converts string to oruby symbol
@@ -2247,17 +2230,14 @@ func (mrb *MrbState) ExcNew(c RClass, msg string) Value {
 	return Value{C.mrb_exc_new(mrb.p, c.p, cmsg, C.mrb_int(len(msg)))}
 }
 
-// ExcRaise raises Ruby exception. This function is likeley to cause
-// panic and program error exit, since Go neither supports exceptions,
-// nor C style longjmp across Go stack.
-//
-//	Instead, consider using this idiom in case of error:
-//
-//	   return mrb.StandardError().Raise("Something went wrong")
-//
-//	This will return Exception from Go, and oruby will raise it on C side
+// ExcRaise marks an exception as pending for the Go callback trampoline.
+// It does not immediately raise; the trampoline resumes Ruby unwinding after Go returns.
 func (mrb *MrbState) ExcRaise(exc MrbValue) {
-	C.mrb_exc_raise(mrb.p, exc.Value().v)
+	if exc.Type() != MrbTTException {
+		mrb.Raise(mrb.ETypeError(), "exception object expected")
+		return
+	}
+	mrb.RaiseObj(exc)
 }
 
 // RaiseObj raises existing exception value
@@ -2308,6 +2288,26 @@ func (mrb *MrbState) Raisef(c RClass, format string, args ...interface{}) Value 
 //	err := oruby.EArgumentError("Unknovn argument %v", someArg)
 //	return mrb.RaiseError(err) -> oruby.Value <#ArgumentError>
 func (mrb *MrbState) RaiseError(err error) Value {
+	var control *rubyControlFlow
+	if errors.As(err, &control) {
+		if control.state != mrb || mrb.p == nil || mrb.p.exc == nil ||
+			uintptr(unsafe.Pointer(mrb.p.exc)) != control.value.Pointer() {
+			return mrb.Raise(mrb.ETypeError(), "Ruby control flow is no longer pending in this state")
+		}
+		return mrb.RaiseObj(control.value)
+	}
+	var ev *ExcValueError
+	var rubyErr *RubyError
+	if errors.As(err, &rubyErr) {
+		exception, e := rubyErr.Exception(mrb)
+		if e != nil {
+			return mrb.Raise(mrb.ETypeError(), e.Error())
+		}
+		return mrb.RaiseObj(exception)
+	}
+	if errors.As(err, &ev) {
+		return mrb.Raise(mrb.ETypeError(), "unowned Ruby exception cannot be raised")
+	}
 	msg := err.Error()
 	if strings.Contains(msg, "file exists") {
 		msg = strings.ReplaceAll(msg, "file exists", "File exists")
@@ -2421,16 +2421,46 @@ func (mrb *MrbState) ESystemCallError() RClass { return mrb.ExcGet("SystemCallEr
 
 // Yield block with value
 func (mrb *MrbState) Yield(b, arg MrbValue) Value {
-	return Value{C._mrb_yield(mrb.p, b.Value().v, arg.Value().v)}
-	// C.mrb_yield() is called from MRB_TRY/MRB_CATCH wrapped helper to avoid Go fatal throws on C side jumps
+	v, status := mrb.yieldOutcome(b, arg)
+	if status != C.GO_MRB_OUTCOME_SUCCESS {
+		mrb.RaiseObj(v)
+	}
+	return v
+}
+
+// YieldE yields to a block and returns a Ruby exception or control-flow outcome as an error.
+func (mrb *MrbState) YieldE(b, arg MrbValue) (Value, error) {
+	v, status := mrb.yieldOutcome(b, arg)
+	return mrb.protectedResult(v, status)
+}
+
+func (mrb *MrbState) yieldOutcome(b, arg MrbValue) (Value, C.int) {
+	var result C.mrb_value
+	status := C._mrb_yield(mrb.p, b.Value().v, arg.Value().v, &result)
+	return Value{result}, status
 }
 
 // YieldArgv mrb_value mrb_yield_argv(mrb_state *mrb, mrb_value b, int argc, mrb_value *argv);
 func (mrb *MrbState) YieldArgv(b MrbValue, argv ...interface{}) Value {
-	argc := len(argv)
+	v, status := mrb.yieldArgvOutcome(b, argv...)
+	if status != C.GO_MRB_OUTCOME_SUCCESS {
+		mrb.RaiseObj(v)
+	}
+	return v
+}
 
+// YieldArgvE yields to a block and returns a Ruby exception or control-flow outcome as an error.
+func (mrb *MrbState) YieldArgvE(b MrbValue, argv ...interface{}) (Value, error) {
+	v, status := mrb.yieldArgvOutcome(b, argv...)
+	return mrb.protectedResult(v, status)
+}
+
+func (mrb *MrbState) yieldArgvOutcome(b MrbValue, argv ...interface{}) (Value, C.int) {
+	argc := len(argv)
+	var result C.mrb_value
 	if argc == 0 {
-		return Value{C._mrb_yield_argv(mrb.p, b.Value().v, 0, nil)}
+		status := C._mrb_yield_argv(mrb.p, b.Value().v, 0, nil, &result)
+		return Value{result}, status
 	}
 
 	args := make([]C.mrb_value, argc)
@@ -2438,14 +2468,32 @@ func (mrb *MrbState) YieldArgv(b MrbValue, argv ...interface{}) Value {
 		args[i] = mrb.Value(argv[i]).v
 	}
 
-	return Value{C._mrb_yield_argv(mrb.p, b.Value().v, C.mrb_int(argc), (*C.mrb_value)(&args[0]))}
+	status := C._mrb_yield_argv(mrb.p, b.Value().v, C.mrb_int(argc), (*C.mrb_value)(&args[0]), &result)
+	runtime.KeepAlive(args)
+	return Value{result}, status
 }
 
 // YieldWithClass yields with class
 func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ...interface{}) Value {
+	v, status := mrb.yieldWithClassOutcome(b, self, c, args...)
+	if status != C.GO_MRB_OUTCOME_SUCCESS {
+		mrb.RaiseObj(v)
+	}
+	return v
+}
+
+// YieldWithClassE yields with a class and reports Ruby exceptions or control flow as an error.
+func (mrb *MrbState) YieldWithClassE(b MrbValue, self MrbValue, c RClass, args ...interface{}) (Value, error) {
+	v, status := mrb.yieldWithClassOutcome(b, self, c, args...)
+	return mrb.protectedResult(v, status)
+}
+
+func (mrb *MrbState) yieldWithClassOutcome(b MrbValue, self MrbValue, c RClass, args ...interface{}) (Value, C.int) {
 	argc := len(args)
+	var result C.mrb_value
 	if argc == 0 {
-		return Value{C._mrb_yield_with_class(mrb.p, b.Value().v, 0, nil, self.Value().v, c.p)}
+		status := C._mrb_yield_with_class(mrb.p, b.Value().v, 0, nil, self.Value().v, c.p, &result)
+		return Value{result}, status
 	}
 
 	argv := make([]C.mrb_value, argc)
@@ -2453,7 +2501,9 @@ func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ..
 		argv[i] = mrb.Value(args[i]).v
 	}
 
-	return Value{C._mrb_yield_with_class(mrb.p, b.Value().v, C.mrb_int(argc), &argv[0], self.Value().v, c.p)}
+	status := C._mrb_yield_with_class(mrb.p, b.Value().v, C.mrb_int(argc), &argv[0], self.Value().v, c.p, &result)
+	runtime.KeepAlive(argv)
+	return Value{result}, status
 }
 
 // YieldCont continue execution to the proc
@@ -2461,22 +2511,28 @@ func (mrb *MrbState) YieldWithClass(b MrbValue, self MrbValue, c RClass, args ..
 //
 //	return mrb,YieldCont(proc, self, args...)
 func (mrb *MrbState) YieldCont(b RProc, self MrbValue, args ...interface{}) Value {
-	//mrb_yield_cont(mrb_state*mrb, mrb_value b, mrb_value self, mrb_int argc, const mrb_value *argv);
 	if b.IsNil() {
 		return mrb.EArgumentError().Raise("no block given")
 	}
 
 	argc := len(args)
-	if argc == 0 {
-		return Value{C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, 0, nil)}
-	}
-
 	argv := make([]C.mrb_value, argc)
 	for i := range args {
 		argv[i] = mrb.Value(args[i]).v
 	}
 
-	return Value{C.mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, C.mrb_int(argc), &argv[0])}
+	var argPtr *C.mrb_value
+	if argc > 0 {
+		argPtr = &argv[0]
+	}
+	var result C.mrb_value
+	status := C._mrb_yield_cont(mrb.p, b.Value().v, self.Value().v, C.mrb_int(argc), argPtr, &result)
+	runtime.KeepAlive(argv)
+	value := Value{result}
+	if status != C.GO_MRB_OUTCOME_SUCCESS {
+		mrb.RaiseObj(value)
+	}
+	return value
 }
 
 // GCProtect protect value from GC
@@ -2705,13 +2761,15 @@ func (mrb *MrbState) FreeContext(c MrbContext) { C.mrb_free_context(mrb.p, c.p) 
 
 //export mrb_free_goref
 func mrb_free_goref(cmrb *C.mrb_state, p unsafe.Pointer) {
-	mrb := states[int(C._mrb_get_idx(cmrb))]
-	mrb.setHook(p, nil)
+	if mrb := lookupMrbStateIndex(int(C._mrb_get_idx(cmrb))); mrb != nil {
+		mrb.setHook(p, nil)
+	}
 }
 
 //export go_gofunc_callback
-func go_gofunc_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.mrb_value {
-	mrb := states[int(mrbidx)]
+func go_gofunc_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) (cres C.mrb_value) {
+	mrb := getMrbStateIndex(int(mrbidx))
+	defer mrb.recoverCallback(&cres)
 	var result []reflect.Value
 	var err error
 
@@ -2781,7 +2839,7 @@ func go_gofunc_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.mrb_val
 
 	res, err := mrb.handleResults(result)
 	if err != nil {
-		return mrb.Raise(mrb.getErrorKlass(err), err.Error()).v
+		return mrb.RaiseError(err).v
 	}
 
 	return res.v

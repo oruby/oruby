@@ -2,9 +2,49 @@ package oruby
 
 import (
 	"fmt"
+	"sort"
 )
 
 var gems = make(map[string]func(*MrbState) interface{})
+
+// lazyGems are initialized on first require, not when state is created
+var lazyGems = make(map[string]func(*MrbState) interface{})
+
+// LazyGem registers gem which is initialized by `require name` (stdlib
+// style libraries), keeping interpreter startup fast.
+func LazyGem(name string, initFn func(*MrbState) interface{}) {
+	if name == "" {
+		panic("error - empty name not allowed")
+	}
+	if _, dup := lazyGems[name]; dup {
+		panic("lazy gem register called twice for gem " + name)
+	}
+	if _, dup := gems[name]; dup {
+		panic("gem register called twice for gem " + name)
+	}
+	lazyGems[name] = initFn
+}
+
+// GemAlias registers require name which loads (or is provided by) gem
+// target, e.g. "stringio" provided by "io".
+func GemAlias(name, target string) {
+	LazyGem(name, func(mrb *MrbState) interface{} {
+		if _, err := mrb.Resolve(target); err != nil {
+			panic(fmt.Sprintf("gem alias %v: %v", name, err))
+		}
+		return nil
+	})
+}
+
+// sortedGemNames returns eagerly initialized gem names in stable order
+func sortedGemNames() []string {
+	names := make([]string, 0, len(gems))
+	for k := range gems {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
 
 //type MrbInitFunc func(*MrbState)
 
@@ -51,9 +91,14 @@ func (mrb *MrbState) Resolve(name string) (bool, error) {
 
 	initFn, exists := gems[name]
 	if !exists {
+		initFn, exists = lazyGems[name]
+	}
+	if !exists {
 		return false, EKeyError("error loading '%v'", name)
 	}
 
+	// mark first, so recursive requires of the same feature terminate
+	mrb.features[name] = nil
 	mrb.features[name] = initFn(mrb)
 	return true, nil
 }
@@ -77,6 +122,9 @@ func (mrb *MrbState) Require(name string) bool {
 
 	initFn, exists := gems[name]
 	if !exists {
+		initFn, exists = lazyGems[name]
+	}
+	if !exists {
 		panic(fmt.Sprintf("error loading '%v'", name))
 	}
 
@@ -95,7 +143,26 @@ func (mrb *MrbState) FeatureExists(name string) bool {
 	if exists {
 		return exists
 	}
+	if _, exists = lazyGems[name]; exists {
+		return exists
+	}
 
 	_, exists = mrb.features[name]
 	return exists
+}
+
+// CopyLazyFeatures requires in state to all lazily loaded gems (stdlib
+// libraries) required in mrb, e.g. for thread states which receive copies
+// of objects of these classes.
+func (mrb *MrbState) CopyLazyFeatures(to *MrbState) {
+	names := make([]string, 0)
+	for name := range mrb.features {
+		if _, lazy := lazyGems[name]; lazy {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		to.Resolve(name)
+	}
 }

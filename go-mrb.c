@@ -4,36 +4,32 @@
 // Go-C-Go proxy callback functions
 // ret values are allocated on C side
 
+static mrb_value callback_result(mrb_state *mrb, struct RObject *previous, mrb_value ret) {
+  if (mrb->exc && (mrb->exc != previous ||
+      ((mrb_type(ret) == MRB_TT_EXCEPTION || mrb_type(ret) == MRB_TT_BREAK) && mrb_obj_ptr(ret) == mrb->exc))) {
+    mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
+  }
+  return ret;
+}
+
 mrb_value set_mrb_env_callback(mrb_state *mrb, mrb_value self) {
+  struct RObject *previous = mrb->exc;
   mrb_value idx = mrb_proc_cfunc_env_get(mrb, 0);
   mrb_value ret = go_mrb_func_env_callback(_mrb_get_idx(mrb), self, (int)mrb_fixnum(idx));
-
-  if ((mrb_type(ret) == MRB_TT_EXCEPTION || mrb_type(ret) == MRB_TT_BREAK) && (mrb_obj_ptr(ret) == mrb->exc)) {
-    mrb_exc_raise(mrb, ret);
-  }
-
-  return ret;
+  return callback_result(mrb, previous, ret);
 }
 
 mrb_value set_mrb_proc_callback(mrb_state *mrb, mrb_value self) {
+  struct RObject *previous = mrb->exc;
   mrb_value ret = go_mrb_proc_callback(_mrb_get_idx(mrb), self, (void *)_mrb_current_proc(mrb));
-
-  if ((mrb_type(ret) == MRB_TT_EXCEPTION || mrb_type(ret) == MRB_TT_BREAK) && (mrb_obj_ptr(ret) == mrb->exc)) {
-    mrb_exc_raise(mrb, ret);
-  }
-
-  return ret;
+  return callback_result(mrb, previous, ret);
 }
 
 mrb_value set_gofunc_callback(mrb_state *mrb, mrb_value self) {
+  struct RObject *previous = mrb->exc;
   mrb_value idx = mrb_proc_cfunc_env_get(mrb, 0);
   mrb_value ret = go_gofunc_callback(_mrb_get_idx(mrb), self, (int)mrb_fixnum(idx));
-
-  if ((mrb_type(ret) == MRB_TT_EXCEPTION || mrb_type(ret) == MRB_TT_BREAK) && (mrb_obj_ptr(ret) == mrb->exc)) {
-    mrb_exc_raise(mrb, ret);
-  }
-
-  return ret;
+  return callback_result(mrb, previous, ret);
 }
 
 int set_hash_callback(mrb_state *mrb, mrb_value key, mrb_value val, void *data) {

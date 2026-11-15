@@ -234,7 +234,7 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	buf.WriteString("\t_sc := mrb.AotScopePush(mrb.ObjectClass().Value(), true)\n")
 	buf.WriteString(fmt.Sprintf("\tres, err := %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil)\n", rootFn))
 	buf.WriteString("\tmrb.AotScopePop(_sc)\n")
-	buf.WriteString("\tif err != nil {\n\t\tmrb.AotLocalJumpCheck()\n\t\treturn res, mrb.AotErr()\n\t}\n")
+	buf.WriteString("\tif err != nil {\n\t\tmrb.AotLocalJumpCheck()\n\t\treturn res, mrb.AotBoundaryErr()\n\t}\n")
 	buf.WriteString("\treturn res, nil\n")
 	buf.WriteString("}\n\n")
 

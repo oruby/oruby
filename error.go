@@ -84,8 +84,16 @@ func (mrb *MrbState) NoMethodError(methodId MrbSym, args MrbValue, fmt string, f
 	// C.mrb_no_method_error() is never called
 }
 
-// FRaise declaration for fail method
-func (mrb *MrbState) FRaise(v MrbValue) Value { return Value{C.mrb_f_raise(mrb.p, v.Value().v)} }
+// FRaise invokes Kernel#raise behind a C-local protection boundary.
+func (mrb *MrbState) FRaise(v MrbValue) Value {
+	var result C.mrb_value
+	status := C._mrb_f_raise_protected(mrb.p, v.Value().v, &result)
+	value := Value{result}
+	if status != C.GO_MRB_OUTCOME_SUCCESS {
+		mrb.RaiseObj(value)
+	}
+	return value
+}
 
 // Protect implemented in the mruby-error mrbgem
 //func (mrb *MrbState) Protect(body MrbFuncT, data MrbValue, state *bool) MrbValue {

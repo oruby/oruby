@@ -154,10 +154,19 @@ func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	err = doLoad(mrb, name, wrap.Bool())
 	if err != nil {
-		return mrb.Raise(mrb.ClassGet("LoadError"), err.Error())
+		return loadFailure(mrb, err)
 	}
 
 	return mrb.TrueValue()
+}
+
+// loadFailure re-raises exception raised by loaded code (SyntaxError,
+// SystemExit, NameError...) instead of hiding it in a LoadError
+func loadFailure(mrb *oruby.MrbState, err error) oruby.MrbValue {
+	if exc := mrb.Exc(); exc != nil {
+		return exc.Value()
+	}
+	return mrb.Raise(mrb.ClassGet("LoadError"), err.Error())
 }
 
 func fullName(filename string) (string, error) {
@@ -240,7 +249,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	loadingFilesAdd(mrb, nameValue)
 	defer loadingFilesDelete(mrb, nameValue)
 	if err := doLoad(mrb, name, false); err != nil {
-		return mrb.Raise(mrb.ClassGet("ELoadError"), err.Error())
+		return loadFailure(mrb, err)
 	}
 
 	// Remember loaded feature

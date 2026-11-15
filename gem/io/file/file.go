@@ -148,43 +148,6 @@ end
 		mrb.DefineMethod(fileClass, "truncate", fileFTruncate, mrb.ArgsReq(1))
 		return nil
 	})
-
-	oruby.Gem("etc", func(mrb *oruby.MrbState) interface{} {
-		etcMod := mrb.DefineModule("Etc")
-		etcMod.DefineClassMethod("getlogin", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-			if u, err := user.Current(); err == nil && u != nil {
-				return mrb.StrNew(u.Username)
-			}
-			if u := os.Getenv("USER"); u != "" {
-				return mrb.StrNew(u)
-			}
-			return oruby.Nil
-		}, mrb.ArgsNone())
-		return nil
-	})
-
-	oruby.Gem("pathname", func(mrb *oruby.MrbState) interface{} {
-		mrb.Eval(`
-class Pathname
-  def initialize(path)
-    @path = path
-  end
-  def to_path
-    @path
-  end
-  def to_s
-    @path.to_s
-  end
-  def to_str
-    @path.to_str rescue @path.to_s
-  end
-  def ==(other)
-    other.is_a?(Pathname) && @path == other.to_path
-  end
-end
-`)
-		return nil
-	})
 }
 
 func proxyClassMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec) {

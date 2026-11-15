@@ -9,7 +9,7 @@ import (
 )
 import "errors"
 
-var mu sync.Mutex
+var mu sync.RWMutex
 var states []*MrbState
 
 func init() {
@@ -18,8 +18,14 @@ func init() {
 
 // GetMrbState returns Go MrbState from C.mrb_state reference
 func getMrbState(cmrb *C.struct_mrb_state) *MrbState {
-	idx := int(C._mrb_get_idx(cmrb))
-	if idx >= len(states) {
+	return getMrbStateIndex(int(C._mrb_get_idx(cmrb)))
+}
+
+// GetMrbState returns Go MrbState from C.mrb_state reference
+func getMrbStateIndex(idx int) *MrbState {
+	mu.RLock()
+	defer mu.RUnlock()
+	if idx < 0 || idx >= len(states) {
 		panic("State index is out of range")
 	}
 
@@ -30,51 +36,34 @@ func getMrbState(cmrb *C.struct_mrb_state) *MrbState {
 	return states[idx]
 }
 
-// GetMrbState returns Go MrbState from C.mrb_state reference
-func getMrbStateIndex(idx int) *MrbState {
-	if idx >= len(states) {
-		panic("State index is out of range")
+func lookupMrbStateIndex(idx int) *MrbState {
+	mu.RLock()
+	defer mu.RUnlock()
+	if idx <= 0 || idx >= len(states) {
+		return nil
 	}
-
-	if states[idx] == nil {
-		panic(errors.New("State does not exists"))
-	}
-
 	return states[idx]
 }
 
 // GetMrbState returns Go MrbState from C.mrb_state reference
 func GetMrbState(cmrb uintptr) *MrbState {
-	idx := int(C._cmrb_get_idx(C.uintptr_t(cmrb)))
-	if idx >= len(states) {
-		panic("State index is out of range")
-	}
-
-	if states[idx] == nil {
-		panic(errors.New("State does not exists"))
-	}
-
-	return states[idx]
+	return getMrbStateIndex(int(C._cmrb_get_idx(C.uintptr_t(cmrb))))
 }
 
 func registerState(mrb *MrbState) {
 	mu.Lock()
-	defer mu.Unlock()
-
-	if len(states) > 500 {
-		for idx, state := range states {
-			if (state == nil) && (idx > 0) {
-				states[idx] = state
-				C._mrb_set_idx(mrb.p, C.mrb_int(idx))
-				return
-			}
+	idx := 1
+	for ; idx < len(states); idx++ {
+		if states[idx] == nil {
+			states[idx] = mrb
+			break
 		}
 	}
-
-	states = append(states, mrb)
-	idx := len(states) - 1
+	if idx == len(states) {
+		states = append(states, mrb)
+	}
+	mu.Unlock()
 	C._mrb_set_idx(mrb.p, C.mrb_int(idx))
-	return
 }
 
 func removeStateIndex(index int) {

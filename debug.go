@@ -201,7 +201,7 @@ func (mrb *MrbState) TriggerDebug(reason string, file string, line int, self Val
 
 //export go_has_line_debug
 func go_has_line_debug(idx C.mrb_int) C.int {
-	mrb := states[int(idx)]
+	mrb := lookupMrbStateIndex(int(idx))
 	if mrb != nil && mrb.lineDebug && mrb.debugHook != nil {
 		return 1
 	}
@@ -210,7 +210,7 @@ func go_has_line_debug(idx C.mrb_int) C.int {
 
 //export go_debug_line_hook
 func go_debug_line_hook(idx C.mrb_int, cirep *C.struct_mrb_irep, pcOff C.uint32_t, cregs *C.mrb_value, line C.int32_t, cfile *C.char) {
-	mrb := states[int(idx)]
+	mrb := lookupMrbStateIndex(int(idx))
 	if mrb == nil || !mrb.lineDebug || mrb.debugHook == nil {
 		return
 	}

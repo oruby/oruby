@@ -146,15 +146,17 @@ func (mrb *MrbState) AddIrep() MrbIrep {
 //
 // @param buffer []byte - irep code, expected as a literal
 func (mrb *MrbState) LoadIrep(buffer []byte) (Value, error) {
-	var ret Value
+	var result C.mrb_value
+	var status C.int
 	bufLen := len(buffer)
 	if bufLen == 0 {
-		ret = Value{C.mrb_load_irep(mrb.p, nil)}
+		status = C._mrb_load_irep_empty(mrb.p, &result)
 	} else {
-		ret = Value{C.mrb_load_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen))}
+		status = C._mrb_load_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), &result)
 		runtime.KeepAlive(buffer)
 	}
-	return mrb.loadResult(ret)
+	v := Value{result}
+	return mrb.protectedResult(v, status)
 }
 
 // LoadIrepBuf irep load from buffer, same as LoadIrep()
@@ -164,17 +166,19 @@ func (mrb *MrbState) LoadIrepBuf(buffer []byte) (Value, error) {
 
 // LoadIrepCxt irep api
 func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbCcontext) (Value, error) {
-	var ret Value
+	var result C.mrb_value
+	var status C.int
 	bufLen := len(buffer)
 
 	if bufLen == 0 {
-		ret = Value{C.mrb_load_irep_cxt(mrb.p, nil, context.p)}
+		status = C._mrb_load_irep_empty_cxt(mrb.p, context.p, &result)
 	} else {
-		ret = Value{C._mrb_load_irep_buf_cxt(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), context.p)}
+		status = C._mrb_load_irep_buf_cxt(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), context.p, &result)
 		runtime.KeepAlive(buffer)
 	}
 
-	return mrb.loadResult(ret)
+	v := Value{result}
+	return mrb.protectedResult(v, status)
 }
 
 // LoadIrepBuf for context
@@ -228,7 +232,7 @@ func (mrb *MrbState) LoadDetectBufCxt(data []byte, c *MrbCcontext) (Value, error
 	if err != nil {
 		return nilValue, err
 	}
-	return mrb.LoadExec(p, c), nil
+	return mrb.LoadExecE(p, c)
 }
 
 // LoadIrepBufCxt irep load form buffer with context, same as LoadIrepCxt

@@ -67,6 +67,10 @@ func init() {
 		t.DefineMethod("saturday?", timeIsSaturday, mrb.ArgsNone())
 
 		t.DefineMethod("to_a", timeToA, mrb.ArgsNone())
+		t.DefineMethod("strftime", timeStrftime, mrb.ArgsReq(1))
+		t.DefineMethod("utc_offset", timeUTCOffset, mrb.ArgsNone())
+		t.DefineAlias("gmt_offset", "utc_offset")
+		t.DefineAlias("gmtoff", "utc_offset")
 
 		return nil
 	})

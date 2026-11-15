@@ -1,4 +1,4 @@
-package thread
+package isolated_worker
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ import (
 	mrb2 := c.mrb
 */
 
-func (c *Context) migrateState() error {
+func (c *Context) legacyMigrateState() error {
 	var err error
 
 	c.migrateAllSymbols()
@@ -72,7 +72,7 @@ func path2class(mrb *oruby.MrbState, classPath string) (oruby.RClass, error) {
 }
 
 // based on https://gist.github.com/3066997 and github.com/mattn/mruby-thread
-func migrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValue, error) {
+func unsafeMigrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValue, error) {
 	switch v.Type() {
 	case oruby.MrbTTClass, oruby.MrbTTModule:
 		path := mrb.ClassPtr(v).ClassPath()
@@ -89,7 +89,7 @@ func migrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValue, err
 		if err != nil {
 			return mrb.NilValue(), err
 		}
-		nv := mrb.ObjAlloc(v.Type(), cls).Value()
+		nv := mrb2.ObjAlloc(v.Type(), cls).Value()
 		err = migrateSimpleIV(mrb, mrb2, v, nv)
 		if err != nil {
 			return mrb.NilValue(), err
@@ -160,15 +160,19 @@ func migrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValue, err
 		err := migrateSimpleIV(mrb, mrb2, v, nv.Value())
 		return nv, err
 	case oruby.MrbTTCData:
-		path := mrb.ClassPtr(v).ClassPath()
+		path := mrb.ClassOf(v).ClassPath()
+		if path.IsNil() {
+			return mrb.NilValue(), nil
+		}
 		c, err := path2class(mrb2, path.String())
 		if err != nil {
 			return mrb.NilValue(), err
 		}
 
-		nv := mrb.ObjAlloc(v.Type(), c).Value()
+		nv := mrb2.ObjAlloc(v.Type(), c).Value()
 		mrb2.DataSetInterface(nv, mrb.Data(v))
-		return nv, nil
+		err = migrateSimpleIV(mrb, mrb2, v, nv)
+		return nv, err
 	}
 
 	return oruby.Nil, oruby.ETypeError("cannot migrateState object: %v (%v)", mrb.Inspect(v), mrb.TypeName(v))
@@ -275,7 +279,7 @@ func migrateIRep(mrb, mrb2 *oruby.MrbState, src oruby.MrbIrep) (oruby.MrbIrep, e
 	return ret, nil
 }
 
-func migrateRProc(mrb, mrb2 *oruby.MrbState, proc oruby.RProc) (oruby.RProc, error) {
+func unsafeMigrateRProc(mrb, mrb2 *oruby.MrbState, proc oruby.RProc) (oruby.RProc, error) {
 	irep, err := migrateIRep(mrb, mrb2, proc.IRep())
 	if err != nil {
 		return oruby.RProc{}, err

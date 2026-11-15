@@ -31,6 +31,10 @@ end
 	})
 
 	oruby.Gem("core_ext", func(mrb *oruby.MrbState) interface{} {
+		// Ruby extensions below reopen classes defined by these gems
+		for _, dep := range []string{"io", "io/file", "regexp", "time", "thread", "process"} {
+			mrb.Resolve(dep)
+		}
 		floatClass := mrb.FloatClass()
 		mrb.DefineMethod(floatClass, "prev_float", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			f := self.Float64()

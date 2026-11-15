@@ -17,13 +17,17 @@ const (
 
 func init() {
 	oruby.Gem("regexp", func(mrb *oruby.MrbState) interface{} {
-		scanner := mrb.DefineGoClass("StringScanner", NewStringScanner)
-		scanner.DefineAlias("exist?", "exist")
+		// StringScanner is provided by stdlib gem (require "strscan")
 
 		data := mrb.DefineGoClass("MatchData", &MatchData{})
 		data.DefineMethod("[]", matchDataIndex, mrb.ArgsArg(1, 1))
 		data.DefineMethod("values_at", matchGoValuesAt, mrb.ArgsAny())
+		// mruby compiles $& and $1..$9 to $~.__group(n)
+		data.DefineMethod("__group", matchDataIndex, mrb.ArgsReq(1))
 		data.DefineAlias("length", "size")
+		// $` and $' compile to $~.__pre_match / $~.__post_match
+		data.DefineAlias("__pre_match", "pre_match")
+		data.DefineAlias("__post_match", "post_match")
 
 		cls := mrb.DefineGoClass("Regexp", regexp.Compile)
 		cls.Const("IGNORECASE", IgnoreCase)
@@ -193,7 +197,7 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 			if toI.Type() != oruby.MrbTTFixnum {
 				return mrb.NilValue()
 			}
-			return mrb.Value(m.StringOrNil(oruby.MrbFixnum(toI)))
+			return strOrNil(mrb, m.StringOrNil(oruby.MrbFixnum(toI))).Value()
 		}
 		return mrb.NilValue()
 	}
@@ -332,10 +336,8 @@ func doMatch(mrb *oruby.MrbState, re *regexp.Regexp, s string, pos int) oruby.Mr
 	mrb.GVSet(mrb.Intern("$&"), mrb.StringValue(m.ToS()))
 	mrb.GVSet(mrb.Intern("$`"), mrb.StringValue(m.PreMatch()))
 	mrb.GVSet(mrb.Intern("$'"), mrb.StringValue(m.PostMatch()))
-	for i := '1'; i == '9'; i++ {
-		idx := int(i - '0')
-		v := m.StringOrNil(idx)
-		mrb.GVSet(mrb.Intern("$"+string(i)), mrb.Value(v))
+	for i := '1'; i <= '9'; i++ {
+		mrb.GVSet(mrb.Intern("$"+string(i)), strOrNil(mrb, m.StringOrNil(int(i-'0'))))
 	}
 
 	return matchData

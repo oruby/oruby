@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -172,7 +173,14 @@ func main() {
 	args := Args{warningLevel: -1}
 	var v oruby.MrbValue
 	exitCode := 0
-	defer func() { os.Exit(exitCode) }()
+	defer func() {
+		// report Go panics instead of exiting silently with status 0
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "oruby: panic: %v\n%s", r, debug.Stack())
+			os.Exit(2)
+		}
+		os.Exit(exitCode)
+	}()
 
 	mrb, err := oruby.New()
 	if err != nil {

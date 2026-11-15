@@ -1,0 +1,61 @@
+//go:build darwin || linux || freebsd
+
+package socket
+
+import "syscall"
+
+func constants() map[string]int {
+	c := map[string]int{
+		"AF_UNSPEC": syscall.AF_UNSPEC, "PF_UNSPEC": syscall.AF_UNSPEC,
+		"AF_INET": syscall.AF_INET, "PF_INET": syscall.AF_INET,
+		"AF_INET6": syscall.AF_INET6, "PF_INET6": syscall.AF_INET6,
+		"AF_UNIX": syscall.AF_UNIX, "PF_UNIX": syscall.AF_UNIX,
+		"AF_LOCAL": syscall.AF_UNIX, "PF_LOCAL": syscall.AF_UNIX,
+		"AF_ROUTE": syscall.AF_ROUTE, "PF_ROUTE": syscall.AF_ROUTE,
+		"AF_APPLETALK": syscall.AF_APPLETALK, "PF_APPLETALK": syscall.AF_APPLETALK,
+		"AF_IPX": syscall.AF_IPX, "PF_IPX": syscall.AF_IPX,
+		"AF_ISDN": syscall.AF_ISDN, "PF_ISDN": syscall.AF_ISDN,
+		"AF_SNA": syscall.AF_SNA, "PF_SNA": syscall.AF_SNA,
+		"AF_DECnet": syscall.AF_DECnet, "PF_DECnet": syscall.AF_DECnet,
+		"SOCK_STREAM": syscall.SOCK_STREAM, "SOCK_DGRAM": syscall.SOCK_DGRAM, "SOCK_RAW": syscall.SOCK_RAW,
+		"SOCK_SEQPACKET": syscall.SOCK_SEQPACKET, "SOCK_RDM": syscall.SOCK_RDM,
+		"IPPROTO_IP": syscall.IPPROTO_IP, "IPPROTO_ICMP": syscall.IPPROTO_ICMP, "IPPROTO_TCP": syscall.IPPROTO_TCP,
+		"IPPROTO_UDP": syscall.IPPROTO_UDP, "IPPROTO_IPV6": syscall.IPPROTO_IPV6, "IPPROTO_RAW": syscall.IPPROTO_RAW,
+		"IPPROTO_ICMPV6": syscall.IPPROTO_ICMPV6, "IPPROTO_IGMP": syscall.IPPROTO_IGMP,
+		"IPPROTO_EGP": syscall.IPPROTO_EGP, "IPPROTO_PUP": syscall.IPPROTO_PUP, "IPPROTO_IDP": syscall.IPPROTO_IDP,
+		"IPPROTO_TP": syscall.IPPROTO_TP, "IPPROTO_HOPOPTS": syscall.IPPROTO_HOPOPTS,
+		"IPPROTO_ROUTING": syscall.IPPROTO_ROUTING, "IPPROTO_FRAGMENT": syscall.IPPROTO_FRAGMENT,
+		"IPPROTO_ESP": syscall.IPPROTO_ESP, "IPPROTO_AH": syscall.IPPROTO_AH, "IPPROTO_NONE": syscall.IPPROTO_NONE,
+		"IPPROTO_DSTOPTS": syscall.IPPROTO_DSTOPTS,
+		"SOL_SOCKET":      syscall.SOL_SOCKET, "SOMAXCONN": syscall.SOMAXCONN,
+		"SO_DEBUG": syscall.SO_DEBUG, "SO_REUSEADDR": syscall.SO_REUSEADDR, "SO_KEEPALIVE": syscall.SO_KEEPALIVE,
+		"SO_DONTROUTE": syscall.SO_DONTROUTE, "SO_BROADCAST": syscall.SO_BROADCAST, "SO_LINGER": syscall.SO_LINGER,
+		"SO_OOBINLINE": syscall.SO_OOBINLINE, "SO_SNDBUF": syscall.SO_SNDBUF, "SO_RCVBUF": syscall.SO_RCVBUF,
+		"SO_SNDLOWAT": syscall.SO_SNDLOWAT, "SO_RCVLOWAT": syscall.SO_RCVLOWAT, "SO_SNDTIMEO": syscall.SO_SNDTIMEO,
+		"SO_RCVTIMEO": syscall.SO_RCVTIMEO, "SO_ERROR": syscall.SO_ERROR, "SO_TYPE": syscall.SO_TYPE,
+		"SO_ACCEPTCONN": syscall.SO_ACCEPTCONN,
+		"TCP_NODELAY":   syscall.TCP_NODELAY, "TCP_MAXSEG": syscall.TCP_MAXSEG,
+		"IP_TOS": syscall.IP_TOS, "IP_TTL": syscall.IP_TTL, "IP_HDRINCL": syscall.IP_HDRINCL,
+		"IP_OPTIONS": syscall.IP_OPTIONS, "IP_MULTICAST_IF": syscall.IP_MULTICAST_IF,
+		"IP_MULTICAST_TTL": syscall.IP_MULTICAST_TTL, "IP_MULTICAST_LOOP": syscall.IP_MULTICAST_LOOP,
+		"IP_ADD_MEMBERSHIP": syscall.IP_ADD_MEMBERSHIP, "IP_DROP_MEMBERSHIP": syscall.IP_DROP_MEMBERSHIP,
+		"IP_RECVOPTS": syscall.IP_RECVOPTS, "IP_RECVRETOPTS": syscall.IP_RECVRETOPTS, "IP_RETOPTS": syscall.IP_RETOPTS,
+		"IPV6_V6ONLY": syscall.IPV6_V6ONLY, "IPV6_UNICAST_HOPS": syscall.IPV6_UNICAST_HOPS,
+		"IPV6_MULTICAST_IF": syscall.IPV6_MULTICAST_IF, "IPV6_MULTICAST_HOPS": syscall.IPV6_MULTICAST_HOPS,
+		"IPV6_MULTICAST_LOOP": syscall.IPV6_MULTICAST_LOOP, "IPV6_CHECKSUM": syscall.IPV6_CHECKSUM,
+		"MSG_OOB": syscall.MSG_OOB, "MSG_PEEK": syscall.MSG_PEEK, "MSG_DONTROUTE": syscall.MSG_DONTROUTE,
+		"MSG_WAITALL": syscall.MSG_WAITALL, "MSG_DONTWAIT": syscall.MSG_DONTWAIT, "MSG_TRUNC": syscall.MSG_TRUNC,
+		"MSG_CTRUNC": syscall.MSG_CTRUNC,
+		"SHUT_RD":    syscall.SHUT_RD, "SHUT_WR": syscall.SHUT_WR, "SHUT_RDWR": syscall.SHUT_RDWR,
+		"INADDR_ANY": 0, "INADDR_BROADCAST": 0xffffffff, "INADDR_LOOPBACK": 0x7f000001, "INADDR_NONE": 0xffffffff,
+		"INADDR_UNSPEC_GROUP": 0xe0000000, "INADDR_ALLHOSTS_GROUP": 0xe0000001, "INADDR_MAX_LOCAL_GROUP": 0xe00000ff,
+		"INET_ADDRSTRLEN": 16, "INET6_ADDRSTRLEN": 46,
+		"AI_PASSIVE": 0x1, "AI_CANONNAME": 0x2, "AI_NUMERICHOST": 0x4,
+		"SCM_RIGHTS": syscall.SCM_RIGHTS,
+		"IFNAMSIZ":   16, "IF_NAMESIZE": 16,
+	}
+	for k, v := range osConstants() {
+		c[k] = v
+	}
+	return c
+}

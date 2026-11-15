@@ -123,13 +123,20 @@ func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	m := mrb.Data(matchData).(*MatchData)
 	if capture.IsNil() {
-		return mrb.Value(m.StringOrNil(0))
+		return strOrNil(mrb, m.StringOrNil(0))
 	}
 
 	if capture.Type() == oruby.MrbTTFixnum {
-		return mrb.Value(m.StringOrNil(capture.Int()))
+		return strOrNil(mrb, m.StringOrNil(capture.Int()))
 	}
 	return mrb.Value(m.NamedCaptures()[mrb.String(capture)])
+}
+
+func strOrNil(mrb *oruby.MrbState, s *string) oruby.MrbValue {
+	if s == nil {
+		return mrb.NilValue()
+	}
+	return mrb.StrNew(*s)
 }
 
 func interpolateBackrefs(replace string, m *MatchData, s string, start, end int) string {

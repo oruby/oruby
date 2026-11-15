@@ -1,6 +1,7 @@
 package bigint
 
 import (
+	"math"
 	"math/big"
 	"math/bits"
 
@@ -179,13 +180,21 @@ func init() {
 							overflow = true
 						}
 					case "*":
-						hi, _ := bits.Mul64(uint64(a), uint64(b))
-						if a != 0 && b != 0 && hi != 0 {
-							overflow = true
+						if a != 0 && b != 0 {
+							c := a * b
+							if c/b != a || (a == -1 && b == math.MinInt64) || (b == -1 && a == math.MinInt64) {
+								overflow = true
+							}
 						}
 					case "<<":
-						if b >= 62 || b < 0 {
-							overflow = true
+						if b > 0 {
+							ua := a
+							if ua < 0 {
+								ua = ^ua
+							}
+							if b >= 63 || bits.Len64(uint64(ua))+int(b) >= 63 {
+								overflow = true
+							}
 						}
 					case "**":
 						if b > 0 {
