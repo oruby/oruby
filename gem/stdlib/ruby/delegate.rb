@@ -6,7 +6,7 @@ class Delegator < BasicObject
       undef_method m rescue nil
     end
     private_instance_methods.each do |m|
-      if /\Abind_call\z|\Ainstance_variable_|\Aobject_id\z/ =~ m.to_s
+      if /\Abind_call\z|\Ainstance_variable_|\Aobject_id\z|\Ablock_given\?\z|\A__/ =~ m.to_s
         next
       end
       undef_method m rescue nil

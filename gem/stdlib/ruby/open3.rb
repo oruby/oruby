@@ -1,6 +1,34 @@
 module Open3
   VERSION = "0.2.1"
 
+  # Waits for the child process; stands in for the waiter Thread of MRI
+  # (oruby has no Ruby threads).
+  class Waiter
+    attr_reader :pid
+
+    def initialize(pid)
+      @pid = pid
+      @status = nil
+    end
+
+    def value
+      @status ||= Process.wait2(@pid)[1]
+    end
+
+    def join(_limit = nil)
+      value
+      self
+    end
+
+    def alive?
+      @status.nil?
+    end
+
+    def [](key)
+      key.to_s == "pid" ? @pid : nil
+    end
+  end
+
   def self.__split_args(cmd)
     env = cmd.first.is_a?(Hash) ? cmd.shift : nil
     opts = cmd.last.is_a?(Hash) ? cmd.pop.dup : {}
@@ -17,8 +45,7 @@ module Open3
     i.sync = true
     o = IO.for_fd(out_fd, "r")
     e = err_fd ? IO.for_fd(err_fd, "r") : nil
-    waiter = Process.detach(pid)
-    waiter.define_singleton_method(:pid) { pid } unless waiter.respond_to?(:pid)
+    waiter = Waiter.new(pid)
     [i, o, e, waiter, stdin_data, binmode]
   end
 
@@ -40,7 +67,7 @@ module Open3
 
   def popen2(*cmd, &block)
     i, o, e, w = Open3.__start(cmd, false)
-    Thread.new { e.read rescue nil; e.close rescue nil }
+    e.close
     Open3.__run([i, o], w, &block)
   end
   module_function :popen2
@@ -106,10 +133,18 @@ module Open3
 
   def pipeline_rw(*cmds, &block)
     opts = cmds.last.is_a?(Hash) ? cmds.pop : {}
-    cmds.each_with_index.map { |_, i| i }
     i, o, e, w = Open3.__start(Open3.__pipeline(cmds, opts), false)
-    Thread.new { e.read rescue nil }
-    Open3.__run([i, o], w, &block).then { |r| block ? r : [i, o, [w]] }
+    e.close
+    if block
+      begin
+        block.call(i, o, [w])
+      ensure
+        [i, o].each { |io| io.close unless io.closed? }
+        w.join
+      end
+    else
+      [i, o, [w]]
+    end
   end
   module_function :pipeline_rw
 
@@ -133,7 +168,8 @@ module Open3
   def pipeline_w(*cmds, &block)
     opts = cmds.last.is_a?(Hash) ? cmds.pop : {}
     i, o, e, w = Open3.__start(Open3.__pipeline(cmds, opts), false)
-    Thread.new { o.read rescue nil }
+    o.close
+    e.close
     if block
       begin
         block.call(i, [w])
@@ -151,7 +187,8 @@ module Open3
     opts = cmds.last.is_a?(Hash) ? cmds.pop : {}
     i, o, e, w = Open3.__start(Open3.__pipeline(cmds, opts), false)
     i.close
-    Thread.new { o.read rescue nil }
+    o.close
+    e.close
     if block
       block.call([w])
     else

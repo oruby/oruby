@@ -169,15 +169,10 @@ module OpenSSL
   end
 
   def self.fixed_length_secure_compare(a, b)
-    raise ArgumentError, "inputs must be of equal length" unless a.bytesize == b.bytesize
-    r = 0
-    a.bytes.zip(b.bytes) { |x, y| r |= x ^ y }
-    r == 0
+    OpenSSL.__fixed_length_secure_compare(a, b)
   end
 
   def self.secure_compare(a, b)
-    ha = OpenSSL::Digest.digest("SHA256", a)
-    hb = OpenSSL::Digest.digest("SHA256", b)
-    fixed_length_secure_compare(ha, hb) && a == b
+    OpenSSL.__secure_compare(a, b)
   end
 end

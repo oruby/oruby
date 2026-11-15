@@ -25,7 +25,11 @@ var rubyLibs = map[string][]string{
 	"getoptlong":  nil,
 	"csv":         {"stringio"},
 	"ipaddr":      {"socket"},
+	"matrix":      nil,
+	"open-uri":    {"uri", "stringio"},
+	"optparse":    nil,
 	"pathname":    nil,
+	"tsort":       nil,
 }
 
 func init() {
@@ -36,6 +40,9 @@ func init() {
 				if _, err := mrb.Resolve(d); err != nil {
 					return err
 				}
+			}
+			if name == "open-uri" {
+				return initOpenURI(mrb)
 			}
 			if name == "prime" {
 				mrb.DefineClass("Prime", mrb.ObjectClass()).DefineClassMethod("__probably_prime", probablyPrime, mrb.ArgsReq(1))

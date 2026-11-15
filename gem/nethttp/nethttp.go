@@ -10,6 +10,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	_ "embed"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/digest"
 	"github.com/oruby/oruby/gem/internal/rb"
 )
 
@@ -58,6 +60,8 @@ func init() {
 		}
 		mod := mrb.DefineModule("OpenSSL")
 		mod.DefineClassMethod("__hmac", hmacDigest, mrb.ArgsReq(3))
+		mod.DefineClassMethod("__fixed_length_secure_compare", fixedLengthSecureCompare, mrb.ArgsReq(2))
+		mod.DefineClassMethod("__secure_compare", secureCompare, mrb.ArgsReq(2))
 		rb.LoadRuby(mrb, "openssl.rb", opensslRb)
 		return nil
 	})
@@ -257,4 +261,35 @@ func hmacDigest(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	m.Write(data)
 	v := mrb.BytesValue(m.Sum(nil))
 	return mrb.Call(v, "force_encoding", mrb.StrNew("ASCII-8BIT"))
+}
+
+func fixedLengthSecureCompare(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs().Slice()
+	a, err := rb.Bytes(mrb, args[0])
+	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	b, err := rb.Bytes(mrb, args[1])
+	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	if len(a) != len(b) {
+		return mrb.Raise(mrb.EArgumentError(), "inputs must be of equal length")
+	}
+	return mrb.BoolValue(subtle.ConstantTimeCompare(a, b) == 1)
+}
+
+func secureCompare(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs().Slice()
+	a, err := rb.Bytes(mrb, args[0])
+	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	b, err := rb.Bytes(mrb, args[1])
+	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	ha := sha256.Sum256(a)
+	hb := sha256.Sum256(b)
+	return mrb.BoolValue(subtle.ConstantTimeCompare(ha[:], hb[:]) == 1)
 }

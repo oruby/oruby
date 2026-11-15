@@ -34,11 +34,31 @@ func (s *status) RShift(v uint32) uint32 {
 }
 
 func (s *status) ToS() string {
-	return fmt.Sprintf("<>")
+	switch {
+	case s.IsSignaled && s.Termsig != nil:
+		str := fmt.Sprintf("pid %d SIG%s (signal %d)", s.Pid, signalName(*s.Termsig), *s.Termsig)
+		if s.IsCoredump {
+			str += " (core dumped)"
+		}
+		return str
+	case s.IsStopped && s.Stopsig != nil:
+		return fmt.Sprintf("pid %d stopped SIG%s (signal %d)", s.Pid, signalName(*s.Stopsig), *s.Stopsig)
+	}
+	return fmt.Sprintf("pid %d exit %d", s.Pid, s.Exitstatus)
 }
 
 func (s *status) Inspect() string {
-	return s.ToS()
+	return "#<Process::Status: " + s.ToS() + ">"
+}
+
+func signalName(n int) string {
+	for name, v := range map[string]int{"HUP": 1, "INT": 2, "QUIT": 3, "ILL": 4, "TRAP": 5, "ABRT": 6,
+		"FPE": 8, "KILL": 9, "SEGV": 11, "PIPE": 13, "ALRM": 14, "TERM": 15, "USR1": 30, "USR2": 31} {
+		if v == n {
+			return name
+		}
+	}
+	return fmt.Sprint(n)
 }
 
 // SetLastStatus sets $? (Process.last_status)

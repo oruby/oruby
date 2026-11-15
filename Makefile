@@ -47,6 +47,7 @@ test:
 #	(cd gem/signal && go test)
 	(cd gem/thread && go test)
 	(cd gem/time && go test)
+	(cd gem/yaml && go test)
 	(cd gem/zlib && go test)
 
 libmruby.a :

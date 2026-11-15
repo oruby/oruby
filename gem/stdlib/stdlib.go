@@ -36,6 +36,7 @@ import (
 	_ "github.com/oruby/oruby/gem/thread"
 	_ "github.com/oruby/oruby/gem/time"
 	_ "github.com/oruby/oruby/gem/uri"
+	_ "github.com/oruby/oruby/gem/yaml"
 	_ "github.com/oruby/oruby/gem/zlib"
 )
 
@@ -62,9 +63,13 @@ func init() {
 		load(mrb, "strscan")
 		return nil
 	})
-	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "prettyprint", "io/nonblock", "io/wait", "English"} {
+	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "io/nonblock", "io/wait", "English"} {
 		oruby.LazyGem(name, func(*oruby.MrbState) interface{} { return nil })
 	}
+	oruby.LazyGem("prettyprint", func(mrb *oruby.MrbState) interface{} {
+		load(mrb, "prettyprint")
+		return nil
+	})
 	oruby.LazyGem("pp", func(mrb *oruby.MrbState) interface{} {
 		load(mrb, "pp")
 		return nil

@@ -385,36 +385,55 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	arg := args.Item(0)
 	r := getRegexp(mrb, arg)
 	if r == nil {
-		return mrb.NilValue()
+		return mrb.ETypeError().Raisef("wrong argument type %v (expected Regexp)", mrb.ClassOf(arg).Name())
 	}
 
 	s := mrb.StringCstr(self)
 	results := r.FindAllStringSubmatchIndex(s, -1)
+	ret := mrb.AryNew()
 	if len(results) == 0 {
-		return mrb.NilValue()
+		mrb.GVSet(mrb.Intern("$~"), mrb.NilValue())
+		if !block.IsNil() {
+			return self
+		}
+		return ret
 	}
 
-	ret := make([][]interface{}, 0, len(results))
-	var m *MatchData
+	groups := r.NumSubexp() > 0
 	for _, result := range results {
-		m = NewMatchData(r, s, result, 0)
-		astr := m.Captures()
-
+		m := NewMatchData(r, s, result, 0)
+		var item oruby.MrbValue
+		if groups {
+			caps := mrb.AryNew()
+			for _, c := range m.Captures() {
+				if c == nil {
+					caps.Push(mrb.NilValue())
+				} else {
+					caps.Push(mrb.StrNew(c.(string)))
+				}
+			}
+			item = caps
+		} else {
+			item = mrb.StrNew(s[result[0]:result[1]])
+		}
 		if !block.IsNil() {
 			matchData := mrb.NewInstance("MatchData", m)
-			_ = mrb.IVSet(mrb.ClassOf(self).Real(), mrb.Intern("@last_match"), matchData)
-			mrb.YieldArgv(block, astr...)
+			_ = mrb.IVSet(mrb.ClassGet("Regexp").Value(), mrb.Intern("@last_match"), matchData)
+			mrb.GVSet(mrb.Intern("$~"), matchData)
+			if _, err := mrb.Funcall(block, mrb.Intern("call"), item); err != nil {
+				return mrb.Exc().Value()
+			}
 		} else {
-			ret = append(ret, astr)
+			ret.Push(item)
 		}
 	}
 
+	m := NewMatchData(r, s, results[len(results)-1], 0)
+	matchData := mrb.NewInstance("MatchData", m)
+	_ = mrb.IVSet(mrb.ClassGet("Regexp").Value(), mrb.Intern("@last_match"), matchData)
+	mrb.GVSet(mrb.Intern("$~"), matchData)
 	if !block.IsNil() {
 		return self
 	}
-
-	m = NewMatchData(r, s, results[len(results)-1], 0)
-	matchData := mrb.NewInstance("MatchData", m)
-	_ = mrb.IVSet(mrb.ClassOf(self).Real(), mrb.Intern("@last_match"), matchData)
-	return mrb.Value(ret)
+	return ret
 }
