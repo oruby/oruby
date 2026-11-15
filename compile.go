@@ -47,6 +47,12 @@ func (c *MrbCcontext) NoExec() bool { return C._mrbc_no_exec(c.p) != 0 }
 // SetNoExec sets NoExec on or off
 func (c *MrbCcontext) SetNoExec(b bool) { C._mrbc_set_no_exec(c.p, iifmb(b)) }
 
+// KeepLv returns if KeepLv is turned on
+func (c *MrbCcontext) KeepLv() bool { return C._mrbc_keep_lv(c.p) != 0 }
+
+// SetKeepLv sets KeepLv on or off
+func (c *MrbCcontext) SetKeepLv(b bool) { C._mrbc_set_keep_lv(c.p, iifmb(b)) }
+
 // SetNoOptimize sets NoOptimize on or off
 func (c *MrbCcontext) SetNoOptimize(b bool) { C._mrbc_set_no_optimize(c.p, iifmb(b)) }
 

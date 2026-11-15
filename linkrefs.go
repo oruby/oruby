@@ -84,13 +84,24 @@ func removeStateIndex(index int) {
 }
 
 func (mrb *MrbState) registerFunc(f interface{}) C.mrb_value {
-	mrb.funcs = append(mrb.funcs, f)
-	return C.mrb_fixnum_value((C.mrb_int)(len(mrb.funcs) - 1))
+	idx := mrb.registerFuncIndex(f)
+	return C.mrb_fixnum_value((C.mrb_int)(idx))
 }
 
 func (mrb *MrbState) registerFuncIndex(f interface{}) int {
 	mrb.funcs = append(mrb.funcs, f)
+	if cf, ok := f.(MrbFuncT); ok {
+		mrb.cfuncs = append(mrb.cfuncs, cf)
+	} else {
+		mrb.cfuncs = append(mrb.cfuncs, nil)
+	}
 	return len(mrb.funcs) - 1
+}
+
+func (mrb *MrbState) registerMrbFuncT(f MrbFuncT) int {
+	mrb.funcs = append(mrb.funcs, f)
+	mrb.cfuncs = append(mrb.cfuncs, f)
+	return len(mrb.cfuncs) - 1
 }
 
 func (mrb *MrbState) getFunc(index uint) (interface{}, error) {
@@ -102,15 +113,10 @@ func (mrb *MrbState) getFunc(index uint) (interface{}, error) {
 }
 
 func (mrb *MrbState) getMrbFuncT(index uint) MrbFuncT {
-	if index >= uint(len(mrb.funcs)) {
+	if index >= uint(len(mrb.cfuncs)) {
 		return nil
 	}
-	f, ok := mrb.funcs[index].(MrbFuncT)
-	if !ok {
-		return nil
-	}
-
-	return f
+	return mrb.cfuncs[index]
 }
 
 func (mrb *MrbState) setHook(p unsafe.Pointer, v interface{}) {

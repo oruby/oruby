@@ -265,6 +265,16 @@ func (irep MrbIrep) NLocals() int {
 	return int(irep.p.nlocals)
 }
 
+// Lv returns local variable symbol at index (0 <= index < NLocals()-1)
+func (irep MrbIrep) Lv(index int) MrbSym {
+	if irep.p == nil || irep.p.lv == nil || index < 0 || index >= irep.NLocals()-1 {
+		return MrbSym(0)
+	}
+	l := irep.NLocals() - 1
+	slice := (*[1 << 28]C.mrb_sym)(unsafe.Pointer(irep.p.lv))[:l:l]
+	return MrbSym(slice[index])
+}
+
 // NRegs returns number of register variables
 func (irep MrbIrep) NRegs() int {
 	return int(irep.p.nregs)

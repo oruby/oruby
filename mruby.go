@@ -58,6 +58,7 @@ type MrbState struct {
 	classmap       map[reflect.Type]unsafe.Pointer
 	hooks          map[unsafe.Pointer]interface{}
 	funcs          []interface{}
+	cfuncs         []MrbFuncT
 	matrix         [][]interface{}
 	exitChan       chan struct{}
 	injectVMChan   chan RProc
@@ -70,6 +71,10 @@ type MrbState struct {
 	hasFastArgs    bool
 	goMethods      map[uintptr]map[MrbSym]MrbFuncT
 	goClassMethods map[uintptr]map[MrbSym]MrbFuncT
+	debugHook      DebugHookFunc
+	lineDebug      bool
+	lastDebugIrep  uintptr
+	lastDebugLine  int
 }
 
 // NewCore create state is MrbState without gems,
@@ -89,6 +94,7 @@ func NewCore() (*MrbState, error) {
 		make(map[reflect.Type]unsafe.Pointer),
 		make(map[unsafe.Pointer]interface{}),
 		make([]interface{}, 0, 255),
+		make([]MrbFuncT, 0, 255),
 		make([][]interface{}, 500),
 		make(chan struct{}),
 		nil,
@@ -101,6 +107,10 @@ func NewCore() (*MrbState, error) {
 		false,
 		make(map[uintptr]map[MrbSym]MrbFuncT),
 		make(map[uintptr]map[MrbSym]MrbFuncT),
+		nil,
+		false,
+		0,
+		-1,
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
@@ -145,6 +155,7 @@ end
 	mrb.DefineGlobalConst("RUBY_ENGINE_VERSION", mrb.StrNew("0.1.0"))
 	mrb.DefineGlobalConst("RUBY_DESCRIPTION", mrb.StrNew(fmt.Sprintf("oruby 0.1.0 [%s]", platform)))
 	mrb.SetGV("$VERBOSE", mrb.FalseValue())
+	mrb.DefineModuleFunction(mrb.KernelModule(), "debug", kernelDebug, mrb.ArgsAny())
 
 	return mrb, nil
 }
@@ -391,6 +402,7 @@ func (mrb *MrbState) Close() {
 		mrb.classmap = nil
 		mrb.hooks = nil
 		mrb.funcs = nil
+		mrb.cfuncs = nil
 		mrb.features = nil
 	}
 }
@@ -427,30 +439,30 @@ func (mrb *MrbState) Value(o interface{}) Value {
 	case bool:
 		return Bool(v)
 	case int:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(v)
 	case *int:
 		if v == nil {
 			return nilValue
 		}
-		return Value{C.mrb_fixnum_value(C.mrb_int(*v))}
+		return MrbFixnumValue(*v)
 	case int32:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case int8:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case int16:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case int64:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case uint:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case uint32:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case uint64:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case uint8:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case uint16:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v))}
+		return MrbFixnumValue(int(v))
 	case float32:
 		return mrb.FloatValue(float64(v))
 	case float64:
@@ -983,16 +995,16 @@ func go_mrb_func_env_callback(mrbidx C.mrb_int, self C.mrb_value, idx C.int) C.m
 }
 
 //export go_mrb_proc_callback
-func go_mrb_proc_callback(mrbidx C.mrb_int, self C.mrb_value) C.mrb_value {
+func go_mrb_proc_callback(mrbidx C.mrb_int, self C.mrb_value, procPtr unsafe.Pointer) C.mrb_value {
 	mrb := states[int(mrbidx)]
 
 	mrb.Lock()
-	f := mrb.mrbProcs[C._mrb_ptr(self)]
+	var f MrbFuncT
+	if procPtr != nil {
+		f = mrb.mrbProcs[procPtr]
+	}
 	if f == nil {
-		currProc := C._mrb_current_proc(mrb.p)
-		if currProc != nil {
-			f = mrb.mrbProcs[unsafe.Pointer(currProc)]
-		}
+		f = mrb.mrbProcs[C._mrb_ptr(self)]
 	}
 	mrb.Unlock()
 
@@ -1035,7 +1047,7 @@ func (mrb *MrbState) registerGoClassMethod(classPtr uintptr, sym MrbSym, f MrbFu
 // DefineMethod for class
 func (mrb *MrbState) DefineMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
 	// function reference is set as oruby function env
-	idx := mrb.registerFuncIndex(f)
+	idx := mrb.registerMrbFuncT(f)
 	sym := mrb.Intern(name)
 	mrb.registerGoMethod(uintptr(unsafe.Pointer(klass.p)), sym, f)
 	C._mrb_method_new_cfunc(mrb.p, klass.p, C.mrb_sym(sym), C.int(idx), C.mrb_aspec(aspec))
@@ -1044,7 +1056,7 @@ func (mrb *MrbState) DefineMethod(klass RClass, name string, f MrbFuncT, aspec M
 
 // DefineClassMethod creates new oruby class method
 func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, aspec MrbAspec) {
-	idx := mrb.registerFuncIndex(f)
+	idx := mrb.registerMrbFuncT(f)
 	sym := mrb.Intern(name)
 	mrb.registerGoClassMethod(uintptr(unsafe.Pointer(klass.p)), sym, f)
 	C._define_class_method(mrb.p, klass.p, C.mrb_sym(sym), C.int(idx), C.mrb_aspec(aspec))
@@ -1053,7 +1065,7 @@ func (mrb *MrbState) DefineClassMethod(klass RClass, name string, f MrbFuncT, as
 
 // DefineClassMethodID creates new oruby class method
 func (mrb *MrbState) DefineClassMethodID(klass RClass, name MrbSym, f MrbFuncT, aspec MrbAspec) {
-	idx := mrb.registerFuncIndex(f)
+	idx := mrb.registerMrbFuncT(f)
 	mrb.registerGoClassMethod(uintptr(unsafe.Pointer(klass.p)), name, f)
 	C._define_class_method(mrb.p, klass.p, C.mrb_sym(name), C.int(idx), C.mrb_aspec(aspec))
 	// C.mrb_define_class_method_id() called through helper
@@ -1065,7 +1077,7 @@ func (mrb *MrbState) DefineSingletonMethod(obj RValue, name string, f MrbFuncT, 
 		panic("value does not have RBasic object structure")
 	}
 	klass := MrbClassPtr(obj)
-	idx := mrb.registerFuncIndex(f)
+	idx := mrb.registerMrbFuncT(f)
 	C._define_class_method(mrb.p, klass.p, C.mrb_sym(mrb.Intern(name)), C.int(idx), C.mrb_aspec(aspec))
 	// C.mrb_define_singleton_method() called through helper
 }
@@ -1076,7 +1088,7 @@ func (mrb *MrbState) DefineSingletonMethodID(obj RValue, name MrbSym, f MrbFuncT
 		panic("value does not have RBasic object structure")
 	}
 	klass := MrbClassPtr(obj)
-	idx := mrb.registerFuncIndex(f)
+	idx := mrb.registerMrbFuncT(f)
 	C._define_class_method(mrb.p, klass.p, C.mrb_sym(name), C.int(idx), C.mrb_aspec(aspec))
 	// C.mrb_define_singleton_method_id() called through helper
 }

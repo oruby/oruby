@@ -9,9 +9,11 @@ import (
 type IRepUnit struct {
 	Index        int           // Unit index (0 is top-level script)
 	Name         string        // Inferred or defined name (e.g. method or block)
+	File         string        // Source filename from debug info
 	NLocals      int           // Number of local variables
 	NRegs        int           // Number of virtual registers
 	Flags        int           // Irep flags
+	Locals       []string      // Local variable names (Locals[i] corresponds to r[i+1])
 	Instructions []Instruction // Decoded instruction sequence
 	Pool         []interface{} // Constant pool literals
 	Syms         []string      // Symbol table

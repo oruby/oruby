@@ -11,6 +11,7 @@ type Instruction struct {
 	C      uint16 // Tertiary operand
 	Target int    // Absolute byte offset for branch/jump targets (-1 if not a jump)
 	Ext    uint8  // 0: none, 1: EXT1, 2: EXT2, 3: EXT3
+	Line   int    // 1-based source line number (-1 or 0 if unknown)
 }
 
 // IsJump returns true if the instruction is a control-flow jump.

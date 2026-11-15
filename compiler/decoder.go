@@ -58,7 +58,25 @@ func (d *Decoder) decodeUnit(irep oruby.MrbIrep, unitCounter *int) (*IRepUnit, e
 	if err != nil {
 		return nil, fmt.Errorf("decoding unit %d iseq: %w", currIdx, err)
 	}
+	for i := range insns {
+		if line, file, ok := d.mrb.DebugGetPosition(irep, uint32(insns[i].Offset)); ok {
+			insns[i].Line = int(line)
+			if unit.File == "" && file != "" {
+				unit.File = file
+			}
+		}
+	}
 	unit.Instructions = insns
+
+	// 3b. Decode Local Variable Names
+	if irep.NLocals() > 1 {
+		unit.Locals = make([]string, irep.NLocals()-1)
+		for i := 0; i < irep.NLocals()-1; i++ {
+			if sym := irep.Lv(i); sym != 0 {
+				unit.Locals[i] = d.mrb.SymName(sym)
+			}
+		}
+	}
 
 	// 4. Decode Child Reps (Blocks, Methods, Lambdas)
 	rLen := irep.RLen()

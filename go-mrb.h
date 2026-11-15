@@ -74,19 +74,55 @@ static mrb_int _cmrb_get_idx(uintptr_t cmrb) {
 /* Inject and run code */
 
 extern struct RProc* inject_run(mrb_int idx);
+extern int go_has_line_debug(mrb_int idx);
+extern void go_debug_line_hook(mrb_int idx, struct mrb_irep *irep, uint32_t pc_off, mrb_value *regs, int32_t line, char *file);
 
 static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
-  struct RProc *p = inject_run(_mrb_get_idx(mrb));
+  mrb_int idx = _mrb_get_idx(mrb);
+  struct RProc *p = inject_run(idx);
   if (p) {
     mrb_funcall_with_block(mrb, mrb_obj_value(p), MRB_SYM(call), 0, NULL, mrb_nil_value());
   }
-//	mrb_raise(mrb, E_TYPE_ERROR, "break from vm_exec");
+  if (irep && pc && regs && go_has_line_debug(idx)) {
+    uint32_t pc_off = (pc >= irep->iseq) ? (uint32_t)(pc - irep->iseq) : 0;
+    int32_t line = -1;
+    const char *file = NULL;
+    if (mrb_debug_get_position(mrb, irep, pc_off, &line, &file) && line > 0) {
+      go_debug_line_hook(idx, (struct mrb_irep *)irep, pc_off, regs, line, (char *)file);
+    }
+  }
 }
 
 static void set_mrb_injector(mrb_state *mrb) {
 	if (!mrb->code_fetch_hook) {
 		mrb->code_fetch_hook = injector;
 	}
+}
+
+typedef struct _mrb_caller_debug_info {
+  const struct mrb_irep *irep;
+  mrb_value *regs;
+  int32_t line;
+  const char *file;
+} _mrb_caller_debug_info;
+
+static inline _mrb_caller_debug_info _mrb_get_caller_debug_info(mrb_state *mrb) {
+  _mrb_caller_debug_info info = { NULL, NULL, -1, NULL };
+  if (!mrb || !mrb->c || !mrb->c->ci) return info;
+  for (mrb_callinfo *ci = mrb->c->ci - 1; ci >= mrb->c->cibase; ci--) {
+    if (ci->proc && !MRB_PROC_CFUNC_P(ci->proc) && ci->proc->body.irep) {
+      const struct mrb_irep *irep = ci->proc->body.irep;
+      info.irep = irep;
+      info.regs = ci->stack;
+      uint32_t pc_off = 0;
+      if (ci->pc && ci->pc > irep->iseq) {
+        pc_off = (uint32_t)(ci->pc - irep->iseq - 1);
+      }
+      mrb_debug_get_position(mrb, irep, pc_off, &info.line, &info.file);
+      return info;
+    }
+  }
+  return info;
 }
 
 // RBasic macro proxy calls
@@ -583,7 +619,7 @@ extern int  go_partial_hook_callback(struct mrb_parser_state *p);
 extern int  go_hash_callback(mrb_state *mrb, mrb_value key, mrb_value val, void *data);
 extern int  go_each_object_callback(mrb_state *mrb, struct RBasic *obj, void *data);
 extern mrb_value go_gofunc_callback(mrb_int mrbidx, mrb_value self, int idx);
-extern mrb_value go_mrb_proc_callback(mrb_int mrbidx, mrb_value self);
+extern mrb_value go_mrb_proc_callback(mrb_int mrbidx, mrb_value self, void *proc_ptr);
 extern mrb_value go_mrb_func_env_callback(mrb_int mrbidx, mrb_value self, int idx);
 
 mrb_value set_mrb_proc_callback(mrb_state *mrb, mrb_value self);

@@ -4,7 +4,7 @@ MRuby::Build.new do |conf|
   # Gets set by the VS command prompts.
   toolchain :clang
 
-  enable_debug
+  # enable_debug
 
   # Use mrbgems
   # conf.gem 'examples/mrbgems/ruby_extension_example'

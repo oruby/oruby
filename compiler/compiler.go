@@ -11,6 +11,7 @@ type Options struct {
 	PackageName string   // Output Go package name (default: "main")
 	Standalone  bool     // Generate a standalone executable with main()
 	EmbedDirs   []string // Optional directory paths to embed using //go:embed (empty = files on disk)
+	Debug       bool     // Emit line-stepping debug hooks for IDE / debugger integration
 }
 
 // Compiler coordinates parsing Ruby code or mruby bytecode and producing Go code.
@@ -38,6 +39,7 @@ func (c *Compiler) CompileIrep(mrb *oruby.MrbState, irep oruby.MrbIrep) (string,
 		PackageName: c.opts.PackageName,
 		Standalone:  c.opts.Standalone,
 		EmbedDirs:   c.opts.EmbedDirs,
+		Debug:       c.opts.Debug,
 	})
 
 	return codegen.Generate(unit)
@@ -74,6 +76,7 @@ func (c *Compiler) CompileBundle(mrb *oruby.MrbState, entryFile string, loadPath
 		PackageName: c.opts.PackageName,
 		Standalone:  c.opts.Standalone,
 		EmbedDirs:   c.opts.EmbedDirs,
+		Debug:       c.opts.Debug,
 	})
 
 	return codegen.GenerateBundle(modules)

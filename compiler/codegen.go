@@ -12,6 +12,7 @@ type CodeGenOptions struct {
 	PackageName string   // Name of the generated Go package (e.g. "main" or "compiled")
 	Standalone  bool     // Whether to include a main() entrypoint
 	EmbedDirs   []string // Optional directory paths/patterns to embed via //go:embed (empty = disk files)
+	Debug       bool     // Emit line-stepping debug hooks for IDE / debugger integration
 }
 
 // CodeGen translates an IRepUnit AST into Go source code.
@@ -20,6 +21,7 @@ type CodeGen struct {
 	isBundle          bool
 	compiledMethods   map[string]string
 	compiledArity     map[string]int
+	intSpecialized    map[string]bool
 	unitMethodName    map[string]string
 	compiledClassInit map[string]string
 	hasCompiledClass  map[string]bool
@@ -41,6 +43,7 @@ func NewCodeGen(opts CodeGenOptions) *CodeGen {
 		opts:              opts,
 		compiledMethods:   make(map[string]string),
 		compiledArity:     make(map[string]int),
+		intSpecialized:    make(map[string]bool),
 		unitMethodName:    make(map[string]string),
 		compiledClassInit: make(map[string]string),
 		hasCompiledClass:  make(map[string]bool),
@@ -115,6 +118,7 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	g.isBundle = isBundle
 	g.compiledMethods = make(map[string]string)
 	g.compiledArity = make(map[string]int)
+	g.intSpecialized = make(map[string]bool)
 	g.unitMethodName = make(map[string]string)
 	g.compiledClassInit = make(map[string]string)
 	g.hasCompiledClass = make(map[string]bool)
@@ -176,6 +180,8 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	}
 
 	// 2. Scan and register all compiled methods & classes for direct Go calls
+	methodUnits := make(map[string]*IRepUnit)
+	methodPrefix := make(map[string]string)
 	for i, mod := range modules {
 		prefix := ""
 		if isBundle {
@@ -184,6 +190,9 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		var allUnits []*IRepUnit
 		collectUnits(mod.Root, &allUnits)
 		for _, u := range allUnits {
+			if u.File == "" {
+				u.File = mod.RelPath
+			}
 			for idx, ins := range u.Instructions {
 				if (ins.Op == OpTDEF || ins.Op == OpDEF || ins.Op == OpSDEF) && int(ins.B) < len(u.Syms) {
 					sym := u.Syms[ins.B]
@@ -196,6 +205,8 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 							g.compiledMethods[sym] = fn
 						}
 						g.unitMethodName[fn] = sym
+						methodUnits[fn] = childUnit
+						methodPrefix[fn] = prefix
 						if arity := unitFixedArity(childUnit); arity >= 0 {
 							g.compiledArity[fn] = arity
 						}
@@ -222,6 +233,26 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 							}
 						}
 					}
+				}
+			}
+		}
+	}
+
+	if !g.opts.Debug {
+		changed := true
+		for changed {
+			changed = false
+			for fn, cu := range methodUnits {
+				if g.intSpecialized[fn] {
+					continue
+				}
+				arity, ok := g.compiledArity[fn]
+				if !ok || arity < 1 || arity > 3 {
+					continue
+				}
+				if g.canEmitIntSpecialized(cu, methodPrefix[fn], g.unitMethodName[fn], arity) {
+					g.intSpecialized[fn] = true
+					changed = true
 				}
 			}
 		}
@@ -366,6 +397,9 @@ func fastAdd(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.FixnumValue(a.Int() + b.Int())
 	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.FloatValue(a.Float64() + b.Float64())
+	}
 	if a.Type() == oruby.MrbTTString && b.Type() == oruby.MrbTTString {
 		return mrb.StrNew(a.String() + b.String())
 	}
@@ -377,6 +411,9 @@ func fastSub(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.FixnumValue(a.Int() - b.Int())
 	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.FloatValue(a.Float64() - b.Float64())
+	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
 }
@@ -385,6 +422,9 @@ func fastMul(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.FixnumValue(a.Int() * b.Int())
 	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.FloatValue(a.Float64() * b.Float64())
+	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
 }
@@ -392,6 +432,9 @@ func fastMul(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 func fastDiv(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger && b.Int() != 0 {
 		return mrb.FixnumValue(a.Int() / b.Int())
+	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) && b.Float64() != 0 {
+		return mrb.FloatValue(a.Float64() / b.Float64())
 	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
@@ -409,6 +452,9 @@ func fastEq(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.BoolValue(a.Int() == b.Int())
 	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.BoolValue(a.Float64() == b.Float64())
+	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
 }
@@ -416,6 +462,9 @@ func fastEq(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 func fastNeq(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.BoolValue(a.Int() != b.Int())
+	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.BoolValue(a.Float64() != b.Float64())
 	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
@@ -425,6 +474,9 @@ func fastLt(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.BoolValue(a.Int() < b.Int())
 	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.BoolValue(a.Float64() < b.Float64())
+	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
 }
@@ -432,6 +484,9 @@ func fastLt(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 func fastLe(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.BoolValue(a.Int() <= b.Int())
+	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.BoolValue(a.Float64() <= b.Float64())
 	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
@@ -441,6 +496,9 @@ func fastGt(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.BoolValue(a.Int() > b.Int())
 	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.BoolValue(a.Float64() > b.Float64())
+	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
 }
@@ -448,6 +506,9 @@ func fastGt(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 func fastGe(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	if a.Type() == oruby.MrbTTInteger && b.Type() == oruby.MrbTTInteger {
 		return mrb.BoolValue(a.Int() >= b.Int())
+	}
+	if (a.Type() == oruby.MrbTTFloat || a.Type() == oruby.MrbTTInteger) && (b.Type() == oruby.MrbTTFloat || b.Type() == oruby.MrbTTInteger) {
+		return mrb.BoolValue(a.Float64() >= b.Float64())
 	}
 	res, _ := mrb.FastCall(a, %s, b)
 	return res
@@ -738,8 +799,19 @@ func unitFixedArity(unit *IRepUnit) int {
 	return -1
 }
 
-func canEmitIntSpecialized(unit *IRepUnit, methodName string, arity int) bool {
-	if arity < 1 || arity > 3 || methodName == "" || len(unit.Instructions) == 0 {
+func unitHasDebugCall(unit *IRepUnit) bool {
+	for _, ins := range unit.Instructions {
+		if (ins.Op == OpSEND || ins.Op == OpSSEND || ins.Op == OpSEND0 || ins.Op == OpSSEND0) && int(ins.B) < len(unit.Syms) {
+			if unit.Syms[ins.B] == "debug" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (g *CodeGen) canEmitIntSpecialized(unit *IRepUnit, prefix, methodName string, arity int) bool {
+	if g.opts.Debug || arity < 1 || arity > 3 || methodName == "" || len(unit.Instructions) == 0 {
 		return false
 	}
 	jumpTargets := make(map[int]bool)
@@ -776,7 +848,19 @@ func canEmitIntSpecialized(unit *IRepUnit, methodName string, arity int) bool {
 			}
 			idx++
 		case OpSEND, OpSSEND:
-			if int(ins.B) >= len(unit.Syms) || unit.Syms[ins.B] != methodName || int(ins.C&0xf) != arity {
+			if int(ins.B) >= len(unit.Syms) {
+				return false
+			}
+			sym := unit.Syms[ins.B]
+			numArgs := int(ins.C & 0xf)
+			if sym == methodName && numArgs == arity {
+				continue
+			}
+			targetFn := g.compiledMethods[prefix+sym]
+			if targetFn == "" {
+				targetFn = g.compiledMethods[sym]
+			}
+			if targetFn == "" || !g.intSpecialized[targetFn] || g.compiledArity[targetFn] != numArgs {
 				return false
 			}
 		default:
@@ -786,7 +870,7 @@ func canEmitIntSpecialized(unit *IRepUnit, methodName string, arity int) bool {
 	return true
 }
 
-func emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName string, arity int) {
+func (g *CodeGen) emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, prefix, fnName string, arity int) {
 	jumpTargets := make(map[int]bool)
 	for _, ins := range unit.Instructions {
 		if ins.IsJump() && ins.Target >= 0 {
@@ -872,11 +956,20 @@ func emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName string, arit
 		case OpJMP:
 			b.WriteString(fmt.Sprintf("\tgoto L_%04d\n", ins.Target))
 		case OpSEND, OpSSEND:
+			sym := unit.Syms[ins.B]
+			numArgs := int(ins.C & 0xf)
+			targetFn := g.compiledMethods[prefix+sym]
+			if targetFn == "" {
+				targetFn = g.compiledMethods[sym]
+			}
+			if targetFn == "" {
+				targetFn = fnName
+			}
 			var args []string
-			for i := 1; i <= arity; i++ {
+			for i := 1; i <= numArgs; i++ {
 				args = append(args, fmt.Sprintf("r[%d]", ins.A+uint32(i)))
 			}
-			b.WriteString(fmt.Sprintf("\tr[%d] = %s_int(%s)\n", ins.A, fnName, strings.Join(args, ", ")))
+			b.WriteString(fmt.Sprintf("\tr[%d] = %s_int(%s)\n", ins.A, targetFn, strings.Join(args, ", ")))
 		case OpRETURN:
 			b.WriteString(fmt.Sprintf("\treturn r[%d]\n", ins.A))
 			hasReturn = true
@@ -925,14 +1018,19 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 	hasHash := unitHasHash(unit)
 	hasClosure := unitHasClosure(unit)
 	hasBackJump := unitHasBackJump(unit)
+	hasDebug := g.opts.Debug || unitHasDebugCall(unit)
 
 	nregs := unit.NRegs
 	if nregs < 2 {
 		nregs = 2
 	}
 
+	unitFile := unit.File
+	if unitFile == "" {
+		unitFile = "main.rb"
+	}
+
 	fnName := fmt.Sprintf("%sIRep_%d", prefix, unit.Index)
-	methodName := g.unitMethodName[fnName]
 	fixedArity := -1
 	if arity, ok := g.compiledArity[fnName]; ok {
 		fixedArity = arity
@@ -940,8 +1038,8 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 
 	b.WriteString(fmt.Sprintf("// %s implements compiled irep block %d\n", fnName, unit.Index))
 	if fixedArity >= 0 {
-		if canEmitIntSpecialized(unit, methodName, fixedArity) {
-			emitIntSpecializedUnit(b, unit, fnName, fixedArity)
+		if g.intSpecialized[fnName] {
+			g.emitIntSpecializedUnit(b, unit, prefix, fnName, fixedArity)
 		}
 		b.WriteString(fmt.Sprintf("func %s(mrb *oruby.MrbState, self oruby.Value, args []oruby.Value, upvalues ...[]oruby.Value) (oruby.Value, error) {\n", fnName))
 		var callArgs []string
@@ -958,7 +1056,7 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 			fnParams = append(fnParams, fmt.Sprintf("_a%d oruby.Value", i+1))
 		}
 		b.WriteString(fmt.Sprintf("func %s_f%d(%s) (oruby.Value, error) {\n", fnName, fixedArity, strings.Join(fnParams, ", ")))
-		if canEmitIntSpecialized(unit, methodName, fixedArity) {
+		if g.intSpecialized[fnName] {
 			var conds, intArgs []string
 			for i := 0; i < fixedArity; i++ {
 				conds = append(conds, fmt.Sprintf("_a%d.Type() == oruby.MrbTTInteger", i+1))
@@ -977,6 +1075,13 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 	}
 	b.WriteString("\tr[0] = self\n")
 	b.WriteString("\t_ = r\n")
+	if hasDebug {
+		var quotedLocals []string
+		for _, ln := range unit.Locals {
+			quotedLocals = append(quotedLocals, fmt.Sprintf("%q", ln))
+		}
+		b.WriteString(fmt.Sprintf("\t_locals := []string{%s}\n\t_ = _locals\n", strings.Join(quotedLocals, ", ")))
+	}
 	if hasBackJump {
 		b.WriteString("\t_ai := mrb.GCArenaSave()\n")
 		b.WriteString("\t_ = _ai\n")
@@ -984,11 +1089,16 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 	b.WriteString("\n")
 
 	hasExplicitReturn := false
+	lastDebugLine := -1
 
 	for idx := 0; idx < len(unit.Instructions); idx++ {
 		ins := unit.Instructions[idx]
 		if jumpTargets[ins.Offset] {
 			b.WriteString(fmt.Sprintf("L_%04d:\n", ins.Offset))
+		}
+		if g.opts.Debug && ins.Line > 0 && ins.Op != OpENTER && (ins.Line != lastDebugLine || jumpTargets[ins.Offset]) {
+			b.WriteString(fmt.Sprintf("\tif mrb.LineDebug() {\n\t\tmrb.TriggerDebug(\"step\", %q, %d, self, nil, r[:], _locals)\n\t}\n", unitFile, ins.Line))
+			lastDebugLine = ins.Line
 		}
 
 		// Peephole 3: Fused comparison + conditional branch (OpEQ/OpLT/OpLE/OpGT/OpGE followed by OpJMPNOT/OpJMPIF)
@@ -1424,6 +1534,11 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 			if targetFn == "" {
 				targetFn = g.compiledMethods[symName]
 			}
+			if symName == "debug" && targetFn == "" {
+				b.WriteString(fmt.Sprintf("\tr[%d] = mrb.TriggerDebug(\"debug\", %q, %d, %s, []oruby.Value{%s}, r[:], _locals)\n",
+					ins.A, unitFile, ins.Line, recv, strings.TrimPrefix(argsJoined, ", ")))
+				break
+			}
 			if targetFn != "" && symName != "require" && symName != "require_relative" && symName != "puts" && symName != "print" && symName != "p" && symName != "new" {
 				if arity, ok := g.compiledArity[targetFn]; ok && arity == numArgs {
 					b.WriteString(fmt.Sprintf("\tr[%d], _ = %s_f%d(mrb, %s%s)\n",
@@ -1457,6 +1572,11 @@ func (g *CodeGen) emitUnit(b *bytes.Buffer, unit *IRepUnit, prefix string) error
 			targetFn := g.compiledMethods[prefix+symName]
 			if targetFn == "" {
 				targetFn = g.compiledMethods[symName]
+			}
+			if symName == "debug" && targetFn == "" {
+				b.WriteString(fmt.Sprintf("\tr[%d] = mrb.TriggerDebug(\"debug\", %q, %d, %s, nil, r[:], _locals)\n",
+					ins.A, unitFile, ins.Line, recv))
+				break
 			}
 			if targetFn != "" && symName != "require" && symName != "require_relative" && symName != "puts" && symName != "print" && symName != "p" && symName != "new" {
 				if arity, ok := g.compiledArity[targetFn]; ok && arity == 0 {

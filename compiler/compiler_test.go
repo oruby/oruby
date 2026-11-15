@@ -658,3 +658,54 @@ replace github.com/oruby/oruby => ` + repoRoot + "\n"
 		t.Errorf("Unexpected embedded read output: %q", outputStr)
 	}
 }
+
+func TestCompiler_DebugAndCrossMethodInt(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	// 1. Verify cross-method _int specialization
+	compFast := New(Options{
+		PackageName: "compiled",
+		Standalone:  false,
+	})
+	srcFast, err := compFast.CompileRuby(mrb, `
+def helper(x)
+  x * 2 + 1
+end
+
+def compute(n)
+  s = 0
+  i = 0
+  while i < n
+    s = s + helper(i)
+    i = i + 1
+  end
+  s
+end
+`)
+	if err != nil {
+		t.Fatalf("CompileRuby error: %v", err)
+	}
+	if !strings.Contains(srcFast, "IRep_1_int") || !strings.Contains(srcFast, "IRep_2_int") {
+		t.Errorf("Expected both helper (IRep_1_int) and compute (IRep_2_int) to be _int specialized:\n%s", srcFast)
+	}
+
+	// 2. Verify compiled debug mode (Kernel#debug + line stepping)
+	compDbg := New(Options{
+		PackageName: "main",
+		Standalone:  false,
+		Debug:       true,
+	})
+	srcDbg, err := compDbg.CompileRuby(mrb, `
+x = 15
+y = 25
+z = debug(x, y)
+x + y
+`)
+	if err != nil {
+		t.Fatalf("CompileRuby debug error: %v", err)
+	}
+	if !strings.Contains(srcDbg, "mrb.TriggerDebug(\"step\"") || !strings.Contains(srcDbg, "mrb.TriggerDebug(\"debug\"") {
+		t.Errorf("Expected step and debug TriggerDebug calls in generated debug code:\n%s", srcDbg)
+	}
+}

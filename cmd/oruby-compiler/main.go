@@ -25,6 +25,7 @@ var (
 	docker     = flag.Bool("docker", false, "Compile Linux binary inside a Docker container")
 	dockerfile = flag.String("dockerfile", "", "Generate multi-stage Dockerfile for containerized deployment")
 	embedDirs  = flag.String("embed", "", "Optional comma-separated directories to embed via //go:embed (empty = files on disk)")
+	debugMode  = flag.Bool("debug", false, "Emit line-stepping debug hooks for IDE / debugger integration")
 	verbose    = flag.Bool("v", false, "Verbose output")
 )
 
@@ -188,6 +189,7 @@ func main() {
 		PackageName: *pkgName,
 		Standalone:  standalone,
 		EmbedDirs:   embeds,
+		Debug:       *debugMode,
 	})
 
 	var goSrc string
@@ -211,6 +213,7 @@ func main() {
 			PackageName: *pkgName,
 			Standalone:  standalone,
 			EmbedDirs:   embeds,
+			Debug:       *debugMode,
 		})
 		goSrc, err = codegen.Generate(unit)
 	}
