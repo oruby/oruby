@@ -23,6 +23,7 @@ func init() {
 		threadClass.DefineClassMethod("stop", unsupportedThread, mrb.ArgsNone())
 
 		mutexClass := mrb.DefineGoClass("Mutex", newMutex)
+		mrb.ConstSet(threadClass, mrb.Intern("Mutex"), mutexClass.Value())
 		mutexClass.DefineMethod("sleep", mutexSleep, mrb.ArgsReq(1))
 		mutexClass.DefineMethod("synchronize", mutexSynchronize, mrb.ArgsReq(1))
 		mutexClass.DefineAlias("locked?", "locked")

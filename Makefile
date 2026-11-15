@@ -42,6 +42,7 @@ test:
 	(cd gem/isolated_worker && go test)
 	(cd gem/json && go test)
 	(cd gem/load && go test)
+	(cd gem/marshal && go test)
 	(cd gem/process && go test)
 	(cd gem/regexp && go test)
 #	(cd gem/signal && go test)

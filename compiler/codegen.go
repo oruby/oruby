@@ -226,7 +226,6 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	buf.WriteString("func Run(mrb *oruby.MrbState) (oruby.Value, error) {\n")
 	buf.WriteString("\tmrb.AotInit()\n")
 	buf.WriteString("\tinitSymbols(mrb)\n")
-	buf.WriteString("\taotTopSelf = mrb.TopSelf()\n")
 	if isBundle {
 		buf.WriteString("\tinitCompiledRequire(mrb)\n")
 		buf.WriteString(fmt.Sprintf("\tcompiledLoaded[%q] = true\n", modules[0].FilePath))
@@ -543,9 +542,6 @@ func (g *CodeGen) emitHelpers(b *bytes.Buffer) {
 	b.WriteString(`
 var _ = unsafe.Pointer(nil)
 
-// aotTopSelf is the main object; receiver-less calls on it may be bound statically
-var aotTopSelf oruby.Value
-
 // recursion budget of integer specialized functions; when exhausted the
 // generic code runs (aotIntDisabled > 0) until the outermost call returns
 var aotIntDepth, aotIntDisabled int
@@ -553,6 +549,24 @@ var aotIntDepth, aotIntDisabled int
 const aotIntMaxDepth = 10000
 
 const aotMinInt = -1 << 63
+
+func aotIntAdd64(x, y int64) (int64, bool) {
+	z := x + y
+	return z, (x^z)&(y^z) >= 0
+}
+
+func aotIntSub64(x, y int64) (int64, bool) {
+	z := x - y
+	return z, (x^y)&(x^z) >= 0
+}
+
+func aotIntMul64(x, y int64) (int64, bool) {
+	z := x * y
+	if x == 0 || y == 0 {
+		return z, true
+	}
+	return z, z/y == x && !(x == -1 && y == aotMinInt) && !(y == -1 && x == aotMinInt)
+}
 
 func aotInt(v oruby.Value) int64 { return *(*int64)(unsafe.Pointer(&v)) }
 
@@ -936,7 +950,7 @@ func (g *CodeGen) canEmitIntSpecialized(unit *IRepUnit, arity int) bool {
 	for idx := 0; idx < len(unit.Instructions); idx++ {
 		ins := unit.Instructions[idx]
 		switch ins.Op {
-		case OpNOP, OpENTER, OpMOVE, OpLOADSELF,
+		case OpNOP, OpENTER, OpMOVE,
 			OpLOADI8, OpLOADINEG, OpLOADI__1,
 			OpLOADI_0, OpLOADI_1, OpLOADI_2, OpLOADI_3, OpLOADI_4, OpLOADI_5, OpLOADI_6, OpLOADI_7,
 			OpLOADI16, OpLOADI32,
@@ -961,18 +975,7 @@ func (g *CodeGen) canEmitIntSpecialized(unit *IRepUnit, arity int) bool {
 			}
 			idx++
 		case OpSSEND:
-			if int(ins.B) >= len(unit.Syms) || ins.C>>4 != 0 {
-				return false
-			}
-			sym := unit.Syms[ins.B]
-			numArgs := int(ins.C & 0xf)
-			targetFn, ok := g.directTarget(sym, numArgs)
-			if !ok {
-				return false
-			}
-			if targetFn != inf.fn && !g.intSpecialized[targetFn] {
-				return false
-			}
+			return false
 		default:
 			return false
 		}
@@ -1034,19 +1037,19 @@ func (g *CodeGen) emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName
 			val := int32(uint32(ins.B)<<16 | uint32(ins.C))
 			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, val))
 		case OpADD:
-			b.WriteString(fmt.Sprintf("\tr[%d] += r[%d]\n", ins.A, ins.A+1))
+			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntAdd64(r[%d], r[%d]); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.A+1))
 		case OpADDI:
-			b.WriteString(fmt.Sprintf("\tr[%d] += %d\n", ins.A, ins.B))
+			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntAdd64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.B))
 		case OpADDILV:
-			b.WriteString(fmt.Sprintf("\tr[%d] += %d\n", ins.A, ins.C))
+			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntAdd64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.C))
 		case OpSUB:
-			b.WriteString(fmt.Sprintf("\tr[%d] -= r[%d]\n", ins.A, ins.A+1))
+			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntSub64(r[%d], r[%d]); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.A+1))
 		case OpSUBI:
-			b.WriteString(fmt.Sprintf("\tr[%d] -= %d\n", ins.A, ins.B))
+			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntSub64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.B))
 		case OpSUBILV:
-			b.WriteString(fmt.Sprintf("\tr[%d] -= %d\n", ins.A, ins.C))
+			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntSub64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.C))
 		case OpMUL:
-			b.WriteString(fmt.Sprintf("\tr[%d] *= r[%d]\n", ins.A, ins.A+1))
+			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntMul64(r[%d], r[%d]); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.A+1))
 		case OpEQ, OpLT, OpLE, OpGT, OpGE:
 			nextIns := unit.Instructions[idx+1]
 			opStr := cmpOpStr(ins.Op)
@@ -2180,18 +2183,6 @@ func (e *unitEmitter) emitSend(idx int, ins Instruction) {
 				kwFlag = "_kw.Type() == oruby.MrbTTHash"
 			}
 			e.w("%s\tr[%d], err = mrb.AotCall(self, %s, %s, _args, %s, %v, %s)\n%s}\n", indent, a, recv, symVar, blkExpr, fcall, kwFlag, indent)
-		}
-	}
-
-	// Direct Go call of statically known top level method
-	if fcall && !hasBlock && splat == "" && kw == "" {
-		if target, ok := g.directTarget(symName, n); ok {
-			e.w("\tif self == aotTopSelf && mrb.AotDepthEnter() {\n")
-			e.w("\t\tr[%d], err = %s_f%d(mrb, self, mrb.NilValue(), mrb.AotTopCtx()%s)\n\t\tmrb.AotDepthLeave()\n", a, target, n, prefixComma(list))
-			e.w("\t} else {\n")
-			generic("\t\t")
-			e.w("\t}\n\t%s\n", e.errChk(idx))
-			return
 		}
 	}
 

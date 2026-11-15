@@ -29,6 +29,15 @@ func TestCurrentAndMain(t *testing.T) {
 	}
 }
 
+func TestThreadMutexConstantAliasesMutex(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`Thread::Mutex.equal?(Mutex) && Thread::Mutex.new.synchronize { true }`)
+	if err != nil || !v.Bool() {
+		t.Fatalf("Thread::Mutex alias and synchronize = %v, %v; want true, nil", v, err)
+	}
+}
+
 func TestIsolatedWorkerJoinTimeoutDuringSleep(t *testing.T) {
 	const key = "ORUBY_WORKER_TIMEOUT_SUBPROCESS"
 	if os.Getenv(key) != "1" {

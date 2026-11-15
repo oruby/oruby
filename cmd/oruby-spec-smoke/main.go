@@ -151,6 +151,10 @@ func reportIdentity(name, root string) error {
 		return fmt.Errorf("hash %s: %w", name, err)
 	}
 	fmt.Printf("%s Ruby manifest sha256=%s files=%d root=%s\n", name, hash, count, root)
+	return reportCheckoutIdentity(name, root)
+}
+
+func reportCheckoutIdentity(name, root string) error {
 	top := runCommand(root, nil, 10*time.Second, "git", "rev-parse", "--show-toplevel")
 	if top.err != nil || filepath.Clean(strings.TrimSpace(top.output)) != filepath.Clean(root) {
 		fmt.Printf("%s git revision=unknown (not a checkout root)\n", name)
@@ -170,6 +174,32 @@ func reportIdentity(name, root string) error {
 	} else {
 		fmt.Printf("%s git status=dirty:\n%s", name, status.output)
 	}
+	return nil
+}
+
+func hashFile(path string) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	h := sha256.New()
+	size, copyErr := io.Copy(h, f)
+	closeErr := f.Close()
+	if copyErr != nil {
+		return "", size, copyErr
+	}
+	if closeErr != nil {
+		return "", size, closeErr
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), size, nil
+}
+
+func reportBinaryIdentity(name, path string) error {
+	hash, size, err := hashFile(path)
+	if err != nil {
+		return fmt.Errorf("hash %s: %w", name, err)
+	}
+	fmt.Printf("%s sha256=%s bytes=%d\n", name, hash, size)
 	return nil
 }
 
@@ -256,6 +286,10 @@ func run() int {
 			return 2
 		}
 	}
+	if err := reportCheckoutIdentity("ORuby", root); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 	tmp, err := os.MkdirTemp(filepath.Join(root, "cmd", "oruby-spec-smoke"), ".run-*")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -273,6 +307,10 @@ func run() int {
 	for _, b := range []struct{ binary, pkg string }{{oruby, "./cmd/oruby"}, {compiler, "./cmd/oruby-compiler"}} {
 		if r := reportCommand("build", root, env, *buildTimeout, "go", "build", "-o", b.binary, b.pkg); r.err != nil || r.timedOut || r.exitCode != 0 {
 			return 1
+		}
+		if err := reportBinaryIdentity(filepath.Base(b.binary), b.binary); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
 		}
 	}
 	env = append(env, "RUBY_EXE="+oruby)

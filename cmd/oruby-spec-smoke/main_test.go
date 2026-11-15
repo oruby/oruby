@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,5 +114,21 @@ func TestHashRubyTree(t *testing.T) {
 	h3, _, err := hashRubyTree(dir)
 	if err != nil || h1 == h3 {
 		t.Fatalf("hash unchanged for changed Ruby input: %s %s %v", h1, h3, err)
+	}
+}
+
+func TestHashFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "artifact")
+	content := []byte{0, 1, 2, 255}
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256(content))
+	hash, size, err := hashFile(path)
+	if err != nil || hash != want || size != int64(len(content)) {
+		t.Fatalf("hashFile = %q, %d, %v; want %q, %d, nil", hash, size, err, want, len(content))
+	}
+	if _, _, err := hashFile(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("hashFile should report a missing artifact")
 	}
 }

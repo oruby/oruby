@@ -107,3 +107,47 @@ Supported isolated workers complete, join, and release resources predictably wit
 - Coordinate parent/child shutdown, completion publication, rooting, and safe cross-state error snapshots in the new worker context.
 - Implement worker `join`, `value`, and timeout behavior; explicitly reject unsafe operations that cannot be made safe.
 - Update both gem READMEs and worker tests, explain the future fork-like opportunity and present incompatibilities, and run focused and broader validation.
+
+## Ruby 4.1 stdlib compatibility follow-up
+
+### Scope and guardrails
+- Continue using MRI Ruby 4.1 as the compatibility target. RubyGems and Bundler must come from authentic Ruby code for that target version; do not substitute another implementation/version.
+- Reuse `cmd/oruby-spec-smoke/` and the existing stdlib/compiler work. Preserve unrelated worktree changes and keep `mruby/` read-only.
+- Keep YAML object construction restricted; never weaken tests or Ruby-version guards merely to report a pass.
+
+### Delivery Steps
+
+### ✓ Step 6: Capture real-spec baseline
+Run existing Base64, PP, OptionParser, and YAML dump spec files in interpreter and AOT modes with the smoke runner. Record exact tallies, tags, warnings, provenance, and any runner limitations before changing library behavior.
+
+### ✓ Step 7: Add safe YAML symbol dumping
+Implement and test YAML symbol serialization without enabling unsafe object loading; run the relevant real YAML dump spec in both modes.
+
+### ✓ Step 8: Improve OptionParser compatibility
+Use real specs and MRI comparison to add common typed conversions and optional arguments, with positive and negative tests.
+
+### ✓ Step 9: Improve PrettyPrint and PP formatting
+Implement tested width/group behavior guided by actual PP specs; preserve explicit limits for unsupported formatting semantics.
+
+### ✓ Step 10: Validate compiler specialization
+Add interpreter/AOT differential runtime tests for integer overflow and `self` handling in specialization; fix only demonstrated mismatches using safe fallback behavior.
+
+### ✓ Step 11: Evaluate authentic RubyGems and Bundler integration
+Verify availability and version provenance of Ruby 4.1 sources and loader prerequisites. Implement only a supportable, tested integration; otherwise report concrete blockers and remaining work without claiming completion.
+
+## Ruby 4.1 follow-on work
+
+### ✓ Step 12: Refresh the MRI 4.1 compatibility baseline
+Run the selected Base64, PP, OptionParser, and YAML dump specs with MRI 4.1-preview1 in interpreter and AOT modes, capturing exact tallies, tags, warnings, and provenance.
+
+### ✓ Step 13: Improve smoke-run reproducibility
+Extend `cmd/oruby-spec-smoke/` only for concrete provenance or comparability gaps, while continuing to distinguish direct AOT entry execution from an MSpec-launched run.
+
+### ✓ Step 14: Fix measured stdlib gaps
+Use the refreshed real-spec results to implement focused compatibility fixes and tests in stdlib providers without weakening YAML safety or version guards.
+
+### ✓ Step 15: Evaluate authentic RubyGems and Bundler loading
+Use only authentic Ruby 4.1 target-version RubyGems and Bundler sources; integrate only if the existing runtime supports tested loading, otherwise record concrete blockers.
+
+### ✓ Step 16: Expand compiler differential coverage
+Add interpreter/AOT tests for concrete dispatch and arithmetic edge cases and fix only demonstrated mismatches with safe fallback behavior.

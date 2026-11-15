@@ -362,6 +362,205 @@ end`,
 	}
 }
 
+func TestCompiler_SpecializedIntegerOverflowParity(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+	}{
+		{
+			name: "multiply_overflow",
+			code: `$trace = ""
+def square(value)
+  value * value
+end
+square(3037000500).to_s`,
+		},
+		{
+			name: "add_overflow",
+			code: `$trace = ""
+def increment(value)
+  value + 1
+end
+increment(9223372036854775807).to_s`,
+		},
+		{
+			name: "subtract_overflow",
+			code: `$trace = ""
+def decrement(value)
+  value - 1
+end
+decrement(-9223372036854775807 - 1).to_s`,
+		},
+		{
+			name: "min_integer_multiply_overflow",
+			code: `$trace = ""
+def negate(value)
+  value * -1
+end
+negate(-9223372036854775807 - 1).to_s`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mrb := oruby.MrbOpen()
+			defer mrb.Close()
+			value, err := mrb.Eval(tt.code)
+			interpreted := interpretedExceptionOutcome(mrb, value, err)
+
+			compilerState := oruby.MrbOpen()
+			defer compilerState.Close()
+			comp := New(Options{PackageName: "main"})
+			source, err := comp.CompileRuby(compilerState, tt.code)
+			if err != nil {
+				t.Fatalf("CompileRuby: %v", err)
+			}
+			if !strings.Contains(source, "_int(") {
+				t.Fatalf("test did not exercise integer specialization:\n%s", source)
+			}
+			compiled := compiledExceptionOutcome(t, source)
+			if compiled.Kind != interpreted.Kind || compiled.Class != interpreted.Class || compiled.Pending != interpreted.Pending ||
+				!strings.Contains(strings.ToLower(compiled.Message), "overflow") || !strings.Contains(strings.ToLower(interpreted.Message), "overflow") {
+				t.Errorf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+			}
+		})
+	}
+}
+
+func TestCompiler_SpecializedIntegerOperatorRedefinitionParity(t *testing.T) {
+	code := `
+def add_one(value)
+  value + 1
+end
+class Integer
+  def +(other)
+    99
+  end
+end
+add_one(2).to_s
+`
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	value, err := mrb.Eval(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interpreted := interpretedExceptionOutcome(mrb, value, nil)
+
+	compilerState := oruby.MrbOpen()
+	defer compilerState.Close()
+	comp := New(Options{PackageName: "main"})
+	source, err := comp.CompileRuby(compilerState, code)
+	if err != nil {
+		t.Fatalf("CompileRuby: %v", err)
+	}
+	if !strings.Contains(source, "_int(") {
+		t.Fatalf("test did not exercise integer specialization:\n%s", source)
+	}
+	compiled := compiledExceptionOutcome(t, source)
+	if compiled != interpreted {
+		t.Fatalf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+	}
+}
+
+func TestCompiler_IntegerDivisionParity(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+	}{
+		{
+			name: "floor_rounding",
+			code: `
+def quotient(left, right)
+  left / right
+end
+[quotient(-7, 3), quotient(7, -3), quotient(-7, -3), quotient(6, -3)].map { |value| value.to_s }.join(",")
+`,
+		},
+		{
+			name: "minimum_integer_by_negative_one",
+			code: `
+def quotient(left, right)
+  left / right
+end
+quotient(-9223372036854775807 - 1, -1).to_s
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mrb := oruby.MrbOpen()
+			defer mrb.Close()
+			value, err := mrb.Eval(tt.code)
+			interpreted := interpretedExceptionOutcome(mrb, value, err)
+
+			compilerState := oruby.MrbOpen()
+			defer compilerState.Close()
+			comp := New(Options{PackageName: "main"})
+			source, err := comp.CompileRuby(compilerState, tt.code)
+			if err != nil {
+				t.Fatalf("CompileRuby: %v", err)
+			}
+			if !strings.Contains(source, "aotDivII(") {
+				t.Fatalf("test did not exercise integer division specialization:\n%s", source)
+			}
+			compiled := compiledExceptionOutcome(t, source)
+			if compiled != interpreted {
+				t.Fatalf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+			}
+		})
+	}
+}
+
+func TestCompiler_DirectCallMethodRedefinitionParity(t *testing.T) {
+	code := `
+def value(amount)
+  amount + 1
+end
+def caller(amount)
+  value(amount)
+end
+eval("def value(amount); amount + 2; end")
+caller(1).to_s
+`
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	value, err := mrb.Eval(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interpreted := interpretedExceptionOutcome(mrb, value, nil)
+
+	compilerState := oruby.MrbOpen()
+	defer compilerState.Close()
+	comp := New(Options{PackageName: "main"})
+	source, err := comp.CompileRuby(compilerState, code)
+	if err != nil {
+		t.Fatalf("CompileRuby: %v", err)
+	}
+	if !strings.Contains(source, "IRep_1_int(") || strings.Contains(source, "IRep_2_int(") {
+		t.Fatalf("rebindable nested call must use generic dispatch:\n%s", source)
+	}
+	compiled := compiledExceptionOutcome(t, source)
+	if interpreted.Message != "3" || compiled != interpreted {
+		t.Fatalf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+	}
+}
+
+func TestCodeGenIntSpecializationRejectsUnsupportedSelf(t *testing.T) {
+	unit := &IRepUnit{Instructions: []Instruction{
+		{Op: OpENTER},
+		{Op: OpLOADSELF, A: 1},
+		{Op: OpRETURN, A: 1},
+	}}
+	codegen := NewCodeGen(CodeGenOptions{})
+	codegen.info[unit] = &unitInfo{fn: "method", method: "method"}
+	codegen.compiledArity["method"] = 1
+
+	if codegen.canEmitIntSpecialized(unit, 1) {
+		t.Fatal("integer specialization accepted OpLOADSELF without an emitter")
+	}
+}
+
 func TestCompiler_StringConcatenation(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -890,7 +1089,7 @@ func TestCompiler_DebugAndCrossMethodInt(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	// 1. Verify cross-method _int specialization
+	// 1. Verify cross-method sends stay dynamic when targets can be redefined
 	compFast := New(Options{
 		PackageName: "compiled",
 		Standalone:  false,
@@ -913,8 +1112,8 @@ end
 	if err != nil {
 		t.Fatalf("CompileRuby error: %v", err)
 	}
-	if !strings.Contains(srcFast, "IRep_1_int") || !strings.Contains(srcFast, "IRep_2_int") {
-		t.Errorf("Expected both helper (IRep_1_int) and compute (IRep_2_int) to be _int specialized:\n%s", srcFast)
+	if !strings.Contains(srcFast, "IRep_1_int") || strings.Contains(srcFast, "IRep_2_int") || !strings.Contains(srcFast, "AotCall1") {
+		t.Errorf("Expected helper to remain specialized while compute dynamically dispatches to it:\n%s", srcFast)
 	}
 
 	// 2. Verify compiled debug mode (Kernel#debug + line stepping)

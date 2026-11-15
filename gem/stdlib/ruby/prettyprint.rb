@@ -9,12 +9,14 @@ class PrettyPrint
   end
 
   def text(object, width = nil)
-    @tokens << [:text, object.to_s]
+    value = object.to_s
+    @tokens << [:text, value, width.nil? ? value.length : width.to_i]
     self
   end
 
   def breakable(separator = " ", width = nil)
-    @tokens << [:break, separator.to_s, @indent]
+    value = separator.to_s
+    @tokens << [:break, value, width.nil? ? value.length : width.to_i, @indent]
     self
   end
 
@@ -54,14 +56,14 @@ class PrettyPrint
       case token[0]
       when :text
         write(token[1])
-        column += token[1].length
+        column += token[2]
       when :break
-        if column + token[1].length + flat_remaining(index + 1) > @maxwidth
-          write(@newline + (" " * token[2]))
-          column = token[2]
+        if column + token[2] + flat_remaining(index + 1) > @maxwidth
+          write(@newline + (" " * token[3]))
+          column = token[3]
         else
           write(token[1])
-          column += token[1].length
+          column += token[2]
         end
       when :newline
         write(@newline + (" " * token[1]))
@@ -95,7 +97,7 @@ class PrettyPrint
     while index < @tokens.length
       token = @tokens[index]
       break if token[0] == :newline
-      length += token[1].length
+      length += token[2]
       index += 1
     end
     length

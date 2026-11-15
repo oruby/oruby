@@ -29,6 +29,7 @@ import (
 	_ "github.com/oruby/oruby/gem/io/popen"
 	_ "github.com/oruby/oruby/gem/json"
 	_ "github.com/oruby/oruby/gem/load"
+	_ "github.com/oruby/oruby/gem/marshal"
 	_ "github.com/oruby/oruby/gem/nethttp"
 	_ "github.com/oruby/oruby/gem/process"
 	_ "github.com/oruby/oruby/gem/regexp"

@@ -8,6 +8,7 @@ import (
 
 	"github.com/oruby/oruby"
 	_ "github.com/oruby/oruby/gem/load"
+	_ "github.com/oruby/oruby/gem/stdlib"
 	_ "github.com/oruby/oruby/gem/yaml"
 )
 
@@ -213,5 +214,49 @@ func TestYAMLDumpDocumentAndIO(t *testing.T) {
   `)
 	if err != nil || !got.Bool() {
 		t.Fatalf("YAML dump document and IO = %v, %v; want true, nil", got, err)
+	}
+}
+
+func TestYAMLDumpOpenStructAndFileWithoutEnablingObjectLoad(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	got, err := mrb.Eval(`
+    require "yaml"
+    require "ostruct"
+    require "io/file"
+    object_yaml = YAML.dump(OpenStruct.new("age" => 20, "name" => "John"))
+    file = File.new("yaml_test.go")
+    begin
+      file_yaml = YAML.dump(file)
+    ensure
+      file.close
+    end
+    safe_load = begin
+      YAML.load(object_yaml)
+      false
+    rescue ArgumentError
+      true
+    end
+    [
+      ["--- !ruby/object:OpenStruct\nage: 20\nname: John\n", "--- !ruby/object:OpenStruct\ntable:\n  :age: 20\n  :name: John\n"].include?(object_yaml),
+      file_yaml == "--- !ruby/object:File {}\n",
+      safe_load
+    ].map { |check| check ? "1" : "0" }.join
+  `)
+	checks := mrb.String(got)
+	if err != nil || checks != "111" {
+		t.Fatalf("YAML object dump and safe load checks = %s, %v; want 111, nil", checks, err)
+	}
+}
+
+func TestYAMLDumpSymbol(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	got, err := mrb.Eval(`require "yaml"; YAML.dump(:locked)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output := mrb.String(got); output != "--- :locked\n" {
+		t.Fatalf("YAML.dump(:locked) = %q; want %q", output, "--- :locked\n")
 	}
 }

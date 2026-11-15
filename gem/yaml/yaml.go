@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,28 @@ func (e unsafeYAMLError) Error() string { return e.message }
 type yamlSyntaxError struct{ err error }
 
 func (e yamlSyntaxError) Error() string { return e.err.Error() }
+
+type rubyYAMLObject struct {
+	class  string
+	fields map[string]interface{}
+}
+
+func (o rubyYAMLObject) MarshalYAML() (interface{}, error) {
+	data, err := yamllib.Marshal(o.fields)
+	if err != nil {
+		return nil, err
+	}
+	var document yamllib.Node
+	if err := yamllib.NewDecoder(bytes.NewReader(data)).Decode(&document); err != nil {
+		return nil, err
+	}
+	if document.Kind != yamllib.DocumentNode || len(document.Content) != 1 {
+		return nil, errors.New("could not create YAML object document")
+	}
+	node := document.Content[0]
+	node.Tag = "!ruby/object:" + o.class
+	return node, nil
+}
 
 func init() {
 	oruby.LazyGem("yaml", initYAML)
@@ -310,6 +333,8 @@ func rubyYAMLValue(mrb *oruby.MrbState, value oruby.Value, seen map[uintptr]bool
 			return nil, errors.New("non-finite floats are not supported")
 		}
 		return f, nil
+	case oruby.MrbTTSymbol:
+		return ":" + mrb.SymName(value.Symbol()), nil
 	case oruby.MrbTTString:
 		return mrb.String(value), nil
 	case oruby.MrbTTArray:
@@ -348,8 +373,46 @@ func rubyYAMLValue(mrb *oruby.MrbState, value oruby.Value, seen map[uintptr]bool
 		}
 		return result, nil
 	default:
+		if mrb.ClassDefined("OpenStruct") && mrb.ObjIsInstanceOf(value, mrb.ClassGet("OpenStruct")) {
+			return rubyOpenStructYAMLValue(mrb, value, seen, depth)
+		}
+		if mrb.ClassDefined("File") && mrb.ObjIsInstanceOf(value, mrb.ClassGet("File")) {
+			return rubyYAMLObject{class: "File", fields: map[string]interface{}{}}, nil
+		}
 		return nil, fmt.Errorf("Ruby value of type %s is not supported", mrb.TypeName(value))
 	}
+}
+
+func rubyOpenStructYAMLValue(mrb *oruby.MrbState, value oruby.Value, seen map[uintptr]bool, depth int) (interface{}, error) {
+	if err := markYAMLComposite(value, seen); err != nil {
+		return nil, err
+	}
+	table := mrb.GetIV(value, "@table")
+	if table.Type() != oruby.MrbTTHash {
+		return nil, errors.New("OpenStruct has no supported table")
+	}
+	fields := make(map[string]interface{})
+	for _, pair := range oruby.RHashEntries(table) {
+		key := pair[0]
+		var name string
+		switch key.Type() {
+		case oruby.MrbTTSymbol:
+			name = mrb.SymName(key.Symbol())
+		case oruby.MrbTTString:
+			name = mrb.String(key)
+		default:
+			return nil, errors.New("OpenStruct YAML keys must be Symbols or Strings")
+		}
+		if _, exists := fields[name]; exists {
+			return nil, fmt.Errorf("duplicate OpenStruct YAML field %q", name)
+		}
+		converted, err := rubyYAMLValue(mrb, pair[1], seen, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		fields[name] = converted
+	}
+	return rubyYAMLObject{class: "OpenStruct", fields: fields}, nil
 }
 
 func markYAMLComposite(value oruby.Value, seen map[uintptr]bool) error {

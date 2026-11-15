@@ -43,6 +43,21 @@ func TestStdlibImportRegistersProviders(t *testing.T) {
 	}
 }
 
+func TestMarshalIsAvailableFromStdlib(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`defined?(Marshal) || "missing"`)
+	if err != nil || mrb.String(got) != "constant" {
+		t.Fatalf("Marshal availability = %q, %v; want constant, nil", mrb.String(got), err)
+	}
+
+	got, err = mrb.Eval(`Marshal::MAJOR_VERSION.to_s + "." + Marshal::MINOR_VERSION.to_s`)
+	if err != nil || mrb.String(got) != "4.8" {
+		t.Fatalf("Marshal format version = %q, %v; want 4.8, nil", mrb.String(got), err)
+	}
+}
+
 func TestStdlibImportIndependentStates(t *testing.T) {
 	first := oruby.MrbOpen()
 	defer first.Close()
@@ -190,6 +205,38 @@ func TestPrettyPrintLazyLoadAndWrapping(t *testing.T) {
 	}
 }
 
+func TestPrettyPrintExplicitWidthsAndGroupIndent(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	if _, err := mrb.Resolve("load"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mrb.Eval(`
+    require "prettyprint"
+    wide_text = PrettyPrint.format("", 6) do |q|
+      q.text("abc", 5)
+      q.breakable
+      q.text("d", 1)
+    end
+    wide_break = PrettyPrint.format("", 4) do |q|
+      q.text("a", 1)
+      q.breakable(" ", 3)
+      q.text("b", 1)
+    end
+    nested = PrettyPrint.format("", 2) do |q|
+      q.group(2, "[", "]") do
+        q.text("a")
+        q.breakable
+        q.text("b")
+      end
+    end
+    [wide_text, wide_break, nested] == ["abc\nd", "a\nb", "[a\n  b]"]
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("PrettyPrint explicit widths/group indentation = %v, %v; want true, nil", got, err)
+	}
+}
+
 func TestOptionParserIntoKeyword(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
@@ -243,6 +290,43 @@ func TestOptionParserIntoKeyword(t *testing.T) {
   `)
 	if err != nil || !got.Bool() {
 		t.Fatalf("OptionParser block with into = %v, %v; want true, nil", got, err)
+	}
+}
+
+func TestOptionParserTypedAndOptionalArguments(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	if _, err := mrb.Resolve("load"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mrb.Eval(`
+    require "optparse"
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.on("-n N", "--number N", Integer)
+      opts.on("--ratio=RATIO", Float)
+      opts.on("--color[=WHEN]", String)
+    end
+    arguments = %w[--number 0xff --ratio 1.5 --color=always tail]
+    remaining = parser.parse!(arguments, into: options)
+    converted = options == { number: 255, ratio: 1.5, color: "always" } && remaining == ["tail"]
+
+    optional_options = {}
+    optional_parser = OptionParser.new { |opts| opts.on("--color[=WHEN]", String) }
+    optional_args = %w[--color tail]
+    optional_remaining = optional_parser.parse!(optional_args, into: optional_options)
+    optional = optional_options == { color: nil } && optional_remaining == ["tail"]
+
+    invalid = begin
+      parser.parse(%w[--number nope])
+      false
+    rescue OptionParser::ParseError
+      true
+    end
+    converted && optional && invalid
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("OptionParser typed/optional arguments = %v, %v; want true, nil", got, err)
 	}
 }
 

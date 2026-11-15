@@ -8,32 +8,33 @@ class OptionParser
   end
 
   def on(*specifications, &handler)
-    unless specifications.all? { |spec| spec.is_a?(String) }
-      raise NotImplementedError, "typed option conversion is not supported"
-    end
     flags = specifications.select { |spec| spec.is_a?(String) && spec.start_with?("-") }
     raise ArgumentError, "no option switches given" if flags.empty?
-    if flags.any? { |flag| flag.sub("[no-]", "").include?("[") }
-      raise NotImplementedError, "optional option arguments are not supported"
+    types = specifications.reject { |spec| spec.is_a?(String) }
+    if types.length > 1 || types.any? { |type| ![Integer, Float, String].include?(type) }
+      raise NotImplementedError, "unsupported option conversion type"
     end
+    type = types.first
 
-    takes_argument = flags.any? { |flag| flag.include?(" ") || flag.include?("=") }
     long = flags.find { |flag| flag.start_with?("--") }
     key_source = long || flags.first
-    key_source = key_source.split(" ", 2).first.split("=", 2).first
+    key_source = key_source.split(" ", 2).first.split("[=", 2).first.split("=", 2).first
     key_source = key_source.start_with?("--") ? key_source[2..-1] : key_source[1..-1]
     negated = key_source.start_with?("[no-]")
     key_source = key_source.sub("[no-]", "") if negated
     key = key_source.to_sym
 
     flags.each do |flag|
-      name = flag.split(" ", 2).first.split("=", 2).first
+      raw_name = flag.split(" ", 2).first
+      optional_argument = raw_name.include?("[=")
+      name = raw_name.split("[=", 2).first.split("=", 2).first
+      takes_argument = optional_argument || flag.include?(" ") || raw_name.include?("=")
       if name.include?("[no-]")
         positive = name.sub("[no-]", "")
-        @switches[positive] = [key, true, takes_argument, handler]
-        @switches[positive.sub("--", "--no-")] = [key, false, takes_argument, handler]
+        @switches[positive] = [key, true, takes_argument, handler, optional_argument, type]
+        @switches[positive.sub("--", "--no-")] = [key, false, takes_argument, handler, optional_argument, type]
       else
-        @switches[name] = [key, !name.start_with?("--no-"), takes_argument, handler]
+        @switches[name] = [key, !name.start_with?("--no-"), takes_argument, handler, optional_argument, type]
       end
     end
     self
@@ -92,12 +93,17 @@ class OptionParser
       end
       raise ParseError, "invalid option: #{argument}" unless option
 
-      key, value, takes_argument, handler = option
+      key, value, takes_argument, handler, optional_argument, type = option
       if takes_argument
         if inline_value.nil?
-          raise ParseError, "missing argument: #{switch_name}" if index + 1 >= arguments.length
-          inline_value = arguments[index + 1].to_s
-          consumed = 2
+          if optional_argument
+            inline_value = nil
+            consumed = 1
+          else
+            raise ParseError, "missing argument: #{switch_name}" if index + 1 >= arguments.length
+            inline_value = arguments[index + 1].to_s
+            consumed = 2
+          end
         else
           consumed = 1
         end
@@ -107,10 +113,25 @@ class OptionParser
         consumed = 1
       end
 
+      value = convert_argument(value, type)
       value = handler.call(value) if handler
       into[key] = value if into
       arguments.slice!(index, consumed)
     end
     arguments
+  end
+
+  def convert_argument(value, type)
+    return value if type.nil? || value.nil? || type == String
+
+    if type == Integer
+      Integer(value)
+    elsif type == Float
+      Float(value)
+    else
+      raise NotImplementedError, "unsupported option conversion type"
+    end
+  rescue StandardError
+    raise ParseError, "invalid argument: #{value}"
   end
 end
