@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/bigint"
 )
 
 const (
@@ -155,12 +157,16 @@ func (w *writer) writeValue(value oruby.Value, depth int) error {
 	case oruby.MrbTTTrue:
 		return w.writeByte('T')
 	case oruby.MrbTTInteger:
-		if err := w.writeByte('i'); err != nil {
-			return err
-		}
-		return w.writeLong(value.Int64())
+		return w.writeInteger(big.NewInt(value.Int64()))
 	case oruby.MrbTTSymbol:
 		return w.writeSymbol(value.Symbol())
+	}
+	hasMarshalDump := w.mrb.RespondTo(value, w.mrb.Intern("marshal_dump"))
+	hasUserDump := w.mrb.RespondTo(value, w.mrb.Intern("_dump"))
+	if value.Type() == oruby.MrbTTCData && !hasMarshalDump && !hasUserDump {
+		if bi, ok := w.mrb.Data(value).(*bigint.RBigInt); ok && isMarshalFixnum(bi.Value()) {
+			return w.writeInteger(bi.Value())
+		}
 	}
 
 	if value.HasBasic() {
@@ -170,10 +176,10 @@ func (w *writer) writeValue(value oruby.Value, depth int) error {
 		}
 	}
 
-	if w.mrb.RespondTo(value, w.mrb.Intern("marshal_dump")) {
+	if hasMarshalDump {
 		return w.writeMarshalDump(value, depth)
 	}
-	if w.mrb.RespondTo(value, w.mrb.Intern("_dump")) {
+	if hasUserDump {
 		return w.writeUserDump(value)
 	}
 	if value.Type() == oruby.MrbTTCData && w.mrb.ClassOf(value).Name() == "Regexp" {
@@ -254,17 +260,72 @@ func (w *writer) writeValue(value oruby.Value, depth int) error {
 		return w.writeStringBytes(tag, []byte(name))
 	case oruby.MrbTTStruct, oruby.MrbTTIStruct:
 		return w.writeStruct(value, depth)
-	case oruby.MrbTTObject, oruby.MrbTTException:
+	case oruby.MrbTTRange:
+		return w.writeRange(value, depth)
+	case oruby.MrbTTObject:
 		return w.writeObject(value, depth)
+	case oruby.MrbTTException:
+		return w.writeException(value, depth)
+	case oruby.MrbTTCData:
+		if bi, ok := w.mrb.Data(value).(*bigint.RBigInt); ok {
+			return w.writeInteger(bi.Value())
+		}
+		return oruby.ETypeError("can't dump %s", w.mrb.TypeName(value))
 	case oruby.MrbTTBigInt:
-		return oruby.ETypeError("can't dump bignum values")
+		return oruby.ETypeError("unsupported native bignum representation")
 	default:
 		return oruby.ETypeError("can't dump %s", w.mrb.TypeName(value))
 	}
 }
 
+func (w *writer) writeInteger(value *big.Int) error {
+	if isMarshalFixnum(value) {
+		if err := w.writeByte('i'); err != nil {
+			return err
+		}
+		return w.writeLong(value.Int64())
+	}
+
+	if value.BitLen() > maxInputBytes*8 {
+		return oruby.ERangeError("Marshal bignum exceeds size limit")
+	}
+	magnitude := new(big.Int).Abs(value).Bytes()
+	words := (len(magnitude) + 1) / 2
+	if err := w.writeByte('l'); err != nil {
+		return err
+	}
+	sign := byte('+')
+	if value.Sign() < 0 {
+		sign = '-'
+	}
+	if err := w.writeByte(sign); err != nil {
+		return err
+	}
+	if err := w.writeLong(int64(words)); err != nil {
+		return err
+	}
+	for i := 0; i < words*2; i++ {
+		index := len(magnitude) - i - 1
+		var b byte
+		if index >= 0 {
+			b = magnitude[index]
+		}
+		if err := w.writeByte(b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isMarshalFixnum(value *big.Int) bool {
+	return value.Cmp(big.NewInt(-(1<<30))) >= 0 && value.Cmp(big.NewInt((1<<30)-1)) <= 0
+}
+
 func (w *writer) writeString(value oruby.Value, depth int) error {
-	data := rubyBytes(value)
+	data, err := rubyBytesLimited(value)
+	if err != nil {
+		return err
+	}
 	encoding := "UTF-8"
 	if w.mrb.RespondTo(value, w.mrb.Intern("encoding")) {
 		enc, err := w.mrb.Funcall(value, w.mrb.Intern("encoding"))
@@ -287,8 +348,11 @@ func (w *writer) writeString(value oruby.Value, depth int) error {
 	if err != nil {
 		return err
 	}
+	if len(vars) != 0 {
+		return oruby.ETypeError("can't dump String instance variables")
+	}
 	binaryEncoding := strings.EqualFold(encoding, "ASCII-8BIT") || strings.EqualFold(encoding, "BINARY")
-	if binaryEncoding && len(vars) == 0 {
+	if binaryEncoding {
 		return w.writeStringBytes('"', data)
 	}
 	if err := w.writeByte('I'); err != nil {
@@ -304,9 +368,9 @@ func (w *writer) writeString(value oruby.Value, depth int) error {
 		encodingValue = oruby.False
 	} else {
 		encodingName = "encoding"
-		encodingValue = w.mrb.BytesValue([]byte(encoding))
+		encodingValue = w.mrb.StrNew(encoding).Value()
 	}
-	if err := w.writeLong(int64(len(vars) + 1)); err != nil {
+	if err := w.writeLong(1); err != nil {
 		return err
 	}
 	if err := w.writeSymbol(w.mrb.Intern(encodingName)); err != nil {
@@ -314,15 +378,6 @@ func (w *writer) writeString(value oruby.Value, depth int) error {
 	}
 	if err := w.writeValue(encodingValue, depth); err != nil {
 		return err
-	}
-	for _, name := range vars {
-		if err := w.writeSymbol(name.Symbol()); err != nil {
-			return err
-		}
-		item := w.mrb.IVGet(value, name.Symbol())
-		if err := w.writeValue(item, depth+1); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -363,7 +418,10 @@ func (w *writer) writeUserDump(value oruby.Value) error {
 	if err := w.writeSymbol(w.mrb.Intern(name)); err != nil {
 		return err
 	}
-	data := rubyBytes(payload)
+	data, err := rubyBytesLimited(payload)
+	if err != nil {
+		return err
+	}
 	if err := w.writeLong(int64(len(data))); err != nil {
 		return err
 	}
@@ -399,7 +457,11 @@ func (w *writer) writeRegexp(value oruby.Value) error {
 	if err := w.writeByte('I'); err != nil {
 		return err
 	}
-	if err := w.writeStringBytes('/', rubyBytes(source)); err != nil {
+	pattern, err := rubyBytesLimited(source)
+	if err != nil {
+		return err
+	}
+	if err := w.writeStringBytes('/', pattern); err != nil {
 		return err
 	}
 	if err := w.writeByte(byte(optionBits)); err != nil {
@@ -556,10 +618,109 @@ func (w *writer) writeStruct(value oruby.Value, depth int) error {
 	return nil
 }
 
+func (w *writer) writeRange(value oruby.Value, depth int) error {
+	rangeValue, err := w.mrb.MrbRangePtr(value)
+	if err != nil {
+		return err
+	}
+	if err := w.writeByte('o'); err != nil {
+		return err
+	}
+	if err := w.writeSymbol(w.mrb.Intern("Range")); err != nil {
+		return err
+	}
+	if err := w.writeLong(3); err != nil {
+		return err
+	}
+	fields := []struct {
+		name  string
+		value oruby.Value
+	}{
+		{"excl", w.mrb.BoolValue(rangeValue.Exclusive())},
+		{"begin", rangeValue.Begin()},
+		{"end", rangeValue.End()},
+	}
+	for _, field := range fields {
+		if err := w.writeSymbol(w.mrb.Intern(field.name)); err != nil {
+			return err
+		}
+		if err := w.writeValue(field.value, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *writer) writeException(value oruby.Value, depth int) error {
+	name, err := w.classPath(value)
+	if err != nil {
+		return err
+	}
+	message := w.mrb.ExcMessage(value)
+	backtrace := w.mrb.ExcBacktrace(value)
+	vars, err := w.ivars(value)
+	if err != nil {
+		return err
+	}
+	if err := w.writeByte('o'); err != nil {
+		return err
+	}
+	if err := w.writeSymbol(w.mrb.Intern(name)); err != nil {
+		return err
+	}
+	fieldCount := 1 + len(vars)
+	writeBacktrace := !message.IsNil() || !backtrace.IsNil()
+	if writeBacktrace {
+		fieldCount++
+	}
+	if err := w.writeLong(int64(fieldCount)); err != nil {
+		return err
+	}
+	fields := []struct {
+		name  string
+		value oruby.Value
+	}{{"mesg", message}}
+	if writeBacktrace {
+		fields = append(fields, struct {
+			name  string
+			value oruby.Value
+		}{"bt", backtrace})
+	}
+	for _, field := range fields {
+		if err := w.writeSymbol(w.mrb.Intern(field.name)); err != nil {
+			return err
+		}
+		if err := w.writeValue(field.value, depth+1); err != nil {
+			return err
+		}
+	}
+	for _, variable := range vars {
+		if err := w.writeSymbol(variable.Symbol()); err != nil {
+			return err
+		}
+		if err := w.writeValue(w.mrb.IVGet(value, variable.Symbol()), depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func rubyBytes(value oruby.Value) []byte {
 	ptr, n := oruby.RStringMem(value)
 	if n == 0 {
 		return nil
 	}
 	return append([]byte(nil), unsafe.Slice(ptr, n)...)
+}
+
+func rubyByteLen(value oruby.Value) int {
+	_, n := oruby.RStringMem(value)
+	return n
+}
+
+func rubyBytesLimited(value oruby.Value) ([]byte, error) {
+	if rubyByteLen(value) > maxInputBytes {
+		return nil, oruby.ERangeError("Marshal string exceeds size limit")
+	}
+	return rubyBytes(value), nil
 }

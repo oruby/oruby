@@ -4,6 +4,7 @@ import (
 	"bytes"
 
 	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/bigint"
 )
 
 func init() {
@@ -11,6 +12,9 @@ func init() {
 }
 
 func initMarshal(mrb *oruby.MrbState) interface{} {
+	if _, err := mrb.Resolve("bigint"); err != nil {
+		panic(err)
+	}
 	mod := mrb.DefineModule("Marshal")
 	mod.DefineClassMethod("dump", marshalDump, mrb.ArgsArg(1, 2))
 	mod.DefineClassMethod("load", marshalLoad, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
@@ -62,10 +66,10 @@ func marshalLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	var source byteSource
 	if args[0].Type() == oruby.MrbTTString {
-		data := rubyBytes(args[0])
-		if len(data) > maxInputBytes {
+		if rubyByteLen(args[0]) > maxInputBytes {
 			return mrb.Raise(mrb.ERangeError(), "Marshal input exceeds size limit")
 		}
+		data := rubyBytes(args[0])
 		source = bytes.NewReader(data)
 	} else if mrb.RespondTo(args[0], mrb.Intern("read")) {
 		source = &rubyReader{mrb: mrb, object: args[0]}

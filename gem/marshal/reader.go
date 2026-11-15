@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/bigint"
 )
 
 type byteSource interface {
@@ -34,7 +36,13 @@ func (r *rubyReader) Read(p []byte) (int, error) {
 	if value.Type() != oruby.MrbTTString {
 		return 0, oruby.ETypeError("IO#read must return String or nil")
 	}
-	data := rubyBytes(value)
+	if rubyByteLen(value) > len(p) {
+		return 0, oruby.EArgumentError("IO#read returned more bytes than requested")
+	}
+	data, err := rubyBytesLimited(value)
+	if err != nil {
+		return 0, err
+	}
 	if len(data) == 0 {
 		return 0, io.EOF
 	}
@@ -143,17 +151,27 @@ func (r *reader) readCount() (int, error) {
 }
 
 func (r *reader) readFull(data []byte) error {
-	if int64(len(data)) > int64(maxInputBytes)-r.read {
-		return oruby.ERangeError("Marshal input exceeds size limit")
+	if err := r.checkReadBudget(len(data)); err != nil {
+		return err
 	}
 	n, err := io.ReadFull(r.source, data)
 	r.read += int64(n)
 	return err
 }
 
+func (r *reader) checkReadBudget(n int) error {
+	if n < 0 || int64(n) > int64(maxInputBytes)-r.read {
+		return oruby.ERangeError("Marshal input exceeds size limit")
+	}
+	return nil
+}
+
 func (r *reader) readBytes() ([]byte, error) {
 	n, err := r.readLength()
 	if err != nil {
+		return nil, err
+	}
+	if err := r.checkReadBudget(n); err != nil {
 		return nil, err
 	}
 	data := make([]byte, n)
@@ -252,12 +270,56 @@ func (r *reader) readValue(depth int) (oruby.Value, error) {
 	case '/':
 		return r.readRegexp()
 	case 'l':
-		return oruby.Nil, oruby.ETypeError("bignum values are not supported by this Marshal provider")
+		return r.readBignum()
 	case 'C', 'e':
 		return oruby.Nil, oruby.ETypeError("Marshal tag %q is not supported", tag)
 	default:
 		return oruby.Nil, oruby.EArgumentError("invalid/unknown Marshal format (0x%02x)", tag)
 	}
+}
+
+func (r *reader) readBignum() (oruby.Value, error) {
+	sign, err := r.readByte()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if sign != '+' && sign != '-' {
+		return oruby.Nil, oruby.EArgumentError("invalid bignum sign in Marshal data")
+	}
+	words, err := r.readLong()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if words < 0 || words > maxInputBytes/2 {
+		return oruby.Nil, oruby.ERangeError("Marshal bignum exceeds size limit")
+	}
+	byteCount := int(words) * 2
+	if err := r.checkReadBudget(byteCount); err != nil {
+		return oruby.Nil, err
+	}
+	littleEndian := make([]byte, byteCount)
+	if err := r.readFull(littleEndian); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return oruby.Nil, oruby.EArgumentError("marshal data too short")
+		}
+		return oruby.Nil, err
+	}
+	for left, right := 0, len(littleEndian)-1; left < right; left, right = left+1, right-1 {
+		littleEndian[left], littleEndian[right] = littleEndian[right], littleEndian[left]
+	}
+	value := new(big.Int).SetBytes(littleEndian)
+	if sign == '-' {
+		value.Neg(value)
+	}
+	if !r.mrb.ClassDefined("Bignum") {
+		return oruby.Nil, oruby.ETypeError("Bignum class is not available")
+	}
+	result, err := r.mrb.ClassGet("Bignum").NewGoInstance(bigint.New(value))
+	if err != nil {
+		return oruby.Nil, err
+	}
+	r.addObject(result)
+	return result, nil
 }
 
 func (r *reader) readStringObject() (oruby.Value, error) {
@@ -372,16 +434,29 @@ func (r *reader) readIvars(depth int) (oruby.Value, error) {
 		if value.Type() == oruby.MrbTTString && (name == "E" || name == "encoding") {
 			encoding := "US-ASCII"
 			if name == "encoding" {
+				if item.Type() != oruby.MrbTTString {
+					return oruby.Nil, oruby.EArgumentError("String encoding metadata is not a String")
+				}
 				encoding = r.mrb.String(item)
-			} else if item.Type() == oruby.MrbTTTrue {
-				encoding = "UTF-8"
-			}
-			if r.mrb.RespondTo(value, r.mrb.Intern("force_encoding")) {
-				if _, err := r.mrb.Funcall(value, r.mrb.Intern("force_encoding"), encoding); err != nil {
-					return oruby.Nil, err
+			} else {
+				switch item.Type() {
+				case oruby.MrbTTTrue:
+					encoding = "UTF-8"
+				case oruby.MrbTTFalse:
+				default:
+					return oruby.Nil, oruby.EArgumentError("String encoding flag is not boolean")
 				}
 			}
+			if !r.mrb.RespondTo(value, r.mrb.Intern("force_encoding")) {
+				return oruby.Nil, oruby.ETypeError("String encoding metadata cannot be restored")
+			}
+			if _, err := r.mrb.Funcall(value, r.mrb.Intern("force_encoding"), encoding); err != nil {
+				return oruby.Nil, err
+			}
 			continue
+		}
+		if value.Type() == oruby.MrbTTString {
+			return oruby.Nil, oruby.ETypeError("String instance variables cannot be restored by this mruby runtime")
 		}
 		if err := r.mrb.IVSet(value, key.Symbol(), item); err != nil {
 			return oruby.Nil, err
@@ -402,6 +477,9 @@ func (r *reader) readObject(depth int) (oruby.Value, error) {
 	if klass.Type() != oruby.MrbTTClass {
 		return oruby.Nil, oruby.ETypeError("%s is not a class", name)
 	}
+	if name == "Range" {
+		return r.readRange(klass, depth)
+	}
 	value, err := r.mrb.Funcall(klass, r.mrb.Intern("allocate"))
 	if err != nil {
 		return oruby.Nil, err
@@ -410,6 +488,9 @@ func (r *reader) readObject(depth int) (oruby.Value, error) {
 	n, err := r.readCount()
 	if err != nil {
 		return oruby.Nil, err
+	}
+	if value.Type() == oruby.MrbTTException {
+		return r.readException(value, n, depth)
 	}
 	for i := 0; i < n; i++ {
 		key, err := r.readValue(depth + 1)
@@ -424,6 +505,121 @@ func (r *reader) readObject(depth int) (oruby.Value, error) {
 			return oruby.Nil, err
 		}
 		if err := r.mrb.IVSet(value, key.Symbol(), item); err != nil {
+			return oruby.Nil, err
+		}
+	}
+	return value, nil
+}
+
+func (r *reader) readRange(klass oruby.Value, depth int) (oruby.Value, error) {
+	value, err := r.mrb.Funcall(klass, r.mrb.Intern("allocate"))
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if value.Type() != oruby.MrbTTRange {
+		return oruby.Nil, oruby.ETypeError("Range.allocate did not return a Range")
+	}
+	r.addObject(value)
+	n, err := r.readCount()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if n != 3 {
+		return oruby.Nil, oruby.EArgumentError("invalid Range field count in Marshal data")
+	}
+	var begin, end oruby.Value
+	var exclusive bool
+	seen := make(map[string]bool, 3)
+	for i := 0; i < n; i++ {
+		key, err := r.readValue(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if key.Type() != oruby.MrbTTSymbol {
+			return oruby.Nil, oruby.EArgumentError("Range field name is not a Symbol")
+		}
+		name := r.mrb.SymName(key.Symbol())
+		if seen[name] {
+			return oruby.Nil, oruby.EArgumentError("duplicate Range field %s in Marshal data", name)
+		}
+		seen[name] = true
+		field, err := r.readValue(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		switch name {
+		case "begin":
+			begin = field
+		case "end":
+			end = field
+		case "excl":
+			if field.Type() != oruby.MrbTTTrue && field.Type() != oruby.MrbTTFalse {
+				return oruby.Nil, oruby.EArgumentError("Range exclusivity flag is not boolean")
+			}
+			exclusive = field.Bool()
+		default:
+			return oruby.Nil, oruby.EArgumentError("unknown Range field %s in Marshal data", name)
+		}
+	}
+	for _, name := range []string{"begin", "end", "excl"} {
+		if !seen[name] {
+			return oruby.Nil, oruby.EArgumentError("missing Range field %s in Marshal data", name)
+		}
+	}
+	if _, err := r.mrb.Funcall(value, r.mrb.Intern("initialize"), begin, end, exclusive); err != nil {
+		return oruby.Nil, err
+	}
+	return value, nil
+}
+
+func (r *reader) readException(value oruby.Value, n, depth int) (oruby.Value, error) {
+	var message, backtrace oruby.Value
+	hasMessage, hasBacktrace := false, false
+	var variables []struct {
+		name  oruby.MrbSym
+		value oruby.Value
+	}
+	for i := 0; i < n; i++ {
+		key, err := r.readValue(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if key.Type() != oruby.MrbTTSymbol {
+			return oruby.Nil, oruby.EArgumentError("instance variable name is not a Symbol")
+		}
+		item, err := r.readValue(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		switch r.mrb.SymName(key.Symbol()) {
+		case "mesg":
+			if hasMessage {
+				return oruby.Nil, oruby.EArgumentError("duplicate Exception message in Marshal data")
+			}
+			message, hasMessage = item, true
+		case "bt":
+			if hasBacktrace {
+				return oruby.Nil, oruby.EArgumentError("duplicate Exception backtrace in Marshal data")
+			}
+			backtrace, hasBacktrace = item, true
+		default:
+			variables = append(variables, struct {
+				name  oruby.MrbSym
+				value oruby.Value
+			}{key.Symbol(), item})
+		}
+	}
+	if !hasMessage {
+		return oruby.Nil, oruby.EArgumentError("missing Exception fields in Marshal data")
+	}
+	if err := r.mrb.SetExcMessage(value, message); err != nil {
+		return oruby.Nil, err
+	}
+	if err := r.mrb.SetExcBacktrace(value, backtrace); err != nil {
+		return oruby.Nil, err
+	}
+	for _, variable := range variables {
+		if err := r.mrb.IVSet(value, variable.name, variable.value); err != nil {
 			return oruby.Nil, err
 		}
 	}
@@ -510,6 +706,9 @@ func (r *reader) readUserLoad() (oruby.Value, error) {
 	}
 	n, err := r.readLength()
 	if err != nil {
+		return oruby.Nil, err
+	}
+	if err := r.checkReadBudget(n); err != nil {
 		return oruby.Nil, err
 	}
 	data := make([]byte, n)

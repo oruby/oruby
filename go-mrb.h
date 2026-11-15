@@ -39,6 +39,22 @@ extern "C" {
 #include "mruby/version.h"
 #include "mruby/opcode.h"
 
+static inline void _mrb_exc_set_marshaled_message(mrb_state *mrb, mrb_value exc, mrb_value message) {
+  struct RException *e = mrb_exc_ptr(exc);
+  e->mesg = mrb_nil_p(message) ? NULL : mrb_basic_ptr(message);
+  if (!mrb_nil_p(message)) {
+    mrb_field_write_barrier_value(mrb, (struct RBasic*)e, message);
+  }
+}
+
+static inline void _mrb_exc_set_marshaled_backtrace(mrb_state *mrb, mrb_value exc, mrb_value backtrace) {
+  struct RException *e = mrb_exc_ptr(exc);
+  e->backtrace = mrb_nil_p(backtrace) ? NULL : mrb_basic_ptr(backtrace);
+  if (!mrb_nil_p(backtrace)) {
+    mrb_field_write_barrier_value(mrb, (struct RBasic*)e, backtrace);
+  }
+}
+
 static char* _MRUBY_COPYRIGHT()  { return MRUBY_COPYRIGHT; }
 static char* _MRUBY_DESCRIPTION()  { return MRUBY_DESCRIPTION; }
 static mrb_int _MRUBY_RELEASE_MAJOR()  { return (mrb_int)MRUBY_RELEASE_MAJOR; }

@@ -2,6 +2,7 @@ package marshal_test
 
 import (
 	"encoding/hex"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -43,6 +44,13 @@ func TestMarshalMRIWireFormat(t *testing.T) {
 		{"zero", `Marshal.dump(0)`, "04086900"},
 		{"positive fixnum", `Marshal.dump(123)`, "040869017b"},
 		{"negative fixnum", `Marshal.dump(-125)`, "040869ff83"},
+		{"largest MRI fixnum", `Marshal.dump(1073741823)`, "04086904ffffff3f"},
+		{"smallest MRI fixnum", `Marshal.dump(-1073741824)`, "040869fc000000c0"},
+		{"first positive bignum", `Marshal.dump(1073741824)`, "04086c2b0700000040"},
+		{"first negative bignum", `Marshal.dump(-1073741825)`, "04086c2d0701000040"},
+		{"large negative bignum", `Marshal.dump(Bignum.new("-1267650600228229401496703205376"))`, "04086c2d0c0000000000000000000000001000"},
+		{"linked bignum", `(number = Bignum.new("1267650600228229401496703205376"); Marshal.dump([number, number]))`, "04085b076c2b0c00000000000000000000000010004006"},
+		{"exception metadata", `(exception = RuntimeError.new("bad"); exception.set_backtrace(["x.rb:2"]); exception.instance_variable_set(:@extra, :ok); Marshal.dump(exception))`, "04086f3a1152756e74696d654572726f72083a096d657367492208626164063a0645543a0762745b0649220b782e72623a32063b07543a0b4065787472613a076f6b"},
 		{"utf8 string", `Marshal.dump("hello")`, "040849220a68656c6c6f063a064554"},
 		{"binary string", `Marshal.dump("\xFF".b)`, "04082206ff"},
 		{"symbol", `Marshal.dump(:name)`, "04083a096e616d65"},
@@ -51,6 +59,9 @@ func TestMarshalMRIWireFormat(t *testing.T) {
 		{"array", `Marshal.dump([1, "x"])`, "04085b07690649220678063a064554"},
 		{"cycle", `(cycle = []; cycle << cycle; Marshal.dump(cycle))`, "04085b064000"},
 		{"hash", `Marshal.dump({a: 1})`, "04087b063a06616906"},
+		{"inclusive range", `Marshal.dump(1..3)`, "04086f3a0a52616e6765083a096578636c463a0a626567696e69063a08656e646908"},
+		{"exclusive range", `Marshal.dump(1...3)`, "04086f3a0a52616e6765083a096578636c543a0a626567696e69063a08656e646908"},
+		{"exception", `Marshal.dump(ArgumentError.new("bad"))`, "04086f3a12417267756d656e744572726f72073a096d657367492208626164063a0645543a07627430"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,6 +73,146 @@ func TestMarshalMRIWireFormat(t *testing.T) {
 				t.Fatalf("wire bytes = %s; MRI 4.1 = %s", got, tc.hex)
 			}
 		})
+	}
+}
+
+func TestMarshalGoBignumRoundTrip(t *testing.T) {
+	mrb := openMarshal(t)
+	got, err := mrb.Eval(`
+    value = Bignum.new("1267650600228229401496703205376")
+    copy = Marshal.load(Marshal.dump(value))
+    copy.class == Bignum && copy.to_s == value.to_s
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("Go-backed Bignum round trip = %v, %v; want true, nil", got, err)
+	}
+	got, err = mrb.Eval(`
+    value = Bignum.new("1267650600228229401496703205376")
+    copy = Marshal.load(Marshal.dump([value, value]))
+    copy[0].equal?(copy[1])
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("Bignum object link = %v, %v; want true, nil", got, err)
+	}
+}
+
+func TestMarshalLoadsMRI41Bignums(t *testing.T) {
+	mrb := openMarshal(t)
+	marshalModule := mrb.ConstGet(mrb.ObjectClass(), mrb.Intern("Marshal"))
+	for _, tc := range []struct {
+		wire string
+		want string
+	}{
+		{"04086c2b0700000040", "1073741824"},
+		{"04086c2d0701000040", "-1073741825"},
+		{"04086c2b0c0000000000000000000000001000", "1267650600228229401496703205376"},
+		{"04086c2d0c0000000000000000000000001000", "-1267650600228229401496703205376"},
+	} {
+		encoded, err := hex.DecodeString(tc.wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := mrb.Funcall(marshalModule, mrb.Intern("load"), mrb.BytesValue(encoded))
+		if err != nil {
+			t.Fatalf("load MRI bignum %s: %v", tc.wire, err)
+		}
+		text, err := mrb.Funcall(value, mrb.Intern("to_s"))
+		if err != nil || mrb.String(text) != tc.want {
+			t.Fatalf("MRI bignum %s = %q, %v; want %q", tc.wire, mrb.String(text), err, tc.want)
+		}
+		if value.Type() != oruby.MrbTTCData || mrb.ClassOf(value).Name() != "Bignum" {
+			t.Fatalf("MRI bignum %s produced %s, want Go-backed Bignum", tc.wire, mrb.TypeName(value))
+		}
+	}
+}
+
+func TestMarshalRangeAndExceptionFixtures(t *testing.T) {
+	mrb := openMarshal(t)
+	marshalModule := mrb.ConstGet(mrb.ObjectClass(), mrb.Intern("Marshal"))
+	load := func(encoded string) oruby.Value {
+		t.Helper()
+		data, err := hex.DecodeString(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := mrb.Funcall(marshalModule, mrb.Intern("load"), mrb.BytesValue(data))
+		if err != nil {
+			t.Fatalf("load MRI fixture %s: %v", encoded, err)
+		}
+		return value
+	}
+
+	inclusive := load("04086f3a0a52616e6765083a096578636c463a0a626567696e69063a08656e646908")
+	exclusive := load("04086f3a0a52616e6765083a096578636c543a0a626567696e69063a08656e646908")
+	for _, tc := range []struct {
+		value     oruby.Value
+		exclusive bool
+	}{
+		{inclusive, false},
+		{exclusive, true},
+	} {
+		if tc.value.Type() != oruby.MrbTTRange {
+			t.Fatalf("MRI Range fixture returned %s", mrb.TypeName(tc.value))
+		}
+		rangeValue, err := mrb.MrbRangePtr(tc.value)
+		if err != nil || rangeValue.Begin().Int64() != 1 || rangeValue.End().Int64() != 3 || rangeValue.Exclusive() != tc.exclusive {
+			t.Fatalf("MRI Range fixture = (%v, %v, %v), %v", rangeValue.Begin(), rangeValue.End(), rangeValue.Exclusive(), err)
+		}
+	}
+
+	exception := load("04086f3a12417267756d656e744572726f72073a096d657367492208626164063a0645543a07627430")
+	if exception.Type() != oruby.MrbTTException || mrb.ObjClassname(exception) != "ArgumentError" {
+		t.Fatalf("MRI Exception fixture = %s, want ArgumentError", mrb.ObjClassname(exception))
+	}
+	message, err := mrb.Funcall(exception, mrb.Intern("message"))
+	if err != nil || mrb.String(message) != "bad" {
+		t.Fatalf("MRI Exception message = %q, %v; want bad", mrb.String(message), err)
+	}
+	nilMessage := load("04086f3a0e457863657074696f6e063a096d657367303a07627430")
+	if !mrb.ExcMessage(nilMessage).IsNil() {
+		t.Fatal("MRI nil Exception message was not preserved")
+	}
+
+	extra := load("04086f3a1152756e74696d654572726f72083a096d657367492208626164063a0645543a0762745b0649220b782e72623a32063b07543a0b4065787472613a076f6b")
+	backtrace, err := mrb.Funcall(extra, mrb.Intern("backtrace"))
+	instanceVariable, ivarErr := mrb.Funcall(extra, mrb.Intern("instance_variable_get"), mrb.SymbolValue(mrb.Intern("@extra")))
+	if err != nil || ivarErr != nil || len(oruby.RArraySlice(backtrace)) != 1 || mrb.String(oruby.RArraySlice(backtrace)[0]) != "x.rb:2" || instanceVariable.Type() != oruby.MrbTTSymbol || mrb.SymName(instanceVariable.Symbol()) != "ok" {
+		t.Fatalf("MRI Exception metadata = (%v, %v), %v; want backtrace and @extra", backtrace, instanceVariable, err)
+	}
+
+	graph, err := mrb.Eval(`
+    items = []
+    range = items..nil
+    items << range
+    restored = Marshal.load(Marshal.dump(range))
+    restored.begin[0].equal?(restored)
+  `)
+	if err != nil || !graph.Bool() {
+		t.Fatalf("cyclic Range endpoint round trip = %v, %v; want true, nil", graph, err)
+	}
+}
+
+func TestMarshalExceptionLoadingSkipsInitializer(t *testing.T) {
+	mrb := openMarshal(t)
+	if _, err := mrb.Eval(`
+    class RuntimeError
+      def initialize(*); raise "Marshal must not call exception initialize"; end
+    end
+	`); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := hex.DecodeString("04086f3a1152756e74696d654572726f72073a096d657367492208626164063a0645543a07627430")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marshalModule := mrb.ConstGet(mrb.ObjectClass(), mrb.Intern("Marshal"))
+	exception, err := mrb.Funcall(marshalModule, mrb.Intern("load"), mrb.BytesValue(encoded))
+	if err != nil {
+		t.Fatalf("loading exception invoked overridden initialize: %v", err)
+	}
+	got, err := mrb.Funcall(exception, mrb.Intern("message"))
+	if err != nil || mrb.String(got) != "bad" {
+		t.Fatalf("loaded exception message = %q, %v; want bad without calling initialize", mrb.String(got), err)
 	}
 }
 
@@ -192,8 +343,8 @@ func TestMarshalIOAndHashDefault(t *testing.T) {
 
 func TestMarshalRejectsUnsupportedStringInstanceVariables(t *testing.T) {
 	mrb := openMarshal(t)
-	if _, err := mrb.Eval(`Marshal.load("\x04\x08I\"\x07hi\x07:\x06EF:\x07@xi\x06")`); err == nil {
-		t.Fatal("Marshal.load should reject String instance variables unsupported by this mruby runtime")
+	if _, err := mrb.Eval(`Marshal.load("\x04\x08I\"\x07hi\x07:\x06EF:\x07@xi\x06")`); err == nil || !strings.Contains(err.Error(), "String instance variables cannot be restored") {
+		t.Fatalf("Marshal.load error = %v; want explicit String-ivar runtime limitation", err)
 	}
 }
 
@@ -250,9 +401,10 @@ func TestMarshalCrossStateAndLimits(t *testing.T) {
 		`Marshal.dump(Hash.new { |hash, key| key })`,
 		`Marshal.dump(proc {})`,
 		`Marshal.load(Marshal.dump(1)) { |value| value }`,
+		`Marshal.load(Marshal.dump(1), proc {})`,
 	} {
 		if _, err := from.Eval(ruby); err == nil {
-			t.Errorf("expected Marshal.dump(%s) to fail", ruby)
+			t.Errorf("expected %s to fail", ruby)
 		}
 	}
 }
@@ -263,6 +415,8 @@ func TestMarshalRejectsMalformedStreams(t *testing.T) {
 		`Marshal.load("\x04\x07")`,
 		`Marshal.load("\x04\x08?")`,
 		`Marshal.load("\x04\x08@\x06")`,
+		`Marshal.load("\x04\x08l?\x00")`,
+		`Marshal.load("\x04\x08l+\x06")`,
 	} {
 		t.Run(ruby, func(t *testing.T) {
 			if _, err := mrb.Eval(ruby); err == nil {

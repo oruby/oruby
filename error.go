@@ -75,6 +75,53 @@ func (mrb *MrbState) ExcNewStr(c RClass, str MrbValue) Value {
 	return Value{C.mrb_exc_new_str(mrb.p, c.p, str.Value().v)}
 }
 
+// ExcMessage returns the raw message value stored in an exception, or nil.
+func (mrb *MrbState) ExcMessage(exc MrbValue) Value {
+	if exc.Type() != MrbTTException {
+		return Nil
+	}
+	return Value{C.mrb_exc_mesg_get(mrb.p, (*C.struct_RException)(C._mrb_ptr(exc.Value().v)))}
+}
+
+// ExcBacktrace returns the raw backtrace value stored in an exception, or nil.
+func (mrb *MrbState) ExcBacktrace(exc MrbValue) Value {
+	if exc.Type() != MrbTTException {
+		return Nil
+	}
+	return Value{C.mrb_exc_backtrace(mrb.p, exc.Value().v)}
+}
+
+// SetExcMessage restores a Marshal exception message without calling Ruby methods.
+func (mrb *MrbState) SetExcMessage(exc, message MrbValue) error {
+	if exc.Type() != MrbTTException {
+		return ETypeError("Exception value expected")
+	}
+	if !message.IsNil() && message.Type() != MrbTTString {
+		return ETypeError("exception message must be a String or nil in this runtime")
+	}
+	C._mrb_exc_set_marshaled_message(mrb.p, exc.Value().v, message.Value().v)
+	return nil
+}
+
+// SetExcBacktrace restores a Marshal exception backtrace without calling Ruby methods.
+func (mrb *MrbState) SetExcBacktrace(exc, backtrace MrbValue) error {
+	if exc.Type() != MrbTTException {
+		return ETypeError("Exception value expected")
+	}
+	if !backtrace.IsNil() {
+		if backtrace.Type() != MrbTTArray {
+			return ETypeError("exception backtrace must be an Array or nil")
+		}
+		for _, frame := range RArraySlice(backtrace.Value()) {
+			if frame.Type() != MrbTTString {
+				return ETypeError("exception backtrace entries must be Strings")
+			}
+		}
+	}
+	C._mrb_exc_set_marshaled_backtrace(mrb.p, exc.Value().v, backtrace.Value().v)
+	return nil
+}
+
 func (mrb *MrbState) NoMethodError(methodId MrbSym, args MrbValue, fmt string, fmtArgs ...interface{}) Value {
 	ret := mrb.ENoMethodError().Raisef(fmt, fmtArgs...)
 	mrb.SetIV(ret, "name", mrb.SymbolValue(methodId))
