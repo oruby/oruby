@@ -8,8 +8,14 @@ class OptionParser
   end
 
   def on(*specifications, &handler)
+    unless specifications.all? { |spec| spec.is_a?(String) }
+      raise NotImplementedError, "typed option conversion is not supported"
+    end
     flags = specifications.select { |spec| spec.is_a?(String) && spec.start_with?("-") }
     raise ArgumentError, "no option switches given" if flags.empty?
+    if flags.any? { |flag| flag.sub("[no-]", "").include?("[") }
+      raise NotImplementedError, "optional option arguments are not supported"
+    end
 
     takes_argument = flags.any? { |flag| flag.include?(" ") || flag.include?("=") }
     long = flags.find { |flag| flag.start_with?("--") }
@@ -101,11 +107,8 @@ class OptionParser
         consumed = 1
       end
 
-      if into
-        into[key] = value
-      elsif handler
-        handler.call(value)
-      end
+      value = handler.call(value) if handler
+      into[key] = value if into
       arguments.slice!(index, consumed)
     end
     arguments

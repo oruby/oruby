@@ -99,6 +99,108 @@ _buf.to_s
 `)
 }
 
+func TestERBResultWithBinding(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	if _, err := mrb.Resolve("erb"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mrb.Eval(`
+    name = "ORuby"
+    template = ERB.new("hello <%= name %>!")
+    template.src.include?("name") && template.result(binding) == "hello ORuby!"
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ERB binding render = %v, %v; want true, nil", got, err)
+	}
+}
+
+func TestERBOptionsAndRun(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	got, err := mrb.Eval(`
+    template = ERB.new("hello", eoutvar: "_output")
+    template.src.include?("_output") && template.result == "hello"
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ERB eoutvar = %v, %v; want true, nil", got, err)
+	}
+	got, err = mrb.Eval(`
+    class ERBCapture
+      attr_reader :value
+      def initialize; @value = ""; end
+      def write(s); @value << s; end
+    end
+    out = ERBCapture.new
+    original = $stdout
+    begin
+      $stdout = out
+      result = ERB.new("hello").run
+    ensure
+      $stdout = original
+    end
+    result.nil? && out.value == "hello"
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ERB run = %v, %v; want true, nil", got, err)
+	}
+	got, err = mrb.Eval(`
+    template = ERB.new("hello")
+    checks = [proc { template.def_method(Module.new, "foo") },
+              proc { template.def_module }, proc { template.def_class },
+              proc { ERB.new("hello", trim_mode: "-") }]
+    checks.all? do |operation|
+      begin
+        operation.call
+        false
+      rescue NotImplementedError
+        true
+      end
+    end
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ERB unsupported operations = %v, %v; want true, nil", got, err)
+	}
+}
+
+func TestERBBindingHashSupport(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	got, err := mrb.Eval(`
+    b = binding
+    b.local_variable_set(:erb_item, "value")
+    eval("erb_item", b) == "value"
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("binding local_variable_set = %v, %v; want true, nil", got, err)
+	}
+}
+
+func TestERBHashLocals(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	got, err := mrb.Eval(`
+    $erb_expected = Object.new
+    template = ERB.new("<%= item.equal?($erb_expected) %>:<%= value %>")
+    template.result_with_hash(item: $erb_expected, value: 42) == "true:42" &&
+      ERB.new("<%= defined?(item) %>").result_with_hash({}) == ""
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ERB hash locals = %v, %v; want true, nil", got, err)
+	}
+	got, err = mrb.Eval(`
+    begin
+      ERB.new("x").result_with_hash({"not valid" => 1})
+      false
+    rescue NameError
+      true
+    end
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ERB invalid local name = %v, %v; want true, nil", got, err)
+	}
+}
+
 func TestShouldStripOnlyWhitespaceForSpecificTags(t *testing.T) {
 	list := `list = ['&\'<>"2']`
 	checkOutput(t,

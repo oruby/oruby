@@ -5,6 +5,7 @@ class PrettyPrint
     @newline = newline.to_s
     @indent = 0
     @tokens = []
+    @column = 0
   end
 
   def text(object, width = nil)
@@ -19,7 +20,7 @@ class PrettyPrint
 
   def group(indent = 0, open_object = nil, close_object = nil)
     text(open_object) unless open_object.nil?
-    yield self if block_given?
+    nest(indent) { yield self } if block_given?
     text(close_object) unless close_object.nil?
     self
   end
@@ -48,7 +49,7 @@ class PrettyPrint
   end
 
   def flush
-    column = 0
+    column = @column
     @tokens.each_with_index do |token, index|
       case token[0]
       when :text
@@ -67,6 +68,8 @@ class PrettyPrint
         column = token[1]
       end
     end
+    @column = column
+    @tokens.clear
     self
   end
 
@@ -77,8 +80,11 @@ class PrettyPrint
     output
   end
 
-  def self.singleline_format(object)
-    object.inspect
+  def self.singleline_format(output = "", maxwidth = 79, newline = "\n")
+    printer = new(output, 1 << 60, newline)
+    yield printer if block_given?
+    printer.flush
+    output
   end
 
   private

@@ -24,9 +24,10 @@ class Matrix
   end
 
   def self.build(row_count, column_count = row_count)
+    return enum_for(:build, row_count, column_count) unless block_given?
     rows = Array.new(row_count.to_i) do |row|
       Array.new(column_count.to_i) do |column|
-        block_given? ? yield(row, column) : 0
+        yield(row, column)
       end
     end
     new(rows)
@@ -48,15 +49,18 @@ class Matrix
     @rows.empty? ? 0 : @rows[0].length
   end
 
-  def [](row, column = nil)
-    column.nil? ? @rows[row] : @rows[row][column]
+  def [](row, column)
+    values = @rows[row]
+    values.nil? ? nil : values[column]
   end
 
   def row(index)
-    Vector.new(@rows[index])
+    values = @rows[index]
+    values.nil? ? nil : Vector.new(values)
   end
 
   def column(index)
+    return nil if index >= column_count || index < -column_count
     Vector.new(@rows.map { |row| row[index] })
   end
 

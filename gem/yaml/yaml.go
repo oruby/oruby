@@ -40,13 +40,18 @@ func initYAML(mrb *oruby.MrbState) interface{} {
 	psych.DefineClassMethod("safe_load", yamlLoad, mrb.ArgsReq(1))
 	psych.DefineClassMethod("load_file", yamlLoadFile, mrb.ArgsReq(1))
 	psych.DefineClassMethod("safe_load_file", yamlLoadFile, mrb.ArgsReq(1))
-	psych.DefineClassMethod("dump", yamlDump, mrb.ArgsReq(1))
-	psych.DefineClassMethod("safe_dump", yamlDump, mrb.ArgsReq(1))
+	psych.DefineClassMethod("dump", yamlDump, mrb.ArgsArg(1, 1))
+	psych.DefineClassMethod("safe_dump", yamlDump, mrb.ArgsArg(1, 1))
+	mrb.ObjectClass().DefineMethod("to_yaml", yamlToYAML, mrb.ArgsOpt(1))
 	mrb.ConstSet(mrb.ObjectClass(), mrb.Intern("YAML"), psych)
 	return nil
 }
 
 func yamlLoad(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	allowAliases, err := yamlAliasesEnabled(mrb)
+	if err != nil {
+		return mrb.Raise(mrb.EArgumentError(), err.Error())
+	}
 	source := mrb.GetArgsFirst()
 	if !source.IsString() {
 		return mrb.Raise(mrb.ExcGet("TypeError"), fmt.Sprintf("YAML source must be a String, got %s", rb.TypeName(mrb, source)))
@@ -55,10 +60,14 @@ func yamlLoad(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	if len(text) > maxYAMLBytes {
 		return mrb.Raise(mrb.EArgumentError(), "YAML input exceeds size limit")
 	}
-	return loadYAMLText(mrb, text, yamlAliasesEnabled(mrb))
+	return loadYAMLText(mrb, text, allowAliases)
 }
 
 func yamlLoadFile(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	allowAliases, err := yamlAliasesEnabled(mrb)
+	if err != nil {
+		return mrb.Raise(mrb.EArgumentError(), err.Error())
+	}
 	path := mrb.GetArgsFirst()
 	if !path.IsString() {
 		return mrb.Raise(mrb.ExcGet("TypeError"), "YAML filename must be a String")
@@ -72,11 +81,20 @@ func yamlLoadFile(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.Raise(rb.ClassPath(mrb, "Psych::Exception"), err.Error())
 	}
-	return loadYAMLText(mrb, string(text), yamlAliasesEnabled(mrb))
+	return loadYAMLText(mrb, string(text), allowAliases)
 }
 
-func yamlAliasesEnabled(mrb *oruby.MrbState) bool {
-	return mrb.KeywordArgs().Get(mrb.Intern("aliases")).Type() == oruby.MrbTTTrue
+func yamlAliasesEnabled(mrb *oruby.MrbState) (bool, error) {
+	kwargs := mrb.KeywordArgs()
+	key := mrb.SymbolValue(mrb.Intern("aliases"))
+	known := 0
+	if kwargs.KeyP(key) {
+		known = 1
+	}
+	if kwargs.Size(kwargs.Value()) != known {
+		return false, errors.New("unsupported YAML keyword option")
+	}
+	return kwargs.Get(key).Bool(), nil
 }
 
 func loadYAMLText(mrb *oruby.MrbState, text string, allowAliases bool) oruby.MrbValue {
@@ -122,6 +140,7 @@ func decodeYAML(source string, allowAliases bool) (interface{}, error) {
 
 type yamlNodeLimits struct {
 	nodes        int
+	bytes        int
 	allowAliases bool
 	active       map[*yamllib.Node]bool
 }
@@ -143,9 +162,6 @@ func decodeYAMLNode(node *yamllib.Node, depth int, limits *yamlNodeLimits) (inte
 		}
 		return decodeYAMLNode(node.Alias, depth+1, limits)
 	}
-	if node.Anchor != "" && !limits.allowAliases {
-		return nil, unsafeYAMLError{message: "YAML anchors are disabled; pass aliases: true to enable them"}
-	}
 	if node.Anchor != "" {
 		limits.active[node] = true
 		defer delete(limits.active, node)
@@ -155,6 +171,10 @@ func decodeYAMLNode(node *yamllib.Node, depth int, limits *yamlNodeLimits) (inte
 	}
 	switch node.Kind {
 	case yamllib.ScalarNode:
+		limits.bytes += len(node.Value)
+		if limits.bytes > maxYAMLBytes {
+			return nil, unsafeYAMLError{message: "expanded YAML exceeds size limit"}
+		}
 		switch node.Tag {
 		case "!!null":
 			return nil, nil
@@ -198,6 +218,11 @@ func decodeYAMLNode(node *yamllib.Node, depth int, limits *yamlNodeLimits) (inte
 		values := make(map[string]interface{}, len(node.Content)/2)
 		for i := 0; i < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
+			limits.nodes++
+			limits.bytes += len(keyNode.Value)
+			if limits.nodes > maxYAMLNodes || limits.bytes > maxYAMLBytes {
+				return nil, unsafeYAMLError{message: "expanded YAML exceeds safety limits"}
+			}
 			if keyNode.Kind != yamllib.ScalarNode || keyNode.Tag != "!!str" || keyNode.Anchor != "" {
 				return nil, unsafeYAMLError{message: "YAML mapping keys must be untagged strings"}
 			}
@@ -217,7 +242,11 @@ func decodeYAMLNode(node *yamllib.Node, depth int, limits *yamlNodeLimits) (inte
 }
 
 func yamlDump(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
-	value, err := rubyYAMLValue(mrb, mrb.GetArgsFirst(), make(map[uintptr]bool), 0)
+	if !mrb.KeywordArgs().EmptyP() {
+		return mrb.Raise(mrb.EArgumentError(), "unsupported YAML dump keyword option")
+	}
+	args := mrb.GetArgs()
+	value, err := rubyYAMLValue(mrb, args.Item(0), make(map[uintptr]bool), 0)
 	if err != nil {
 		return mrb.Raise(mrb.EArgumentError(), err.Error())
 	}
@@ -225,7 +254,40 @@ func yamlDump(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.Raise(mrb.EArgumentError(), err.Error())
 	}
-	return mrb.BytesValue(encoded)
+	prefix := "--- "
+	switch v := value.(type) {
+	case nil:
+		encoded = nil
+		prefix = "---\n"
+	case []interface{}:
+		if len(v) != 0 {
+			prefix = "---\n"
+		}
+	case map[string]interface{}:
+		if len(v) != 0 {
+			prefix = "---\n"
+		}
+	}
+	document := mrb.BytesValue(append([]byte(prefix), encoded...))
+	if output := args.Item(1); !output.IsNil() {
+		mrb.Call(output, "write", document)
+		if exc := mrb.Exc(); exc != nil {
+			return exc.Value()
+		}
+		return output
+	}
+	return document
+}
+
+func yamlToYAML(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if !mrb.KeywordArgs().EmptyP() {
+		return mrb.Raise(mrb.EArgumentError(), "unsupported YAML dump keyword option")
+	}
+	args := mrb.GetArgs()
+	if args.Len() == 0 {
+		return mrb.Call(mrb.ModuleGet("Psych"), "dump", self)
+	}
+	return mrb.Call(mrb.ModuleGet("Psych"), "dump", self, args.Item(0))
 }
 
 func rubyYAMLValue(mrb *oruby.MrbState, value oruby.Value, seen map[uintptr]bool, depth int) (interface{}, error) {

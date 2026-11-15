@@ -1,5 +1,5 @@
 # Minimal OpenSSL: SSL constants/errors for net/http (TLS is Go crypto/tls),
-# OpenSSL::Digest and OpenSSL::HMAC over Go crypto.
+# OpenSSL::Digest, OpenSSL::HMAC and secure random bytes over Go crypto.
 module OpenSSL
   VERSION = "3.3.0"
   OPENSSL_VERSION = "Go crypto/tls"
@@ -163,8 +163,23 @@ module OpenSSL
   end
 
   module Random
+    class RandomError < OpenSSLError; end
+
+    # Limit each request to 16 MiB to avoid unbounded allocation.
     def self.random_bytes(n)
-      ::Random.bytes(n)
+      unless n.is_a?(Integer) || n.is_a?(Float)
+        unless n.respond_to?(:to_int, true)
+          name = n.nil? ? "nil" : (n.equal?(true) || n.equal?(false) ? n.to_s : n.class.to_s)
+          message = n.nil? ? "no implicit conversion from nil to integer" : "no implicit conversion of #{name} into Integer"
+          raise TypeError, message
+        end
+        original = n
+        n = n.__send__(:to_int)
+        unless n.is_a?(Integer)
+          raise TypeError, "can't convert #{original.class} to Integer (#{original.class}#to_int gives #{n.class})"
+        end
+      end
+      OpenSSL.__random_bytes(n)
     end
   end
 

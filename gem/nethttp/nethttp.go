@@ -1,12 +1,13 @@
 // Package nethttp implements Ruby's net/http library. The protocol layer
 // (headers, requests, responses, buffered IO) is Ruby code over the socket
 // gem; HTTPS uses Go crypto/tls (Net::TLSSocket). It also provides a small
-// "openssl" library: SSL constants, OpenSSL::Digest and OpenSSL::HMAC.
+// "openssl" library: SSL constants, digests, HMAC, and secure random bytes.
 package nethttp
 
 import (
 	"crypto/hmac"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -16,6 +17,8 @@ import (
 	_ "embed"
 	"errors"
 	"hash"
+	"io"
+	"math"
 	"net"
 	"os"
 	"strings"
@@ -60,6 +63,7 @@ func init() {
 		}
 		mod := mrb.DefineModule("OpenSSL")
 		mod.DefineClassMethod("__hmac", hmacDigest, mrb.ArgsReq(3))
+		mod.DefineClassMethod("__random_bytes", randomBytes, mrb.ArgsReq(1))
 		mod.DefineClassMethod("__fixed_length_secure_compare", fixedLengthSecureCompare, mrb.ArgsReq(2))
 		mod.DefineClassMethod("__secure_compare", secureCompare, mrb.ArgsReq(2))
 		rb.LoadRuby(mrb, "openssl.rb", opensslRb)
@@ -227,6 +231,35 @@ func tlsVersion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.StrNew("TLSv1.3")
 	}
 	return mrb.NilValue()
+}
+
+const maxRandomBytes = 16 << 20
+
+func randomBytes(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	arg := mrb.GetArgsFirst()
+	var n int64
+	switch arg.Type() {
+	case oruby.MrbTTInteger:
+		n = arg.Int64()
+	case oruby.MrbTTFloat:
+		f := arg.Float64()
+		if math.IsNaN(f) || math.IsInf(f, 0) || f >= 0x1p63 || f < -0x1p63 {
+			return mrb.Raise(mrb.ERangeError(), "float out of range of integer")
+		}
+		n = int64(f)
+	case oruby.MrbTTBigInt:
+		return mrb.Raise(mrb.ERangeError(), "bignum too big to convert into 'long'")
+	default:
+		return mrb.Raise(mrb.ETypeError(), "no implicit conversion into Integer")
+	}
+	if n < 0 || n > maxRandomBytes {
+		return mrb.Raise(mrb.EArgumentError(), "random byte count must be between 0 and 16777216")
+	}
+	data := make([]byte, int(n))
+	if _, err := io.ReadFull(rand.Reader, data); err != nil {
+		return rb.Raise(mrb, "OpenSSL::Random::RandomError", "%s", err)
+	}
+	return mrb.Call(mrb.BytesValue(data), "force_encoding", mrb.StrNew("ASCII-8BIT"))
 }
 
 // OpenSSL.__hmac(algorithm, key, data) -> binary digest

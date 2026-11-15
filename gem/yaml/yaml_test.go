@@ -147,6 +147,32 @@ func TestYAMLAliasesAndLoadFile(t *testing.T) {
 	if err != nil || !got.Bool() {
 		t.Fatalf("YAML cyclic alias rejection = %v, %v; want true, nil", got, err)
 	}
+	got, err = mrb.Eval(`
+    alone = YAML.safe_load("a: &anchor [one]\n") == {"a" => ["one"]}
+    truthy = YAML.safe_load("a: &anchor [one]\nb: *anchor\n", aliases: 1)["b"] == ["one"]
+    unknown = begin
+      YAML.safe_load("a: 1", permitted_classes: [Object])
+      false
+    rescue ArgumentError
+      true
+    end
+    alone && truthy && unknown
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("YAML anchor and option validation = %v, %v; want true, nil", got, err)
+	}
+	got, err = mrb.Eval(`
+    source = "base: &anchor \"" + ("x" * 100000) + "\"\ncopies:\n" + ("  - *anchor\n" * 90)
+    begin
+      YAML.safe_load(source, aliases: true)
+      false
+    rescue ArgumentError
+      true
+    end
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("YAML alias expansion byte limit = %v, %v; want true, nil", got, err)
+	}
 }
 
 func TestYAMLLazyActivationIsPerState(t *testing.T) {
@@ -165,5 +191,27 @@ func TestYAMLLazyActivationIsPerState(t *testing.T) {
 	got, err = second.Eval(`defined?(YAML).nil?`)
 	if err != nil || !got.Bool() {
 		t.Fatalf("YAML in second state = %v, %v; want true, nil", got, err)
+	}
+}
+
+func TestYAMLDumpDocumentAndIO(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	got, err := mrb.Eval(`
+    require "yaml"
+    class YAMLWriteCapture
+      attr_reader :contents
+      def initialize; @contents = ""; end
+      def write(text); @contents << text; end
+    end
+    out = YAMLWriteCapture.new
+    value = ["a", "b"]
+    written = YAML.dump(value, out)
+    written.equal?(out) && out.contents == value.to_yaml &&
+      out.contents.start_with?("---\n") && YAML.load(out.contents) == value &&
+      YAML.dump("str") == "--- str\n"
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("YAML dump document and IO = %v, %v; want true, nil", got, err)
 	}
 }
