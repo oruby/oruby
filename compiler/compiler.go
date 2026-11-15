@@ -16,7 +16,8 @@ type Options struct {
 
 // Compiler coordinates parsing Ruby code or mruby bytecode and producing Go code.
 type Compiler struct {
-	opts Options
+	opts    Options
+	Skipped []error // extra bundle files skipped by the last CompileBundleWith
 }
 
 // New creates a new Compiler with the given options.
@@ -66,8 +67,16 @@ func (c *Compiler) CompileRuby(mrb *oruby.MrbState, code string) (string, error)
 
 // CompileBundle resolves all required files starting from entryFile, precompiles them, and bundles them into Go source.
 func (c *Compiler) CompileBundle(mrb *oruby.MrbState, entryFile string, loadPaths []string) (string, error) {
+	return c.CompileBundleWith(mrb, entryFile, nil, loadPaths)
+}
+
+// CompileBundleWith compiles entryFile with its dependencies and additional
+// files (e.g. spec files loaded dynamically with Kernel#load) into one bundle.
+// Extra files which fail to parse are skipped; see Skipped.
+func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extra []string, loadPaths []string) (string, error) {
 	resolver := NewDependencyResolver(mrb, loadPaths)
-	modules, err := resolver.Resolve(entryFile)
+	modules, skipped, err := resolver.ResolveWith(entryFile, extra)
+	c.Skipped = skipped
 	if err != nil {
 		return "", fmt.Errorf("resolving dependencies for %s: %w", entryFile, err)
 	}

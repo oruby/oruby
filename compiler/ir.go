@@ -7,17 +7,32 @@ import (
 
 // IRepUnit represents a compiled procedure or method block (mrb_irep).
 type IRepUnit struct {
-	Index        int           // Unit index (0 is top-level script)
-	Name         string        // Inferred or defined name (e.g. method or block)
-	File         string        // Source filename from debug info
-	NLocals      int           // Number of local variables
-	NRegs        int           // Number of virtual registers
-	Flags        int           // Irep flags
-	Locals       []string      // Local variable names (Locals[i] corresponds to r[i+1])
-	Instructions []Instruction // Decoded instruction sequence
-	Pool         []interface{} // Constant pool literals
-	Syms         []string      // Symbol table
-	Children     []*IRepUnit   // Nested procedures (methods, blocks)
+	Index        int            // Unit index (0 is top-level script)
+	Name         string         // Inferred or defined name (e.g. method or block)
+	File         string         // Source filename from debug info
+	NLocals      int            // Number of local variables
+	NRegs        int            // Number of virtual registers
+	Flags        int            // Irep flags
+	Locals       []string       // Local variable names (Locals[i] corresponds to r[i+1])
+	Instructions []Instruction  // Decoded instruction sequence
+	Pool         []interface{}  // Constant pool literals
+	Syms         []string       // Symbol table
+	Children     []*IRepUnit    // Nested procedures (methods, blocks)
+	Catch        []CatchHandler // begin/rescue/ensure handler table
+}
+
+// Catch handler types (enum mrb_catch_type)
+const (
+	CatchRescue = 0
+	CatchEnsure = 1
+)
+
+// CatchHandler maps bytecode range [Begin, End) to handler code at Target.
+type CatchHandler struct {
+	Type   int
+	Begin  int
+	End    int
+	Target int
 }
 
 // Disassemble returns a human-readable disassembly of the unit and its children.

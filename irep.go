@@ -285,6 +285,19 @@ func (irep MrbIrep) CLen() int {
 	return int(irep.p.clen)
 }
 
+// CatchHandler returns catch handler at index (0 <= index < CLen()).
+// Type is 0 for rescue and 1 for ensure handlers. Handler covers
+// bytecode range [begin, end) and jumps to target.
+func (irep MrbIrep) CatchHandler(index int) (typ int, begin, end, target uint32) {
+	if index < 0 || index >= irep.CLen() {
+		return -1, 0, 0, 0
+	}
+	var t C.int
+	var b, e, tg C.uint32_t
+	C._mrb_irep_catch_handler(irep.p, C.int(index), &t, &b, &e, &tg)
+	return int(t), uint32(b), uint32(e), uint32(tg)
+}
+
 // Flags returns irep flags
 func (irep MrbIrep) Flags() int {
 	return int(irep.p.flags)

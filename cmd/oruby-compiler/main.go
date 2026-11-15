@@ -26,6 +26,7 @@ var (
 	dockerfile = flag.String("dockerfile", "", "Generate multi-stage Dockerfile for containerized deployment")
 	embedDirs  = flag.String("embed", "", "Optional comma-separated directories to embed via //go:embed (empty = files on disk)")
 	debugMode  = flag.Bool("debug", false, "Emit line-stepping debug hooks for IDE / debugger integration")
+	extraFiles = flag.String("add", "", "Comma-separated extra Ruby files or globs compiled into the bundle (loadable by path at runtime)")
 	verbose    = flag.Bool("v", false, "Verbose output")
 )
 
@@ -202,7 +203,21 @@ func main() {
 				}
 			}
 		}
-		goSrc, err = comp.CompileBundle(mrb, inputPath, lps)
+		var extra []string
+		for _, pat := range strings.Split(*extraFiles, ",") {
+			if pat = strings.TrimSpace(pat); pat == "" {
+				continue
+			}
+			matches, gerr := filepath.Glob(pat)
+			if gerr != nil || len(matches) == 0 {
+				matches = []string{pat}
+			}
+			extra = append(extra, matches...)
+		}
+		goSrc, err = comp.CompileBundleWith(mrb, inputPath, extra, lps)
+		for _, serr := range comp.Skipped {
+			fmt.Fprintf(os.Stderr, "warning: skipped: %v\n", serr)
+		}
 	} else {
 		decoder := compiler.NewDecoder(mrb)
 		unit, err := decoder.Decode(irep)

@@ -56,6 +56,39 @@ func (r *DependencyResolver) Resolve(entryFile string) ([]*ModuleUnit, error) {
 	return modules, nil
 }
 
+// ResolveWith resolves entryFile and additional files (and their
+// dependencies) into one bundle. Extra files can be loaded at runtime with
+// load/require by their absolute path. Extra files which fail to compile
+// are skipped and reported in skipped.
+func (r *DependencyResolver) ResolveWith(entryFile string, extra []string) (modules []*ModuleUnit, skipped []error, err error) {
+	modules, err = r.Resolve(entryFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	absEntry, _ := filepath.Abs(entryFile)
+	rootDir := filepath.Dir(absEntry)
+	for _, f := range extra {
+		abs, err := filepath.Abs(f)
+		if err != nil {
+			return nil, nil, err
+		}
+		// resolve into a separate list so a failing file leaves no partial modules
+		var part []*ModuleUnit
+		counter := len(modules)
+		visited := make(map[string]*ModuleUnit, len(r.visited))
+		for k, v := range r.visited {
+			visited[k] = v
+		}
+		if err := r.resolveRecursive(abs, rootDir, &part, &counter); err != nil {
+			r.visited = visited
+			skipped = append(skipped, err)
+			continue
+		}
+		modules = append(modules, part...)
+	}
+	return modules, skipped, nil
+}
+
 func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*ModuleUnit, counter *int) error {
 	if _, ok := r.visited[absPath]; ok {
 		return nil // already resolved
@@ -133,6 +166,9 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 }
 
 func (r *DependencyResolver) findRelative(currentDir, target string) string {
+	if filepath.IsAbs(target) {
+		currentDir = ""
+	}
 	candidates := []string{
 		filepath.Join(currentDir, target),
 		filepath.Join(currentDir, target+".rb"),

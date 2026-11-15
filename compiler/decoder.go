@@ -68,6 +68,12 @@ func (d *Decoder) decodeUnit(irep oruby.MrbIrep, unitCounter *int) (*IRepUnit, e
 	}
 	unit.Instructions = insns
 
+	// 3a. Decode catch handler table (begin/rescue/ensure)
+	for i := 0; i < irep.CLen(); i++ {
+		typ, begin, end, target := irep.CatchHandler(i)
+		unit.Catch = append(unit.Catch, CatchHandler{Type: typ, Begin: int(begin), End: int(end), Target: int(target)})
+	}
+
 	// 3b. Decode Local Variable Names
 	if irep.NLocals() > 1 {
 		unit.Locals = make([]string, irep.NLocals()-1)
@@ -97,6 +103,7 @@ func (d *Decoder) decodeISeq(iseq []byte) ([]Instruction, error) {
 	pc := 0
 	seqLen := len(iseq)
 	ext := uint8(0)
+	extStart := -1
 
 	for pc < seqLen {
 		offset := pc
@@ -107,15 +114,17 @@ func (d *Decoder) decodeISeq(iseq []byte) ([]Instruction, error) {
 
 		// Handle extension modifiers
 		switch op {
-		case OpEXT1:
-			ext = 1
+		case OpEXT1, OpEXT2, OpEXT3:
+			ext = uint8(op-OpEXT1) + 1
+			if extStart < 0 {
+				extStart = offset
+			}
 			continue
-		case OpEXT2:
-			ext = 2
-			continue
-		case OpEXT3:
-			ext = 3
-			continue
+		}
+		// An instruction with extension prefix starts at the prefix byte
+		if extStart >= 0 {
+			offset = extStart
+			extStart = -1
 		}
 
 		currentExt := ext
@@ -298,6 +307,7 @@ func (d *Decoder) decodeISeq(iseq []byte) ([]Instruction, error) {
 			}
 		}
 
+		ins.Next = pc
 		insns = append(insns, ins)
 	}
 

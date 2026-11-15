@@ -75,6 +75,7 @@ type MrbState struct {
 	lineDebug      bool
 	lastDebugIrep  uintptr
 	lastDebugLine  int
+	aot            *aotState // AOT compiled code runtime state (goaot.go)
 }
 
 // NewCore create state is MrbState without gems,
@@ -111,6 +112,7 @@ func NewCore() (*MrbState, error) {
 		false,
 		0,
 		-1,
+		nil,
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)

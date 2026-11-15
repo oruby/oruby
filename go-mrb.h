@@ -725,6 +725,14 @@ static inline void _mrb_intern_batch(mrb_state *mrb, const char *buf, const uint
   }
 }
 
+static inline void _mrb_irep_catch_handler(const mrb_irep *irep, int i, int *type, uint32_t *begin, uint32_t *end, uint32_t *target) {
+  const struct mrb_irep_catch_handler *e = mrb_irep_catch_handler_table(irep) + i;
+  *type = e->type;
+  *begin = mrb_irep_catch_handler_unpack(e->begin);
+  *end = mrb_irep_catch_handler_unpack(e->end);
+  *target = mrb_irep_catch_handler_unpack(e->target);
+}
+
 #if defined(__cplusplus)
 }  /* extern "C" { */
 #endif

@@ -8,7 +8,7 @@ mrb_value set_mrb_env_callback(mrb_state *mrb, mrb_value self) {
   mrb_value idx = mrb_proc_cfunc_env_get(mrb, 0);
   mrb_value ret = go_mrb_func_env_callback(_mrb_get_idx(mrb), self, (int)mrb_fixnum(idx));
 
-  if ((mrb_type(ret) == MRB_TT_EXCEPTION) && (mrb_obj_ptr(ret) == mrb->exc)) {
+  if ((mrb_type(ret) == MRB_TT_EXCEPTION || mrb_type(ret) == MRB_TT_BREAK) && (mrb_obj_ptr(ret) == mrb->exc)) {
     mrb_exc_raise(mrb, ret);
   }
 
@@ -18,7 +18,7 @@ mrb_value set_mrb_env_callback(mrb_state *mrb, mrb_value self) {
 mrb_value set_mrb_proc_callback(mrb_state *mrb, mrb_value self) {
   mrb_value ret = go_mrb_proc_callback(_mrb_get_idx(mrb), self, (void *)_mrb_current_proc(mrb));
 
-  if ((mrb_type(ret) == MRB_TT_EXCEPTION) && (mrb_obj_ptr(ret) == mrb->exc)) {
+  if ((mrb_type(ret) == MRB_TT_EXCEPTION || mrb_type(ret) == MRB_TT_BREAK) && (mrb_obj_ptr(ret) == mrb->exc)) {
     mrb_exc_raise(mrb, ret);
   }
 
@@ -29,7 +29,7 @@ mrb_value set_gofunc_callback(mrb_state *mrb, mrb_value self) {
   mrb_value idx = mrb_proc_cfunc_env_get(mrb, 0);
   mrb_value ret = go_gofunc_callback(_mrb_get_idx(mrb), self, (int)mrb_fixnum(idx));
 
-  if ((mrb_type(ret) == MRB_TT_EXCEPTION) && (mrb_obj_ptr(ret) == mrb->exc)) {
+  if ((mrb_type(ret) == MRB_TT_EXCEPTION || mrb_type(ret) == MRB_TT_BREAK) && (mrb_obj_ptr(ret) == mrb->exc)) {
     mrb_exc_raise(mrb, ret);
   }
 
