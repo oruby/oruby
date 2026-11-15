@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,7 +41,7 @@ func init() {
 		def("__mv", 2, func(a []oruby.Value) error { return moveFile(str(a[0]), str(a[1])) })
 		def("__ln", 2, func(a []oruby.Value) error { return os.Link(str(a[0]), str(a[1])) })
 		def("__ln_s", 2, func(a []oruby.Value) error { return os.Symlink(str(a[0]), str(a[1])) })
-		def("__chmod", 2, func(a []oruby.Value) error { return os.Chmod(str(a[1]), fs.FileMode(a[0].Int())) })
+		def("__chmod", 2, func(a []oruby.Value) error { return chmodFile(str(a[1]), a[0]) })
 		def("__touch", 2, func(a []oruby.Value) error {
 			name := str(a[0])
 			t := time.Now()
@@ -65,6 +66,165 @@ func init() {
 		load(mrb, "fileutils")
 		return nil
 	})
+}
+
+func chmodFile(path string, mode oruby.Value) error {
+	if mode.IsInteger() {
+		return os.Chmod(path, fs.FileMode(mode.Int()))
+	}
+	if !mode.IsString() {
+		return errors.New("mode must be an integer or symbolic string")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	current := uint32(info.Mode().Perm())
+	if info.Mode()&fs.ModeSetuid != 0 {
+		current |= 04000
+	}
+	if info.Mode()&fs.ModeSetgid != 0 {
+		current |= 02000
+	}
+	if info.Mode()&fs.ModeSticky != 0 {
+		current |= 01000
+	}
+	updated, err := applySymbolicMode(current, mode.String(), info.IsDir())
+	if err != nil {
+		return err
+	}
+	fileMode := fs.FileMode(updated & 0777)
+	if updated&04000 != 0 {
+		fileMode |= fs.ModeSetuid
+	}
+	if updated&02000 != 0 {
+		fileMode |= fs.ModeSetgid
+	}
+	if updated&01000 != 0 {
+		fileMode |= fs.ModeSticky
+	}
+	return os.Chmod(path, fileMode)
+}
+
+func applySymbolicMode(current uint32, mode string, isDir bool) (uint32, error) {
+	if mode == "" {
+		return 0, errors.New("invalid symbolic mode")
+	}
+
+	classBits := [3]uint32{0700, 0070, 0007}
+	for _, clause := range strings.Split(mode, ",") {
+		if clause == "" {
+			return 0, errors.New("invalid symbolic mode")
+		}
+		index := 0
+		who := [3]bool{}
+		for index < len(clause) {
+			switch clause[index] {
+			case 'u':
+				who[0] = true
+			case 'g':
+				who[1] = true
+			case 'o':
+				who[2] = true
+			case 'a':
+				who = [3]bool{true, true, true}
+			default:
+				goto whoDone
+			}
+			index++
+		}
+	whoDone:
+		if !who[0] && !who[1] && !who[2] {
+			who = [3]bool{true, true, true}
+		}
+		if index >= len(clause) || (clause[index] != '+' && clause[index] != '-' && clause[index] != '=') {
+			return 0, errors.New("invalid symbolic mode")
+		}
+		operator := clause[index]
+		index++
+
+		var selected, requested uint32
+		for class, selectedForClass := range who {
+			if selectedForClass {
+				selected |= classBits[class]
+				switch class {
+				case 0:
+					selected |= 04000
+				case 1:
+					selected |= 02000
+				case 2:
+					selected |= 01000
+				}
+			}
+		}
+
+		for ; index < len(clause); index++ {
+			switch clause[index] {
+			case 'r', 'w', 'x':
+				for class, selectedForClass := range who {
+					if selectedForClass {
+						bit := uint32(1)
+						if clause[index] == 'r' {
+							bit = 4
+						} else if clause[index] == 'w' {
+							bit = 2
+						}
+						requested |= bit << uint(6-class*3)
+					}
+				}
+			case 'X':
+				if isDir || current&0111 != 0 {
+					for class, selectedForClass := range who {
+						if selectedForClass {
+							requested |= 1 << uint(6-class*3)
+						}
+					}
+				}
+			case 'u', 'g', 'o':
+				source := 0
+				if clause[index] == 'g' {
+					source = 1
+				} else if clause[index] == 'o' {
+					source = 2
+				}
+				for destination, selectedForClass := range who {
+					if selectedForClass {
+						bits := current & classBits[source]
+						if source > destination {
+							bits <<= uint((source - destination) * 3)
+						} else {
+							bits >>= uint((destination - source) * 3)
+						}
+						requested |= bits & classBits[destination]
+					}
+				}
+			case 's':
+				if who[0] {
+					requested |= 04000
+				}
+				if who[1] {
+					requested |= 02000
+				}
+			case 't':
+				if who[2] {
+					requested |= 01000
+				}
+			default:
+				return 0, errors.New("invalid symbolic mode")
+			}
+		}
+
+		switch operator {
+		case '+':
+			current |= requested
+		case '-':
+			current &^= requested
+		case '=':
+			current = current&^selected | requested
+		}
+	}
+	return current & 07777, nil
 }
 
 func copyFile(src, dst string, preserve bool) error {

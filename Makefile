@@ -34,6 +34,7 @@ test:
 	(cd gem/database && go test)
 	(cd gem/env && go test)
 	(cd gem/fullcore && go test)
+	(cd gem/stdlib && go test)
 	(cd gem/http && go test)
 	(cd gem/io && go test)
 	(cd gem/io/file && go test)

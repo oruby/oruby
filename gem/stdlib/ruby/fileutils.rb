@@ -190,14 +190,26 @@ module FileUtils
       list = __list(list)
       __msg({ verbose: verbose }, "chmod #{mode.is_a?(Integer) ? '%o' % mode : mode} #{list.join(' ')}")
       return if noop
-      raise ArgumentError, "symbolic mode is not supported" unless mode.is_a?(Integer)
       list.each { |path| __chmod(mode, path) }
     end
 
     def chmod_R(mode, list, noop: nil, verbose: nil, force: nil)
-      __list(list).each do |root|
-        require 'find'
-        Find.find(root) { |p| __chmod(mode, p) }
+      list = __list(list)
+      __msg({ verbose: verbose }, "chmod -R #{mode.is_a?(Integer) ? '%o' % mode : mode} #{list.join(' ')}")
+      return if noop
+      list.each do |root|
+        begin
+          require 'find'
+          Find.find(root) do |path|
+            begin
+              __chmod(mode, path)
+            rescue SystemCallError => __exc
+              raise __exc unless force
+            end
+          end
+        rescue SystemCallError => __exc
+          raise __exc unless force
+        end
       end
     end
 

@@ -190,7 +190,7 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	buf.WriteString("\t\"unsafe\"\n")
 	buf.WriteString("\t\"github.com/oruby/oruby\"\n")
 	if g.opts.Standalone {
-		buf.WriteString("\t_ \"github.com/oruby/oruby/gem/fullcore\"\n")
+		buf.WriteString("\t_ \"github.com/oruby/oruby/gem/stdlib\"\n")
 	}
 	buf.WriteString(")\n\n")
 

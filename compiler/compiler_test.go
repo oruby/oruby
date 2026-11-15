@@ -44,6 +44,9 @@ multiply(x, y)
 	if !strings.Contains(goSrc, "func IRep_1(") {
 		t.Errorf("Expected func IRep_1 in generated code for multiply method")
 	}
+	if !strings.Contains(goSrc, `_ "github.com/oruby/oruby/gem/stdlib"`) {
+		t.Errorf("Expected gem/stdlib import in standalone generated code")
+	}
 	if !strings.Contains(goSrc, "fastMul(mrb,") {
 		t.Errorf("Expected fastMul in generated code")
 	}

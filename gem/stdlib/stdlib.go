@@ -1,7 +1,5 @@
-// Package stdlib provides small Ruby standard libraries implemented with Go
-// standard packages: securerandom, random/formatter, syslog, tmpdir, find,
-// shellwords, abbrev, monitor, timeout, fcntl, rbconfig/sizeof, and require
-// names of classes provided by other oruby gems (stringio, tempfile, ...).
+// Package stdlib registers ORuby's standard-library providers, including
+// libraries implemented in Go, Ruby sources, and other ORuby gems.
 package stdlib
 
 import (
@@ -11,13 +9,39 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/base64"
+	_ "github.com/oruby/oruby/gem/bigdecimal"
+	_ "github.com/oruby/oruby/gem/bigint"
+	_ "github.com/oruby/oruby/gem/complex"
+	_ "github.com/oruby/oruby/gem/core_ext"
+	_ "github.com/oruby/oruby/gem/date"
+	_ "github.com/oruby/oruby/gem/digest"
+	_ "github.com/oruby/oruby/gem/env"
+	_ "github.com/oruby/oruby/gem/erubi"
+	_ "github.com/oruby/oruby/gem/etc"
+	_ "github.com/oruby/oruby/gem/http"
 	"github.com/oruby/oruby/gem/internal/rb"
+	_ "github.com/oruby/oruby/gem/io"
+	_ "github.com/oruby/oruby/gem/io/file"
+	_ "github.com/oruby/oruby/gem/io/popen"
+	_ "github.com/oruby/oruby/gem/json"
+	_ "github.com/oruby/oruby/gem/load"
+	_ "github.com/oruby/oruby/gem/nethttp"
+	_ "github.com/oruby/oruby/gem/process"
+	_ "github.com/oruby/oruby/gem/regexp"
+	_ "github.com/oruby/oruby/gem/socket"
+	_ "github.com/oruby/oruby/gem/thread"
+	_ "github.com/oruby/oruby/gem/time"
+	_ "github.com/oruby/oruby/gem/uri"
+	_ "github.com/oruby/oruby/gem/zlib"
 )
 
 //go:embed ruby/*.rb
 var rubyFS embed.FS
+var benchmarkStart = time.Now()
 
 func load(mrb *oruby.MrbState, name string) {
 	src, err := rubyFS.ReadFile("ruby/" + name + ".rb")
@@ -38,9 +62,21 @@ func init() {
 		load(mrb, "strscan")
 		return nil
 	})
-	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "pp", "prettyprint", "io/nonblock", "io/wait", "English"} {
+	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "prettyprint", "io/nonblock", "io/wait", "English"} {
 		oruby.LazyGem(name, func(*oruby.MrbState) interface{} { return nil })
 	}
+	oruby.LazyGem("pp", func(mrb *oruby.MrbState) interface{} {
+		load(mrb, "pp")
+		return nil
+	})
+	oruby.LazyGem("benchmark", func(mrb *oruby.MrbState) interface{} {
+		mod := mrb.DefineModule("Benchmark")
+		mod.DefineClassMethod("__clock", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			return mrb.FloatValue(time.Since(benchmarkStart).Seconds())
+		}, mrb.ArgsNone())
+		load(mrb, "benchmark")
+		return nil
+	})
 
 	oruby.LazyGem("random/formatter", func(mrb *oruby.MrbState) interface{} {
 		load(mrb, "formatter")

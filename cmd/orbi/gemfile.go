@@ -1,5 +1,5 @@
 package main
 
 import (
-	_ "github.com/oruby/oruby/gem/fullcore"
+	_ "github.com/oruby/oruby/gem/stdlib"
 )
