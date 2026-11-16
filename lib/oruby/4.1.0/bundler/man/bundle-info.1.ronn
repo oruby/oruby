@@ -1,0 +1,25 @@
+bundle-info(1) -- Show information for the given gem in your bundle
+===================================================================
+
+## SYNOPSIS
+
+`bundle info` [GEM_NAME]
+              [--path]
+              [--version]
+              [--exact-match]
+
+## DESCRIPTION
+
+Given a gem name present in your bundle, print the basic information about it
+ such as homepage, version, path and summary.
+
+## OPTIONS
+
+* `--path`:
+  Print the path of the given gem
+
+* `--version`:
+  Print gem version
+
+* `--exact-match`:
+  Only match gems whose names exactly match the given name.

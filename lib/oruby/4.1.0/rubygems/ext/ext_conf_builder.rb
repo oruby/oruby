@@ -1,0 +1,74 @@
+# frozen_string_literal: true
+
+#--
+# Copyright 2006 by Chad Fowler, Rich Kilmer, Jim Weirich and others.
+# All rights reserved.
+# See LICENSE.txt for permissions.
+#++
+
+class Gem::Ext::ExtConfBuilder < Gem::Ext::Builder
+  def self.build(extension, dest_path, results, args = [], lib_dir = nil, extension_dir = Dir.pwd,
+    target_rbconfig = Gem.target_rbconfig, n_jobs: nil)
+    require "fileutils"
+    require "tempfile"
+
+    tmp_dest = Dir.mktmpdir(".gem.", extension_dir)
+
+    # Some versions of `mktmpdir` return absolute paths, which will break make
+    # if the paths contain spaces.
+    #
+    # As such, we convert to a relative path.
+    tmp_dest_relative = get_relative_path(tmp_dest.clone, extension_dir)
+
+    destdir = ENV["DESTDIR"]
+
+    begin
+      cmd = ruby << File.basename(extension)
+      cmd << "--target-rbconfig=#{target_rbconfig.path}" if target_rbconfig.path
+      cmd.push(*args)
+
+      run(cmd, results, class_name, extension_dir)
+
+      # "clean" is the first make target, and mkmf puts mkmf.log in CLEANFILES,
+      # so park the log next to the built extension before make can delete it.
+      # Whether it is then dropped or kept for inspection is decided by
+      # Gem::Ext::Builder#build_extension.
+      mkmf_log = File.join(extension_dir, "mkmf.log")
+      FileUtils.mv mkmf_log, dest_path if File.exist?(mkmf_log)
+
+      ENV["DESTDIR"] = nil
+
+      make dest_path, results, extension_dir, tmp_dest_relative, target_rbconfig: target_rbconfig, n_jobs: n_jobs
+
+      full_tmp_dest = File.join(extension_dir, tmp_dest_relative)
+
+      is_cross_compiling = target_rbconfig["platform"] != RbConfig::CONFIG["platform"]
+      # Do not copy extension libraries by default when cross-compiling
+      # not to conflict with the one already built for the host platform.
+      if Gem.install_extension_in_lib && lib_dir && !is_cross_compiling
+        FileUtils.mkdir_p lib_dir
+        entries = Dir.entries(full_tmp_dest) - %w[. ..]
+        entries = entries.map {|entry| File.join full_tmp_dest, entry }
+        FileUtils.cp_r entries, lib_dir, remove_destination: true
+      end
+
+      FileUtils::Entry_.new(full_tmp_dest).traverse do |ent|
+        destent = ent.class.new(dest_path, ent.rel)
+        destent.exist? || FileUtils.mv(ent.path, destent.path)
+      end
+
+      make dest_path, results, extension_dir, tmp_dest_relative, ["clean"], target_rbconfig: target_rbconfig
+    ensure
+      ENV["DESTDIR"] = destdir
+    end
+
+    results
+  ensure
+    FileUtils.rm_rf tmp_dest if tmp_dest
+  end
+
+  def self.get_relative_path(path, base)
+    path[0..base.length - 1] = "." if path.start_with?(base)
+    path
+  end
+end

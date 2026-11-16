@@ -1,0 +1,290 @@
+# frozen_string_literal: true
+
+require_relative "../worker"
+require_relative "gem_installer"
+
+module Bundler
+  class ParallelInstaller
+    class SpecInstallation
+      attr_accessor :spec, :name, :full_name, :post_install_message, :state, :error, :dependencies
+      def initialize(spec)
+        @spec = spec
+        @name = spec.name
+        @full_name = spec.full_name
+        @state = :none
+        @post_install_message = ""
+        @error = nil
+      end
+
+      def installed?
+        state == :installed
+      end
+
+      def enqueue_with_priority?
+        state == :installable && spec.extensions.any?
+      end
+
+      def failed?
+        state == :failed
+      end
+
+      def ready_to_enqueue?
+        state == :none
+      end
+
+      def ready_to_install?(installed_specs)
+        return false unless state == :downloaded
+
+        spec.extensions.none? || dependencies_installed?(installed_specs)
+      end
+
+      def has_post_install_message?
+        !post_install_message.empty?
+      end
+
+      # Recursively checks that all dependencies (direct and transitive) have been installed.
+      def dependencies_installed?(installed_specs)
+        dependencies.all? do |dep|
+          installed_specs.include?(dep.name) && dep.dependencies_installed?(installed_specs)
+        end
+      end
+
+      def to_s
+        "#<#{self.class} #{full_name} (#{state})>"
+      end
+    end
+
+    def self.call(*args, **kwargs)
+      new(*args, **kwargs).call
+    end
+
+    attr_reader :size
+
+    def initialize(installer, all_specs, size, standalone, force, local: false, skip: nil)
+      @installer = installer
+      @size = size
+      @standalone = standalone
+      @force = force
+      @local = local
+      @specs = all_specs.map {|s| SpecInstallation.new(s) }
+      specs_by_name = @specs.to_h {|s| [s.name, s] }
+      @specs.each do |spec_install|
+        dependencies = Override.rewrite_dependencies(installer.definition.overrides, spec_install.name, spec_install.spec.dependencies)
+        spec_install.dependencies = dependencies.filter_map do |dep|
+          specs_by_name[dep.name] unless dep.type == :development || dep.name == spec_install.name
+        end
+      end
+      @specs.each do |spec_install|
+        spec_install.state = :installed if skip.include?(spec_install.name)
+      end if skip
+      @spec_set = all_specs
+      @rake = @specs.find {|s| s.name == "rake" unless s.installed? }
+    end
+
+    def call
+      if @rake
+        do_download(@rake, 0)
+        do_install(@rake, 0)
+        Gem::Specification.reset
+      end
+
+      if @size > 1
+        install_with_worker
+      else
+        install_serially
+      end
+
+      handle_error if failed_specs.any?
+      @specs
+    ensure
+      @worker_pool&.stop
+      @download_worker_pool&.stop
+    end
+
+    private
+
+    def failed_specs
+      @specs.select(&:failed?)
+    end
+
+    def install_with_worker
+      with_jobserver do
+        installed_specs = {}
+        enqueue_specs(installed_specs)
+
+        process_specs(installed_specs) until finished_installing?
+      end
+    end
+
+    def with_jobserver
+      # The jobserver hands tokens to child `make` processes through MAKEFLAGS
+      # using the GNU make `--jobserver-auth` protocol. nmake, the default make
+      # on mswin, instead reads MAKEFLAGS as bare option letters and aborts
+      # every native extension build with `fatal error U1065: invalid option
+      # '-'`. Skip the jobserver when nmake is in use. Other Windows toolchains
+      # such as mingw use GNU make and keep working through the inherited pipe.
+      return yield if nmake? || bsd_make?
+
+      begin
+        r, w = IO.pipe
+        r.close_on_exec = false
+        w.close_on_exec = false
+        w.write("*" * @size)
+
+        old_makeflags = ENV["MAKEFLAGS"]
+        ENV["MAKEFLAGS"] = [old_makeflags, "--jobserver-auth=#{r.fileno},#{w.fileno}"].compact.join(" ")
+
+        yield
+      ensure
+        # Restore MAKEFLAGS before closing the pipe so a close failure can't
+        # leave the process with descriptors that point at a closed pipe.
+        old_makeflags ? ENV["MAKEFLAGS"] = old_makeflags : ENV.delete("MAKEFLAGS")
+
+        r&.close
+        w&.close
+      end
+    end
+
+    # Mirror how RubyGems' extension builder picks the make program so the
+    # jobserver is only set up when a GNU-compatible make will consume it.
+    def nmake?
+      make = ENV["MAKE"] || ENV["make"]
+      make ||= "nmake" if RUBY_PLATFORM.include?("mswin")
+      /\bnmake/i.match?(make.to_s)
+    end
+
+    def bsd_make?
+      return false unless Gem.freebsd_platform?
+      make = ENV["MAKE"] || ENV["make"] || "make"
+      !/\bgmake/i.match?(make)
+    end
+
+    def install_serially
+      until finished_installing?
+        raise "failed to find a spec to enqueue while installing serially" unless spec_install = @specs.find(&:ready_to_enqueue?)
+        spec_install.state = :enqueued
+        do_download(spec_install, 0)
+        do_install(spec_install, 0)
+      end
+    end
+
+    def download_worker_pool
+      @download_worker_pool ||= Bundler::Worker.new(@size, "Gem Downloader",
+        ->(spec_install, worker_num) { do_download(spec_install, worker_num) }, response_queue: response_queue)
+    end
+
+    def worker_pool
+      @worker_pool ||= Bundler::Worker.new(@size, "Parallel Installer",
+        ->(spec_install, worker_num) { do_install(spec_install, worker_num) }, response_queue: response_queue)
+    end
+
+    def response_queue
+      @response_queue ||= Thread::Queue.new
+    end
+
+    def do_download(spec_install, worker_num)
+      Plugin.hook(Plugin::Events::GEM_BEFORE_INSTALL, spec_install)
+
+      gem_installer = Bundler::GemInstaller.new(
+        spec_install.spec, @installer, @standalone, worker_num, @force, @local
+      )
+
+      success, message = gem_installer.download
+
+      if success
+        spec_install.state = :downloaded
+      else
+        spec_install.error = "#{message}\n\n#{require_tree_for_spec(spec_install.spec)}"
+        spec_install.state = :failed
+      end
+
+      spec_install
+    end
+
+    def do_install(spec_install, worker_num)
+      gem_installer = Bundler::GemInstaller.new(
+        spec_install.spec, @installer, @standalone, worker_num, @force, @local
+      )
+      success, message = gem_installer.install_from_spec
+      if success
+        spec_install.state = :installed
+        spec_install.post_install_message = message unless message.nil?
+      else
+        spec_install.error = "#{message}\n\n#{require_tree_for_spec(spec_install.spec)}"
+        spec_install.state = :failed
+      end
+      Plugin.hook(Plugin::Events::GEM_AFTER_INSTALL, spec_install)
+      spec_install
+    end
+
+    # Process one completed download or installation. Downloads can finish
+    # before their dependencies are installed, so check all downloaded specs
+    # after each completion and enqueue any that are now installable.
+    def process_specs(installed_specs)
+      spec = worker_pool.deq
+
+      if spec.installed?
+        installed_specs[spec.name] = true
+      elsif spec.failed?
+        return
+      end
+
+      @specs.each do |candidate|
+        next unless candidate.ready_to_install?(installed_specs)
+
+        candidate.state = :installable
+        worker_pool.enq(candidate, priority: candidate.enqueue_with_priority?)
+      end
+    end
+
+    def finished_installing?
+      @specs.all? do |spec|
+        return true if spec.failed?
+        spec.installed?
+      end
+    end
+
+    def handle_error
+      errors = failed_specs.map(&:error)
+      if exception = errors.find {|e| e.is_a?(Bundler::BundlerError) }
+        raise exception
+      end
+      raise Bundler::InstallError, errors.join("\n\n")
+    end
+
+    def require_tree_for_spec(spec)
+      tree = @spec_set.what_required(spec)
+      gemfile_name = begin
+        File.basename(SharedHelpers.default_gemfile)
+      rescue GemfileNotFound
+        # This runs while reporting an install error. When no Gemfile can be
+        # located (e.g. Bundler used as a library), raising here would mask
+        # the original error, so fall back to a generic header instead.
+        "Gemfile"
+      end
+      t = String.new("In #{gemfile_name}:\n")
+      tree.each_with_index do |s, depth|
+        t << "  " * depth.succ << s.name
+        unless tree.last == s
+          t << %( was resolved to #{s.version}, which depends on)
+        end
+        t << %(\n)
+      end
+      t
+    end
+
+    # Queue every missing spec for download. `process_specs` schedules each
+    # downloaded spec for installation once its dependencies are installed.
+    def enqueue_specs(installed_specs)
+      @specs.each do |spec|
+        if spec.installed?
+          installed_specs[spec.name] = true
+          next
+        end
+
+        spec.state = :enqueued
+        download_worker_pool.enq spec
+      end
+    end
+  end
+end

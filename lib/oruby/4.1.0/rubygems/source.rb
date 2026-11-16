@@ -1,0 +1,507 @@
+# frozen_string_literal: true
+
+require_relative "text"
+require_relative "cooldown"
+##
+# A Source knows how to list and fetch gems from a RubyGems marshal index.
+#
+# There are other Source subclasses for installed gems, local gems, the
+# Compact Index API and so-forth.
+
+class Gem::Source
+  include Comparable
+  include Gem::Text
+
+  FILES = { # :nodoc:
+    released: "specs",
+    latest: "latest_specs",
+    prerelease: "prerelease_specs",
+  }.freeze
+
+  ##
+  # Decoded compact index metadata for one content-addressable gem build:
+  # its +version+, content-address +suffix+, +ruby_abi+, and +platform+.
+  # Two infos are equal when their version and suffix match.
+
+  ContentAddressableInfo = Struct.new(:version, :suffix, :ruby_abi, :platform) do
+    def hash
+      [version, suffix].hash
+    end
+
+    def eql?(other)
+      other.is_a?(self.class) &&
+        version == other.version &&
+        suffix == other.suffix
+    end
+    alias_method :==, :eql?
+  end
+
+  ##
+  # The URI this source will fetch gems from.
+
+  attr_reader :uri
+
+  ##
+  # Creates a new Source which will use the index located at +uri+.
+
+  def initialize(uri)
+    require_relative "uri"
+    @uri = Gem::Uri.parse!(uri)
+    @update_cache = nil
+  end
+
+  ##
+  # Sources are ordered by installation preference.
+
+  def <=>(other)
+    case other
+    when Gem::Source::Installed,
+         Gem::Source::Local,
+         Gem::Source::Lock,
+         Gem::Source::SpecificFile,
+         Gem::Source::Git,
+         Gem::Source::Vendor then
+      -1
+    when Gem::Source then
+      unless @uri
+        return 0 unless other.uri
+        return 1
+      end
+
+      return -1 unless other.uri
+
+      # Returning 1 here ensures that when sorting a list of sources, the
+      # original ordering of sources supplied by the user is preserved.
+      return 1 unless @uri.to_s == other.uri.to_s
+
+      0
+    end
+  end
+
+  def ==(other) # :nodoc:
+    self.class === other && @uri == other.uri
+  end
+
+  alias_method :eql?, :== # :nodoc:
+
+  ##
+  # Returns a Set that can fetch specifications from this source.
+  #
+  # The set will optionally fetch prereleases if requested.
+  #
+  def dependency_resolver_set(prerelease = false)
+    new_dependency_resolver_set.tap {|set| set.prerelease = prerelease }
+  end
+
+  def hash # :nodoc:
+    @uri.hash
+  end
+
+  ##
+  # Returns the local directory to write +uri+ to.
+
+  def cache_dir(uri)
+    # Correct for windows paths
+    escaped_path = uri.path.sub(%r{^/([a-z]):/}i, '/\\1-/')
+
+    File.join Gem.spec_cache_dir, "#{uri.host}%#{uri.port}", File.dirname(escaped_path)
+  end
+
+  ##
+  # Returns true when it is possible and safe to update the cache directory.
+
+  def update_cache?
+    return @update_cache unless @update_cache.nil?
+    @update_cache =
+      begin
+        File.stat(Gem.user_home).uid == Process.uid
+      rescue Errno::ENOENT
+        false
+      end
+  end
+
+  ##
+  # Fetches a specification for the given Gem::NameTuple.
+
+  def fetch_spec(name_tuple)
+    fetcher = Gem::RemoteFetcher.fetcher
+
+    spec_file_name = name_tuple.spec_name
+
+    # The name tuple comes from a remote index and is not otherwise
+    # validated, so refuse anything that would escape the spec cache
+    # directory when used as a path component.
+    if File.basename(spec_file_name) != spec_file_name
+      raise Gem::Exception, "malformed spec name: #{spec_file_name.inspect}"
+    end
+
+    source_uri = enforce_trailing_slash(uri) + "#{Gem::MARSHAL_SPEC_DIR}#{spec_file_name}"
+
+    cache_dir = cache_dir source_uri
+
+    local_spec = File.join cache_dir, spec_file_name
+
+    if File.exist? local_spec
+      spec = Gem.read_binary local_spec
+      Gem.load_safe_marshal
+      spec = begin
+               Gem::SafeMarshal.safe_load(spec)
+             rescue StandardError
+               nil
+             end
+      return spec if spec
+    end
+
+    source_uri.path << ".rz"
+
+    spec = fetcher.fetch_path source_uri
+    spec = Gem::Util.inflate spec
+
+    if update_cache?
+      require "fileutils"
+      FileUtils.mkdir_p cache_dir
+
+      File.open local_spec, "wb" do |io|
+        io.write spec
+      end
+    end
+
+    Gem.load_safe_marshal
+    # TODO: Investigate setting Gem::Specification#loaded_from to a URI
+    Gem::SafeMarshal.safe_load spec
+  end
+
+  ##
+  # Loads +type+ kind of specs fetching from +@uri+ if the on-disk cache is
+  # out of date.
+  #
+  # +type+ is one of the following:
+  #
+  # :released   => Return the list of all released specs
+  # :latest     => Return the list of only the highest version of each gem
+  # :prerelease => Return the list of all prerelease only specs
+  #
+  # The compact index is used when the source provides it, falling back
+  # to the Marshal spec indexes.
+
+  def load_specs(type)
+    load_compact_index_specs(type) || load_marshal_specs(type)
+  end
+
+  ##
+  # The compact index client for this source, caching under
+  # Gem.spec_cache_dir. Also used by Gem::Resolver::APISet.
+
+  def compact_index_client # :nodoc:
+    @compact_index_client ||= begin
+      require_relative "compact_index_client"
+
+      index_uri = compact_index_uri
+
+      Gem::CompactIndexClient.new(compact_index_cache_dir(index_uri),
+        Gem::CompactIndexClient::HTTPFetcher.new(index_uri))
+    end
+  end
+
+  ##
+  # Decodes content-addressable +tuples+ (whose platform field holds the
+  # content address) into tuples carrying their real platform and Ruby ABI
+  # from the compact index /info metadata.
+
+  def decode_content_addressable_tuples(tuples, latest: false)
+    ca_tuples = tuples.select(&:content_address)
+    return tuples if ca_tuples.empty?
+
+    decoded_tuples = ca_tuples.group_by(&:name).flat_map do |name, name_tuples|
+      rows = name_tuples.map do |tuple|
+        [tuple.name, tuple.version, tuple.version.to_s, tuple.content_address]
+      end
+
+      content_addressable_tuples(name, rows)
+    end
+
+    decoded_by_key = decoded_tuples.to_h do |tuple|
+      [[tuple.name, tuple.version, tuple.content_address], tuple]
+    end
+
+    decoded = tuples.filter_map do |tuple|
+      if tuple.content_address
+        decoded_by_key[[tuple.name, tuple.version, tuple.content_address]]
+      else
+        tuple
+      end
+    end
+
+    return decoded unless latest
+
+    decoded.group_by(&:name).flat_map do |_, name_tuples|
+      max_versions_by_platform(name_tuples)
+    end
+  end
+
+  ##
+  # The publish time of gem +name+ at +version+ for +suffix+, when this
+  # source provides it through the compact index created_at metadata.
+  # Returns nil when the source, the gem or the version has no known
+  # publish time.
+
+  def created_at(name, version, suffix = Gem::Platform::RUBY)
+    return unless %w[http https].include?(uri.scheme)
+
+    @created_at_info ||= {}
+    info = @created_at_info[name] ||= begin
+      compact_index_client.fetch_info(name)
+    rescue Gem::RemoteFetcher::FetchError, Gem::CompactIndexClient::Error
+      []
+    end
+
+    suffix = (suffix || Gem::Platform::RUBY).to_s
+    version = version.to_s
+
+    row = info.find do |row_info|
+      row_info[Gem::CompactIndexClient::INFO_VERSION] == version &&
+        (row_info[Gem::CompactIndexClient::INFO_SUFFIX] || Gem::Platform::RUBY) == suffix
+    end
+    return unless row
+
+    value = row[Gem::CompactIndexClient::INFO_REQS].assoc("created_at")&.last&.first
+
+    Gem::Cooldown.parse_created_at(value)
+  end
+
+  ##
+  # The publish time for +tuple+. Content-addressable tuples are looked up by
+  # content address; all other tuples are looked up by platform.
+
+  def created_at_for_tuple(tuple)
+    created_at(tuple.name, tuple.version, tuple.content_address || tuple.platform)
+  end
+
+  ##
+  # Downloads +spec+ and writes it to +dir+.  See also
+  # Gem::RemoteFetcher#download.
+
+  def download(spec, dir = Dir.pwd)
+    fetcher = Gem::RemoteFetcher.fetcher
+    fetcher.download spec, uri.to_s, dir
+  end
+
+  def pretty_print(q) # :nodoc:
+    q.object_group(self) do
+      q.group 2, "[Remote:", "]" do
+        q.breakable
+        q.text @uri.to_s
+
+        if api = uri
+          q.breakable
+          q.text "API URI: "
+          q.text api.to_s
+        end
+      end
+    end
+  end
+
+  def typo_squatting?(host, distance_threshold = 4)
+    return if @uri.host.nil?
+    levenshtein_distance(@uri.host, host).between? 1, distance_threshold
+  end
+
+  private
+
+  def load_marshal_specs(type)
+    file       = FILES[type]
+    fetcher    = Gem::RemoteFetcher.fetcher
+    file_name  = "#{file}.#{Gem.marshal_version}"
+    spec_path  = enforce_trailing_slash(uri) + "#{file_name}.gz"
+    cache_dir  = cache_dir spec_path
+    local_file = File.join(cache_dir, file_name)
+    retried    = false
+
+    if update_cache?
+      require "fileutils"
+      FileUtils.mkdir_p cache_dir
+    end
+
+    spec_dump = fetcher.cache_update_path spec_path, local_file, update_cache?
+
+    Gem.load_safe_marshal
+    begin
+      Gem::NameTuple.from_list Gem::SafeMarshal.safe_load(spec_dump)
+    rescue ArgumentError
+      if update_cache? && !retried
+        FileUtils.rm local_file
+        retried = true
+        retry
+      else
+        raise Gem::Exception.new("Invalid spec cache file in #{local_file}")
+      end
+    end
+  end
+
+  ##
+  # Builds the name tuple list for +type+ from the compact index versions
+  # file. Returns nil when the source does not provide a usable compact
+  # index, so the caller can fall back to the Marshal spec indexes.
+
+  def load_compact_index_specs(type)
+    return unless %w[http https].include?(uri.scheme)
+
+    versions = compact_index_versions
+    return if versions.nil? || versions.empty?
+
+    tuples = []
+
+    versions.each_value do |rows|
+      gem_tuples = rows.filter_map do |row_name, version_string, suffix|
+        next unless Gem::Version.correct?(version_string)
+
+        version = Gem::Version.new(version_string)
+        next if version.prerelease? != (type == :prerelease)
+
+        suffix ||= "ruby"
+        content_address = suffix if Gem::ContentAddress.match?(suffix)
+
+        Gem::NameTuple.new(row_name, version, suffix, content_address: content_address)
+      end
+
+      gem_tuples = max_versions_by_platform(gem_tuples) if type == :latest
+
+      tuples.concat(gem_tuples)
+    end
+
+    tuples
+  end
+
+  def compact_index_versions
+    @compact_index_versions ||= compact_index_client.versions
+  rescue Gem::RemoteFetcher::FetchError, Gem::CompactIndexClient::Error
+    @compact_index_versions = {}
+    nil
+  end
+
+  def compact_index_info_rows(name)
+    compact_index_client.info(name)
+  rescue Gem::RemoteFetcher::FetchError, Gem::CompactIndexClient::Error
+    []
+  end
+
+  def content_addressable_tuples(name, rows)
+    metadata = content_addressable_metadata(name, rows)
+
+    rows.filter_map do |row_name, version, version_string, suffix|
+      row_metadata = metadata.find do |entry|
+        entry.version == version_string && entry.suffix == suffix
+      end
+      next unless row_metadata
+
+      Gem::NameTuple.new(
+        row_name,
+        version,
+        row_metadata.platform,
+        content_address: suffix,
+        ruby_abi: row_metadata.ruby_abi
+      )
+    end
+  end
+
+  def content_addressable_metadata(name, rows)
+    wanted_rows = rows.map do |row|
+      ContentAddressableInfo.new(row[2], row[3], nil, nil)
+    end
+
+    available_rows = compact_index_info_rows(name).filter_map do |info_row|
+      version = info_row[Gem::CompactIndexClient::INFO_VERSION]
+      suffix = info_row[Gem::CompactIndexClient::INFO_SUFFIX]
+
+      requirements = compact_index_requirements(info_row)
+      platform = required_platform_from(requirements[:platform])
+      next unless platform
+      next unless requirements[:ruby]
+
+      ruby_abi = Gem::ContentAddress.ruby_abi_for(Gem::Requirement.new(requirements[:ruby]))
+      ContentAddressableInfo.new(version, suffix, ruby_abi, platform)
+    end
+
+    available_rows & wanted_rows
+  end
+
+  def compact_index_requirements(info_row)
+    info_row[Gem::CompactIndexClient::INFO_REQS].to_h do |key, requirements|
+      [key.to_sym, requirements]
+    end
+  end
+
+  def required_platform_from(requirement)
+    platform = Array(requirement).last.to_s
+    return if platform.empty?
+
+    platform
+  end
+
+  def max_versions_by_platform(tuples)
+    grouped_tuples = tuples.group_by {|tuple| latest_platform_key(tuple) }
+    grouped_tuples.map do |_, platform_tuples|
+      platform_tuples.max_by(&:version)
+    end
+  end
+
+  def latest_platform_key(tuple)
+    if tuple.content_address
+      [tuple.platform, tuple.ruby_abi || tuple.content_address]
+    else
+      tuple.platform
+    end
+  end
+
+  def compact_index_uri
+    if uri.host == "rubygems.org"
+      index_uri = uri.dup
+      index_uri.host = "index.rubygems.org"
+      index_uri
+    else
+      uri
+    end
+  end
+
+  def compact_index_cache_dir(index_uri)
+    if update_cache?
+      # Correct for windows paths
+      escaped_path = index_uri.path.sub(%r{^/([a-z]):/}i, '/\\1-/')
+
+      File.join Gem.spec_cache_dir, "compact_index",
+        "#{index_uri.host}%#{index_uri.port}", *escaped_path.split("/").reject(&:empty?)
+    else
+      require "tmpdir"
+      require "fileutils"
+      dir = Dir.mktmpdir "gem_compact_index"
+      at_exit { FileUtils.rm_rf dir }
+      dir
+    end
+  end
+
+  def new_dependency_resolver_set
+    return Gem::Resolver::IndexSet.new self if uri.scheme == "file"
+
+    bundler_api_uri = enforce_trailing_slash(compact_index_uri) + "versions"
+
+    begin
+      fetcher = Gem::RemoteFetcher.fetcher
+      response = fetcher.fetch_path bundler_api_uri, nil, true
+    rescue Gem::RemoteFetcher::FetchError
+      Gem::Resolver::IndexSet.new self
+    else
+      Gem::Resolver::APISet.new response.uri + "./info/"
+    end
+  end
+
+  def enforce_trailing_slash(uri)
+    uri.merge(uri.path.gsub(%r{/+$}, "") + "/")
+  end
+end
+
+require_relative "source/git"
+require_relative "source/installed"
+require_relative "source/specific_file"
+require_relative "source/local"
+require_relative "source/lock"
+require_relative "source/vendor"

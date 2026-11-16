@@ -1,0 +1,62 @@
+# frozen_string_literal: true
+
+module Bundler
+  #
+  # This class materializes a set of resolved specifications (`LazySpecification`)
+  # for a given gem into the most appropriate real specifications
+  # (`StubSepecification`, `EndpointSpecification`, etc), given a dependency and a
+  # target platform.
+  #
+  class Materialization
+    def initialize(dep, platform, candidates:)
+      @dep = dep
+      @platform = platform
+      @candidates = candidates
+      @locked_platforms = candidates&.map(&:platform)
+    end
+
+    def complete?
+      specs.any?
+    end
+
+    def specs
+      @specs ||= if @candidates.nil?
+        []
+      elsif platform
+        MatchPlatform.select_best_platform_match(@candidates, platform, force_ruby: dep.force_ruby_platform)
+      else
+        MatchPlatform.select_best_local_platform_match(@candidates, force_ruby: dep.force_ruby_platform || dep.default_force_ruby_platform, locked_platforms: @locked_platforms)
+      end
+    end
+
+    def dependencies
+      spec = materialized_spec || specs.first
+      overrides = specs.first.overrides if specs.first.is_a?(LazySpecification)
+      Override.rewrite_dependencies(overrides, spec.name, spec.runtime_dependencies).map {|d| [d, platform] }
+    end
+
+    def materialized_spec
+      specs.reject(&:missing?).first&.materialization
+    end
+
+    def completely_missing_specs
+      return [] unless specs.all?(&:missing?)
+
+      specs
+    end
+
+    def partially_missing_specs
+      specs.select(&:missing?)
+    end
+
+    def incomplete_specs
+      return [] if complete?
+
+      @candidates || LazySpecification.new(dep.name, nil, nil)
+    end
+
+    private
+
+    attr_reader :dep, :platform
+  end
+end
