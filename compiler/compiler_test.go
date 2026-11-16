@@ -532,10 +532,12 @@ end`,
 	}
 }
 
+// Overflow out of the pure-integer fast path promotes to a bigint, as in MRI.
 func TestCompiler_SpecializedIntegerOverflowParity(t *testing.T) {
 	tests := []struct {
 		name string
 		code string
+		want string
 	}{
 		{
 			name: "multiply_overflow",
@@ -544,6 +546,7 @@ def square(value)
   value * value
 end
 square(3037000500).to_s`,
+			want: "9223372037000250000",
 		},
 		{
 			name: "add_overflow",
@@ -552,6 +555,7 @@ def increment(value)
   value + 1
 end
 increment(9223372036854775807).to_s`,
+			want: "9223372036854775808",
 		},
 		{
 			name: "subtract_overflow",
@@ -560,6 +564,7 @@ def decrement(value)
   value - 1
 end
 decrement(-9223372036854775807 - 1).to_s`,
+			want: "-9223372036854775809",
 		},
 		{
 			name: "min_integer_multiply_overflow",
@@ -568,6 +573,7 @@ def negate(value)
   value * -1
 end
 negate(-9223372036854775807 - 1).to_s`,
+			want: "9223372036854775808",
 		},
 	}
 	for _, tt := range tests {
@@ -588,9 +594,8 @@ negate(-9223372036854775807 - 1).to_s`,
 				t.Fatalf("test did not exercise integer specialization:\n%s", source)
 			}
 			compiled := compiledExceptionOutcome(t, source)
-			if compiled.Kind != interpreted.Kind || compiled.Class != interpreted.Class || compiled.Pending != interpreted.Pending ||
-				!strings.Contains(strings.ToLower(compiled.Message), "overflow") || !strings.Contains(strings.ToLower(interpreted.Message), "overflow") {
-				t.Errorf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+			if compiled != interpreted || compiled.Kind != "return" || compiled.Message != tt.want {
+				t.Errorf("compiled outcome = %+v, interpreted = %+v, want %s", compiled, interpreted, tt.want)
 			}
 		})
 	}
@@ -629,6 +634,58 @@ add_one(2).to_s
 	compiled := compiledExceptionOutcome(t, source)
 	if compiled != interpreted {
 		t.Fatalf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+	}
+}
+
+func TestCompiler_InlineNumericOperatorRedefinitionParity(t *testing.T) {
+	cases := map[string]string{
+		"float": `
+def scale(x)
+  x * 2.0
+end
+r = [scale(1.5)]
+class Float
+  def *(other)
+    -1.0
+  end
+end
+r << scale(1.5)
+r.inspect
+`,
+		"compare": `
+def lower(a, b)
+  if a < b then :yes else :no end
+end
+r = [lower(1, 2)]
+class Integer
+  def <(other)
+    false
+  end
+end
+r << lower(1, 2)
+r.inspect
+`,
+	}
+	for name, code := range cases {
+		t.Run(name, func(t *testing.T) {
+			mrb := oruby.MrbOpen()
+			defer mrb.Close()
+			value, err := mrb.Eval(code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			interpreted := interpretedExceptionOutcome(mrb, value, nil)
+
+			compilerState := oruby.MrbOpen()
+			defer compilerState.Close()
+			source, err := New(Options{PackageName: "main"}).CompileRuby(compilerState, code)
+			if err != nil {
+				t.Fatalf("CompileRuby: %v", err)
+			}
+			if compiled := compiledExceptionOutcome(t, source); compiled != interpreted {
+				t.Fatalf("compiled outcome = %+v, interpreted = %+v", compiled, interpreted)
+			}
+		})
 	}
 }
 

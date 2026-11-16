@@ -11,7 +11,6 @@ import (
 	"unsafe"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/bigint"
 	rx "github.com/oruby/oruby/gem/regexp"
 )
 
@@ -163,12 +162,6 @@ func (w *writer) writeValue(value oruby.Value, depth int) error {
 	}
 	hasMarshalDump := w.mrb.RespondTo(value, w.mrb.Intern("marshal_dump"))
 	hasUserDump := w.mrb.RespondTo(value, w.mrb.Intern("_dump"))
-	if value.Type() == oruby.MrbTTCData && !hasMarshalDump && !hasUserDump {
-		if bi, ok := w.mrb.Data(value).(*bigint.RBigInt); ok && isMarshalFixnum(bi.Value()) {
-			return w.writeInteger(bi.Value())
-		}
-	}
-
 	if value.HasBasic() {
 		linked, err := w.reference(value)
 		if err != nil || linked {
@@ -266,13 +259,12 @@ func (w *writer) writeValue(value oruby.Value, depth int) error {
 		return w.writeObject(value, depth)
 	case oruby.MrbTTException:
 		return w.writeException(value, depth)
-	case oruby.MrbTTCData:
-		if bi, ok := w.mrb.Data(value).(*bigint.RBigInt); ok {
-			return w.writeInteger(bi.Value())
-		}
-		return oruby.ETypeError("can't dump %s", w.mrb.TypeName(value))
 	case oruby.MrbTTBigInt:
-		return oruby.ETypeError("unsupported native bignum representation")
+		z, err := w.mrb.BigInt(value)
+		if err != nil {
+			return err
+		}
+		return w.writeInteger(z)
 	default:
 		return oruby.ETypeError("can't dump %s", w.mrb.TypeName(value))
 	}

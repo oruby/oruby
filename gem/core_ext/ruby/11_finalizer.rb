@@ -60,7 +60,7 @@ module ObjectSpace
   end
 end
 
-at_exit { ObjectSpace._run_finalizers } if respond_to?(:at_exit)
+at_exit { ObjectSpace._run_finalizers }
 
 class Object
   alias __orig_dup__ dup

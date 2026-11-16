@@ -1,5 +1,5 @@
 # Encoding extensions
-class EncodingError < StandardError; end unless defined?(EncodingError)
+class EncodingError < StandardError; end
 module Encoding
   class CompatibilityError < ::EncodingError; end
 

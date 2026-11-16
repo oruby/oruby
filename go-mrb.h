@@ -769,9 +769,7 @@ void _mrb_method_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx
 void _define_class_method(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 
 // Module#private/public/protected/module_function accepting String names
-void _mrb_patch_visibility(mrb_state *mrb);
 // defined?(X) / defined?(A::B) report pending autoloads (gem/load) as constants
-void _mrb_patch_defined(mrb_state *mrb);
 
 // cmd helpers
 extern void mrb_codedump_all(mrb_state*, struct RProc*);
@@ -869,6 +867,15 @@ static inline void _mrb_irep_catch_handler(const mrb_irep *irep, int i, int *typ
   *end = mrb_irep_catch_handler_unpack(e->end);
   *target = mrb_irep_catch_handler_unpack(e->target);
 }
+
+// Numeric operators the AOT compiler evaluates inline for Integer and Float
+// operands (see AotIntOpsRedefined); a set bit means the program redefined one.
+#define _AOT_BOPS(f) (f(MRB_BOP_ADD) | f(MRB_BOP_SUB) | f(MRB_BOP_MUL) | f(MRB_BOP_DIV) | \
+                      f(MRB_BOP_EQ) | f(MRB_BOP_LT) | f(MRB_BOP_LE) | f(MRB_BOP_GT) | f(MRB_BOP_GE))
+enum {
+  _AOT_INT_BOP_MASK = _AOT_BOPS(MRB_BOP_INTEGER),
+  _AOT_FLOAT_BOP_MASK = _AOT_BOPS(MRB_BOP_FLOAT)
+};
 
 #if defined(__cplusplus)
 }  /* extern "C" { */

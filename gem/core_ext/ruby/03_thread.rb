@@ -1,9 +1,5 @@
 # Thread extensions for local storage
 class Thread
-  def self.current
-    @__current ||= (allocate rescue new rescue Object.new)
-  end unless respond_to?(:current)
-
   def [](key)
     @__locals ||= {}
     @__locals[key.to_s]
@@ -42,16 +38,13 @@ end
 
 # Ruby names the synchronization classes under Thread as well
 class Thread
-  Queue = ::Queue if Object.const_defined?(:Queue) && !const_defined?(:Queue, false)
-  SizedQueue = ::SizedQueue if Object.const_defined?(:SizedQueue) && !const_defined?(:SizedQueue, false)
-  ConditionVariable = ::ConditionVariable if Object.const_defined?(:ConditionVariable) && !const_defined?(:ConditionVariable, false)
+  Queue = ::Queue
+  SizedQueue = ::SizedQueue
 end
 
 # oruby runs one Ruby thread, so a locked mutex is owned by the current thread
-if Object.const_defined?(:Mutex)
-  class Mutex
-    def owned?
-      locked?
-    end unless method_defined?(:owned?)
+class Mutex
+  def owned?
+    locked?
   end
 end

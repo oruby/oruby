@@ -48,8 +48,8 @@ func TestMarshalMRIWireFormat(t *testing.T) {
 		{"smallest MRI fixnum", `Marshal.dump(-1073741824)`, "040869fc000000c0"},
 		{"first positive bignum", `Marshal.dump(1073741824)`, "04086c2b0700000040"},
 		{"first negative bignum", `Marshal.dump(-1073741825)`, "04086c2d0701000040"},
-		{"large negative bignum", `Marshal.dump(Bignum.new("-1267650600228229401496703205376"))`, "04086c2d0c0000000000000000000000001000"},
-		{"linked bignum", `(number = Bignum.new("1267650600228229401496703205376"); Marshal.dump([number, number]))`, "04085b076c2b0c00000000000000000000000010004006"},
+		{"large negative bignum", `Marshal.dump(-1267650600228229401496703205376)`, "04086c2d0c0000000000000000000000001000"},
+		{"linked bignum", `(number = 1267650600228229401496703205376; Marshal.dump([number, number]))`, "04085b076c2b0c00000000000000000000000010004006"},
 		{"exception metadata", `(exception = RuntimeError.new("bad"); exception.set_backtrace(["x.rb:2"]); exception.instance_variable_set(:@extra, :ok); Marshal.dump(exception))`, "04086f3a1152756e74696d654572726f72083a096d657367492208626164063a0645543a0762745b0649220b782e72623a32063b07543a0b4065787472613a076f6b"},
 		{"utf8 string", `Marshal.dump("hello")`, "040849220a68656c6c6f063a064554"},
 		{"binary string", `Marshal.dump("\xFF".b)`, "04082206ff"},
@@ -76,18 +76,18 @@ func TestMarshalMRIWireFormat(t *testing.T) {
 	}
 }
 
-func TestMarshalGoBignumRoundTrip(t *testing.T) {
+func TestMarshalBignumRoundTrip(t *testing.T) {
 	mrb := openMarshal(t)
 	got, err := mrb.Eval(`
-    value = Bignum.new("1267650600228229401496703205376")
+    value = 1267650600228229401496703205376
     copy = Marshal.load(Marshal.dump(value))
-    copy.class == Bignum && copy.to_s == value.to_s
+    copy.class == Integer && copy == value
   `)
 	if err != nil || !got.Bool() {
-		t.Fatalf("Go-backed Bignum round trip = %v, %v; want true, nil", got, err)
+		t.Fatalf("Bignum round trip = %v, %v; want true, nil", got, err)
 	}
 	got, err = mrb.Eval(`
-    value = Bignum.new("1267650600228229401496703205376")
+    value = 1267650600228229401496703205376
     copy = Marshal.load(Marshal.dump([value, value]))
     copy[0].equal?(copy[1])
   `)
@@ -120,8 +120,8 @@ func TestMarshalLoadsMRI41Bignums(t *testing.T) {
 		if err != nil || mrb.String(text) != tc.want {
 			t.Fatalf("MRI bignum %s = %q, %v; want %q", tc.wire, mrb.String(text), err, tc.want)
 		}
-		if value.Type() != oruby.MrbTTCData || mrb.ClassOf(value).Name() != "Bignum" {
-			t.Fatalf("MRI bignum %s produced %s, want Go-backed Bignum", tc.wire, mrb.TypeName(value))
+		if mrb.ClassOf(value).Name() != "Integer" {
+			t.Fatalf("MRI bignum %s produced %s, want Integer", tc.wire, mrb.TypeName(value))
 		}
 	}
 }

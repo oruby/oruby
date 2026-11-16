@@ -8,10 +8,10 @@ ORuby (`github.com/oruby/oruby`) is a Go package that embeds [mruby](https://git
 
 ## Setup & build
 
-mruby is a git submodule (`mruby/`, branch `stable`) and must be built before any Go code compiles.
+mruby is a git submodule (`mruby/`, tracking upstream `master` until mruby 4.1.0 is released — it carries fixes not on `stable`, such as bare `raise`/`$!`, keyword arguments in bare `super`, native `autoload` and refinements) and must be built before any Go code compiles. mruby vendors Prism as a nested submodule, so update recursively.
 
 ```sh
-git submodule init && git submodule update   # populate mruby/
+git submodule update --init --recursive      # populate mruby/ and its Prism submodule
 make                                          # builds mruby/build/host/lib/libmruby.a, runs check_api.rb, go build
 ```
 
@@ -19,6 +19,7 @@ make                                          # builds mruby/build/host/lib/libm
 - `MRUBY_CONFIG` is selected by the Makefile: `scripts/build_config_{darwin,unix,win}.rb`. Gems compiled into libmruby are listed in `scripts/oruby.gembox`.
 - `make check` — `scripts/check_api.rb` lists `MRB_API` functions from mruby headers not yet wrapped in the matching `<header>.go` file.
 - `make update` — clean, pull latest submodule, rebuild libmruby.
+- Go's build cache does not track mruby's headers or `libmruby.a`: after rebuilding libmruby against a different mruby revision, run `go clean -cache` (or build/test with `-a`), otherwise cached cgo objects with the old struct layout crash at `mrb_open` ("allocation failure").
 - Windows (`mingw32-make`, `mruby.dll`) is unsupported/WIP.
 
 ## Testing

@@ -83,6 +83,19 @@ func (mrb *MrbState) aotInspectMessage(exc Value) string {
 	return ""
 }
 
+// AotIntOpsRedefined reports whether the program redefined an Integer
+// operator that compiled code evaluates inline (+ - * / == < <= > >=). It
+// reads mruby's redefinition bits directly, without a cgo call, so generated
+// code can check it on every operation.
+func (mrb *MrbState) AotIntOpsRedefined() bool {
+	return mrb.p.bop_redefined&C._AOT_INT_BOP_MASK != 0
+}
+
+// AotFloatOpsRedefined is AotIntOpsRedefined for the Float operators.
+func (mrb *MrbState) AotFloatOpsRedefined() bool {
+	return mrb.p.bop_redefined&C._AOT_FLOAT_BOP_MASK != 0
+}
+
 // AotErr returns current pending exception as Go error
 func (mrb *MrbState) AotErr() error {
 	if mrb.p.exc == nil {

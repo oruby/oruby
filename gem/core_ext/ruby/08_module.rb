@@ -45,73 +45,16 @@ module Kernel
   end
 end
 
-if defined?(File::Constants) && !IO.include?(File::Constants)
-  class IO
-    include File::Constants
-  end
+class IO
+  include File::Constants
 end
 
 class Module
-  unless method_defined?(:private_class_method)
-    def private_class_method(*names)
-      names.flatten.each { |n| singleton_class.__send__(:private, n.to_sym) }
-      nil
-    end
-
-    def public_class_method(*names)
-      names.flatten.each { |n| singleton_class.__send__(:public, n.to_sym) }
-      nil
-    end
-  end
-end
-
-class Module
-  # method_defined?(name, inherit = true), and the visibility-specific forms
-  alias_method :__method_defined?, :method_defined?
-  def method_defined?(name, inherit = true)
-    return __method_defined?(name) if inherit
-    instance_methods(false).include?(name.to_sym)
-  end
-
-  unless method_defined?(:public_method_defined?)
-    def public_method_defined?(name, inherit = true)
-      public_instance_methods(inherit).include?(name.to_sym)
-    end
-  end
-
-  unless method_defined?(:private_method_defined?)
-    def private_method_defined?(name, inherit = true)
-      private_instance_methods(inherit).include?(name.to_sym)
-    end
-  end
-
-  unless method_defined?(:protected_method_defined?)
-    def protected_method_defined?(name, inherit = true)
-      protected_instance_methods(inherit).include?(name.to_sym)
-    end
-  end
-end
-
-class Module
-  # const_get(name, inherit = true), including "A::B" paths
+  # mruby rejects a path rooted at Object ("::String")
   alias_method :__const_get, :const_get
   def const_get(name, inherit = true)
-    if name.is_a?(String) && name.include?("::")
-      parts = name.split("::")
-      mod = parts.first.empty? ? (parts.shift; Object) : self
-      return parts.inject(mod) { |m, part| m.const_get(part, inherit) }
-    end
-    if inherit
-      # modules also see Object's constants, as in MRI
-      if !is_a?(Class) && !const_defined?(name) && Object.const_defined?(name)
-        return Object.__const_get(name)
-      end
-      __const_get(name)
-    elsif const_defined?(name, false)
-      __const_get(name)
-    else
-      raise NameError.new("uninitialized constant #{self == Object ? '' : "#{self}::"}#{name}", name.to_sym)
-    end
+    return Object.__const_get(name[2..], inherit) if name.is_a?(String) && name.start_with?("::")
+    __const_get(name, inherit)
   end
 end
 

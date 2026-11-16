@@ -64,6 +64,8 @@ MRuby::GemBox.new do |conf|
 
   # Use Random class
   conf.gem :core => "mruby-random"
+  conf.gem :core => "mruby-random-formatter"
+  conf.gem :core => "mruby-coerce"
 
   # Use Object class extension
   conf.gem :core => "mruby-object-ext"
@@ -97,6 +99,8 @@ MRuby::GemBox.new do |conf|
 
   # Use Rational class
   conf.gem :core => "mruby-rational"
+  conf.gem :core => "mruby-complex"
+  conf.gem :core => "mruby-bigint"
 
   # Use mruby-compiler to build other mrbgems
   conf.gem :core => "mruby-compiler"

@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/bigint"
 )
 
 type byteSource interface {
@@ -311,13 +310,7 @@ func (r *reader) readBignum() (oruby.Value, error) {
 	if sign == '-' {
 		value.Neg(value)
 	}
-	if !r.mrb.ClassDefined("Bignum") {
-		return oruby.Nil, oruby.ETypeError("Bignum class is not available")
-	}
-	result, err := r.mrb.ClassGet("Bignum").NewGoInstance(bigint.New(value))
-	if err != nil {
-		return oruby.Nil, err
-	}
+	result := r.mrb.BigIntValue(value)
 	r.addObject(result)
 	return result, nil
 }

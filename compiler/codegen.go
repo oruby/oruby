@@ -586,8 +586,8 @@ func aotSetInt(v oruby.Value, i int64) oruby.Value {
 	return v
 }
 
-func aotAddII(a, b oruby.Value) (oruby.Value, bool) {
-	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
+func aotAddII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if mrb.AotIntOpsRedefined() || a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
 		return a, false
 	}
 	x, y := aotInt(a), aotInt(b)
@@ -598,8 +598,8 @@ func aotAddII(a, b oruby.Value) (oruby.Value, bool) {
 	return aotSetInt(a, z), true
 }
 
-func aotSubII(a, b oruby.Value) (oruby.Value, bool) {
-	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
+func aotSubII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if mrb.AotIntOpsRedefined() || a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
 		return a, false
 	}
 	x, y := aotInt(a), aotInt(b)
@@ -610,8 +610,8 @@ func aotSubII(a, b oruby.Value) (oruby.Value, bool) {
 	return aotSetInt(a, z), true
 }
 
-func aotMulII(a, b oruby.Value) (oruby.Value, bool) {
-	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
+func aotMulII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if mrb.AotIntOpsRedefined() || a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
 		return a, false
 	}
 	x, y := aotInt(a), aotInt(b)
@@ -625,8 +625,8 @@ func aotMulII(a, b oruby.Value) (oruby.Value, bool) {
 	return aotSetInt(a, z), true
 }
 
-func aotDivII(a, b oruby.Value) (oruby.Value, bool) {
-	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
+func aotDivII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if mrb.AotIntOpsRedefined() || a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
 		return a, false
 	}
 	x, y := aotInt(a), aotInt(b)
@@ -640,8 +640,8 @@ func aotDivII(a, b oruby.Value) (oruby.Value, bool) {
 	return aotSetInt(a, q), true
 }
 
-func aotModII(a, b oruby.Value) (oruby.Value, bool) {
-	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
+func aotModII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if mrb.AotIntOpsRedefined() || a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
 		return a, false
 	}
 	x, y := aotInt(a), aotInt(b)
@@ -655,8 +655,8 @@ func aotModII(a, b oruby.Value) (oruby.Value, bool) {
 	return aotSetInt(a, m), true
 }
 
-func aotCmpII(a, b oruby.Value) (int64, int64, bool) {
-	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
+func aotCmpII(mrb *oruby.MrbState, a, b oruby.Value) (int64, int64, bool) {
+	if mrb.AotIntOpsRedefined() || a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
 		return 0, 0, false
 	}
 	return aotInt(a), aotInt(b), true
@@ -672,8 +672,8 @@ func aotNum(v oruby.Value) (float64, bool) {
 	return 0, false
 }
 
-func aotFloats(a, b oruby.Value) (float64, float64, bool) {
-	if a.Type() != oruby.MrbTTFloat && b.Type() != oruby.MrbTTFloat {
+func aotFloats(mrb *oruby.MrbState, a, b oruby.Value) (float64, float64, bool) {
+	if mrb.AotFloatOpsRedefined() || (a.Type() != oruby.MrbTTFloat && b.Type() != oruby.MrbTTFloat) {
 		return 0, 0, false
 	}
 	x, ok1 := aotNum(a)
@@ -692,7 +692,7 @@ func aotSend1(mrb *oruby.MrbState, a oruby.Value, sym oruby.MrbSym, b oruby.Valu
 	for _, h := range arith {
 		b.WriteString(fmt.Sprintf(`
 func %s(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
-	if x, y, ok := aotFloats(a, b); ok {
+	if x, y, ok := aotFloats(mrb, a, b); ok {
 		return mrb.FloatValue(x %s y)
 	}
 	return aotSend1(mrb, a, %s, b)
@@ -701,7 +701,7 @@ func %s(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	}
 	b.WriteString(fmt.Sprintf(`
 func fastDiv(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
-	if x, y, ok := aotFloats(a, b); ok {
+	if x, y, ok := aotFloats(mrb, a, b); ok {
 		return mrb.FloatValue(x / y)
 	}
 	return aotSend1(mrb, a, %s, b)
@@ -721,7 +721,7 @@ func fastNeq(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	for _, h := range cmps {
 		b.WriteString(fmt.Sprintf(`
 func %s(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
-	if x, y, ok := aotFloats(a, b); ok {
+	if x, y, ok := aotFloats(mrb, a, b); ok {
 		return mrb.BoolValue(x %s y)
 	}
 	return aotSend1(mrb, a, %s, b)
@@ -1421,7 +1421,7 @@ func (g *CodeGen) emitUnit(out *bytes.Buffer, unit *IRepUnit) error {
 				conds = append(conds, fmt.Sprintf("_a%d.Type() == oruby.MrbTTInteger", i+1))
 				intArgs = append(intArgs, fmt.Sprintf("aotInt(_a%d)", i+1))
 			}
-			out.WriteString(fmt.Sprintf("\tif aotIntDisabled == 0 && %s {\n\t\tif _v, _ok := %s_int(%s); _ok {\n\t\t\treturn mrb.FixnumValue(int(_v)), nil\n\t\t}\n\t\taotIntDisabled++\n\t\tdefer func() { aotIntDisabled-- }()\n\t}\n",
+			out.WriteString(fmt.Sprintf("\tif aotIntDisabled == 0 && !mrb.AotIntOpsRedefined() && %s {\n\t\tif _v, _ok := %s_int(%s); _ok {\n\t\t\treturn mrb.FixnumValue(int(_v)), nil\n\t\t}\n\t\taotIntDisabled++\n\t\tdefer func() { aotIntDisabled-- }()\n\t}\n",
 				strings.Join(conds, " && "), fn, strings.Join(intArgs, ", ")))
 		}
 	} else {
@@ -1596,7 +1596,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 					cond = "_c"
 					vcond = "_v.Bool()"
 				}
-				e.w("\tif _x, _y, _ok := aotCmpII(r[%d], r[%d]); _ok {\n", a, a+1)
+				e.w("\tif _x, _y, _ok := aotCmpII(mrb, r[%d], r[%d]); _ok {\n", a, a+1)
 				e.w("\t\t_c := _x %s _y\n\t\tr[%d] = mrb.BoolValue(_c)\n\t\tif %s { %s }\n", op, a, cond, jmp)
 				e.w("\t} else {\n\t\t_v := %s(mrb, r[%d], r[%d])\n\t\t%s\n\t\tr[%d] = _v\n\t\tif %s { %s }\n\t}\n",
 					cmpHelper(ins.Op), a, a+1, e.chk(idx), a, vcond, jmp)
@@ -1721,7 +1721,7 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 	case OpADD, OpSUB, OpMUL, OpDIV:
 		ii := map[Opcode]string{OpADD: "aotAddII", OpSUB: "aotSubII", OpMUL: "aotMulII", OpDIV: "aotDivII"}[ins.Op]
 		slow := map[Opcode]string{OpADD: "fastAdd", OpSUB: "fastSub", OpMUL: "fastMul", OpDIV: "fastDiv"}[ins.Op]
-		e.w("\tif _z, _ok := %s(r[%d], r[%d]); _ok {\n\t\tr[%d] = _z\n\t} else {\n\t\tr[%d] = %s(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
+		e.w("\tif _z, _ok := %s(mrb, r[%d], r[%d]); _ok {\n\t\tr[%d] = _z\n\t} else {\n\t\tr[%d] = %s(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
 			ii, a, a+1, a, a, slow, a, a+1, e.chk(idx))
 
 	case OpADDI, OpSUBI, OpADDILV, OpSUBILV:
@@ -1733,11 +1733,11 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 		if ins.Op == OpSUBI || ins.Op == OpSUBILV {
 			ii, slow = "aotSubII", "fastSub"
 		}
-		e.w("\tif _z, _ok := %s(r[%d], mrb.FixnumValue(%d)); _ok {\n\t\tr[%d] = _z\n\t} else {\n\t\tr[%d] = %s(mrb, r[%d], mrb.FixnumValue(%d))\n\t\t%s\n\t}\n",
+		e.w("\tif _z, _ok := %s(mrb, r[%d], mrb.FixnumValue(%d)); _ok {\n\t\tr[%d] = _z\n\t} else {\n\t\tr[%d] = %s(mrb, r[%d], mrb.FixnumValue(%d))\n\t\t%s\n\t}\n",
 			ii, a, imm, a, a, slow, a, imm, e.chk(idx))
 
 	case OpEQ, OpLT, OpLE, OpGT, OpGE:
-		e.w("\tif _x, _y, _ok := aotCmpII(r[%d], r[%d]); _ok {\n\t\tr[%d] = mrb.BoolValue(_x %s _y)\n\t} else {\n\t\tr[%d] = %s(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
+		e.w("\tif _x, _y, _ok := aotCmpII(mrb, r[%d], r[%d]); _ok {\n\t\tr[%d] = mrb.BoolValue(_x %s _y)\n\t} else {\n\t\tr[%d] = %s(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
 			a, a+1, a, cmpOpStr(ins.Op), a, cmpHelper(ins.Op), a, a+1, e.chk(idx))
 
 	case OpJMP:
@@ -2212,11 +2212,11 @@ func (e *unitEmitter) emitSend(idx int, ins Instruction) {
 	if !fcall && !hasBlock && n == 1 && nk == 0 {
 		switch symName {
 		case "%":
-			e.w("\tif _z, _ok := aotModII(r[%d], r[%d]); _ok {\n\t\tr[%d] = _z\n\t} else {\n\t\tr[%d] = fastMod(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
+			e.w("\tif _z, _ok := aotModII(mrb, r[%d], r[%d]); _ok {\n\t\tr[%d] = _z\n\t} else {\n\t\tr[%d] = fastMod(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
 				a, a+1, a, a, a, a+1, e.chk(idx))
 			return
 		case "!=":
-			e.w("\tif _x, _y, _ok := aotCmpII(r[%d], r[%d]); _ok {\n\t\tr[%d] = mrb.BoolValue(_x != _y)\n\t} else {\n\t\tr[%d] = fastNeq(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
+			e.w("\tif _x, _y, _ok := aotCmpII(mrb, r[%d], r[%d]); _ok {\n\t\tr[%d] = mrb.BoolValue(_x != _y)\n\t} else {\n\t\tr[%d] = fastNeq(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
 				a, a+1, a, a, a, a+1, e.chk(idx))
 			return
 		}

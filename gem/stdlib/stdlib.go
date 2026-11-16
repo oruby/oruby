@@ -14,8 +14,6 @@ import (
 	"github.com/oruby/oruby"
 	_ "github.com/oruby/oruby/gem/base64"
 	_ "github.com/oruby/oruby/gem/bigdecimal"
-	_ "github.com/oruby/oruby/gem/bigint"
-	_ "github.com/oruby/oruby/gem/complex"
 	_ "github.com/oruby/oruby/gem/core_ext"
 	_ "github.com/oruby/oruby/gem/date"
 	_ "github.com/oruby/oruby/gem/digest"

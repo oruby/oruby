@@ -3,7 +3,7 @@ package oruby
 // #cgo CFLAGS: -I${SRCDIR}/mruby/include -I${SRCDIR}/mruby/build/host/include
 // #cgo LDFLAGS: -L${SRCDIR}/mruby/build/host/lib
 // // Must match MRUBY_CFLAGS in mruby/build/host/lib/libmruby.flags.mak (build_config_*.rb defines + defines added by gems)
-// #cgo CFLAGS: -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_SYMBOL_MAX=0 -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET
+// #cgo CFLAGS: -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_SYMBOL_MAX=0 -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET -DMRB_USE_COERCE -DMRB_USE_BIGINT -DMRB_USE_COMPLEX
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -13,6 +13,8 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"runtime"
 	"strings"
@@ -124,10 +126,6 @@ func NewCore() (*MrbState, error) {
 	// Store *MrbState pointer, so it can be retrieved from C callbacks
 	registerState(mrb)
 
-	// Module#private "name" etc. accept Strings as in Ruby
-	C._mrb_patch_visibility(mrb.p)
-	C._mrb_patch_defined(mrb.p)
-
 	// SystemCallError exception
 	// mruby code have SystemCallError::_sys_fail method, but it is not used
 	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
@@ -158,6 +156,8 @@ end
 
 	// Standard Ruby constants
 	platform := runtime.GOARCH + "-" + runtime.GOOS
+	// the MRI version ORuby targets, not the bundled mruby's MRUBY_RUBY_VERSION
+	mrb.DefineGlobalConst("RUBY_VERSION", mrb.StrNew("4.1.0"))
 	mrb.DefineGlobalConst("RUBY_PLATFORM", mrb.StrNew(platform))
 	mrb.DefineGlobalConst("RUBY_ENGINE", mrb.StrNew("oruby"))
 	mrb.DefineGlobalConst("RUBY_ENGINE_VERSION", mrb.StrNew("0.1.0"))
@@ -450,6 +450,11 @@ func p(str *C.char) {
 	print(C.GoString(str))
 }
 
+// complexValue converts a Go complex number to a Ruby Complex (mruby-complex)
+func (mrb *MrbState) complexValue(c complex128) Value {
+	return mrb.Call(mrb.ClassGet("Complex").Value(), "rect", real(c), imag(c)).Value()
+}
+
 // Value converts Go interface to oruby value
 func (mrb *MrbState) Value(o interface{}) Value {
 	switch v := o.(type) {
@@ -473,11 +478,21 @@ func (mrb *MrbState) Value(o interface{}) Value {
 	case int64:
 		return MrbFixnumValue(int(v))
 	case uint:
-		return MrbFixnumValue(int(v))
+		return mrb.Value(uint64(v))
 	case uint32:
 		return MrbFixnumValue(int(v))
 	case uint64:
+		if v > math.MaxInt64 {
+			return mrb.BigIntValue(new(big.Int).SetUint64(v))
+		}
 		return MrbFixnumValue(int(v))
+	case *big.Int:
+		if v == nil {
+			return nilValue
+		}
+		return mrb.BigIntValue(v)
+	case big.Int:
+		return mrb.BigIntValue(&v)
 	case uint8:
 		return MrbFixnumValue(int(v))
 	case uint16:
@@ -541,9 +556,9 @@ func (mrb *MrbState) Value(o interface{}) Value {
 	case MrbFuncT:
 		return mrb.ProcNewCFunc(v).Value()
 	case complex64:
-		return mrb.NewInstance("Complex", real(v), imag(v)).Value()
+		return mrb.complexValue(complex128(v))
 	case complex128:
-		return mrb.NewInstance("Complex", real(v), imag(v)).Value()
+		return mrb.complexValue(v)
 	case MrbValue:
 		return v.Value()
 	case ValueMigrator:
@@ -573,8 +588,7 @@ func (mrb *MrbState) valueValue(v reflect.Value) Value {
 	case reflect.Float32, reflect.Float64:
 		return mrb.FloatValue(v.Float())
 	case reflect.Complex64, reflect.Complex128:
-		vv := v.Complex()
-		return mrb.NewInstance("Complex", real(vv), imag(vv)).Value()
+		return mrb.complexValue(v.Complex())
 	case reflect.String:
 		return mrb.StrNew(v.String())
 	case reflect.Bool:
@@ -684,6 +698,9 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 		return float64(C._mrb_float(o.Value().v))
 	case C.MRB_TT_FIXNUM:
 		return int(C._mrb_fixnum(o.Value().v))
+	case C.MRB_TT_BIGINT:
+		z, _ := mrb.BigInt(o)
+		return z
 	case C.MRB_TT_SYMBOL:
 		return MrbSym(C._mrb_symbol(o.Value().v))
 	case C.MRB_TT_UNDEF:
@@ -767,13 +784,10 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 		return RFiber{o.Value().RBasic()}
 	case C.MRB_TT_DATA:
 		return mrb.DataCheckGetInterface(o)
-	case C.MRB_TT_ISTRUCT:
-		// TODO: return IStruct interfaces (ratiolnal)
-		if mrb.ObjIsKindOf(o, mrb.ClassGet("Complex")) {
-			r := mrb.Call(o, "real")
-			i := mrb.Call(o, "imaginary")
-			return complex(r.Value().Float64(), i.Value().Float64())
-		}
+	case C.MRB_TT_COMPLEX:
+		r := mrb.Call(mrb.Call(o, "real"), "to_f")
+		i := mrb.Call(mrb.Call(o, "imaginary"), "to_f")
+		return complex(r.Value().Float64(), i.Value().Float64())
 
 		// MRB_TT_ICLASS,      Internal mrb use
 		// MRB_TT_BREAK,

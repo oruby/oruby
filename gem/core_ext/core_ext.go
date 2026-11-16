@@ -11,6 +11,13 @@ import (
 	"strings"
 
 	"github.com/oruby/oruby"
+	// gems the Ruby extensions build on, always linked with core_ext
+	_ "github.com/oruby/oruby/gem/io"
+	_ "github.com/oruby/oruby/gem/io/file"
+	_ "github.com/oruby/oruby/gem/process"
+	_ "github.com/oruby/oruby/gem/regexp"
+	_ "github.com/oruby/oruby/gem/thread"
+	_ "github.com/oruby/oruby/gem/time"
 )
 
 //go:embed ruby/*.rb

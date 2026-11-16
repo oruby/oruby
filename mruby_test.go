@@ -3,6 +3,7 @@ package oruby
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"testing"
 	"time"
 	"unsafe"
@@ -177,11 +178,35 @@ func TestComplex(t *testing.T) {
 	mrb, _ := New()
 	defer mrb.Close()
 
-	// Test is run only if native C Complex gem exists
-	if mrb.ClassDefined("Complex") {
-		v := mrb.Value(complex(11.11, 88.88))
-		ExpectEql(t, mrb.Value(v), v)
-	}
+	v := mrb.Value(complex(11.11, 88.88))
+	ExpectEql(t, mrb.Intf(v), complex(11.11, 88.88))
+	r, err := mrb.Eval(`Complex(1, 2).real.class.to_s`)
+	ExpectNilError(t, err)
+	ExpectEql(t, mrb.String(r), "Integer")
+}
+
+func TestBigInt(t *testing.T) {
+	mrb, _ := New()
+	defer mrb.Close()
+
+	want, _ := new(big.Int).SetString("-1267650600228229401496703205376", 10)
+	v := mrb.Value(want)
+	ExpectEql(t, v.Type(), MrbTTBigInt)
+	ExpectEql(t, mrb.String(mrb.Call(v, "to_s")), want.String())
+	got, err := mrb.BigInt(v)
+	ExpectNilError(t, err)
+	ExpectEql(t, got.Cmp(want), 0)
+	ExpectEql(t, mrb.Intf(v).(*big.Int).Cmp(want), 0)
+
+	small := mrb.Value(big.NewInt(42))
+	ExpectEql(t, small.Type(), MrbTTInteger)
+	ExpectEql(t, mrb.String(mrb.Call(mrb.Value(uint64(1<<63)), "to_s")), "9223372036854775808")
+
+	lit, err := mrb.Eval(`2**100`)
+	ExpectNilError(t, err)
+	var scanned *big.Int
+	ExpectNilError(t, mrb.Scan(lit, &scanned))
+	ExpectEql(t, scanned.String(), "1267650600228229401496703205376")
 }
 
 func TestConvert(t *testing.T) {

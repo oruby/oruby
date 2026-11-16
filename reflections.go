@@ -4,6 +4,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strings"
 	"time"
@@ -324,6 +325,20 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 		truthy := o.Type() > MrbTTFalse
 		s := reflect.ValueOf(truthy)
 		vel.Set(s)
+		return nil
+	}
+
+	if t := o.Type(); (t == MrbTTInteger || t == MrbTTBigInt) &&
+		(velType == reflect.TypeOf((*big.Int)(nil)) || velType == reflect.TypeOf(big.Int{})) {
+		z, err := mrb.BigInt(o)
+		if err != nil {
+			return err
+		}
+		if velType.Kind() == reflect.Ptr {
+			vel.Set(reflect.ValueOf(z))
+		} else {
+			vel.Set(reflect.ValueOf(*z))
+		}
 		return nil
 	}
 

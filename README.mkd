@@ -5,8 +5,7 @@ ORuby is a package to embed mruby scripts into Go and help expose Go types in mr
 ## Install
 
 ```
-git submodule init
-git submodule update
+git submodule update --init --recursive
 make
 ```
 

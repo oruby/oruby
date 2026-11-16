@@ -22,7 +22,9 @@ func checkRuby(t *testing.T, mrb *oruby.MrbState, code string) {
 
 func checkNoImplicitThreadOrFork(t *testing.T, mrb *oruby.MrbState) {
 	t.Helper()
-	checkRuby(t, mrb, `!Object.const_defined?(:Thread) && !Process.respond_to?(:fork)`)
+	// mruby 4.1 defines Thread as the namespace of Thread::Backtrace, so check
+	// for a thread implementation rather than the constant
+	checkRuby(t, mrb, `!(Object.const_defined?(:Thread) && Thread.method_defined?(:join)) && !Process.respond_to?(:fork)`)
 }
 
 func checkWorkerAvailable(t *testing.T, mrb *oruby.MrbState) {

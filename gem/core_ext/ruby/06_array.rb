@@ -1,33 +1,19 @@
 # Array extensions
 class Array
-  if method_defined?(:pack)
-    alias __orig_pack pack
-    def pack(*args)
-      res = __orig_pack(*args)
-      res.force_encoding(Encoding::BINARY) if defined?(Encoding::BINARY) && res.respond_to?(:force_encoding)
-      res
+  # mruby-pack ignores the native-size modifiers: a C long ("l_", "l!",
+  # "L_", "L!") is 8 bytes on the 64-bit platforms ORuby supports
+  def self.__native_long_template(fmt)
+    return fmt unless fmt.is_a?(String) && (fmt.include?("_") || fmt.include?("!"))
+    fmt.gsub(/([lL])([_!<>]+)/) do
+      mods = $2
+      mods.include?("_") || mods.include?("!") ? ($1 == "l" ? "q" : "Q") + mods.delete("_!") : $1 + mods
     end
   end
-  def instance_variable_set(name, val)
-    $__array_ivars ||= {}
-    ($__array_ivars[object_id] ||= {})[name.to_s] = val
-  end
 
-  def instance_variable_get(name)
-    $__array_ivars ||= {}
-    ($__array_ivars[object_id] ||= {})[name.to_s]
+  alias __orig_pack pack
+  def pack(fmt, *args, **kw)
+    __orig_pack(Array.__native_long_template(fmt), *args, **kw).force_encoding(Encoding::BINARY)
   end
-
-  def instance_variable_defined?(name)
-    $__array_ivars ||= {}
-    ($__array_ivars[object_id] ||= {}).key?(name.to_s)
-  end
-
-  def instance_variables
-    $__array_ivars ||= {}
-    ($__array_ivars[object_id] ||= {}).keys.map(&:to_sym)
-  end
-
   def hash
     Thread.current[:__array_hash_stack] ||= []
     stack = Thread.current[:__array_hash_stack]
@@ -99,14 +85,14 @@ class Array
   end
 
   def self.__coerce_to_int(idx)
-    if defined?(Bignum) && (idx.is_a?(Bignum) || idx.class.name == "Bignum")
-      raise RangeError, "bignum too big to convert into long"
+    if idx.is_a?(Integer)
+      raise RangeError, "bignum too big to convert into 'long'" if idx > 0x7fff_ffff_ffff_ffff || idx < -0x8000_0000_0000_0000
+      return idx
     end
-    return idx if idx.is_a?(Integer)
     if idx.respond_to?(:to_int)
       val = idx.to_int
-      if defined?(Bignum) && (val.is_a?(Bignum) || val.class.name == "Bignum")
-        raise RangeError, "bignum too big to convert into long"
+      if val.is_a?(Integer) && (val > 0x7fff_ffff_ffff_ffff || val < -0x8000_0000_0000_0000)
+        raise RangeError, "bignum too big to convert into 'long'"
       end
       raise TypeError, "can't convert #{idx.class} to Integer (#{idx.class}#to_int gives #{val.class})" unless val.is_a?(Integer)
       val
@@ -302,7 +288,7 @@ class Array
   alias __orig_aref []
   def [](arg, *rest)
     if rest.empty?
-      if defined?(Enumerator::ArithmeticSequence) && arg.is_a?(Enumerator::ArithmeticSequence)
+      if arg.is_a?(Enumerator::ArithmeticSequence)
         return __slice_arith_seq(arg)
       end
       if arg.is_a?(Range)
@@ -810,7 +796,7 @@ class Array
     end
     if empty?
       res = ""
-      res.force_encoding(Encoding::US_ASCII) if defined?(Encoding::US_ASCII)
+      res.force_encoding(Encoding::US_ASCII)
       return res
     end
     sep = $, if sep.nil?
@@ -1519,4 +1505,26 @@ class Array
   end
 
 
+end
+
+class String
+  # native-size longs (see Array.__native_long_template) and offset:, which
+  # mruby-pack lacks
+  alias __orig_unpack unpack
+  def unpack(fmt, offset: 0, &block)
+    __unpack_from(offset).__orig_unpack(Array.__native_long_template(fmt), &block)
+  end
+
+  alias __orig_unpack1 unpack1
+  def unpack1(fmt, offset: 0)
+    __unpack_from(offset).__orig_unpack1(Array.__native_long_template(fmt))
+  end
+
+  private def __unpack_from(offset)
+    offset = Integer(offset)
+    return self if offset == 0
+    raise ArgumentError, "offset can't be negative" if offset < 0
+    raise ArgumentError, "offset outside of string" if offset > bytesize
+    byteslice(offset, bytesize - offset)
+  end
 end

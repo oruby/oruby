@@ -29,7 +29,6 @@ test:
 	(cd gem/assert && go test)
 	(cd gem/base64 && go test)
 	(cd gem/bigint && go test)
-	(cd gem/complex && go test)
 	(cd gem/core_ext && go test)
 	(cd gem/database && go test)
 	(cd gem/env && go test)
@@ -58,6 +57,7 @@ libmruby.a :
 pull :
 	git submodule init
 	git submodule update --remote
+	(cd mruby && git submodule update --init)
 
 check :
 	ruby scripts/check_api.rb

@@ -4,7 +4,6 @@ import (
 	"bytes"
 
 	"github.com/oruby/oruby"
-	_ "github.com/oruby/oruby/gem/bigint"
 )
 
 func init() {
@@ -12,9 +11,6 @@ func init() {
 }
 
 func initMarshal(mrb *oruby.MrbState) interface{} {
-	if _, err := mrb.Resolve("bigint"); err != nil {
-		panic(err)
-	}
 	mod := mrb.DefineModule("Marshal")
 	mod.DefineClassMethod("dump", marshalDump, mrb.ArgsArg(1, 2))
 	mod.DefineClassMethod("load", marshalLoad, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())

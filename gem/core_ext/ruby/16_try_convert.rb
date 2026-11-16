@@ -6,7 +6,7 @@ class Hash
     r = obj.to_hash
     return r if r.nil? || r.is_a?(Hash)
     raise TypeError, "can't convert #{obj.class} to Hash (#{obj.class}#to_hash gives #{r.class})"
-  end unless respond_to?(:try_convert)
+  end
 end
 
 class String
@@ -16,7 +16,7 @@ class String
     r = obj.to_str
     return r if r.nil? || r.is_a?(String)
     raise TypeError, "can't convert #{obj.class} to String (#{obj.class}#to_str gives #{r.class})"
-  end unless respond_to?(:try_convert)
+  end
 end
 
 class Integer
@@ -26,7 +26,7 @@ class Integer
     r = obj.to_int
     return r if r.nil? || r.is_a?(Integer)
     raise TypeError, "can't convert #{obj.class} to Integer (#{obj.class}#to_int gives #{r.class})"
-  end unless respond_to?(:try_convert)
+  end
 end
 
 # $+ compiles to $~.__last_group

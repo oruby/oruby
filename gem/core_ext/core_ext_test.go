@@ -145,3 +145,31 @@ func TestUnsupportedThreadAndDetach(t *testing.T) {
 		})
 	}
 }
+
+// Shims for older mruby must not shadow what mruby provides natively
+// (a BasicObject#method_missing shim once made every NoMethodError recurse).
+func TestCoreExtNativeOverlap(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	mrb.Require("core_ext")
+
+	cases := map[string]string{
+		`begin; Object.new.no_such; rescue NoMethodError => e; e.name.to_s; end`:                                                   "no_such",
+		`class CeBO < BasicObject; end; begin; CeBO.new.zz; rescue ::NoMethodError; "ok"; end`:                                     "ok",
+		`class CeMM; def method_missing(n, *a) = super; end; begin; CeMM.new.x; rescue NoMethodError; "ok"; end`:                   "ok",
+		`begin; begin; raise KeyError, "in"; rescue; raise; end; rescue => e; e.class.to_s; end`:                                   "KeyError",
+		`begin; begin; raise KeyError; rescue => c; raise ArgumentError, "o", cause: c; end; rescue => e; e.cause.class.to_s; end`: "KeyError",
+		`class CeN < Numeric; undef_method :coerce; end; 1.coerce(2.5).inspect`:                                                    "[2.5, 1.0]",
+		`caller_locations(0, 1).first.class.to_s`:                                                                                  "Thread::Backtrace::Location",
+	}
+	for code, want := range cases {
+		v, err := mrb.Eval(code)
+		if err != nil {
+			t.Errorf("%s: %v", code, err)
+			continue
+		}
+		if got := mrb.String(v); got != want {
+			t.Errorf("%s = %q, want %q", code, got, want)
+		}
+	}
+}
