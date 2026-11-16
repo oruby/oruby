@@ -13,6 +13,176 @@ import (
 	"github.com/oruby/oruby"
 )
 
+func generatedBundleOutput(t *testing.T, files map[string]string, mainBody string, extraFiles ...string) string {
+	t.Helper()
+	projectDir := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		path := filepath.Join(projectDir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	resolver := NewDependencyResolver(mrb, nil)
+	extraPaths := make([]string, len(extraFiles))
+	for i, path := range extraFiles {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(projectDir, path)
+		}
+		extraPaths[i] = path
+	}
+	modules, skipped, err := resolver.ResolveWith(filepath.Join(projectDir, "main.rb"), extraPaths)
+	if err != nil {
+		t.Fatalf("resolve bundle: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("explicit bundle files were skipped: %v", skipped)
+	}
+	source, err := NewCodeGen(CodeGenOptions{PackageName: "main"}).GenerateBundle(modules)
+	if err != nil {
+		t.Fatalf("generate bundle: %v", err)
+	}
+
+	buildDir := t.TempDir()
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goMod := "module compiled_bundle_test\n\ngo 1.27\n\nrequire github.com/oruby/oruby v0.0.0\n\nreplace github.com/oruby/oruby => " + repoRoot + "\n"
+	mainSrc := "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/oruby/oruby\"\n\t_ \"github.com/oruby/oruby/gem/stdlib\"\n)\n\nfunc main() {\n" + mainBody + "\n}\n"
+	for name, content := range map[string]string{"go.mod": goMod, "compiled.go": source, "main.go": mainSrc} {
+		if err := os.WriteFile(filepath.Join(buildDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	build := exec.Command("go", "build", "-mod=mod", "-o", "compiled_bundle", ".")
+	build.Dir = buildDir
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build generated bundle: %v\n%s\nGenerated source:\n%s", err, output, source)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	run := exec.CommandContext(ctx, filepath.Join(buildDir, "compiled_bundle"))
+	run.Dir = projectDir
+	output, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run generated bundle: %v (context: %v)\n%s", err, ctx.Err(), output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func TestGeneratedBundleRequireAliasesArePerStateAndLoadRepeats(t *testing.T) {
+	output := generatedBundleOutput(t, map[string]string{
+		"main.rb": `$load_count = 0
+require_relative "lib/feature"
+require "feature"
+require "lib/feature"`,
+		"lib/feature.rb": `require "feature"
+$load_count += 1`,
+		"external.rb": `$filesystem_fallback = 29`,
+	}, `
+check := func(err error) { if err != nil { panic(err) } }
+count := func(mrb *oruby.MrbState) string { value, err := mrb.Eval("$load_count"); check(err); return mrb.String(value) }
+first := oruby.MrbOpen()
+_, err := first.Resolve("load"); check(err)
+_, err = Run(first); check(err)
+fmt.Println(count(first))
+_, err = first.Eval(`+"`load 'feature.rb'`"+`); check(err)
+_, err = first.Eval(`+"`load 'feature.rb'`"+`); check(err)
+fmt.Println(count(first))
+_, err = first.Eval(`+"`require 'lib/feature'`"+`); check(err)
+fmt.Println(count(first))
+fallback, err := first.Eval(`+"`load './external.rb'`"+`); check(err)
+fallback, err = first.Eval("$filesystem_fallback"); check(err)
+fmt.Println(first.String(fallback))
+first.Close()
+second := oruby.MrbOpen()
+_, err = second.Resolve("load"); check(err)
+_, err = Run(second); check(err)
+fmt.Println(count(second))
+second.Close()
+`)
+	want := "1\n3\n3\n29\n1"
+	if output != want {
+		t.Fatalf("generated bundle output = %q; want %q", output, want)
+	}
+}
+
+func TestGeneratedBundleRequireRetriesAfterFailure(t *testing.T) {
+	output := generatedBundleOutput(t, map[string]string{
+		"main.rb": `begin
+require_relative "lib/failure"
+rescue
+end`,
+		"lib/failure.rb": `if $retry_attempts == nil
+  $retry_attempts = 0
+end
+$retry_attempts += 1
+raise "first load failed" if $retry_attempts == 1`,
+	}, `
+mrb := oruby.MrbOpen()
+if _, err := mrb.Resolve("load"); err != nil { panic(err) }
+if _, err := Run(mrb); err != nil { panic(err) }
+first, err := mrb.Eval("$retry_attempts"); if err != nil { panic(err) }
+fmt.Println(mrb.String(first))
+if _, err := mrb.Eval(`+"`require_relative 'lib/failure'`"+`); err != nil { panic(err) }
+second, err := mrb.Eval("$retry_attempts"); if err != nil { panic(err) }
+fmt.Println(mrb.String(second))
+mrb.Close()
+`)
+	if output != "1\n2" {
+		t.Fatalf("generated bundle retry output = %q; want %q", output, "1\n2")
+	}
+}
+
+func TestGeneratedBundleExplicitExtraFileLoadsByRubyPath(t *testing.T) {
+	output := generatedBundleOutput(t, map[string]string{
+		"main.rb": `$extra_count = 0
+load "features/dynamic.rb"`,
+		"features/dynamic.rb": `$extra_count += 1`,
+	}, `
+mrb := oruby.MrbOpen()
+if _, err := mrb.Resolve("load"); err != nil { panic(err) }
+if _, err := Run(mrb); err != nil { panic(err) }
+value, err := mrb.Eval("$extra_count"); if err != nil { panic(err) }
+fmt.Println(mrb.String(value))
+mrb.Close()
+`, "features/dynamic.rb")
+	if output != "1" {
+		t.Fatalf("explicit extra file output = %q; want %q", output, "1")
+	}
+}
+
+func TestCompileBundleReportsInvalidExplicitExtraFile(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.rb")
+	extra := filepath.Join(dir, "extra.rb")
+	if err := os.WriteFile(entry, []byte("1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("if true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	comp := New(Options{PackageName: "main"})
+	if _, err := comp.CompileBundleWith(mrb, entry, []string{extra}, nil); err != nil {
+		t.Fatalf("compile bundle with invalid extra file: %v", err)
+	}
+	if len(comp.Skipped) != 1 || !strings.Contains(comp.Skipped[0].Error(), extra) {
+		t.Fatalf("invalid explicit file was not reported: %v", comp.Skipped)
+	}
+}
+
 func TestCompiler_CompileRubyToSource(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

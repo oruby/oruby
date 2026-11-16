@@ -151,3 +151,28 @@ Use only authentic Ruby 4.1 target-version RubyGems and Bundler sources; integra
 
 ### ✓ Step 16: Expand compiler differential coverage
 Add interpreter/AOT tests for concrete dispatch and arithmetic edge cases and fix only demonstrated mismatches with safe fallback behavior.
+
+## RubyGems/Bundler boot and compiled-gem loading
+
+### ✓ Step 17: Implement deferred module-scoped autoload
+Replace eager autoload with deferred registrations and constant lookup; test owner isolation, retries, recursion, and missing constants.
+
+- Update `gem/load/load.go` and `load_test.go` to register autoloads per module and resolve them only when the constant is accessed.
+- Preserve correct behavior for string and symbol names, missing files, repeated lookup, recursive lookup, and failed-load retry.
+
+### ✓ Step 18: Correct compiled feature loading state
+Make compiled `require` canonical and per-state, with failure rollback and repeatable `load` semantics.
+
+- Update `compiler/codegen.go` and compiler tests for aliases, recursive loading, retries, independent states, and filesystem fallback.
+- Do not mark a compiled feature loaded before successful execution.
+
+### ✓ Step 19: Assess explicit gem compilation and packaging
+Determine whether gem files and load paths can be packaged without silently skipping compilation errors.
+
+- Inspect `compiler/resolver.go` and `cmd/oruby-compiler/`; add a manifest only if it can be validated end to end.
+
+### * Step 20: Retry authentic RubyGems and Bundler boot
+Retry authentic MRI Ruby 4.1-preview1 RubyGems/Bundler sources after the loader changes and address demonstrated blockers where feasible.
+
+- Document verified boot behavior and concrete remaining limitations in `gem/stdlib/` documentation.
+- Keep RubyGems and Bundler as authentic Ruby source from the target MRI version; do not claim Rails support without a working test.

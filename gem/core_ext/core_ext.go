@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -14,19 +16,94 @@ import (
 //go:embed ruby/*.rb
 var rubyFiles embed.FS
 
+func rubyConfigCPU() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x86_64"
+	case "386":
+		return "i386"
+	default:
+		return runtime.GOARCH
+	}
+}
+
 func init() {
 	oruby.Gem("rbconfig", func(mrb *oruby.MrbState) interface{} {
+		cpu := rubyConfigCPU()
+		host := cpu + "-unknown-" + runtime.GOOS
+		arch := cpu + "-" + runtime.GOOS
+		switch runtime.GOOS {
+		case "darwin":
+			host = cpu + "-apple-darwin"
+		case "linux":
+			host = cpu + "-unknown-linux-gnu"
+		case "windows":
+			host = cpu + "-w64-mingw32"
+		}
+		// Install layout follows MRI's, relative to the oruby executable:
+		// <prefix>/bin/oruby, <prefix>/lib/oruby/<ruby_version>, ...
+		prefix := "/usr/local"
+		if exe, err := os.Executable(); err == nil {
+			if real, err := filepath.EvalSymlinks(exe); err == nil {
+				exe = real
+			}
+			prefix = filepath.Dir(filepath.Dir(exe))
+		}
+		dlext := "so"
+		if runtime.GOOS == "darwin" {
+			dlext = "bundle"
+		}
 		mrb.Eval(fmt.Sprintf(`
 module RbConfig
+  ruby_version = (defined?(RUBY_VERSION) ? RUBY_VERSION : '4.1.0')
+  ruby_version += '.0' if ruby_version.count('.') == 1
+  prefix = %q
+  join = lambda { |*parts| parts.join('/') } # File may not be loaded yet
+  major, minor, teeny = ruby_version.split('.')
+  rubylibprefix = join.call(prefix, 'lib', 'oruby')
+  sitedir = join.call(rubylibprefix, 'site_ruby')
+  vendordir = join.call(rubylibprefix, 'vendor_ruby')
   CONFIG = {
-    'host_os' => '%s',
+    'host_os' => %q,
+    'host_cpu' => %q,
+    'host' => %q,
+    'arch' => %q,
+    'target_os' => %q,
+    'target_cpu' => %q,
     'EXEEXT' => '',
-    'ruby_version' => (defined?(RUBY_VERSION) ? RUBY_VERSION : '3.0.0'),
-    'bindir' => '',
-    'ruby_install_name' => 'oruby'
+    'DLEXT' => %q,
+    'MAJOR' => major, 'MINOR' => minor, 'TEENY' => teeny, 'PATCHLEVEL' => '0',
+    'ruby_version' => ruby_version,
+    'RUBY_PROGRAM_VERSION' => ruby_version,
+    'RUBY_API_VERSION' => [major, minor].join('.'),
+    'prefix' => prefix,
+    'exec_prefix' => prefix,
+    'bindir' => join.call(prefix, 'bin'),
+    'libdir' => join.call(prefix, 'lib'),
+    'datadir' => join.call(prefix, 'share'),
+    'sysconfdir' => join.call(prefix, 'etc'),
+    'rubylibprefix' => rubylibprefix,
+    'rubylibdir' => join.call(rubylibprefix, ruby_version),
+    'rubyarchdir' => join.call(rubylibprefix, ruby_version, %q),
+    'archdir' => join.call(rubylibprefix, ruby_version, %q),
+    'sitedir' => sitedir,
+    'sitelibdir' => join.call(sitedir, ruby_version),
+    'sitearchdir' => join.call(sitedir, ruby_version, %q),
+    'vendordir' => vendordir,
+    'vendorlibdir' => join.call(vendordir, ruby_version),
+    'vendorarchdir' => join.call(vendordir, ruby_version, %q),
+    'ruby_install_name' => 'oruby',
+    'RUBY_INSTALL_NAME' => 'oruby',
+    'RUBY_BASE_NAME' => 'oruby',
+    'RUBY_SO_NAME' => 'oruby',
+    'CROSS_COMPILING' => 'no'
   }
+  def self.ruby
+    CONFIG['bindir'] + '/' + CONFIG['ruby_install_name'] + CONFIG['EXEEXT']
+  end
 end
-`, runtime.GOOS))
+CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
+`, prefix, runtime.GOOS, cpu, host, arch, runtime.GOOS, cpu, dlext, arch, arch, arch, arch))
 		return nil
 	})
 

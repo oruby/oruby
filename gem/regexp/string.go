@@ -1,19 +1,35 @@
 package regexp
 
 import (
-	"fmt"
-	"regexp"
+	_ "embed"
 	"strconv"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 )
+
+//go:embed string_ext.rb
+var stringExtRb []byte
 
 func initString(mrb *oruby.MrbState) {
 	str := mrb.StringClass()
+	for _, m := range []struct {
+		name, old string
+		f         oruby.MrbFuncT
+	}{{"rindex", "old_rindex", stringRindex}, {"byteindex", "old_byteindex", stringByteindex},
+		{"byterindex", "old_byterindex", stringByterindex}} {
+		if mrb.RespondTo(mrb.StrNew(""), mrb.Intern(m.name)) {
+			str.DefineAlias(m.old, m.name)
+		}
+		str.DefineMethod(m.name, m.f, mrb.ArgsArg(1, 1))
+	}
+	defer rb.LoadRuby(mrb, "string_ext.rb", stringExtRb)
 
 	str.DefineMethod("=~", stringMatchEqual, mrb.ArgsReq(1))
-	str.DefineMethod("match", stringMatch, mrb.ArgsArg(1, 1))
+	str.DefineMethod("match", stringMatch, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
 	str.DefineMethod("match?", stringIsMatch, mrb.ArgsArg(1, 1))
 	str.DefineAlias("old_index", "index")
 	str.DefineMethod("index", stringIndex, mrb.ArgsArg(1, 1))
@@ -23,113 +39,40 @@ func initString(mrb *oruby.MrbState) {
 	str.DefineAlias("old_gsub", "gsub")
 	str.DefineMethod("gsub", stringGsub, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
 	str.DefineMethod("gsub!", stringGsubBang, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
-	str.DefineMethod("scan", stringScan, mrb.ArgsReq(1))
+	str.DefineMethod("scan", stringScan, mrb.ArgsReq(1)+mrb.ArgsBlock())
 	str.DefineAlias("old_slice", "slice")
-	str.DefineMethod("slice", stringSlice, mrb.ArgsArg(1, 2))
-	//str.DefineMethod("slice!", stringSliceBang, mrb.ArgsArg(1,2))
+	str.DefineMethod("slice", stringSlice, mrb.ArgsArg(1, 1))
+	str.DefineAlias("old_aref", "[]")
+	str.DefineMethod("[]", stringAref, mrb.ArgsArg(1, 1))
 	str.DefineAlias("old_split", "split")
 	str.DefineMethod("split", stringSplit, mrb.ArgsOpt(2))
 }
 
-func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
-	pattern := args.ItemDefFunc(0, func() oruby.MrbValue { return mrb.GetGV("$;") })
-	limit := args.ItemDefInt(1, 0)
-	limited := limit > 0
+// literalCache keeps compiled patterns for String arguments of sub/gsub/scan,
+// which match literally.
+var literalCache sync.Map // string -> *Regexp
 
-	if self.Value().Len() == 0 {
-		return mrb.AryNew()
-	}
-	if limit == 1 {
-		return mrb.AryNewFromValues(self)
-	}
-
-	re, ok := mrb.Data(pattern).(*regexp.Regexp)
-	if !ok {
-		return mrb.Call(self, "old_split", pattern, limit)
-	}
-
-	result := mrb.AryNew()
-	s := mrb.String(self)
-
-	// Empty regex, eg. "some_string",split(//) -> ["s","o","m","e"..."g"]
-	if re.String() == "" {
-		for _, r := range []rune(s) {
-			if limited && (limit-result.Len() <= 1) {
-				break
-			}
-
-			result.Push(mrb.StringValue(string(r)))
+// getRegexp returns the pattern of a Regexp argument; a String argument
+// matches literally (as in sub, gsub, scan, index, split).
+func getRegexp(mrb *oruby.MrbState, value oruby.Value) *Regexp {
+	switch value.Type() {
+	case oruby.MrbTTCData:
+		if reg, ok := mrb.Data(value).(*Regexp); ok {
+			return reg
 		}
-
-		for limit == 0 && result.Len() > 0 && result.Item(-1).Len() == 0 {
-			result.Pop()
+	case oruby.MrbTTString:
+		s := rstr(value)
+		if r, ok := literalCache.Load(s); ok {
+			return r.(*Regexp)
 		}
-		return result
-	}
-
-	matches := re.FindAllStringSubmatchIndex(s, -1)
-	if len(matches) == 0 {
-		result.PushString(s)
-		return result
-	}
-
-	lastEnd := 0
-	for _, m := range matches {
-		if limited && (limit-result.Len() <= 1) {
-			break
+		r, err := compileRuby(QuoteMeta(s), 0)
+		if err != nil {
+			return nil
 		}
-		matchStart := m[0]
-		matchEnd := m[1]
-
-		result.PushString(s[lastEnd:matchStart])
-
-		for i := 2; i < len(m); i += 2 {
-			if m[i] >= 0 {
-				result.PushString(s[m[i]:m[i+1]])
-			} else {
-				result.Push(mrb.NilValue())
-			}
-		}
-
-		lastEnd = matchEnd
+		literalCache.Store(s, r)
+		return r
 	}
-
-	if lastEnd <= len(s) {
-		result.PushString(s[lastEnd:])
-	}
-
-	for limit == 0 && result.Len() > 0 && result.Item(-1).Len() == 0 {
-		result.Pop()
-	}
-	return result
-}
-
-func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
-	pattern := args.Item(0)
-	r := getRegexp(mrb, pattern)
-	if r == nil {
-		if args.Len() == 1 {
-			return mrb.Call(self, "old_slice", pattern)
-		}
-		return mrb.Call(self, "old_slice", args.Item(0), args.Item(1))
-	}
-	capture := args.ItemDef(1, mrb.NilValue())
-	matchData := doMatch(mrb, r, mrb.String(self), 0)
-	if matchData.IsNil() {
-		return matchData
-	}
-
-	m := mrb.Data(matchData).(*MatchData)
-	if capture.IsNil() {
-		return strOrNil(mrb, m.StringOrNil(0))
-	}
-
-	if capture.Type() == oruby.MrbTTFixnum {
-		return strOrNil(mrb, m.StringOrNil(capture.Int()))
-	}
-	return mrb.Value(m.NamedCaptures()[mrb.String(capture)])
+	return nil
 }
 
 func strOrNil(mrb *oruby.MrbState, s *string) oruby.MrbValue {
@@ -139,105 +82,285 @@ func strOrNil(mrb *oruby.MrbState, s *string) oruby.MrbValue {
 	return mrb.StrNew(*s)
 }
 
-func interpolateBackrefs(replace string, m *MatchData, s string, start, end int) string {
+func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	pattern := args.ItemDefFunc(0, func() oruby.MrbValue { return mrb.GetGV("$;") })
+	limit := args.ItemDefInt(1, 0)
+
+	re, ok := mrb.Data(pattern.Value()).(*Regexp)
+	if !ok {
+		return mrb.Call(self, "old_split", pattern, limit)
+	}
+	result := mrb.AryNew()
+	s := mrb.String(self)
+	if len(s) == 0 {
+		return result
+	}
+	if limit == 1 {
+		result.PushString(s)
+		return result
+	}
+	matches, err := re.findAll(s)
+	if err != nil {
+		return raiseTimeout(mrb, err)
+	}
+
+	last := 0
+	for _, m := range matches {
+		if limit > 0 && result.Len() >= limit-1 {
+			break
+		}
+		// an empty match splits between characters, but never at either end
+		// or directly after the previous separator
+		if m[0] == m[1] && (m[0] == 0 || m[0] >= len(s) || m[0] == last) {
+			continue
+		}
+		result.PushString(s[last:m[0]])
+		for i := 2; i < len(m); i += 2 {
+			if m[i] >= 0 {
+				result.PushString(s[m[i]:m[i+1]])
+			} else {
+				result.Push(mrb.NilValue())
+			}
+		}
+		last = m[1]
+	}
+	result.PushString(s[last:])
+
+	if limit == 0 {
+		for result.Len() > 0 && result.Item(-1).Len() == 0 {
+			result.Pop()
+		}
+	}
+	return result
+}
+
+func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return sliceWith(mrb, self, "old_slice")
+}
+
+func stringAref(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return sliceWith(mrb, self, "old_aref")
+}
+
+// sliceWith implements String#slice / String#[] for Regexp arguments and
+// delegates other argument types to the original method
+func sliceWith(mrb *oruby.MrbState, self oruby.Value, old string) oruby.MrbValue {
+	args := mrb.GetArgs()
+	pattern := args.Item(0)
+	r, ok := mrb.Data(pattern).(*Regexp)
+	if pattern.Type() != oruby.MrbTTCData || !ok {
+		if args.Len() == 1 {
+			return mrb.Call(self, old, pattern)
+		}
+		return mrb.Call(self, old, args.Item(0), args.Item(1))
+	}
+	capture := args.ItemDef(1, mrb.NilValue())
+	matchData := doMatch(mrb, r, mrb.String(self), 0)
+	if matchData.Value().IsNil() {
+		return matchData
+	}
+	m := mrb.Data(matchData.Value()).(*MatchData)
+	if capture.Value().IsNil() {
+		return strOrNil(mrb, m.StringOrNil(0))
+	}
+	return matchDataGetIndex(mrb, m, capture.Value())
+}
+
+// expandReplacement expands \0 \& \1..\N \k<name> \` \' \\ in replace
+func expandReplacement(replace string, m *MatchData) string {
 	if !strings.Contains(replace, "\\") {
 		return replace
 	}
-	wholeMatch, _ := m.toString(0)
-	replace = strings.ReplaceAll(replace, "\\&", wholeMatch)
-	replace = strings.ReplaceAll(replace, "\\0", wholeMatch)
-	replace = strings.ReplaceAll(replace, "\\`", s[:start])
-	replace = strings.ReplaceAll(replace, "\\'", s[end:])
-
-	for i := 1; i < m.Size(); i++ {
-		v, isNil := m.toString(i)
-		if isNil {
-			v = ""
+	var b strings.Builder
+	for i := 0; i < len(replace); i++ {
+		c := replace[i]
+		if c != '\\' || i+1 >= len(replace) {
+			b.WriteByte(c)
+			continue
 		}
-		replace = strings.ReplaceAll(replace, "\\"+strconv.Itoa(i), v)
-	}
-	for name, val := range m.NamedCaptures() {
-		if name != "" && val != nil {
-			replace = strings.ReplaceAll(replace, "\\k<"+name+">", fmt.Sprint(val))
+		n := replace[i+1]
+		switch {
+		case n >= '0' && n <= '9':
+			j := i + 1
+			for j < len(replace) && replace[j] >= '0' && replace[j] <= '9' {
+				j++
+			}
+			// use the longest group number that exists, as Ruby does
+			digits := replace[i+1 : j]
+			for len(digits) > 1 {
+				if k, _ := strconv.Atoi(digits); k < m.Size() {
+					break
+				}
+				digits = digits[:len(digits)-1]
+			}
+			k, _ := strconv.Atoi(digits)
+			if v, isNil := m.toString(k); !isNil {
+				b.WriteString(v)
+			}
+			i += len(digits)
+		case n == '&':
+			v, _ := m.toString(0)
+			b.WriteString(v)
+			i++
+		case n == '`':
+			b.WriteString(m.PreMatch())
+			i++
+		case n == '\'':
+			b.WriteString(m.PostMatch())
+			i++
+		case n == '+':
+			for g := m.Size() - 1; g > 0; g-- {
+				if v, isNil := m.toString(g); !isNil {
+					b.WriteString(v)
+					break
+				}
+			}
+			i++
+		case n == '\\':
+			b.WriteByte('\\')
+			i++
+		case n == 'k' && i+2 < len(replace) && replace[i+2] == '<':
+			end := strings.IndexByte(replace[i+3:], '>')
+			if end < 0 {
+				b.WriteByte(c)
+				continue
+			}
+			name := replace[i+3 : i+3+end]
+			for g, nm := range m.names {
+				if g > 0 && nm == name {
+					if v, isNil := m.toString(g); !isNil {
+						b.WriteString(v)
+					}
+				}
+			}
+			i += 3 + end
+		default:
+			b.WriteByte(c)
 		}
 	}
-	return replace
+	return b.String()
 }
 
-func doReplace(mrb *oruby.MrbState, re *regexp.Regexp, s string, pos int, f func(v string) (string, bool)) (string, int) {
-	if pos > len(s) {
-		return s, len(s) + 1
-	}
-	matchValue := doMatch(mrb, re, s, pos)
-	if matchValue.IsNil() {
-		return s, len(s) + 1
-	}
-	m := mrb.Data(matchValue).(*MatchData)
-	start, _ := m.Begin(0)
-	end, _ := m.End(0)
-	if start < 0 || end < start || start > len(s) || end > len(s) {
-		return s, len(s) + 1
-	}
+// replacer produces the replacement for one match, or an exception value
+type replacer func(md oruby.Value, m *MatchData) (string, oruby.MrbValue)
 
-	capture := s[start:end]
-	replace, lit := f(capture)
-	if !lit {
-		replace = interpolateBackrefs(replace, m, s, start, end)
+func makeReplacer(mrb *oruby.MrbState, replace, block oruby.Value) replacer {
+	switch {
+	case !block.IsNil():
+		return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
+			setLastMatch(mrb, md)
+			ret := mrb.Yield(block, mrb.StrNew(m.ToS()))
+			if mrb.HasExc() {
+				return "", ret
+			}
+			if ret.Type() != oruby.MrbTTString {
+				ret = mrb.Call(ret, "to_s")
+			}
+			return mrb.String(ret), nil
+		}
+	case replace.Type() == oruby.MrbTTHash:
+		return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
+			v := mrb.Call(replace, "[]", mrb.StrNew(m.ToS()))
+			if v.IsNil() {
+				return "", nil
+			}
+			if v.Type() != oruby.MrbTTString {
+				v = mrb.Call(v, "to_s")
+			}
+			return mrb.String(v), nil
+		}
+	default:
+		str := mrb.String(mrb.EnsureStringType(replace).Value())
+		return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
+			return expandReplacement(str, m), nil
+		}
 	}
-
-	ret := s[:start] + replace + s[end:]
-	nextPos := start + len(replace)
-	if end == start {
-		nextPos++
-	}
-	return ret, nextPos
 }
 
-func doSub(mrb *oruby.MrbState, self oruby.Value) (oruby.MrbValue, bool) {
+// substitute replaces the first (all=false) or every match of re in s
+func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replacer) (string, bool, oruby.MrbValue) {
+	var matches [][]int
+	if all {
+		var err error
+		if matches, err = re.findAll(s); err != nil {
+			return s, false, raiseTimeout(mrb, err)
+		}
+	} else if m, err := re.findErr(s, 0); err != nil {
+		return s, false, raiseTimeout(mrb, err)
+	} else if m != nil {
+		matches = [][]int{m}
+	}
+	if len(matches) == 0 {
+		setLastMatch(mrb, mrb.NilValue())
+		return s, false, nil
+	}
+	var b strings.Builder
+	last := 0
+	var md oruby.Value
+	for _, m := range matches {
+		data := NewMatchData(re, s, m, 0)
+		md = mrb.NewInstance("MatchData", data).Value()
+		repl, exc := rep(md, data)
+		if exc != nil {
+			return s, false, exc
+		}
+		b.WriteString(s[last:m[0]])
+		b.WriteString(repl)
+		last = m[1]
+	}
+	b.WriteString(s[last:])
+	setLastMatch(mrb, md)
+	return b.String(), true, nil
+}
+
+func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (oruby.MrbValue, bool) {
 	args, block := mrb.GetArgsWithBlock()
 	pattern := args.Item(0)
-	replace := args.ItemDef(1, mrb.NilValue())
-	replaceStr := ""
+	replace := args.ItemDef(1, mrb.NilValue()).Value()
+	nargs := args.Len()
+	if nargs == 1 {
+		// gsub(re, "a" => "b"): mruby passes a brace-less hash as keywords
+		if kw := mrb.KeywordArgs().Value(); !kw.IsNil() && !mrb.Call(kw, "empty?").Bool() {
+			replace, nargs = kw, 2
+		}
+	}
 	r := getRegexp(mrb, pattern)
 	if r == nil {
-		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("old_sub"), pattern, replace, block)
+		old := "old_sub"
+		if all {
+			old = "old_gsub"
+		}
+		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern(old), pattern, replace, block)
 		return ret, false
 	}
-	if block.IsNil() && replace.IsNil() {
-		return mrb.Call(self, "to_enum", mrb.Intern("sub"), pattern), false
-	}
-	if block.IsNil() && replace.Type() != oruby.MrbTTHash {
-		replaceStr = mrb.EnsureStringType(replace).String()
-	}
-
-	orig := mrb.String(self)
-	matched := false
-	s, _ := doReplace(mrb, r, orig, 0, func(v string) (string, bool) {
-		matched = true
-		if !block.IsNil() {
-			ret := mrb.Yield(block, mrb.StringValue(v))
-			return mrb.String(ret), true
-		} else if replace.Type() == oruby.MrbTTHash {
-			if mrb.HashKeyP(replace, mrb.StringValue(v)) {
-				ret := mrb.HashGet(replace, mrb.StringValue(v))
-				return mrb.String(ret), true
-			}
-			return v, true
-		} else {
-			return replaceStr, false
+	if block.IsNil() && nargs < 2 {
+		if all {
+			return mrb.Call(self, "to_enum", mrb.Intern(name), pattern), false
 		}
-	})
-
-	return mrb.StringValue(s), matched && s != orig
+		return mrb.Raise(mrb.EArgumentError(), "wrong number of arguments (given 1, expected 2)"), false
+	}
+	blk := block.Value()
+	if !block.IsNil() && nargs >= 2 {
+		blk = mrb.NilValue()
+	}
+	s, matched, exc := substitute(mrb, r, mrb.String(self), all, makeReplacer(mrb, replace, blk))
+	if exc != nil {
+		return exc, false
+	}
+	return mrb.StringValue(s), matched
 }
 
 func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	res, _ := doSub(mrb, self)
+	res, _ := doSubst(mrb, self, false, "sub")
 	return res
 }
 
 func stringSubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	res, modified := doSub(mrb, self)
+	res, modified := doSubst(mrb, self, false, "sub!")
+	if mrb.HasExc() {
+		return res
+	}
 	if !modified {
 		return mrb.NilValue()
 	}
@@ -245,139 +368,124 @@ func stringSubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
-func doGsub(mrb *oruby.MrbState, self oruby.Value) (oruby.MrbValue, bool) {
-	args, block := mrb.GetArgsWithBlock()
-	pattern := args.Item(0)
-	replace := args.ItemDef(1, mrb.NilValue())
-	replaceStr := ""
-	r := getRegexp(mrb, pattern)
-	if r == nil {
-		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("old_gsub"), pattern, replace, block)
-		return ret, false
-	}
-	if block.IsNil() && replace.IsNil() {
-		return mrb.Call(self, "to_enum", mrb.Intern("gsub"), pattern), false
-	}
-	if block.IsNil() && replace.Type() != oruby.MrbTTHash {
-		replaceStr = mrb.EnsureStringType(replace).String()
-	}
-
-	orig := mrb.String(self)
-	s := orig
-	pos := 0
-	matched := false
-	for pos <= len(s) {
-		var nextPos int
-		var nextS string
-		nextS, nextPos = doReplace(mrb, r, s, pos, func(v string) (string, bool) {
-			matched = true
-			if !block.IsNil() {
-				ret := mrb.Yield(block, mrb.StringValue(v))
-				return mrb.String(ret), true
-			} else if replace.Type() == oruby.MrbTTHash {
-				if mrb.HashKeyP(replace, mrb.StringValue(v)) {
-					ret := mrb.HashGet(replace, mrb.StringValue(v))
-					return mrb.String(ret), true
-				}
-				return v, true
-			} else {
-				return replaceStr, false
-			}
-		})
-		s = nextS
-		if nextPos <= pos || nextPos > len(s) {
-			break
-		}
-		pos = nextPos
-	}
-	return mrb.StringValue(s), matched && s != orig
-}
-
 func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	res, _ := doGsub(mrb, self)
+	res, _ := doSubst(mrb, self, true, "gsub")
 	return res
 }
 
 func stringGsubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	res, modified := doGsub(mrb, self)
+	res, modified := doSubst(mrb, self, true, "gsub!")
+	if mrb.HasExc() {
+		return res
+	}
 	if !modified {
+		if res.Value().Type() != oruby.MrbTTString {
+			return res // enumerator
+		}
 		return mrb.NilValue()
 	}
 	mrb.Call(self, "replace", res)
 	return self
 }
 
+// patternRegexp converts the argument of match/match?: a String is compiled
+// as a regexp (not escaped)
+func patternRegexp(mrb *oruby.MrbState, v oruby.Value) (*Regexp, oruby.Value, oruby.MrbValue) {
+	if r, ok := mrb.Data(v).(*Regexp); ok && v.Type() == oruby.MrbTTCData {
+		return r, v, nil
+	}
+	if v.Type() == oruby.MrbTTString {
+		obj, err := mrb.ObjNew(mrb.ClassGet("Regexp"), v)
+		if err != nil {
+			return nil, oruby.Nil, mrb.RaiseError(err)
+		}
+		return mrb.Data(obj.Value()).(*Regexp), obj.Value(), nil
+	}
+	return nil, oruby.Nil, mrb.Raise(mrb.ETypeError(), "wrong argument type "+mrb.ClassOf(v).Name()+" (expected Regexp)")
+}
+
 func stringIsMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
-	re := getRegexp(mrb, args.Item(0))
-	if re == nil {
-		return mrb.Raise(mrb.ETypeError(), "wrong argument type (expected Regexp)")
+	re, _, exc := patternRegexp(mrb, args.Item(0))
+	if exc != nil {
+		return exc
 	}
 	s := mrb.String(self)
-	pos := args.ItemDef(1, mrb.FixnumValue(0)).Int()
-
-	result := re.FindStringSubmatchIndex(s[pos:])
-	return mrb.BoolValue(len(result) > 0)
+	pos, ok := byteIndex(s, args.ItemDef(1, mrb.FixnumValue(0)).Int())
+	if !ok {
+		return oruby.False
+	}
+	m, err := re.findErr(s, pos)
+	if err != nil {
+		return raiseTimeout(mrb, err)
+	}
+	return mrb.BoolValue(m != nil)
 }
 
 func stringMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
-	re := getRegexp(mrb, args.Item(0))
-	if re == nil {
+	args, block := mrb.GetArgsWithBlock()
+	re, reValue, exc := patternRegexp(mrb, args.Item(0))
+	if exc != nil {
+		return exc
+	}
+	s := mrb.String(self)
+	pos, ok := byteIndex(s, args.ItemDef(1, mrb.FixnumValue(0)).Int())
+	if !ok {
+		setLastMatch(mrb, mrb.NilValue())
 		return mrb.NilValue()
 	}
-	pos := args.ItemDef(1, mrb.FixnumValue(0)).Int()
-	return doMatch(mrb, re, mrb.String(self), pos)
+	md := doMatch(mrb, re, s, pos)
+	if !md.Value().IsNil() && md.Value().Type() == oruby.MrbTTCData {
+		_ = mrb.IVSet(md.Value(), mrb.Intern("@regexp"), reValue)
+		if !block.IsNil() {
+			return mrb.Yield(block, md)
+		}
+	}
+	return md
 }
 
 func stringMatchEqual(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	ret := stringMatch(mrb, self)
-	if ret.IsNil() {
-		return ret
+	arg := mrb.GetArgsFirst()
+	re, ok := mrb.Data(arg).(*Regexp)
+	if arg.Type() != oruby.MrbTTCData || !ok {
+		if arg.Type() == oruby.MrbTTString {
+			return mrb.Raise(mrb.ETypeError(), "wrong argument type String (expected Regexp)")
+		}
+		return mrb.Call(arg, "=~", self)
 	}
-	data := mrb.Data(ret).(*MatchData)
-	idx, _ := data.Begin(0)
-
-	return mrb.FixnumValue(idx)
+	s := mrb.String(self)
+	md := doMatch(mrb, re, s, 0)
+	if md.Value().IsNil() || md.Value().Type() != oruby.MrbTTCData {
+		return md
+	}
+	data := mrb.Data(md.Value()).(*MatchData)
+	idx := data.byteBegin(0)
+	return mrb.FixnumValue(charIndex(s, idx))
 }
 
 func stringIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	arg := args.Item(0)
-	pos := oruby.MrbFixnum(args.ItemDef(1, mrb.FixnumValue(0)))
-	re, ok := mrb.Data(arg).(*regexp.Regexp)
-	if !ok {
-		return mrb.Call(self, "old_index", arg, pos)
-	}
-	s := mrb.StrToCstr(self)
-
-	// Negative pos is position from last
-	if pos < 0 {
-		pos += len(s)
-	}
-	// Invalid position - return nil
-	if pos < 0 || pos >= len(s) {
-		return mrb.NilValue()
-	}
-
-	result := re.FindStringSubmatchIndex(s[pos:])
-	if len(result) == 0 {
-		return mrb.NilValue()
-	}
-	return mrb.FixnumValue(result[0] + pos)
-}
-
-func getRegexp(mrb *oruby.MrbState, value oruby.Value) *regexp.Regexp {
-	switch value.Type() {
-	case oruby.MrbTTCData:
-		if reg, ok := mrb.Data(value).(*regexp.Regexp); ok {
-			return reg
+	re, ok := mrb.Data(arg).(*Regexp)
+	if arg.Type() != oruby.MrbTTCData || !ok {
+		if args.Len() > 1 {
+			return mrb.Call(self, "old_index", arg, args.Item(1))
 		}
-	case oruby.MrbTTString:
-		s := mrb.StringCstr(value)
-		return regexp.MustCompile(regexp.QuoteMeta(s))
+		return mrb.Call(self, "old_index", arg)
 	}
-	return nil
+	s := rstr(self)
+	pos, ok := byteIndex(s, oruby.MrbFixnum(args.ItemDef(1, mrb.FixnumValue(0))))
+	if !ok {
+		setLastMatch(mrb, mrb.NilValue())
+		return mrb.NilValue()
+	}
+	md := doMatch(mrb, re, s, pos)
+	if md.Value().IsNil() || md.Value().Type() != oruby.MrbTTCData {
+		return md
+	}
+	data := mrb.Data(md.Value()).(*MatchData)
+	idx := data.byteBegin(0)
+	return mrb.FixnumValue(charIndex(s, idx))
 }
 
 func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -388,18 +496,22 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.ETypeError().Raisef("wrong argument type %v (expected Regexp)", mrb.ClassOf(arg).Name())
 	}
 
-	s := mrb.StringCstr(self)
-	results := r.FindAllStringSubmatchIndex(s, -1)
+	s := rstr(self)
+	results, err := r.findAll(s)
+	if err != nil {
+		return raiseTimeout(mrb, err)
+	}
 	ret := mrb.AryNew()
 	if len(results) == 0 {
-		mrb.GVSet(mrb.Intern("$~"), mrb.NilValue())
+		setLastMatch(mrb, mrb.NilValue())
 		if !block.IsNil() {
 			return self
 		}
 		return ret
 	}
 
-	groups := r.NumSubexp() > 0
+	groups := r.numSubexp() > 0
+	var md oruby.Value
 	for _, result := range results {
 		m := NewMatchData(r, s, result, 0)
 		var item oruby.MrbValue
@@ -416,24 +528,125 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		} else {
 			item = mrb.StrNew(s[result[0]:result[1]])
 		}
+		md = mrb.NewInstance("MatchData", m).Value()
 		if !block.IsNil() {
-			matchData := mrb.NewInstance("MatchData", m)
-			_ = mrb.IVSet(mrb.ClassGet("Regexp").Value(), mrb.Intern("@last_match"), matchData)
-			mrb.GVSet(mrb.Intern("$~"), matchData)
-			if _, err := mrb.Funcall(block, mrb.Intern("call"), item); err != nil {
-				return mrb.Exc().Value()
+			setLastMatch(mrb, md)
+			v := mrb.Yield(block, item)
+			if mrb.HasExc() {
+				return v
 			}
 		} else {
 			ret.Push(item)
 		}
 	}
 
-	m := NewMatchData(r, s, results[len(results)-1], 0)
-	matchData := mrb.NewInstance("MatchData", m)
-	_ = mrb.IVSet(mrb.ClassGet("Regexp").Value(), mrb.Intern("@last_match"), matchData)
-	mrb.GVSet(mrb.Intern("$~"), matchData)
+	setLastMatch(mrb, md)
 	if !block.IsNil() {
 		return self
 	}
 	return ret
+}
+
+// stringRindex is String#rindex(regexp, pos): the last match starting at or
+// before character pos
+func stringRindex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return reverseSearch(mrb, self, "old_rindex", false)
+}
+
+// stringByterindex is String#byterindex(regexp, pos) with byte offsets
+func stringByterindex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return reverseSearch(mrb, self, "old_byterindex", true)
+}
+
+func reverseSearch(mrb *oruby.MrbState, self oruby.Value, old string, bytes bool) oruby.MrbValue {
+	args := mrb.GetArgs()
+	arg := args.Item(0)
+	re, ok := mrb.Data(arg).(*Regexp)
+	if arg.Type() != oruby.MrbTTCData || !ok {
+		if args.Len() > 1 {
+			return mrb.Call(self, old, arg, args.Item(1))
+		}
+		return mrb.Call(self, old, arg)
+	}
+	s := rstr(self)
+	pos := len(s)
+	if args.Len() > 1 {
+		n := oruby.MrbFixnum(args.Item(1))
+		if bytes {
+			if n < 0 {
+				n += len(s)
+			}
+			if n < 0 {
+				setLastMatch(mrb, mrb.NilValue())
+				return mrb.NilValue()
+			}
+			if n < len(s) {
+				pos = n
+			}
+		} else {
+			b, ok := byteIndex(s, n)
+			if !ok {
+				if n < 0 {
+					setLastMatch(mrb, mrb.NilValue())
+					return mrb.NilValue()
+				}
+				b = len(s)
+			}
+			pos = b
+		}
+	}
+	for p := pos; p >= 0; {
+		m, err := re.findErr(s, p)
+		if err != nil {
+			return raiseTimeout(mrb, err)
+		}
+		if m != nil && m[0] == p {
+			md := newMatchValue(mrb, re, s, m)
+			setLastMatch(mrb, md)
+			if bytes {
+				return mrb.FixnumValue(p)
+			}
+			return mrb.FixnumValue(charIndex(s, p))
+		}
+		if p == 0 {
+			break
+		}
+		_, w := utf8.DecodeLastRuneInString(s[:p])
+		p -= w
+	}
+	setLastMatch(mrb, mrb.NilValue())
+	return mrb.NilValue()
+}
+
+// stringByteindex is String#byteindex(regexp, pos) with byte offsets
+func stringByteindex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	arg := args.Item(0)
+	re, ok := mrb.Data(arg).(*Regexp)
+	if arg.Type() != oruby.MrbTTCData || !ok {
+		if args.Len() > 1 {
+			return mrb.Call(self, "old_byteindex", arg, args.Item(1))
+		}
+		return mrb.Call(self, "old_byteindex", arg)
+	}
+	s := rstr(self)
+	pos := 0
+	if args.Len() > 1 {
+		pos = oruby.MrbFixnum(args.Item(1))
+		if pos < 0 {
+			pos += len(s)
+		}
+	}
+	if pos < 0 || pos > len(s) {
+		setLastMatch(mrb, mrb.NilValue())
+		return mrb.NilValue()
+	}
+	if pos < len(s) && !utf8.RuneStart(s[pos]) {
+		return mrb.Raise(mrb.EIndexError(), "offset "+strconv.Itoa(pos)+" does not land on character boundary")
+	}
+	md := doMatch(mrb, re, s, pos)
+	if md.Value().IsNil() || md.Value().Type() != oruby.MrbTTCData {
+		return md
+	}
+	return mrb.FixnumValue(mrb.Data(md.Value()).(*MatchData).byteBegin(0))
 }

@@ -33,6 +33,7 @@ import (
 	_ "github.com/oruby/oruby/gem/nethttp"
 	_ "github.com/oruby/oruby/gem/process"
 	_ "github.com/oruby/oruby/gem/regexp"
+	_ "github.com/oruby/oruby/gem/regexp/full"
 	_ "github.com/oruby/oruby/gem/socket"
 	_ "github.com/oruby/oruby/gem/thread"
 	_ "github.com/oruby/oruby/gem/time"

@@ -160,20 +160,20 @@ class Array
     if __has_custom_method?(item, :respond_to_missing?)
       res = (item.__send__(:respond_to_missing?, :to_ary, true) rescue nil)
       return nil unless res
-      val = item.to_ary
+      val = item.__send__(:to_ary)
       return nil if val.nil?
       raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
       val
     elsif __has_custom_method?(item, :respond_to?)
       res = (item.respond_to?(:to_ary, true) rescue false)
       return nil unless res
-      val = item.to_ary
+      val = item.__send__(:to_ary)
       return nil if val.nil?
       raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
       val
     elsif __has_custom_method?(item, :method_missing)
       begin
-        val = item.to_ary
+        val = item.__send__(:to_ary)
         return nil if val.nil?
         raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
         val
@@ -185,7 +185,7 @@ class Array
         end
       end
     elsif (item.respond_to?(:to_ary, true) rescue false)
-      val = item.to_ary
+      val = item.__send__(:to_ary)
       return nil if val.nil?
       raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
       val

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/bigint"
+	rx "github.com/oruby/oruby/gem/regexp"
 )
 
 const (
@@ -441,17 +441,17 @@ func (w *writer) writeRegexp(value oruby.Value) error {
 	if source.Type() != oruby.MrbTTString {
 		return oruby.ETypeError("Regexp source/options cannot be represented in Marshal format")
 	}
+	compiledSource, compiledOptions, ok := rx.SourceOptions(w.mrb.Data(value))
 	optionBits := -1
 	if options.Type() == oruby.MrbTTInteger {
 		optionBits = int(options.Int())
-	} else if compiled, ok := w.mrb.Data(value).(*regexp.Regexp); ok {
-		optionBits = regexpOptions(compiled.String())
+	} else if ok {
+		optionBits = compiledOptions
 	}
 	if optionBits < 0 || optionBits > 0xff {
 		return oruby.ETypeError("Regexp source/options cannot be represented in Marshal format")
 	}
-	compiled, ok := w.mrb.Data(value).(*regexp.Regexp)
-	if !ok || (optionBits&2 == 0 && compiled.String() != regexpSourceWithOptions(w.mrb.String(source), optionBits)) {
+	if !ok || compiledSource != w.mrb.String(source) || compiledOptions != optionBits {
 		return oruby.ETypeError("Regexp compiled pattern does not match its stored source/options")
 	}
 	if err := w.writeByte('I'); err != nil {
@@ -474,43 +474,6 @@ func (w *writer) writeRegexp(value oruby.Value) error {
 		return err
 	}
 	return w.writeByte('F')
-}
-
-func regexpOptions(pattern string) int {
-	if !strings.HasPrefix(pattern, "(?") {
-		return -1
-	}
-	end := strings.IndexByte(pattern, ')')
-	if end < 3 {
-		return -1
-	}
-	flags := strings.SplitN(pattern[2:end], "-", 2)[0]
-	options := 0
-	if strings.Contains(flags, "i") {
-		options |= 1
-	}
-	if strings.Contains(flags, "m") || strings.Contains(flags, "s") {
-		options |= 4
-	}
-	return options
-}
-
-func regexpSourceWithOptions(source string, options int) string {
-	enabled, disabled := "", "-"
-	if options&1 != 0 {
-		enabled += "i"
-	} else {
-		disabled += "i"
-	}
-	if options&4 != 0 {
-		enabled += "ms"
-	} else {
-		disabled += "ms"
-	}
-	if disabled == "-" {
-		disabled = ""
-	}
-	return fmt.Sprintf("(?%s%s)%s", enabled, disabled, source)
 }
 
 func (w *writer) classPath(value oruby.Value) (string, error) {

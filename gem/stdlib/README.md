@@ -6,7 +6,21 @@ Blank-import `github.com/oruby/oruby/gem/stdlib` to register the standard-librar
 
 This is a provider collection, not a complete MRI standard library. Some names have useful Go-backed or Ruby-source implementations, some are provided by the configured mruby build, and some registrations are compatibility placeholders. Availability through `require` does not mean complete MRI behavior or passing the corresponding `ruby/spec` suite; consult individual gem sources and tests for the current implementation level.
 
-RubyGems and Bundler must use their Ruby implementations from the targeted MRI Ruby version, not Go reimplementations. As of 2026-11-15, this machine has MRI 4.1.0-preview1 with RubyGems and Bundler 4.1.0.beta2; the authentic files are installed under that Ruby's `lib/ruby/4.1.0+5`. Upstream `ruby/rubygems` `v4.1.0.beta3` sources are a different version and are not substitutes. ORuby now provides a partial Go-backed Marshal 4.8 gem, but RubyGems still requires additional runtime facilities, including installed-gem/specification discovery; Bundler's runtime and dependency-resolution environment are also absent. The target sources are therefore not vendored or registered, and no Go reimplementation of RubyGems or Bundler is substituted.
+RubyGems and Bundler must use their Ruby implementations from the targeted MRI Ruby version, not Go reimplementations. This machine has MRI 4.1.0-preview1 with RubyGems and Bundler 4.1.0.beta2 under that Ruby's `lib/ruby/4.1.0+5`; upstream `ruby/rubygems` `v4.1.0.beta3` sources are a different version and are not substitutes.
+
+Status as of 2026-11-16, running those authentic sources with `$LOAD_PATH` pointing at them and `GEM_HOME`/`GEM_PATH` at MRI 4.1's gem directory:
+
+- `require "rubygems"` loads RubyGems 4.1.0.beta2. `Gem::Version`, `Gem::Requirement`, `Gem::Specification.new`, installed-spec discovery (`Gem::Specification.all`, `find_by_name`) and `gem "rake"` activation work, and the installed pure-Ruby `rake` 13.4.2 loads. Gems with native extensions are skipped by RubyGems itself ("extensions are not built").
+- `require "bundler"` loads Bundler 4.1.0.beta2, and the Gemfile DSL (`source`, `gem`) evaluates.
+- `require "bundler/setup"` with a one-gem Gemfile and lockfile runs into dependency resolution. It currently stops while listing installed specs, where `Gem::ContentAddress.valid_ruby_abi?` is reported undefined; this is under investigation.
+
+The runtime changes that got this far: Ruby-compatible regexps (`gem/regexp/full`), deferred module-scoped `autoload` with lexical and ancestor lookup, an MRI-style `RbConfig` install layout, `RUBY_PATCHLEVEL` and related constants, String names for `private`/`public`/`protected`/`module_function`, `Module#const_get(name, inherit)` and `method_defined?(name, inherit)`, `LoadError#path`, a complete `ENV`, eager `Pathname` (core in Ruby 4), `Thread::Queue` aliases and thread variables, and an unlimited dynamic-symbol table (`MRB_SYMBOL_MAX=0`, which requires rebuilding libmruby).
+
+Known gaps that affect these libraries: mruby has no `$!`, so a bare `raise` inside `rescue` raises a new RuntimeError instead of re-raising (Bundler's Gemfile error handling relies on it), and Bundler's parallel workers need `Thread.new`, which is unsupported (they are only started for git sources). The sources are not yet vendored into ORuby's stdlib.
+
+Regular expressions: `gem/regexp` runs every pattern Go's RE2 can express exactly, after translating Ruby syntax and semantics, and `gem/stdlib` also imports `gem/regexp/full`, a pure-Go backtracking fallback (`github.com/dlclark/regexp2/v2`) for Ruby-only syntax such as lookaround, atomic groups, possessive quantifiers and backreferences. Embedded users who import only `gem/regexp` do not link the fallback and get a `RegexpError` naming any unsupported construct. Subexpression calls (`\g<name>`), the absent operator and byte-wise matching of binary strings are not supported; see `gem/regexp/README.md`.
+
+Ruby `Thread.new` is not supported (see `gem/thread`), so providers that MRI implements with helper threads differ: `Open3` returns a waiter object with `value`, `join` and `pid` rather than a `Thread`, and `Process.detach` is unavailable.
 
 The `gem/marshal` package implements a bounded Marshal 4.8 subset; see its README for support limits and the critical warning that `Marshal.load` is unsafe for untrusted input.
 

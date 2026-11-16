@@ -36,6 +36,7 @@ func init() {
 		mrb.DefineGlobalFunction("require_relative", loadRequireRelative, mrb.ArgsReq(1))
 		mrb.ModuleClass().DefineMethod("autoload", loadAutoload, mrb.ArgsReq(2))
 		mrb.ModuleClass().DefineMethod("autoload?", loadAutoloadP, mrb.ArgsReq(1))
+		mrb.ModuleClass().DefineMethod("const_missing", loadConstMissing, mrb.ArgsReq(1))
 		mrb.DefineGlobalFunction("autoload", loadAutoload, mrb.ArgsReq(2))
 		mrb.DefineGlobalFunction("autoload?", loadAutoloadP, mrb.ArgsReq(1))
 		return nil
@@ -145,7 +146,7 @@ func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	name, err := fullName(nameValue.String())
 	if err != nil {
-		return mrb.Raisef(mrb.ClassGet("LoadError"), "cannot load such file -- %v", nameValue.String())
+		return raiseCannotLoad(mrb, nameValue.String())
 	}
 
 	nv := mrb.StrNew(name)
@@ -160,6 +161,13 @@ func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.TrueValue()
 }
 
+// raiseCannotLoad raises LoadError for feature with LoadError#path set
+func raiseCannotLoad(mrb *oruby.MrbState, feature string) oruby.MrbValue {
+	exc := mrb.Raisef(mrb.ClassGet("LoadError"), "cannot load such file -- %v", feature)
+	_ = mrb.IVSet(exc, mrb.Intern("@path"), mrb.StrNew(feature))
+	return exc
+}
+
 // loadFailure re-raises exception raised by loaded code (SyntaxError,
 // SystemExit, NameError...) instead of hiding it in a LoadError
 func loadFailure(mrb *oruby.MrbState, err error) oruby.MrbValue {
@@ -170,8 +178,12 @@ func loadFailure(mrb *oruby.MrbState, err error) oruby.MrbValue {
 }
 
 func fullName(filename string) (string, error) {
-	if _, err := os.Stat(filename); err != nil {
+	fi, err := os.Stat(filename)
+	if err != nil {
 		return "", err
+	}
+	if fi.IsDir() {
+		return "", fmt.Errorf("%s is a directory", filename)
 	}
 	return filepath.Abs(filename)
 }
@@ -190,13 +202,13 @@ func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
 
 	if feature[0] == '.' || feature[0] == '/' || feature[0] == filepath.Separator ||
 		(len(feature) > 1 && feature[1] == ':') {
-		if name, err := fullName(feature); err == nil {
-			return name, nil
-		}
 		for _, fn := range filenames {
 			if name, err := fullName(fn); err == nil {
 				return name, nil
 			}
+		}
+		if name, err := fullName(feature); err == nil {
+			return name, nil
 		}
 		return "", fmt.Errorf("cannot load such file -- %v", feature)
 	}
@@ -230,7 +242,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 
 	name, err := resolveName(mrb, feature)
 	if err != nil {
-		return mrb.Raisef(mrb.ClassGet("ELoadError"), "cannot load such file -- %v", feature)
+		return raiseCannotLoad(mrb, feature)
 	}
 
 	// Check if fullpath name is already loaded
@@ -295,32 +307,160 @@ func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return doRequire(mrb, name)
 }
 
-// loadAutoload autoload feature is not suported. It immediatly requires feature
-func loadAutoload(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	name, pathValue := mrb.GetArgs2()
-	path := pathValue.String()
-	if name.Type() != oruby.MrbTTSymbol || name.Type() != oruby.MrbTTString {
-		return mrb.Raise(mrb.ClassGet("ELoadError"), "Symbol expected")
+func autoloadOwner(mrb *oruby.MrbState, self oruby.Value) oruby.Value {
+	if self.Type() == oruby.MrbTTClass || self.Type() == oruby.MrbTTModule {
+		return self
 	}
-
-	ret := doRequire(mrb, path)
-
-	autoloads := mrb.GetGV("$AUTOLOADS")
-	if autoloads.IsNil() {
-		autoloads = mrb.HashNew().Value()
-		mrb.SetGV("$AUTOLOADS", autoloads)
-	}
-	mrb.HashSet(autoloads, name, pathValue)
-
-	return ret
+	return mrb.ObjectClass().Value()
 }
 
-// loadAutoloadP autoload feature is not suported. It immediatly requires feature
-func loadAutoloadP(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	name := mrb.GetArgsFirst()
-	autoloads := mrb.GetGV("$AUTOLOADS")
-	if autoloads.IsNil() || name.Type() != oruby.MrbTTSymbol || name.Type() != oruby.MrbTTString {
+func autoloadName(mrb *oruby.MrbState, value oruby.Value) (oruby.MrbSym, bool) {
+	switch value.Type() {
+	case oruby.MrbTTSymbol:
+		return value.Symbol(), true
+	case oruby.MrbTTString:
+		name := value.String()
+		if name != "" {
+			return mrb.Intern(name), true
+		}
+	}
+	return 0, false
+}
+
+func autoloadEntries(mrb *oruby.MrbState, owner oruby.Value, create bool) oruby.Value {
+	registry := mrb.GetGV("$AUTOLOADS")
+	if registry.IsNil() {
+		if !create {
+			return oruby.Nil
+		}
+		registry = mrb.HashNew().Value()
+		mrb.SetGV("$AUTOLOADS", registry)
+	}
+	entries := mrb.HashGet(registry, owner)
+	if entries.IsNil() && create {
+		entries = mrb.HashNew().Value()
+		mrb.HashSet(registry, owner, entries)
+	}
+	return entries
+}
+
+// loadAutoload records a deferred constant-to-file mapping for its owning module.
+func loadAutoload(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	name, pathValue := mrb.GetArgs2()
+	id, ok := autoloadName(mrb, name)
+	if !ok {
+		return mrb.Raise(mrb.ENameError(), "autoload must be called with a constant name")
+	}
+	if pathValue.Type() != oruby.MrbTTString {
+		return mrb.Raisef(mrb.ETypeError(), "no implicit conversion of %s into String", mrb.TypeName(pathValue))
+	}
+	owner := autoloadOwner(mrb, self)
+	if mrb.ConstDefined(owner, id) {
 		return mrb.NilValue()
 	}
-	return mrb.HashGet(autoloads, name)
+	entries := autoloadEntries(mrb, owner, true)
+	mrb.HashSet(entries, mrb.SymbolValue(id), pathValue)
+	return mrb.NilValue()
+}
+
+// loadAutoloadP returns the deferred path for a constant owned by the receiver.
+func loadAutoloadP(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	name := mrb.GetArgsFirst()
+	id, ok := autoloadName(mrb, name)
+	if !ok {
+		return mrb.NilValue()
+	}
+	entries := autoloadEntries(mrb, autoloadOwner(mrb, self), false)
+	if entries.IsNil() {
+		return mrb.NilValue()
+	}
+	return mrb.HashGet(entries, mrb.SymbolValue(id))
+}
+
+// autoloadCandidates lists the modules whose autoloads may define a missing
+// constant of self, in Ruby lookup order: self, the enclosing namespaces
+// (from self's name; mruby's const_missing does not expose the lexical
+// scope), self's ancestors, then Object.
+func autoloadCandidates(mrb *oruby.MrbState, self oruby.Value) []oruby.Value {
+	out := []oruby.Value{self}
+	seen := map[oruby.RClass]bool{}
+	add := func(v oruby.Value) {
+		if v.Type() != oruby.MrbTTClass && v.Type() != oruby.MrbTTModule {
+			return
+		}
+		c := mrb.ClassPtr(v)
+		if seen[c] {
+			return
+		}
+		seen[c] = true
+		out = append(out, v)
+	}
+	seen[mrb.ClassPtr(self)] = true
+	if path := mrb.ClassPtr(self).Name(); strings.Contains(path, "::") {
+		parts := strings.Split(path, "::")
+		var chain []oruby.Value
+		cur := mrb.ObjectClass()
+		for _, part := range parts[:len(parts)-1] {
+			if !cur.ConstDefinedAt(part) {
+				break
+			}
+			v := cur.ConstGet(part)
+			if v.Type() != oruby.MrbTTClass && v.Type() != oruby.MrbTTModule {
+				break
+			}
+			chain = append(chain, v)
+			cur = mrb.ClassPtr(v)
+		}
+		for i := len(chain) - 1; i >= 0; i-- {
+			add(chain[i])
+		}
+	}
+	if anc, err := mrb.Funcall(self, mrb.Intern("ancestors")); err == nil && anc.Type() == oruby.MrbTTArray {
+		for _, a := range oruby.RArraySlice(anc) {
+			add(a)
+		}
+	}
+	add(mrb.ObjectClass().Value())
+	return out
+}
+
+func loadConstMissing(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	name := mrb.GetArgsFirst()
+	id, ok := autoloadName(mrb, name)
+	if ok {
+		key := mrb.SymbolValue(id)
+		for _, owner := range autoloadCandidates(mrb, self) {
+			entries := autoloadEntries(mrb, owner, false)
+			if entries.IsNil() {
+				continue
+			}
+			path := mrb.HashGet(entries, key)
+			if path.IsNil() {
+				continue
+			}
+			mrb.HashDeleteKey(entries, key)
+			result := doRequire(mrb, path.String())
+			if mrb.HasExc() {
+				if !mrb.ConstDefinedAt(owner, id) {
+					mrb.HashSet(entries, key, path)
+				}
+				return result
+			}
+			if mrb.ConstDefinedAt(owner, id) {
+				return mrb.ConstGet(owner, id)
+			}
+			break
+		}
+	}
+
+	constant := "unknown"
+	if name.Type() == oruby.MrbTTSymbol {
+		constant = mrb.SymName(name.Symbol())
+	} else if name.Type() == oruby.MrbTTString {
+		constant = name.String()
+	}
+	if owner := mrb.ClassPtr(self).Name(); owner != "" && owner != "Object" {
+		constant = owner + "::" + constant
+	}
+	return mrb.Raisef(mrb.ENameError(), "uninitialized constant %s", constant)
 }

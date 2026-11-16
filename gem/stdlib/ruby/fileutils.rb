@@ -230,13 +230,84 @@ module FileUtils
       new_time = File.mtime(new)
       Array(old_list).all? { |old| !File.exist?(old) || File.mtime(old) < new_time }
     end
+
+    def chown(user, group, list, noop: nil, verbose: nil)
+      list = __list(list)
+      __msg({ verbose: verbose }, "chown #{[user, group].compact.join(':')} #{list.join(' ')}")
+      return if noop
+      uid = user.is_a?(String) ? (require("etc") && Etc.getpwnam(user).uid) : user
+      gid = group.is_a?(String) ? (require("etc") && Etc.getgrnam(group).gid) : group
+      File.chown(uid, gid, *list)
+    end
+
+    def chown_R(user, group, list, noop: nil, verbose: nil, force: nil)
+      list = __list(list)
+      return chown(user, group, list, noop: noop, verbose: verbose) if noop
+      require "find"
+      list.each do |root|
+        Find.find(root) do |path|
+          begin
+            chown(user, group, path)
+          rescue SystemCallError => __exc
+            raise __exc unless force
+          end
+        end
+      end
+    end
+
+    # option tables, as in MRI's fileutils (Rake builds on them)
+    def commands
+      OPT_TABLE.keys
+    end
+
+    def options
+      OPT_TABLE.values.flatten.uniq.map(&:to_s)
+    end
+
+    def have_option?(mid, opt)
+      li = OPT_TABLE[mid.to_s] or raise ArgumentError, "no such method: #{mid}"
+      li.include?(opt)
+    end
+
+    def options_of(mid)
+      OPT_TABLE[mid.to_s].map(&:to_s)
+    end
+
+    def collect_method(opt)
+      OPT_TABLE.keys.select { |m| OPT_TABLE[m].include?(opt) }
+    end
   end
+
+  OPT_TABLE = {
+    "cd" => [:verbose], "chdir" => [:verbose],
+    "chmod" => [:noop, :verbose], "chmod_R" => [:noop, :verbose, :force],
+    "chown" => [:noop, :verbose], "chown_R" => [:noop, :verbose, :force],
+    "copy" => [:preserve, :noop, :verbose], "cp" => [:preserve, :noop, :verbose],
+    "cp_r" => [:preserve, :noop, :verbose, :dereference_root, :remove_destination],
+    "install" => [:preserve, :noop, :verbose, :mode, :owner, :group],
+    "link" => [:force, :noop, :verbose], "ln" => [:force, :noop, :verbose],
+    "ln_s" => [:force, :relative, :target_directory, :noop, :verbose],
+    "symlink" => [:force, :relative, :target_directory, :noop, :verbose],
+    "ln_sf" => [:noop, :verbose, :relative, :target_directory],
+    "makedirs" => [:mode, :noop, :verbose], "mkdir" => [:mode, :noop, :verbose],
+    "mkdir_p" => [:mode, :noop, :verbose], "mkpath" => [:mode, :noop, :verbose],
+    "move" => [:force, :noop, :verbose, :secure], "mv" => [:force, :noop, :verbose, :secure],
+    "remove" => [:force, :noop, :verbose], "rm" => [:force, :noop, :verbose],
+    "rm_f" => [:noop, :verbose], "rm_r" => [:force, :noop, :verbose, :secure],
+    "rm_rf" => [:noop, :verbose, :secure], "rmdir" => [:parents, :noop, :verbose],
+    "rmtree" => [:noop, :verbose, :secure], "safe_unlink" => [:noop, :verbose],
+    "touch" => [:noop, :verbose, :mtime, :nocreate]
+  }.freeze
+
+  LOW_METHODS = %i[pwd copy_entry copy_file compare_file identical? cmp remove_entry
+                   remove_entry_secure remove_file remove_dir uptodate?].freeze
+  METHODS = (LOW_METHODS + OPT_TABLE.keys.map(&:to_sym)).freeze
 
   # FileUtils methods are also private instance methods of including classes
   %i[pwd cd chdir mkdir mkdir_p makedirs mkpath rmdir rm remove rm_f safe_unlink rm_r rm_rf
      rmtree remove_entry remove_entry_secure remove_file remove_dir cp copy copy_file cp_r
-     copy_entry mv move ln link ln_s symlink ln_sf touch chmod chmod_R install compare_file
-     identical? cmp uptodate?].each do |name|
+     copy_entry mv move ln link ln_s symlink ln_sf touch chmod chmod_R chown chown_R install
+     compare_file identical? cmp uptodate?].each do |name|
     define_method(name) { |*args, **kw, &blk| FileUtils.__send__(name, *args, **kw, &blk) }
     private name
   end

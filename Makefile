@@ -45,6 +45,7 @@ test:
 	(cd gem/marshal && go test)
 	(cd gem/process && go test)
 	(cd gem/regexp && go test)
+	(cd gem/regexp/full && go test)
 #	(cd gem/signal && go test)
 	(cd gem/thread && go test)
 	(cd gem/time && go test)

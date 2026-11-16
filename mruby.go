@@ -3,7 +3,7 @@ package oruby
 // #cgo CFLAGS: -I${SRCDIR}/mruby/include -I${SRCDIR}/mruby/build/host/include
 // #cgo LDFLAGS: -L${SRCDIR}/mruby/build/host/lib
 // // Must match MRUBY_CFLAGS in mruby/build/host/lib/libmruby.flags.mak (build_config_*.rb defines + defines added by gems)
-// #cgo CFLAGS: -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET
+// #cgo CFLAGS: -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_SYMBOL_MAX=0 -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET
 // #cgo linux   LDFLAGS: -lmruby -lm -lreadline -lncurses
 // #cgo darwin  LDFLAGS: -lmruby -lm -lreadline -lncurses
 ////#cgo windows LDFLAGS: -lmruby -lm -lmingwex -static
@@ -124,6 +124,10 @@ func NewCore() (*MrbState, error) {
 	// Store *MrbState pointer, so it can be retrieved from C callbacks
 	registerState(mrb)
 
+	// Module#private "name" etc. accept Strings as in Ruby
+	C._mrb_patch_visibility(mrb.p)
+	C._mrb_patch_defined(mrb.p)
+
 	// SystemCallError exception
 	// mruby code have SystemCallError::_sys_fail method, but it is not used
 	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
@@ -158,6 +162,10 @@ end
 	mrb.DefineGlobalConst("RUBY_ENGINE", mrb.StrNew("oruby"))
 	mrb.DefineGlobalConst("RUBY_ENGINE_VERSION", mrb.StrNew("0.1.0"))
 	mrb.DefineGlobalConst("RUBY_DESCRIPTION", mrb.StrNew(fmt.Sprintf("oruby 0.1.0 [%s]", platform)))
+	mrb.DefineGlobalConst("RUBY_PATCHLEVEL", MrbFixnumValue(0))
+	mrb.DefineGlobalConst("RUBY_RELEASE_DATE", mrb.StrNew("2026-11-01"))
+	mrb.DefineGlobalConst("RUBY_REVISION", mrb.StrNew("oruby"))
+	mrb.DefineGlobalConst("RUBY_COPYRIGHT", mrb.StrNew("oruby - Copyright (C) Dušan D. Majkić; mruby - Copyright (C) mruby developers"))
 	mrb.SetGV("$VERBOSE", mrb.FalseValue())
 	mrb.DefineModuleFunction(mrb.KernelModule(), "debug", kernelDebug, mrb.ArgsAny())
 
@@ -641,7 +649,8 @@ func (mrb *MrbState) String(v MrbValue) string {
 	case C.MRB_TT_HASH:
 		return fmt.Sprintf("%v", mrb.Intf(v))
 	case C.MRB_TT_STRING:
-		return mrb.StrToCstr(v)
+		// raw bytes: StrToCstr (mrb_str_to_cstr) raises on NUL bytes
+		return v.Value().String()
 	case C.MRB_TT_DATA:
 		return fmt.Sprintf("%v", mrb.Intf(v))
 	case C.MRB_TT_OBJECT:

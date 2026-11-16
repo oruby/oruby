@@ -228,11 +228,22 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	buf.WriteString("\tinitSymbols(mrb)\n")
 	if isBundle {
 		buf.WriteString("\tinitCompiledRequire(mrb)\n")
-		buf.WriteString(fmt.Sprintf("\tcompiledLoaded[%q] = true\n", modules[0].FilePath))
+		entryKey := modules[0].FilePath
+		if entryKey == "" {
+			entryKey = modules[0].RelPath
+		}
+		buf.WriteString(fmt.Sprintf("\tcompiledBegin(mrb, %q)\n", entryKey))
 	}
 	buf.WriteString("\t_sc := mrb.AotScopePush(mrb.ObjectClass().Value(), true)\n")
 	buf.WriteString(fmt.Sprintf("\tres, err := %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil)\n", rootFn))
 	buf.WriteString("\tmrb.AotScopePop(_sc)\n")
+	if isBundle {
+		entryKey := modules[0].FilePath
+		if entryKey == "" {
+			entryKey = modules[0].RelPath
+		}
+		buf.WriteString(fmt.Sprintf("\tcompiledFinish(mrb, %q, err == nil)\n", entryKey))
+	}
 	buf.WriteString("\tif err != nil {\n\t\tmrb.AotLocalJumpCheck()\n\t\treturn res, mrb.AotBoundaryErr()\n\t}\n")
 	buf.WriteString("\treturn res, nil\n")
 	buf.WriteString("}\n\n")
@@ -751,30 +762,74 @@ func fastSetIdx(mrb *oruby.MrbState, self, recv, key, val oruby.Value) error {
 }
 
 func (g *CodeGen) emitRequireHooks(b *bytes.Buffer, modules []*ModuleUnit) {
-	b.WriteString("var compiledRegistry map[string]func(*oruby.MrbState) (oruby.Value, error)\n\n")
+	b.WriteString(`type compiledModule struct {
+	id string
+	run func(*oruby.MrbState) (oruby.Value, error)
+}
+
+var compiledRegistry map[string]compiledModule
+
+func compiledFeatureSet(mrb *oruby.MrbState) oruby.Value {
+	features := mrb.GetGV("$__ORUBY_COMPILED_FEATURES")
+	if features.IsNil() {
+		features = mrb.HashNew().Value()
+		mrb.SetGV("$__ORUBY_COMPILED_FEATURES", features)
+	}
+	return features
+}
+
+func compiledBegin(mrb *oruby.MrbState, id string) {
+	mrb.HashSet(compiledFeatureSet(mrb), mrb.AotStrNew(id), mrb.TrueValue())
+}
+
+func compiledFinish(mrb *oruby.MrbState, id string, success bool) {
+	features := compiledFeatureSet(mrb)
+	key := mrb.AotStrNew(id)
+	if !success {
+		mrb.HashDeleteKey(features, key)
+		return
+	}
+	mrb.FeatureAdd(id)
+	loaded := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
+	if loaded.Type() == oruby.MrbTTArray {
+		found := false
+		for i := 0; i < loaded.Len(); i++ {
+			item := mrb.AryEntry(loaded, i)
+			if item.Type() == oruby.MrbTTString && item.String() == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			mrb.AryPush(loaded, key)
+		}
+	}
+}
+
+	`)
 	b.WriteString("func init() {\n")
-	b.WriteString("\tcompiledRegistry = map[string]func(*oruby.MrbState) (oruby.Value, error){\n")
+	b.WriteString("\tcompiledRegistry = map[string]compiledModule{\n")
 	seenKeys := make(map[string]bool)
-	addKey := func(key, fnName string) {
+	addKey := func(key, id, fnName string) {
 		if key == "" || seenKeys[key] {
 			return
 		}
 		seenKeys[key] = true
-		b.WriteString(fmt.Sprintf("\t\t%q: func(mrb *oruby.MrbState) (oruby.Value, error) { return %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil) },\n", key, fnName))
+		b.WriteString(fmt.Sprintf("\t\t%q: compiledModule{id: %q, run: func(mrb *oruby.MrbState) (oruby.Value, error) { return %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil) }},\n", key, id, fnName))
 	}
 	for _, mod := range modules {
-		addKey(mod.FilePath, g.info[mod.Root].fn)
-	}
-	for _, mod := range modules {
+		id := mod.FilePath
+		if id == "" {
+			id = mod.RelPath
+		}
+		addKey(id, id, g.info[mod.Root].fn)
 		for _, key := range mod.CanonicalKeys() {
-			addKey(key, g.info[mod.Root].fn)
+			addKey(key, id, g.info[mod.Root].fn)
 		}
 	}
 	b.WriteString("\t}\n}\n\n")
 
-	b.WriteString(fmt.Sprintf(`var compiledLoaded = make(map[string]bool)
-
-// compiledFind resolves feature to a compiled module key
+	b.WriteString(fmt.Sprintf(`// compiledFind resolves feature to a compiled module key
 func compiledFind(feature, dir string, relative bool) string {
 	var candidates []string
 	if relative || strings.HasPrefix(feature, "./") || strings.HasPrefix(feature, "../") {
@@ -809,19 +864,30 @@ func compiledFind(feature, dir string, relative bool) string {
 }
 
 func compiledRun(mrb *oruby.MrbState, key string, once bool) (oruby.Value, error) {
-	fn := compiledRegistry[key]
-	id := key
+	mod, ok := compiledRegistry[key]
+	if !ok {
+		return mrb.FalseValue(), nil
+	}
+	id := mod.id
 	if once {
-		if compiledLoaded[id] {
+	features := compiledFeatureSet(mrb)
+		featureKey := mrb.AotStrNew(id)
+		if mrb.HashKeyP(features, featureKey) {
 			return mrb.FalseValue(), nil
 		}
-		compiledLoaded[id] = true
+		mrb.HashSet(features, featureKey, mrb.TrueValue())
 	}
 	_sc := mrb.AotScopePush(mrb.ObjectClass().Value(), true)
-	_, err := fn(mrb)
+	_, err := mod.run(mrb)
 	mrb.AotScopePop(_sc)
 	if err != nil {
+		if once {
+			mrb.HashDeleteKey(compiledFeatureSet(mrb), mrb.AotStrNew(id))
+		}
 		return mrb.NilValue(), err
+	}
+	if once {
+		compiledFinish(mrb, id, true)
 	}
 	return mrb.TrueValue(), nil
 }

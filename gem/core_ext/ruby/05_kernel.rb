@@ -227,3 +227,15 @@ module Process
 end
 
 
+
+# MRI defines Kernel#warn as a module function (also Kernel.warn)
+module Kernel
+  module_function :warn
+end
+
+class Exception
+  def backtrace_locations
+    bt = backtrace
+    bt && bt.map { |l| Thread::Backtrace::Location.new(l) }
+  end unless method_defined?(:backtrace_locations)
+end

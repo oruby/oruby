@@ -768,6 +768,11 @@ void _mrb_proc_new_singleton_method(mrb_state *mrb, mrb_value obj, mrb_sym id, i
 void _mrb_method_new_cfunc(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 void _define_class_method(mrb_state *mrb, struct RClass *c, mrb_sym id, int idx, mrb_aspec aspec);
 
+// Module#private/public/protected/module_function accepting String names
+void _mrb_patch_visibility(mrb_state *mrb);
+// defined?(X) / defined?(A::B) report pending autoloads (gem/load) as constants
+void _mrb_patch_defined(mrb_state *mrb);
+
 // cmd helpers
 extern void mrb_codedump_all(mrb_state*, struct RProc*);
 static void _set_parser_s(struct mrb_parser_state *parser, char *str) {

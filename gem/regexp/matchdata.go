@@ -2,20 +2,19 @@ package regexp
 
 import (
 	"fmt"
-	"regexp"
 )
 
 // MatchData helper struct
 type MatchData struct {
-	r      *regexp.Regexp
+	r      *Regexp
 	s      string
 	names  []string
 	result []int
 }
 
 // NewMatchData creates MatchData for matched regex
-func NewMatchData(regx *regexp.Regexp, s string, result []int, pos int) *MatchData {
-	gonames := regx.SubexpNames()
+func NewMatchData(regx *Regexp, s string, result []int, pos int) *MatchData {
+	gonames := regx.subexpNames()
 	names := make([]string, 0, len(gonames))
 	hasNames := false
 	for _, name := range gonames {
@@ -33,7 +32,7 @@ func NewMatchData(regx *regexp.Regexp, s string, result []int, pos int) *MatchDa
 			}
 		}
 	} else {
-		copy(names, gonames)
+		names = append(names, gonames...)
 		ret = result
 	}
 
@@ -63,7 +62,7 @@ func (m *MatchData) IsEqual(m2 *MatchData) bool {
 		}
 	}
 
-	return (m.r.String() == m2.r.String()) && (m.s == m2.s)
+	return m.r.source == m2.r.source && m.r.options == m2.r.options && m.s == m2.s
 }
 
 func (m *MatchData) toString(idx int) (string, bool) {
@@ -90,22 +89,45 @@ func (m *MatchData) StringOrNil(idx int) *string {
 	return &result
 }
 
-// Begin position of match at index
-func (m *MatchData) Begin(idx int) (int, error) {
-	if (idx < 0) || (idx >= m.Size()) {
-		return -1, fmt.Errorf("index %v out of matches", idx)
+// byteBegin is the byte offset where group idx starts (-1 if unset)
+func (m *MatchData) byteBegin(idx int) int {
+	if idx < 0 || idx >= m.Size() {
+		return -1
 	}
-
-	return m.result[idx*2], nil
+	return m.result[idx*2]
 }
 
-// End position of match at index
-func (m *MatchData) End(idx int) (int, error) {
+// Begin is the character offset where group idx starts (MatchData#begin)
+func (m *MatchData) charBegin(idx int) (interface{}, error) {
 	if (idx < 0) || (idx >= m.Size()) {
-		return -1, fmt.Errorf("index %v out of matches", idx)
+		return nil, fmt.Errorf("index %v out of matches", idx)
 	}
+	if m.result[idx*2] < 0 {
+		return nil, nil
+	}
+	return charIndex(m.s, m.result[idx*2]), nil
+}
 
-	return m.result[idx*2+1], nil
+// End is the character offset where group idx ends (MatchData#end)
+func (m *MatchData) charEnd(idx int) (interface{}, error) {
+	if (idx < 0) || (idx >= m.Size()) {
+		return nil, fmt.Errorf("index %v out of matches", idx)
+	}
+	if m.result[idx*2+1] < 0 {
+		return nil, nil
+	}
+	return charIndex(m.s, m.result[idx*2+1]), nil
+}
+
+// Byteoffset returns [begin, end] byte offsets of group idx (MatchData#byteoffset)
+func (m *MatchData) byteOffset(idx int) ([]interface{}, error) {
+	if (idx < 0) || (idx >= m.Size()) {
+		return nil, fmt.Errorf("index %v out of matches", idx)
+	}
+	if m.result[idx*2] < 0 {
+		return []interface{}{nil, nil}, nil
+	}
+	return []interface{}{m.result[idx*2], m.result[idx*2+1]}, nil
 }
 
 // Size returns number of matches
@@ -194,17 +216,15 @@ func (m *MatchData) NamedCaptures() map[string]interface{} {
 	return ret
 }
 
-// Offset returns capture offsets
-func (m *MatchData) Offset(idx int) ([]interface{}, error) {
+// Offset returns [begin, end] character offsets of group idx (MatchData#offset)
+func (m *MatchData) charOffset(idx int) ([]interface{}, error) {
 	if (idx < 0) || (idx >= m.Size()) {
 		return nil, fmt.Errorf("index %v out of matches", idx)
 	}
-
 	if m.result[idx*2] < 0 {
 		return []interface{}{nil, nil}, nil
 	}
-
-	return []interface{}{m.result[idx*2], m.result[idx*2+1]}, nil
+	return []interface{}{charIndex(m.s, m.result[idx*2]), charIndex(m.s, m.result[idx*2+1])}, nil
 }
 
 // PostMatch returns string after match
@@ -227,6 +247,6 @@ func (m *MatchData) PreMatch() string {
 }
 
 // Regexp returns underlyng Regexp object
-func (m *MatchData) Regexp() *regexp.Regexp {
+func (m *MatchData) Regexp() *Regexp {
 	return m.r
 }

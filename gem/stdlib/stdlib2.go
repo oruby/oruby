@@ -55,6 +55,17 @@ func init() {
 	oruby.GemAlias("csv/table", "csv")
 	oruby.GemAlias("csv/row", "csv")
 
+	// Pathname is a core class in Ruby 4 (defined without require)
+	oruby.Gem("pathname_core", func(mrb *oruby.MrbState) interface{} {
+		for _, dep := range []string{"io", "io/file"} {
+			mrb.Resolve(dep)
+		}
+		if _, err := mrb.Resolve("pathname"); err != nil {
+			return err
+		}
+		return nil
+	})
+
 	oruby.LazyGem("open3", func(mrb *oruby.MrbState) interface{} {
 		if _, err := mrb.Resolve("io"); err != nil {
 			return err

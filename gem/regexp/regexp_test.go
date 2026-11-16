@@ -94,7 +94,7 @@ func TestRegexp_New5(t *testing.T) {
     [ Regexp.new(".*"), "abcd\nefg", "abcd" ],
     [ Regexp.new("^a."), "abcd\naefg", "ab" ],
     [ Regexp.new("^b."), "bacd\naefg", "ba" ],
-    [ Regexp.new(".$"), "bacd\naefg", "g" ]
+    [ Regexp.new(".$"), "bacd\naefg", "d" ]
   ]
 
   patterns.all?{ |reg, str, result| reg.match(str)[0] == result }
@@ -106,7 +106,7 @@ func TestRegexp_Multiline(t *testing.T) {
     [ Regexp.new(".*", Regexp::MULTILINE), "abc\ndef", "abc\ndef" ],
     [ Regexp.new(".*"), "abc\ndef", "abc" ],
     [ Regexp.new(".c$", Regexp::MULTILINE), "abc\nefc", "bc" ],
-    [ Regexp.new(".c$"), "abc\nefc", "fc" ]
+    [ Regexp.new(".c$"), "abc\nefc", "bc" ]
   ]
 
   patterns.all?{ |reg, str, result| reg.match(str)[0] == result}
@@ -130,7 +130,7 @@ func TestRegexp_Extended(t *testing.T) {
 	assert(t, "Regexp#match (extended)", `
 	src = <<-END  
       ^             # match the beginning of the line
-      (\\w+) (\\w+) # capture the first two words
+      (\\w+)\\s(\\w+) # capture the first two words (/x ignores literal spaces)
 END
 	reg = Regexp.new(src, Regexp::EXTENDED|Regexp::MULTILINE)
 	m = reg.match('foo bar baz')
@@ -149,4 +149,23 @@ func TestRegexp_Extended2(t *testing.T) {
 	m = reg.match('1984-06-20')
     m[:year] == '1984' && m[:month] == '06' && m[:day] == '20'
 	`)
+}
+
+// Without gem/regexp/full, Ruby-only syntax raises RegexpError naming the construct
+func TestRegexp_RE2OnlyEngine(t *testing.T) {
+	assert(t, "lookahead without full engine", `
+	  begin
+	    Regexp.new("a(?=b)")
+	    false
+	  rescue RegexpError => e
+	    e.message.include?("lookahead") && e.message.include?("gem/regexp/full")
+	  end`)
+	assert(t, "Ruby semantics on RE2", `
+	  "bacd\naefg"[/.$/] == "d" &&
+	    "a\nb" !~ /a.b/ && "a\nb" =~ /a.b/m &&
+	    "é" !~ /\w/ && "é1"[/[[:alpha:]]+/] == "é" &&
+	    "\v" =~ /\s/ && "xz1fA"[/\h+/] == "1fA" &&
+	    "abc".scan(/b*/) == ["", "b", "", ""] &&
+	    "aaa\naa".gsub(/^a/, "b") == "baa\nba" &&
+	    /(?<a>x)(y)/.match("xy").to_a == ["xy", "x"]`)
 }

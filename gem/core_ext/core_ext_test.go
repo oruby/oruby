@@ -1,6 +1,7 @@
 package core_ext
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/oruby/oruby"
@@ -48,6 +49,31 @@ func TestCoreExt(t *testing.T) {
 	v, err = mrb.Eval(`{ a: 1, b: 2 }.hash.is_a?(Integer)`)
 	assert.NilError(t, err)
 	assert.Equal(t, v.Bool(), true)
+}
+
+func TestRbConfigPlatformFields(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	if _, err := mrb.Resolve("rbconfig"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key  string
+		want string
+	}{
+		{"arch", rubyConfigCPU() + "-" + runtime.GOOS},
+		{"host_cpu", rubyConfigCPU()},
+		{"host_os", runtime.GOOS},
+	} {
+		got, err := mrb.Eval("RbConfig::CONFIG[" + `"` + tc.key + `"` + "]")
+		if err != nil || mrb.String(got) != tc.want {
+			t.Fatalf("RbConfig::CONFIG[%q] = %q, %v; want %q", tc.key, mrb.String(got), err, tc.want)
+		}
+	}
+	got, err := mrb.Eval(`RbConfig::CONFIG["host"].is_a?(String) && !RbConfig::CONFIG["host"].empty?`)
+	if err != nil || !got.Bool() {
+		t.Fatalf("RbConfig host must be a non-empty String: %v, %v", got, err)
+	}
 }
 
 func TestThreadLocalsAndIdentity(t *testing.T) {

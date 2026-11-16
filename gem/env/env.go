@@ -1,11 +1,16 @@
 package env
 
 import (
+	_ "embed"
 	"os"
 	"strings"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 )
+
+//go:embed env.rb
+var envRb []byte
 
 func init() {
 	oruby.Gem("env", func(mrb *oruby.MrbState) interface{} {
@@ -34,6 +39,7 @@ func init() {
 
 		mrb.ConstSet(mrb.KernelModule(), mrb.Sym("ENV"), env)
 		//mrb.DefineGlobalConst("ENV", env)
+		rb.LoadRuby(mrb, "env.rb", envRb)
 		return nil
 	})
 }
