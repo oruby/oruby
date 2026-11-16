@@ -868,6 +868,9 @@ static inline void _mrb_irep_catch_handler(const mrb_irep *irep, int i, int *typ
   *target = mrb_irep_catch_handler_unpack(e->target);
 }
 
+void _mrb_init_oruby_core(mrb_state *mrb);
+void _mrb_make_method_private(mrb_state *mrb, struct RClass *c, mrb_sym mid);
+
 // Numeric operators the AOT compiler evaluates inline for Integer and Float
 // operands (see AotIntOpsRedefined); a set bit means the program redefined one.
 #define _AOT_BOPS(f) (f(MRB_BOP_ADD) | f(MRB_BOP_SUB) | f(MRB_BOP_MUL) | f(MRB_BOP_DIV) | \

@@ -72,3 +72,16 @@ module Process
     t
   end
 end
+
+class Module
+  # a module may alias a method found only in Object, as in MRI through 4.1
+  alias __alias_method alias_method
+  def alias_method(new_name, old_name)
+    __alias_method(new_name, old_name)
+  rescue NameError => e
+    raise unless e.name == old_name.to_sym
+    return new_name.to_sym if instance_of?(Module) && __alias_from_object(new_name, old_name)
+    kind = instance_of?(Module) ? "module" : "class"
+    raise NameError.new("undefined method '#{old_name}' for #{kind} '#{self}'", old_name.to_sym)
+  end
+end

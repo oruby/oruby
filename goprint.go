@@ -7,10 +7,11 @@ func initPrint(mrb *MrbState) interface{} {
 	kernel := mrb.KernelModule()
 
 	kernel.DefineMethod("__printstr__", printStr, mrb.ArgsAny())
-	kernel.DefineMethod("print", printPrint, mrb.ArgsAny())
-	kernel.DefineMethod("puts", printPuts, mrb.ArgsAny())
-	kernel.DefineMethod("p", printP, mrb.ArgsAny())
-	kernel.DefineMethod("printf", printPrintf, mrb.ArgsAny())
+	// module functions as in MRI: Kernel.p must not reach mruby's C stdio
+	kernel.DefineModuleFunction("print", printPrint, mrb.ArgsAny())
+	kernel.DefineModuleFunction("puts", printPuts, mrb.ArgsAny())
+	kernel.DefineModuleFunction("p", printP, mrb.ArgsAny())
+	kernel.DefineModuleFunction("printf", printPrintf, mrb.ArgsAny())
 	kernel.DefineMethod("defined?", mrubyDefined, mrb.ArgsAny())
 
 	if mrb.RespondTo(kernel.Value(), mrb.Intern("Integer")) {
