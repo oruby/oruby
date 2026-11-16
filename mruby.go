@@ -131,6 +131,7 @@ func NewCore() (*MrbState, error) {
 	// mruby code have SystemCallError::_sys_fail method, but it is not used
 	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
 	mrb.DefineClass("SystemExit", mrb.EExceptionClass())
+	mrb.DefineClass("SecurityError", mrb.EExceptionClass())
 	mrb.Eval(`
 class SystemExit < Exception
   attr_reader :status
@@ -153,6 +154,23 @@ class SystemExit < Exception
     @status == 0
   end
 end
+
+module Kernel
+  def __oruby_alias__(new_name, old_name)
+    target = is_a?(Module) ? self : self.class
+    target.class_eval do
+      alias_method new_name, old_name
+    end
+  end
+
+  def __oruby_undef__(*names)
+    target = is_a?(Module) ? self : self.class
+    target.class_eval do
+      undef_method *names
+    end
+  end
+  module_function :__oruby_alias__, :__oruby_undef__
+end
 `)
 
 	// Standard Ruby constants
@@ -169,6 +187,13 @@ end
 	mrb.DefineGlobalConst("RUBY_COPYRIGHT", mrb.StrNew("oruby - Copyright (C) Dušan D. Majkić; mruby - Copyright (C) mruby developers"))
 	mrb.SetGV("$VERBOSE", mrb.FalseValue())
 	mrb.DefineModuleFunction(mrb.KernelModule(), "debug", kernelDebug, mrb.ArgsAny())
+	mrb.DefineModuleFunction(mrb.KernelModule(), "__preprocess_ruby", func(mrb *MrbState, self Value) MrbValue {
+		args := mrb.GetArgs()
+		if args.Len() == 0 {
+			return mrb.NilValue()
+		}
+		return mrb.StringValue(PreprocessRuby(args.Item(0).String()))
+	}, mrb.ArgsReq(1))
 
 	return mrb, nil
 }

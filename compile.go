@@ -357,6 +357,7 @@ func (mrb *MrbState) ParseFile(fileName string, context *MrbCcontext) (MrbParser
 
 // ParseString to oruby parser state
 func (mrb *MrbState) ParseString(s string, context *MrbCcontext) (MrbParserState, error) {
+	s = PreprocessRuby(s)
 	cs := C.CString(s)
 	defer C.free(unsafe.Pointer(cs))
 	p := C.mrb_parse_nstring(mrb.p, cs, C.size_t(len(s)), context.p)
@@ -407,6 +408,7 @@ func (mrb *MrbState) LoadFile(fileName string) (Value, error) {
 
 // LoadString loads string to oruby value
 func (mrb *MrbState) LoadString(s string) (Value, error) {
+	s = PreprocessRuby(s)
 	cs := C.CString(s)
 	defer C.free(unsafe.Pointer(cs))
 
@@ -431,6 +433,7 @@ func (mrb *MrbState) LoadFileCxt(fileName string, context *MrbCcontext) (Value, 
 
 // LoadStringCxt loads string into oruby context
 func (mrb *MrbState) LoadStringCxt(s string, context *MrbCcontext) (Value, error) {
+	s = PreprocessRuby(s)
 	return mrb.LoadBytesCxt([]byte(s), context)
 }
 
@@ -439,6 +442,7 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	if len(buf) == 0 {
 		return nilValue, errors.New("empty buffer")
 	}
+	buf = PreprocessRubyBytes(buf)
 	var result C.mrb_value
 	status := C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p, &result)
 	runtime.KeepAlive(buf)
