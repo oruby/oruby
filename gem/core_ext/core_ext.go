@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -23,22 +21,11 @@ import (
 //go:embed ruby/*.rb
 var rubyFiles embed.FS
 
-func rubyConfigCPU() string {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "x86_64"
-	case "386":
-		return "i386"
-	default:
-		return runtime.GOARCH
-	}
-}
-
 func init() {
 	oruby.Gem("rbconfig", func(mrb *oruby.MrbState) interface{} {
-		cpu := rubyConfigCPU()
+		arch := oruby.RubyArch()
+		cpu := arch[:strings.IndexByte(arch, '-')]
 		host := cpu + "-unknown-" + runtime.GOOS
-		arch := cpu + "-" + runtime.GOOS
 		switch runtime.GOOS {
 		case "darwin":
 			host = cpu + "-apple-darwin"
@@ -49,21 +36,14 @@ func init() {
 		}
 		// Install layout follows MRI's, relative to the oruby executable:
 		// <prefix>/bin/oruby, <prefix>/lib/oruby/<ruby_version>, ...
-		prefix := "/usr/local"
-		if exe, err := os.Executable(); err == nil {
-			if real, err := filepath.EvalSymlinks(exe); err == nil {
-				exe = real
-			}
-			prefix = filepath.Dir(filepath.Dir(exe))
-		}
+		prefix := oruby.InstallPrefix()
 		dlext := "so"
 		if runtime.GOOS == "darwin" {
 			dlext = "bundle"
 		}
 		mrb.Eval(fmt.Sprintf(`
 module RbConfig
-  ruby_version = (defined?(RUBY_VERSION) ? RUBY_VERSION : '4.1.0')
-  ruby_version += '.0' if ruby_version.count('.') == 1
+  ruby_version = RUBY_VERSION
   prefix = %q
   join = lambda { |*parts| parts.join('/') } # File may not be loaded yet
   major, minor, teeny = ruby_version.split('.')

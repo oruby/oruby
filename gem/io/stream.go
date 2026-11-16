@@ -89,7 +89,7 @@ func ioExternalEncoding(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !v.IsNil() {
 		return v
 	}
-	encMod := mrb.ModuleGet("Encoding")
+	encMod := mrb.EncodingClass()
 	if !encMod.IsNil() && mrb.RespondTo(encMod, mrb.Intern("default_external")) {
 		defExt, err := mrb.Funcall(encMod, mrb.Intern("default_external"))
 		if err == nil && !defExt.IsNil() {
@@ -628,38 +628,36 @@ func ioPutc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.NilValue()
 }
 
-func pArray(mrb *oruby.MrbState, ary oruby.Value, w io.Writer) error {
-	if ary.Len() == 0 {
-		_, err := io.WriteString(w, "\n")
-		return err
-	}
-
-	for i := 0; i < ary.Len(); i++ {
-		v := mrb.AryEntry(ary, i)
-		if v.IsArray() {
-			err := pArray(mrb, v, w)
-			if err != nil {
+// putsValue writes v as IO#puts does: an Array element by element (a
+// recursive one as "[...]"), anything else as to_s followed by a newline
+// unless it already ends with one.
+func putsValue(mrb *oruby.MrbState, v oruby.Value, w io.Writer, seen map[oruby.Value]bool) error {
+	if v.IsArray() {
+		if seen[v] {
+			_, err := io.WriteString(w, "[...]\n")
+			return err
+		}
+		seen[v] = true
+		defer delete(seen, v)
+		for i := 0; i < v.Len(); i++ {
+			if err := putsValue(mrb, mrb.AryEntry(v, i), w, seen); err != nil {
 				return err
 			}
-			continue
 		}
-
-		s, err := valueToS(mrb, v)
-		if err != nil {
-			return err
-		}
-
-		_, err = w.Write(s.Bytes())
-		if err != nil {
-			return err
-		}
-
-		_, err = w.Write([]byte{'\n'})
-		if err != nil {
-			return err
-		}
+		return nil
 	}
-	return nil
+	s, err := valueToS(mrb, v)
+	if err != nil {
+		return err
+	}
+	b := s.Bytes()
+	if _, err := w.Write(b); err != nil {
+		return err
+	}
+	if len(b) == 0 || b[len(b)-1] != '\n' {
+		_, err = w.Write([]byte{'\n'})
+	}
+	return err
 }
 
 func ioPuts(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -669,48 +667,24 @@ func ioPuts(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok || w == nil {
 		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
+	writeErr := func(err error) oruby.MrbValue {
+		if errors.Is(err, syscall.EBADF) {
+			return RaiseIOError(mrb, "not opened for writing")
+		}
+		return mrb.RaiseError(err)
+	}
 	if argc == 0 {
-		_, err := w.Write([]byte{'\n'})
-		if err != nil {
-			if errors.Is(err, syscall.EBADF) {
-				return RaiseIOError(mrb, "not opened for writing")
-			}
-			return mrb.RaiseError(err)
+		if _, err := w.Write([]byte{'\n'}); err != nil {
+			return writeErr(err)
 		}
 		return mrb.NilValue()
 	}
-
+	seen := map[oruby.Value]bool{}
 	for i := 0; i < argc; i++ {
-		v := args.Item(i)
-		if v.IsArray() {
-			err := pArray(mrb, v, w)
-			if err != nil {
-				return mrb.RaiseError(err)
-			}
-		}
-
-		s, err := valueToS(mrb, v)
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
-
-		_, err = w.Write(s.Bytes())
-		if err != nil {
-			if errors.Is(err, syscall.EBADF) {
-				return RaiseIOError(mrb, "not opened for writing")
-			}
-			return mrb.RaiseError(err)
-		}
-
-		_, err = w.Write([]byte{'\n'})
-		if err != nil {
-			if errors.Is(err, syscall.EBADF) {
-				return RaiseIOError(mrb, "not opened for writing")
-			}
-			return mrb.RaiseError(err)
+		if err := putsValue(mrb, args.Item(i), w, seen); err != nil {
+			return writeErr(err)
 		}
 	}
-
 	return mrb.NilValue()
 }
 
@@ -751,7 +725,7 @@ func ioPwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func binaryStringValue(mrb *oruby.MrbState, buf []byte) oruby.Value {
 	v := mrb.BytesValue(buf)
 	if mrb.RespondTo(v, mrb.Intern("force_encoding")) {
-		modEnc := mrb.ModuleGet("Encoding")
+		modEnc := mrb.EncodingClass()
 		if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
 			binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
 			mrb.Funcall(v, mrb.Intern("force_encoding"), binEnc)
@@ -861,7 +835,7 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	} else {
 		if mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
-			modEnc := mrb.ModuleGet("Encoding")
+			modEnc := mrb.EncodingClass()
 			if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
 				binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
 				mrb.Funcall(ret, mrb.Intern("force_encoding"), binEnc)

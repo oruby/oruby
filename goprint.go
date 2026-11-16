@@ -1,6 +1,9 @@
 package oruby
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func initPrint(mrb *MrbState) interface{} {
 	// Override oruby print functions so mrb output behave as go output
@@ -153,23 +156,46 @@ func printStr(mrb *MrbState, self Value) MrbValue {
 	return arg
 }
 
+// stdout returns $stdout when an IO library has set it. Kernel output goes
+// through it, as in Ruby, so reassigning $stdout captures it; a state
+// without gem/io writes to Go's os.Stdout.
+func (mrb *MrbState) stdout() (Value, bool) {
+	out := mrb.GetGV("$stdout")
+	return out, !out.IsNil() && mrb.RespondTo(out, mrb.Intern("write"))
+}
+
 func printPrint(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
+	if out, ok := mrb.stdout(); ok {
+		if _, err := mrb.Funcall(out, mrb.Intern("print"), args.SliceIntf()...); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.NilValue()
+	}
 	for i := 0; i < args.Len(); i++ {
-		fmt.Print(mrb.Intf(args.Item(i)))
+		v, err := mrb.Funcall(args.Item(i), mrb.Intern("to_s"))
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		fmt.Print(mrb.String(v))
 	}
 	return mrb.NilValue()
 }
 
 func printPuts(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
+	if out, ok := mrb.stdout(); ok {
+		if _, err := mrb.Funcall(out, mrb.Intern("puts"), args.SliceIntf()...); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.NilValue()
+	}
 	toS := mrb.Intern("to_s")
 	for i := 0; i < args.Len(); i++ {
 		v, err := mrb.FuncallWithBlock(args.Item(i), toS)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
-
 		s := mrb.String(v)
 		if len(s) > 0 && s[len(s)-1] == '\n' {
 			fmt.Print(s)
@@ -180,20 +206,33 @@ func printPuts(mrb *MrbState, self Value) MrbValue {
 	if args.Len() == 0 {
 		fmt.Println("")
 	}
-
 	return mrb.NilValue()
+}
+
+// write sends s to $stdout, or to Go's os.Stdout without one
+func (mrb *MrbState) writeStdout(s string) error {
+	if out, ok := mrb.stdout(); ok {
+		_, err := mrb.Funcall(out, mrb.Intern("write"), mrb.StrNew(s))
+		return err
+	}
+	fmt.Print(s)
+	return nil
 }
 
 func printP(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
 	inspect := mrb.Intern("inspect")
+	var b strings.Builder
 	for i := 0; i < args.Len(); i++ {
 		v, err := mrb.FuncallWithBlock(args.Item(i), inspect)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
-
-		fmt.Println(mrb.String(v))
+		b.WriteString(mrb.String(v))
+		b.WriteByte('\n')
+	}
+	if err := mrb.writeStdout(b.String()); err != nil {
+		return mrb.RaiseError(err)
 	}
 
 	switch args.Len() {
@@ -208,10 +247,15 @@ func printP(mrb *MrbState, self Value) MrbValue {
 
 func printPrintf(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
+	if args.Len() == 0 {
+		return mrb.NilValue()
+	}
 	v, err := mrb.FuncallWithBlock(mrb.KernelModule(), mrb.Intern("sprintf"), args.SliceIntf()...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	fmt.Print(mrb.String(v))
+	if err := mrb.writeStdout(mrb.String(v)); err != nil {
+		return mrb.RaiseError(err)
+	}
 	return mrb.NilValue()
 }

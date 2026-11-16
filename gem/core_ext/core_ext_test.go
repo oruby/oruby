@@ -2,6 +2,7 @@ package core_ext
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/oruby/oruby"
@@ -61,8 +62,8 @@ func TestRbConfigPlatformFields(t *testing.T) {
 		key  string
 		want string
 	}{
-		{"arch", rubyConfigCPU() + "-" + runtime.GOOS},
-		{"host_cpu", rubyConfigCPU()},
+		{"arch", oruby.RubyArch()},
+		{"host_cpu", strings.SplitN(oruby.RubyArch(), "-", 2)[0]},
 		{"host_os", runtime.GOOS},
 	} {
 		got, err := mrb.Eval("RbConfig::CONFIG[" + `"` + tc.key + `"` + "]")
@@ -161,6 +162,42 @@ func TestCoreExtNativeOverlap(t *testing.T) {
 		`begin; begin; raise KeyError; rescue => c; raise ArgumentError, "o", cause: c; end; rescue => e; e.cause.class.to_s; end`: "KeyError",
 		`class CeN < Numeric; undef_method :coerce; end; 1.coerce(2.5).inspect`:                                                    "[2.5, 1.0]",
 		`caller_locations(0, 1).first.class.to_s`:                                                                                  "Thread::Backtrace::Location",
+	}
+	for code, want := range cases {
+		v, err := mrb.Eval(code)
+		if err != nil {
+			t.Errorf("%s: %v", code, err)
+			continue
+		}
+		if got := mrb.String(v); got != want {
+			t.Errorf("%s = %q, want %q", code, got, want)
+		}
+	}
+}
+
+// Encoding is MRI's class of Encoding objects; strings report them.
+func TestCoreExtEncoding(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	mrb.Require("core_ext")
+
+	cases := map[string]string{
+		`"x".encoding.inspect`:                                      "#<Encoding:UTF-8>",
+		`"x".b.encoding.inspect`:                                    "#<Encoding:BINARY (ASCII-8BIT)>",
+		`"x".force_encoding("ISO-8859-1").encoding.name`:            "ISO-8859-1",
+		`"x".force_encoding("ISO-8859-1").dup.encoding.name`:        "ISO-8859-1",
+		`"x".force_encoding("US-ASCII").b.encoding.name`:            "ASCII-8BIT",
+		`"x".force_encoding("ISO-8859-1").instance_variables.size`:  "0",
+		`:a.encoding.name`:                                          "US-ASCII",
+		`__ENCODING__.name`:                                         "UTF-8",
+		`Encoding.find("binary").equal?(Encoding::ASCII_8BIT).to_s`: "true",
+		`(Encoding::UTF_8 == "UTF-8").to_s`:                         "false",
+		`Encoding.compatible?("abc", "é").name`:                     "UTF-8",
+		`(Encoding.find("nope") rescue $!.class).to_s`:              "ArgumentError",
+		`("a".force_encoding(:BINARY) rescue $!.class).to_s`:        "TypeError",
+		`(Encoding.allocate rescue $!.class).to_s`:                  "TypeError",
+		`200.chr("ISO-8859-1").encoding.name`:                       "ISO-8859-1",
+		`Encoding.list.size.to_s`:                                   "103",
 	}
 	for code, want := range cases {
 		v, err := mrb.Eval(code)

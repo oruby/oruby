@@ -18,6 +18,9 @@ func init() {
 				loadPath.Push(mrb.StrNew(p))
 			}
 		}
+		for _, p := range oruby.DefaultLoadPath() {
+			loadPath.Push(mrb.StrNew(p))
+		}
 		mrb.SetGV("$LOAD_PATH", loadPath)
 		mrb.SetGV("$:", loadPath)
 		mrb.SetGV("$-I", loadPath)

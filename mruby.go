@@ -158,7 +158,7 @@ end
 	// Standard Ruby constants
 	platform := runtime.GOARCH + "-" + runtime.GOOS
 	// the MRI version ORuby targets, not the bundled mruby's MRUBY_RUBY_VERSION
-	mrb.DefineGlobalConst("RUBY_VERSION", mrb.StrNew("4.1.0"))
+	mrb.DefineGlobalConst("RUBY_VERSION", mrb.StrNew(RubyVersion))
 	mrb.DefineGlobalConst("RUBY_PLATFORM", mrb.StrNew(platform))
 	mrb.DefineGlobalConst("RUBY_ENGINE", mrb.StrNew("oruby"))
 	mrb.DefineGlobalConst("RUBY_ENGINE_VERSION", mrb.StrNew("0.1.0"))

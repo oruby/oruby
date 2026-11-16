@@ -173,8 +173,35 @@ static mrb_value vis_private(mrb_state *mrb, mrb_value self) { return vis_call(m
 static mrb_value vis_protected(mrb_state *mrb, mrb_value self) { return vis_call(mrb, self, 2); }
 static mrb_value vis_module_function(mrb_state *mrb, mrb_value self) { return vis_call(mrb, self, 3); }
 
+// Strings carry mruby's own UTF-8/binary tag; any other encoding (core_ext's
+// Encoding) is kept in a hidden instance variable, which instance_variables
+// does not list (no '@') and dup/clone copy with the string.
+static mrb_value str_enc_binary_p(mrb_state *mrb, mrb_value self) {
+  return mrb_bool_value(RSTR_BINARY_P(mrb_str_ptr(self)));
+}
+
+static mrb_value str_enc_tag(mrb_state *mrb, mrb_value self) {
+  return mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "__encoding"));
+}
+
+static mrb_value str_enc_tag_set(mrb_state *mrb, mrb_value self) {
+  mrb_value enc;
+  mrb_get_args(mrb, "o", &enc);
+  mrb_sym sym = mrb_intern_lit(mrb, "__encoding");
+  if (mrb_nil_p(enc)) {
+    if (mrb_iv_defined(mrb, self, sym)) mrb_iv_remove(mrb, self, sym);
+  }
+  else {
+    mrb_iv_set(mrb, self, sym, enc);
+  }
+  return enc;
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_private_method(mrb, mrb->module_class, "__alias_from_object", mod_alias_from_object, MRB_ARGS_REQ(2));
+  mrb_define_private_method(mrb, mrb->string_class, "__encoding_binary?", str_enc_binary_p, MRB_ARGS_NONE());
+  mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag", str_enc_tag, MRB_ARGS_NONE());
+  mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag=", str_enc_tag_set, MRB_ARGS_REQ(1));
 
   mrb_func_t wrappers[] = {vis_public, vis_private, vis_protected, vis_module_function};
   for (int i = 0; i < 4; i++) {

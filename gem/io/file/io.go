@@ -111,7 +111,7 @@ func ioSysopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func binaryStringValue(mrb *oruby.MrbState, buf []byte) oruby.Value {
 	v := mrb.BytesValue(buf)
 	if mrb.RespondTo(v, mrb.Intern("force_encoding")) {
-		modEnc := mrb.ModuleGet("Encoding")
+		modEnc := mrb.EncodingClass()
 		if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
 			binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
 			mrb.Funcall(v, mrb.Intern("force_encoding"), binEnc)
@@ -291,7 +291,7 @@ func ioReadInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ret := mrb.StrNew(string(buf[:n]))
 	if hasLength {
 		if mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
-			modEnc := mrb.ModuleGet("Encoding")
+			modEnc := mrb.EncodingClass()
 			if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
 				binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
 				mrb.Funcall(ret, mrb.Intern("force_encoding"), binEnc)

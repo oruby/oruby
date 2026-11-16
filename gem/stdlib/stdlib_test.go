@@ -525,3 +525,25 @@ func TestFileUtilsSymbolicChmod(t *testing.T) {
 		t.Fatalf("chmod_R force should ignore missing paths: %v", err)
 	}
 }
+
+// Kernel output goes through $stdout, as in Ruby
+func TestStdlibStdoutCapture(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`require "stringio"
+	  $stdout = StringIO.new
+	  puts [1, [2, []]], "a\n"
+	  print "b", 3
+	  p :c
+	  printf("%d", 4)
+	  module Kernel; p :d; end
+	  s = $stdout.string
+	  $stdout = STDOUT
+	  s`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := mrb.String(v), "1\n2\na\nb3:c\n4:d\n"; got != want {
+		t.Errorf("captured %q, want %q", got, want)
+	}
+}

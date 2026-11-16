@@ -250,3 +250,9 @@ func (mrb *MrbState) StrBufAppend(str, str2 MrbValue) Value {
 // Intentionally left unsuported
 // C.mrb_string_value_ptr() - obsolete
 // C.mrb_string_value_len() - obsolete
+
+// EncodingClass returns Ruby's Encoding: core_ext's class, or the module of
+// the mruby-encoding gem in a state where core_ext is not loaded.
+func (mrb *MrbState) EncodingClass() RClass {
+	return mrb.ClassPtr(mrb.ObjectClass().ConstGet("Encoding"))
+}

@@ -13,6 +13,7 @@ import (
 )
 
 type Args struct {
+	disableGems    bool
 	rfp            string
 	cmdline        string
 	fname          bool
@@ -112,6 +113,8 @@ func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
 				args.dashN = true
 			case arg == "-p":
 				args.dashP = true
+			case arg == "--disable-gems" || arg == "--disable=gems" || arg == "--disable-all" || arg == "--disable=all":
+				args.disableGems = true
 			case strings.HasPrefix(arg, "--disable") || strings.HasPrefix(arg, "--enable"):
 			case arg == "-w":
 				args.verbose = true
@@ -232,6 +235,11 @@ func main() {
 		mrb.SetGV("$VERBOSE", mrb.TrueValue())
 	default:
 		mrb.SetGV("$VERBOSE", mrb.FalseValue())
+	}
+
+	// RubyGems is loaded at startup, as MRI does, unless --disable-gems
+	if !args.disableGems {
+		mrb.Eval("begin; require 'rubygems'; rescue LoadError; warn \"`RubyGems' were not loaded.\"; end")
 	}
 
 	/* Load libraries */

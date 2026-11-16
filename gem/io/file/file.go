@@ -632,7 +632,7 @@ func fileExpandPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.Raisef(mrb.EArgumentError(), "wrong number of arguments (given %d, expected 1..2)", len(args))
 	}
 
-	if modEnc := mrb.ModuleGet("Encoding"); !modEnc.IsNil() {
+	if modEnc := mrb.EncodingClass(); !modEnc.IsNil() {
 		if mrb.RespondTo(modEnc, mrb.Intern("default_external")) {
 			if defExt, err := mrb.Funcall(modEnc, mrb.Intern("default_external")); err == nil && !mrb.NilP(defExt) {
 				if compat, err := mrb.Funcall(defExt, mrb.Intern("ascii_compatible?")); err == nil && !compat.Bool() {
@@ -791,7 +791,7 @@ func rubyExtname(path string) string {
 
 func raisePathError(mrb *oruby.MrbState, err error) oruby.MrbValue {
 	if _, ok := err.(*compatibilityError); ok {
-		compatClass := mrb.ClassGetUnder(mrb.ModuleGet("Encoding"), "CompatibilityError")
+		compatClass := mrb.ClassGetUnder(mrb.EncodingClass(), "CompatibilityError")
 		return mrb.Raise(compatClass, err.Error())
 	}
 	if _, ok := err.(*typeError); ok {
@@ -1727,13 +1727,11 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	if strings.Contains(modeStr, ":") {
 		parts := strings.Split(modeStr, ":")
-		if len(parts) >= 2 && parts[1] != "" {
-			encClass := mrb.ModuleGet("Encoding")
-			extEnc, _ = mrb.Funcall(encClass, mrb.Intern("find"), mrb.StrNew(parts[1]))
+		if len(parts) >= 2 {
+			extEnc = findEncoding(mrb, parts[1])
 		}
-		if len(parts) >= 3 && parts[2] != "" {
-			encClass := mrb.ModuleGet("Encoding")
-			intEnc, _ = mrb.Funcall(encClass, mrb.Intern("find"), mrb.StrNew(parts[2]))
+		if len(parts) >= 3 {
+			intEnc = findEncoding(mrb, parts[2])
 		}
 	}
 	opt := mrb.KeywordArgs()
@@ -1747,12 +1745,9 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		encVal := mrb.HashFetch(optHash, mrb.Intern("encoding"), mrb.NilValue())
 		if encVal.IsString() {
 			parts := strings.Split(encVal.String(), ":")
-			encClass := mrb.ModuleGet("Encoding")
-			if len(parts) >= 1 && parts[0] != "" {
-				extEnc, _ = mrb.Funcall(encClass, mrb.Intern("find"), mrb.StrNew(parts[0]))
-			}
-			if len(parts) >= 2 && parts[1] != "" {
-				intEnc, _ = mrb.Funcall(encClass, mrb.Intern("find"), mrb.StrNew(parts[1]))
+			extEnc = findEncoding(mrb, parts[0])
+			if len(parts) >= 2 {
+				intEnc = findEncoding(mrb, parts[1])
 			}
 		} else if !encVal.IsNil() {
 			extEnc = encVal
@@ -1798,7 +1793,7 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if isBinary {
 		mrb.SetIV(self, "@binmode", oruby.True)
 		if extEnc.IsNil() {
-			encClass := mrb.ModuleGet("Encoding")
+			encClass := mrb.EncodingClass()
 			extEnc, _ = mrb.Funcall(encClass, mrb.Intern("find"), mrb.StrNew("ASCII-8BIT"))
 		}
 	}
@@ -1904,4 +1899,22 @@ func fileUtime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	}
 	return oruby.Integer(len(paths))
+}
+
+// findEncoding resolves an encoding named in an open mode or encoding:
+// option: "BOM|" is dropped, "-" (no conversion) and an empty name give nil,
+// and an unknown name is ignored, as MRI ignores it with a warning.
+func findEncoding(mrb *oruby.MrbState, name string) oruby.Value {
+	if len(name) >= 4 && strings.EqualFold(name[:4], "BOM|") {
+		name = name[4:]
+	}
+	if name == "" || name == "-" {
+		return mrb.NilValue()
+	}
+	v, err := mrb.Funcall(mrb.EncodingClass(), mrb.Intern("find"), mrb.StrNew(name))
+	if err != nil {
+		mrb.ExcClear()
+		return mrb.NilValue()
+	}
+	return v
 }
