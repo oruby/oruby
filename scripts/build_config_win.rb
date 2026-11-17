@@ -31,6 +31,10 @@ MRuby::Build.new do |conf|
   #   cc.include_paths = ["#{root}/include"]
   #   cc.defines = %w(DISABLE_GEMS)
   cc.defines << %w(MRB_HIGH_PROFILE MRB_METHOD_T_STRUCT MRB_NO_BOXING _hypot=hypot)
+  # Prism's allocations come from libc: mruby-compiler otherwise routes them
+  # through one process-wide mrb_state (global_mrb), so states compiling on
+  # different threads at once run each other's GC
+  cc.defines << 'MRC_PRISM_LIBC'
   #   cc.option_include_path = '-I%s'
   #   cc.option_define = '-D%s'
   #   cc.compile_options = "%{flags} -MMD -o %{outfile} -c %{infile}"

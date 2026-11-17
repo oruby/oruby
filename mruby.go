@@ -1410,21 +1410,39 @@ func (mrb *MrbState) ObjNew(c RClass, args ...interface{}) (RValue, error) {
 		return RValue{}, ETypeError("can't create instance of %v", c.Name())
 	}
 
-	argv := make([]C.mrb_value, len(args)+1)
+	l := len(args)
+	var stackBuf [8]C.mrb_value
+	var a []C.mrb_value
+	if l <= 8 {
+		a = stackBuf[:l]
+	} else {
+		a = make([]C.mrb_value, l)
+	}
 	for i := range args {
-		argv[i] = mrb.Value(args[i]).v
+		a[i] = mrb.Value(args[i]).v
+	}
+	var aPtr *C.mrb_value
+	if l > 0 {
+		aPtr = &a[0]
 	}
 
-	ret := RValue{C.mrb_obj_new(
+	var result C.mrb_value
+	status := C._mrb_obj_new(
 		mrb.p,
 		c.p,
-		C.mrb_int(len(args)),
-		&argv[0],
-	), mrb}
+		C.mrb_int(l),
+		aPtr,
+		&result,
+	)
+	v := Value{result}
+	runtime.KeepAlive(a)
 
-	runtime.KeepAlive(argv)
-
-	return ret, nil
+	res, err := mrb.protectedResult(v, status)
+	if err != nil {
+		return RValue{}, err
+	}
+	return RValue{res.v, mrb}, nil
+	// C.mrb_obj_new() called through helper
 }
 
 // ClassNewInstance creates new oruby object, alias for ObjNew

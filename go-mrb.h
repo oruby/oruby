@@ -61,30 +61,20 @@ static mrb_int _MRUBY_RELEASE_MAJOR()  { return (mrb_int)MRUBY_RELEASE_MAJOR; }
 static mrb_int _MRUBY_RELEASE_MINOR()  { return (mrb_int)MRUBY_RELEASE_MINOR; }
 static mrb_int _MRUBY_RELEASE_TEENY()  { return (mrb_int)MRUBY_RELEASE_TEENY; }
 
+// The MrbState index (linkrefs.go) is kept in mrb->ud itself, not in a
+// heap object: callbacks that run while mrb_close frees the heap (Go-backed
+// data's dfree) still read it
 static void _mrb_set_idx(mrb_state *mrb, mrb_int idx) {
-  struct RBasic *s = mrb_obj_alloc(mrb, MRB_TT_ISTRUCT, mrb->object_class);
-  struct RIStruct *is = (struct RIStruct *)s;
-  mrb_int *i = (mrb_int *)is->inline_data;
-
-  *i = idx;
-
-  s->frozen = 1;
-  mrb_sym sym = mrb_intern_lit(mrb, "$MRB");
-  mrb_gv_set(mrb, sym, mrb_obj_value(s));
-
-  // Set pointer to MrbState index
-  if (idx != 0) {
-    mrb->ud = i;
-  }
+  mrb->ud = (void *)(intptr_t)idx;
 }
 
 static mrb_int _mrb_get_idx(mrb_state *mrb) {
-  return mrb->ud ? *(mrb_int*)mrb->ud : 0;
+  return (mrb_int)(intptr_t)mrb->ud;
 }
 
 static mrb_int _cmrb_get_idx(uintptr_t cmrb) {
   mrb_state *mrb = (mrb_state *)cmrb;
-  return mrb->ud ? *(mrb_int*)mrb->ud : 0;
+  return (mrb_int)(intptr_t)mrb->ud;
 }
 
 /* Inject and run code */
@@ -466,6 +456,24 @@ static int
 _mrb_yield_cont(mrb_state *mrb, mrb_value block, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value *result) {
   _go_mrb_yield_cont_data yield = { block, self, argc, argv };
   return _go_mrb_protect(mrb, _go_mrb_yield_cont_body, &yield, result);
+}
+
+typedef struct {
+  struct RClass *c;
+  mrb_int argc;
+  const mrb_value *argv;
+} _go_mrb_obj_new_data;
+
+static mrb_value
+_go_mrb_obj_new_body(mrb_state *mrb, void *data) {
+  _go_mrb_obj_new_data *d = (_go_mrb_obj_new_data *)data;
+  return mrb_obj_new(mrb, d->c, d->argc, d->argv);
+}
+
+static int
+_mrb_obj_new(mrb_state *mrb, struct RClass *c, mrb_int argc, const mrb_value *argv, mrb_value *result) {
+  _go_mrb_obj_new_data d = { c, argc, argv };
+  return _go_mrb_protect(mrb, _go_mrb_obj_new_body, &d, result);
 }
 
 static mrb_value
