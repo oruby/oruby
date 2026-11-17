@@ -521,14 +521,23 @@ func procKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func procAbort(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	// as MRI: print and raise SystemExit(1), so ensure clauses, rescue and
+	// at_exit still run (core_ext replaces this with the full MRI version)
 	msg := mrb.GetArgsFirst().String()
 	if msg != "" {
-		fmt.Println(msg)
-	} else if mrb.Exc() != nil {
-		fmt.Println(mrb.Err().Error())
+		fmt.Fprintln(os.Stderr, msg)
+	} else {
+		msg = "exit"
+		if mrb.Exc() != nil {
+			fmt.Fprintln(os.Stderr, mrb.Err().Error())
+		}
 	}
-	os.Exit(1)
-	return mrb.NilValue()
+	sysExitClass := mrb.ClassGet("SystemExit")
+	exc, err := mrb.ObjNew(sysExitClass, 1, msg)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return mrb.RaiseObj(exc)
 }
 
 func procExit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

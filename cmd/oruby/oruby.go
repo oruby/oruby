@@ -812,6 +812,8 @@ func reportException(mrb *oruby.MrbState, err error) (int, bool) {
 		return 0, false
 	}
 	mrb.ExcClear()
+	// at_exit handlers see the exception that ends the program in $!
+	mrb.SetGV("$!", exc.Value())
 	if exc.IsKindOf(mrb.ClassGet("SystemExit")) {
 		status := mrb.Call(exc.Value(), "status")
 		code := 0
