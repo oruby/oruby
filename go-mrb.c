@@ -270,6 +270,7 @@ static void wrap_eval_methods(mrb_state *mrb) {
 // three-argument form is handled here, in C, so the backtrace has no extra
 // frame; the frame itself is hidden as mruby's raise hides its own.
 static mrb_func_t raise_orig[2];
+void _orb_bt_keep_now(mrb_state *mrb, mrb_value exc);
 mrb_noreturn void mrb_exc_raise_with_cause(mrb_state *mrb, mrb_value exc, mrb_value cause);
 
 static mrb_value raise_call(mrb_state *mrb, mrb_value self, int which) {
@@ -288,15 +289,41 @@ static mrb_value raise_call(mrb_state *mrb, mrb_value self, int which) {
     }
     if (!mrb_nil_p(bt)) mrb_funcall_id(mrb, exc, mrb_intern_lit(mrb, "set_backtrace"), 1, bt);
     mrb->c->ci->mid = 0;
-    if (!mrb_undef_p(cause)) mrb_exc_raise_with_cause(mrb, exc, cause);
+    if (!mrb_undef_p(cause)) {
+      _orb_bt_keep_now(mrb, exc);
+      mrb_exc_raise_with_cause(mrb, exc, cause);
+    }
     mrb_exc_raise(mrb, exc);
+  }
+  if (mrb->c->ci->kw && mrb_get_argc(mrb) > 0) {
+    /* raise(exc[, mesg], cause: c), as mrb_f_raise (kernel.c) raises it,
+       with the stack kept for the backtrace labels */
+    mrb_value exc = mrb_nil_value(), mesg = mrb_nil_value(), cause = mrb_undef_value(), rest = mrb_nil_value();
+    mrb_sym kw_names[] = { mrb_intern_lit(mrb, "cause") };
+    mrb_kwargs kw = { 1, 0, kw_names, &cause, &rest };
+    mrb_int argc = mrb_get_args(mrb, "|oo:", &exc, &mesg, &kw);
+    if (!mrb_undef_p(cause) && !(mrb_hash_p(rest) && !mrb_hash_empty_p(mrb, rest)) && argc > 0) {
+      mrb->c->ci->mid = 0;
+      if (argc == 1) {
+        if (mrb_string_p(exc)) {
+          mesg = exc;
+          exc = mrb_obj_value(E_RUNTIME_ERROR);
+        }
+        else {
+          mesg = mrb_nil_value();
+        }
+      }
+      exc = mrb_make_exception(mrb, exc, mesg);
+      _orb_bt_keep_now(mrb, exc);
+      mrb_exc_raise_with_cause(mrb, exc, cause);
+    }
   }
   return raise_orig[which](mrb, self);
 }
 
 // Exception#set_backtrace as in MRI: nil, a String, an Array of String or an
 // Array of Thread::Backtrace::Location (then kept for backtrace_locations)
-static mrb_func_t exc_bt_locations_orig;
+void _orb_bt_forget(mrb_state *mrb, mrb_value exc);
 
 static mrb_value exc_set_backtrace_m(mrb_state *mrb, mrb_value exc) {
   mrb_value bt = mrb_get_arg1(mrb), strs = bt;
@@ -304,6 +331,7 @@ static mrb_value exc_set_backtrace_m(mrb_state *mrb, mrb_value exc) {
   struct RException *e = mrb_exc_ptr(exc);
   mrb_iv_remove(mrb, exc, cache);
   mrb_iv_remove(mrb, exc, locs);
+  _orb_bt_forget(mrb, exc);
   if (mrb_nil_p(bt)) {
     e->backtrace = NULL;
     return bt;
@@ -347,13 +375,6 @@ static mrb_value exc_set_backtrace_m(mrb_state *mrb, mrb_value exc) {
   e->backtrace = mrb_basic_ptr(strs);
   mrb_field_write_barrier_value(mrb, mrb_basic_ptr(exc), strs);
   return bt;
-}
-
-static mrb_value exc_bt_locations_m(mrb_state *mrb, mrb_value exc) {
-  mrb_value locs = mrb_iv_get(mrb, exc, mrb_intern_lit(mrb, "__bt_locations__"));
-  if (mrb_array_p(locs)) return locs;
-  if (exc_bt_locations_orig) return exc_bt_locations_orig(mrb, exc);
-  return mrb_nil_value();
 }
 
 static mrb_value raise_w0(mrb_state *mrb, mrb_value self) { return raise_call(mrb, self, 0); }
@@ -779,6 +800,8 @@ static void gv_init_checked(mrb_state *mrb) {
   _mrb_gv_hook(mrb, "$@", "$@", 3);
 }
 
+void _orb_bt_init(mrb_state *mrb, pthread_mutex_t *mu);
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
   pthread_mutex_lock(&oruby_core_mu);
   _mrb_wrap_string_encoding(mrb);
@@ -801,15 +824,8 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
       mrb_alias_method(mrb, owner, mrb_intern_lit(mrb, "fail"), mrb_intern_lit(mrb, "raise"));
     }
   }
-  {
-    struct RClass *ec = mrb->eException_class, *owner = ec;
-    mrb_method_t m = mrb_method_search_vm(mrb, &owner, mrb_intern_lit(mrb, "backtrace_locations"));
-    if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_CFUNC_P(m) && MRB_METHOD_CFUNC(m) != exc_bt_locations_m) {
-      exc_bt_locations_orig = MRB_METHOD_CFUNC(m);
-    }
-    mrb_define_method(mrb, ec, "set_backtrace", exc_set_backtrace_m, MRB_ARGS_REQ(1));
-    if (exc_bt_locations_orig) mrb_define_method(mrb, ec, "backtrace_locations", exc_bt_locations_m, MRB_ARGS_NONE());
-  }
+  mrb_define_method(mrb, mrb->eException_class, "set_backtrace", exc_set_backtrace_m, MRB_ARGS_REQ(1));
+  _orb_bt_init(mrb, &oruby_core_mu);
   mrb_define_private_method(mrb, mrb->module_class, "__alias_from_object", mod_alias_from_object, MRB_ARGS_REQ(2));
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_binary?", str_enc_binary_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag", str_enc_tag, MRB_ARGS_NONE());

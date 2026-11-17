@@ -723,6 +723,7 @@ func run() int {
 	}
 
 	c.Filename(cmdline)
+	mrb.SetMainScript(cmdline)
 	var v oruby.Value
 	switch {
 	case src == nil:

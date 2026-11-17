@@ -145,7 +145,8 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 			if len(data) == 0 {
 				continue
 			}
-			c.Filename(path)
+			// a core file, which backtraces show as MRI shows its own
+			c.Filename("<internal:core_ext/" + entry.Name() + ">")
 			_, err = mrb.LoadBytesCxt(data, c)
 			if err != nil {
 				panic(fmt.Sprintf("core_ext error loading %s: %s", path, err))

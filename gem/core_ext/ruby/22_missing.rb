@@ -59,6 +59,26 @@ class Exception
     order ||= :top
 
     options[:highlight] = highlight
+    here = caller(1)
+    limit = Thread::Backtrace.limit
+    # the exception, then its causes; a cause seen before ends the chain
+    parts = []
+    seen = {}
+    e = self
+    while e.is_a?(Exception) && !seen[e.__id__]
+      seen[e.__id__] = true
+      parts << e.__send__(:__oruby_message_part, options, order, limit, here)
+      e = e.cause
+    end
+    return parts.join if order == :top
+    tb = highlight ? "\e[1mTraceback\e[m (most recent call last):\n" : "Traceback (most recent call last):\n"
+    tb + parts.reverse.join
+  end
+
+  # One exception of full_message: its message and backtrace, the "from"
+  # lines cut to `limit` (--backtrace-limit) as MRI's print_backtrace cuts
+  private def __oruby_message_part(options, order, limit, here)
+    highlight = options[:highlight]
     if respond_to?(:detailed_message)
       head = detailed_message(**options)
       if head.nil?
@@ -73,15 +93,19 @@ class Exception
     end
 
     bt = backtrace
-    bt = caller(1) if bt.nil? || bt.empty?
+    bt = here if bt.nil? || bt.empty?
     top = bt.first ? "#{bt.first}: " : ""
     rest = bt.drop(1)
+    tail = nil
+    if limit >= 0 && bt.size > limit + 2
+      tail = "\t ... #{rest.size - limit} levels...\n"
+      rest = rest.first(limit)
+    end
     if order == :top
-      "#{top}#{head}\n" + rest.map { |l| "\tfrom #{l}\n" }.join
+      "#{top}#{head}\n" + rest.map { |l| "\tfrom #{l}\n" }.join + tail.to_s
     else
       w = rest.size.to_s.size
-      tb = highlight ? "\e[1mTraceback\e[m (most recent call last):\n" : "Traceback (most recent call last):\n"
-      tb + rest.each_with_index.map { |l, i| "\t#{(i + 1).to_s.rjust(w)}: from #{l}\n" }.reverse.join + "#{top}#{head}\n"
+      tail.to_s + rest.each_with_index.map { |l, i| "\t#{(i + 1).to_s.rjust(w)}: from #{l}\n" }.reverse.join + "#{top}#{head}\n"
     end
   end
 end

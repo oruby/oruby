@@ -57,6 +57,19 @@ class Thread::Backtrace
   end
 end
 
+class Thread
+  # the current thread's stack; this method's own frame is the first, as in MRI
+  def backtrace(*args)
+    return nil unless equal?(Thread.current)
+    args.empty? ? caller(0) : caller(*args)
+  end
+
+  def backtrace_locations(*args)
+    return nil unless equal?(Thread.current)
+    args.empty? ? caller_locations(0) : caller_locations(*args)
+  end
+end
+
 class SystemExit < Exception
   attr_reader :status
 

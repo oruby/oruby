@@ -595,6 +595,7 @@ func (mrb *MrbState) Close() {
 
 		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
+		C._orb_bt_state_closed(C.mrb_int(idx))
 
 		removeStateIndex(idx)
 
@@ -1157,6 +1158,13 @@ func (mrb *MrbState) SymbolClass() RClass { return RClass{mrb.p.symbol_class, mr
 
 // KernelModule class in state
 func (mrb *MrbState) KernelModule() RClass { return RClass{mrb.p.kernel_module, mrb} }
+
+// SetMainScript names the file of the program's main script: its top level
+// is '<main>' in backtraces, the top level of other files '<top (required)>'
+func (mrb *MrbState) SetMainScript(name string) {
+	k := mrb.KernelModule().Value()
+	C.mrb_iv_set(mrb.p, k.v, C.mrb_sym(mrb.Intern("__oruby_main__")), mrb.StrNew(name).v)
+}
 
 // EExceptionClass in state
 func (mrb *MrbState) EExceptionClass() RClass {

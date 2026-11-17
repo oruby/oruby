@@ -877,6 +877,7 @@ static inline void _mrb_irep_catch_handler(const mrb_irep *irep, int i, int *typ
 }
 
 void _mrb_init_oruby_core(mrb_state *mrb);
+void _orb_bt_state_closed(mrb_int idx);
 void _mrb_make_method_private(mrb_state *mrb, struct RClass *c, mrb_sym mid);
 
 // Numeric operators the AOT compiler evaluates inline for Integer and Float
