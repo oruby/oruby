@@ -48,31 +48,32 @@ class Integer
 end
 
 class Exception
-  def full_message(highlight: false, order: :top)
-    unless highlight == true || highlight == false || highlight.nil?
+  def full_message(highlight: (hl_unset = true; nil), order: :top, **options)
+    highlight = Exception.to_tty? if hl_unset
+    unless highlight == true || highlight == false
       raise ArgumentError, "expected true or false as highlight: #{highlight.inspect}"
     end
     unless order == :top || order == :bottom || order.nil?
       raise ArgumentError, "expected :top or :bottom as order: #{order.inspect}"
     end
     order ||= :top
+
+    options[:highlight] = highlight
+    if respond_to?(:detailed_message)
+      head = detailed_message(**options)
+      if head.nil?
+        cls = self.class.to_s
+        head = highlight ? "\e[1;4m#{cls}\e[m" : cls
+      else
+        head = head.respond_to?(:to_str) ? head.to_str : head.to_s
+      end
+    else
+      cls = self.class.to_s
+      head = highlight ? "\e[1;4m#{cls}\e[m" : cls
+    end
+
     bt = backtrace
     bt = caller(1) if bt.nil? || bt.empty?
-    msg = message.to_s
-    cls = self.class.to_s
-    lines = msg.split("\n", -1)
-    first = lines.shift || ""
-    if msg.empty?
-      head = highlight ? "\e[1;4munhandled exception\e[m" : "unhandled exception"
-      head = cls if cls != "RuntimeError" && !highlight
-      head = "\e[1;4m#{cls}\e[m" if cls != "RuntimeError" && highlight
-    elsif highlight
-      head = "\e[1m#{first} (\e[1;4m#{cls}\e[m\e[1m)\e[m"
-      head += lines.map { |l| "\n\e[1m#{l}\e[m" }.join
-    else
-      head = "#{first} (#{cls})"
-      head += lines.map { |l| "\n#{l}" }.join
-    end
     top = bt.first ? "#{bt.first}: " : ""
     rest = bt.drop(1)
     if order == :top

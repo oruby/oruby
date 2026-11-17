@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"strings"
 
 	"github.com/oruby/oruby"
 )
@@ -68,7 +69,11 @@ func dirOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirInitialize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.FSPath(mrb.GetArgsFirst())
+	arg := mrb.GetArgsFirst()
+	if strings.ContainsRune(arg.String(), 0) {
+		return mrb.EArgumentError().Raise("string contains null byte")
+	}
+	dir := mrb.FSPath(arg)
 	f, err := os.Open(dir)
 	if err != nil {
 		return mrb.RaiseError(err)
@@ -81,14 +86,21 @@ func dirInitialize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirEntries(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.FSPath(mrb.GetArgsFirst())
+	arg := mrb.GetArgsFirst()
+	if strings.ContainsRune(arg.String(), 0) {
+		return mrb.EArgumentError().Raise("string contains null byte")
+	}
+	dir := mrb.FSPath(arg)
 	f, err := os.Open(dir)
 	if err != nil {
-		return mrb.FalseValue()
+		return mrb.RaiseError(err)
 	}
 
 	files, err := f.Readdirnames(-1)
 	_ = f.Close()
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
 	ret := mrb.AryNewCapa(len(files) + 2)
 	ret.PushString(".")
 	ret.PushString("..")
@@ -100,43 +112,53 @@ func dirEntries(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, skipDots bool) oruby.MrbValue {
 	block := mrb.GetArgsBlock()
-	ret := mrb.NilValue()
-	if !block.IsNil() {
-		ret = mrb.AryNew().Value()
+	if block.IsNil() {
+		args := mrb.GetArgs()
+		if args.Len() > 0 {
+			return mrb.Call(self, "to_enum", mrb.GetMID(), args.Item(0))
+		}
+		return mrb.Call(self, "to_enum", mrb.GetMID())
 	}
 	err := eachName(dir, skipDots, func(f string) error {
-		if !block.IsNil() {
-			_ = mrb.Yield(block, mrb.StrNew(f))
-			if mrb.Exc() != nil {
-				return mrb.Err()
-			}
-			return nil
+		_ = mrb.Yield(block, mrb.StrNew(f))
+		if mrb.Exc() != nil {
+			return mrb.Err()
 		}
-		mrb.AryPush(ret, mrb.StrNew(f))
 		return nil
 	})
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-
-	if block.IsNil() {
-		return mrb.Call(self, "to_enum", mrb.GetMID())
+	if self.Type() == oruby.MrbTTClass {
+		return mrb.NilValue()
 	}
-	return ret
+	return self
 }
 
 func dirForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.FSPath(mrb.GetArgsFirst())
+	arg := mrb.GetArgsFirst()
+	if strings.ContainsRune(arg.String(), 0) {
+		return mrb.EArgumentError().Raise("string contains null byte")
+	}
+	dir := mrb.FSPath(arg)
 	return dirDoForeach(mrb, self, dir, false)
 }
 
 func dirSEachChild(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.FSPath(mrb.GetArgsFirst())
+	arg := mrb.GetArgsFirst()
+	if strings.ContainsRune(arg.String(), 0) {
+		return mrb.EArgumentError().Raise("string contains null byte")
+	}
+	dir := mrb.FSPath(arg)
 	return dirDoForeach(mrb, self, dir, true)
 }
 
 func dirChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.FSPath(mrb.GetArgsFirst())
+	arg := mrb.GetArgsFirst()
+	if strings.ContainsRune(arg.String(), 0) {
+		return mrb.EArgumentError().Raise("string contains null byte")
+	}
+	dir := mrb.FSPath(arg)
 	if dir == "" {
 		return mrb.EArgumentError().Raise("ENOENT empty directory not allowed")
 	}
@@ -257,6 +279,12 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.EArgumentError().Raise("pattern must be string or array of strings")
 	}
 
+	for _, p := range patterns {
+		if strings.ContainsRune(p, 0) {
+			return mrb.EArgumentError().Raise("string contains null byte")
+		}
+	}
+
 	flags := 0
 	if args.Item(1).IsInt() {
 		flags = args.ItemDefInt(1, flags)
@@ -267,6 +295,9 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !opt.IsNil() {
 		if base := mrb.HashFetch(opt, mrb.Intern("base"), oruby.Nil); base.IsString() {
 			basePath = base.String()
+			if strings.ContainsRune(basePath, 0) {
+				return mrb.EArgumentError().Raise("string contains null byte")
+			}
 		}
 	}
 
@@ -361,11 +392,15 @@ func dirExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirIsEmpty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.FSPath(mrb.GetArgsFirst())
+	arg := mrb.GetArgsFirst()
+	if strings.ContainsRune(arg.String(), 0) {
+		return mrb.EArgumentError().Raise("string contains null byte")
+	}
+	dir := mrb.FSPath(arg)
 
 	f, err := os.Open(dir)
 	if err != nil {
-		return mrb.FalseValue()
+		return mrb.RaiseError(err)
 	}
 
 	files, err := f.Readdirnames(1)

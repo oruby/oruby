@@ -291,6 +291,9 @@ func packUn(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
+	if strings.ContainsRune(path, 0) {
+		return rb.Raise(mrb, "ArgumentError", "string contains null byte")
+	}
 	if len(path) >= unixPathMax {
 		return rb.Raise(mrb, "ArgumentError", "too long unix socket path (%d bytes given but %d bytes max)", len(path), unixPathMax)
 	}

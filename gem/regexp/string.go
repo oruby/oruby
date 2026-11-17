@@ -334,6 +334,20 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern(old), pattern, replace, block)
 		return ret, false
 	}
+	if mrb.RespondTo(self, mrb.Intern("valid_encoding?")) {
+		if valid := mrb.Call(self, "valid_encoding?"); !valid.IsNil() && !valid.Bool() {
+			enc := mrb.Call(self, "encoding")
+			encName := "UTF-8"
+			if !enc.IsNil() {
+				if nameVal := mrb.Call(enc, "name"); !nameVal.IsNil() && nameVal.IsString() {
+					encName = nameVal.String()
+				} else {
+					encName = mrb.String(enc)
+				}
+			}
+			return mrb.Raise(mrb.EArgumentError(), "invalid byte sequence in "+encName), false
+		}
+	}
 	if block.IsNil() && nargs < 2 {
 		if all {
 			return mrb.Call(self, "to_enum", mrb.Intern(name), pattern), false
