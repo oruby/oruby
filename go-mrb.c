@@ -568,10 +568,10 @@ void _mrb_wrap_string_encoding(mrb_state *mrb) {
 // The setter then calls Kernel.__oruby_trace_fire(name, value) when
 // trace_var hooks exist for the name.
 #define GV_SLOTS 128
-#include <pthread.h>
-/* the slot tables and the wrapped originals are process-wide; states are
-   opened concurrently (e.g. from goroutines) */
-static pthread_mutex_t oruby_core_mu = PTHREAD_MUTEX_INITIALIZER;
+/* The slot tables and the wrapped originals are process-wide, and states
+   are opened concurrently (from goroutines). The Go side serializes every
+   write to them with coreMu (mruby.go): _mrb_init_oruby_core runs under it,
+   and so does _mrb_gv_slot when trace_var hooks a global later. */
 static char *gv_names[GV_SLOTS];
 static char *gv_canon[GV_SLOTS];
 static int gv_kinds[GV_SLOTS];
@@ -761,31 +761,39 @@ static const struct { mrb_value (*get)(mrb_state *); void (*set)(mrb_state *, mr
   {gv_get_127, gv_set_127},
 };
 
-// _mrb_gv_hook makes name a virtual global of the given kind; its current
-// value is kept. Returns FALSE when the slots are used up.
-mrb_bool _mrb_gv_hook(mrb_state *mrb, const char *name, const char *canon, int kind) {
+// _mrb_gv_slot finds or claims the process-wide slot for name; -1 when the
+// slots are used up. It touches only the tables: the caller holds coreMu.
+int _mrb_gv_slot(const char *name, const char *canon, int kind) {
   int i;
-  pthread_mutex_lock(&oruby_core_mu);
   for (i = 0; i < gv_n; i++) {
-    if (strcmp(gv_names[i], name) == 0) break;
+    if (strcmp(gv_names[i], name) == 0) return i;
   }
-  if (i == gv_n) {
-    if (gv_n == GV_SLOTS) {
-      pthread_mutex_unlock(&oruby_core_mu);
-      return FALSE;
-    }
-    gv_names[i] = strdup(name);
-    gv_canon[i] = strdup(canon);
-    gv_kinds[i] = kind;
-    gv_n++;
-  }
-  pthread_mutex_unlock(&oruby_core_mu);
+  if (gv_n == GV_SLOTS) return -1;
+  gv_names[i] = strdup(name);
+  gv_canon[i] = strdup(canon);
+  gv_kinds[i] = kind;
+  gv_n++;
+  return i;
+}
+
+// _mrb_gv_hook_slot makes slot i's global virtual in mrb; its current value
+// is kept. It runs Ruby (the global's getter), so no lock is held.
+void _mrb_gv_hook_slot(mrb_state *mrb, int i) {
+  const char *name = gv_names[i];
   mrb_sym sym = mrb_intern_cstr(mrb, name);
   mrb_value key = mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i]));
   mrb_value store = gv_storage(mrb);
   mrb_value cur = mrb_gv_get(mrb, sym);   /* before it turns virtual */
   if (!mrb_hash_key_p(mrb, store, key)) mrb_hash_set(mrb, store, key, cur);
   mrb_gv_define_virtual(mrb, sym, gv_fns[i].get, gv_fns[i].set);
+}
+
+// _mrb_gv_hook is _mrb_gv_slot and _mrb_gv_hook_slot together, for state
+// init (under coreMu). Returns FALSE when the slots are used up.
+mrb_bool _mrb_gv_hook(mrb_state *mrb, const char *name, const char *canon, int kind) {
+  int i = _mrb_gv_slot(name, canon, kind);
+  if (i < 0) return FALSE;
+  _mrb_gv_hook_slot(mrb, i);
   return TRUE;
 }
 
@@ -800,12 +808,11 @@ static void gv_init_checked(mrb_state *mrb) {
   _mrb_gv_hook(mrb, "$@", "$@", 3);
 }
 
-void _orb_bt_init(mrb_state *mrb, pthread_mutex_t *mu);
+void _orb_bt_init(mrb_state *mrb);
 
+/* runs under coreMu (mruby.go): it fills the process-wide tables */
 void _mrb_init_oruby_core(mrb_state *mrb) {
-  pthread_mutex_lock(&oruby_core_mu);
   _mrb_wrap_string_encoding(mrb);
-  pthread_mutex_unlock(&oruby_core_mu);
   gv_init_checked(mrb);
   wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
   wrap_eval_methods(mrb);
@@ -825,7 +832,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
     }
   }
   mrb_define_method(mrb, mrb->eException_class, "set_backtrace", exc_set_backtrace_m, MRB_ARGS_REQ(1));
-  _orb_bt_init(mrb, &oruby_core_mu);
+  _orb_bt_init(mrb);
   mrb_define_private_method(mrb, mrb->module_class, "__alias_from_object", mod_alias_from_object, MRB_ARGS_REQ(2));
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_binary?", str_enc_binary_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag", str_enc_tag, MRB_ARGS_NONE());

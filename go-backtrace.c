@@ -17,7 +17,6 @@
 // without the blocks inside them.
 #include <string.h>
 #include <stdio.h>
-#include <pthread.h>
 #include <limits.h>
 #include <stdlib.h>
 #include "go-mrb.h"
@@ -634,13 +633,13 @@ static mrb_func_t bt_replace(mrb_state *mrb, struct RClass *c, const char *name,
   return orig;
 }
 
-/* the originals are the same functions in every state */
-void _orb_bt_init(mrb_state *mrb, pthread_mutex_t *mu) {
+/* the originals are the same functions in every state; called from
+   _mrb_init_oruby_core, under coreMu */
+void _orb_bt_init(mrb_state *mrb) {
   mrb_func_t locw[6] = {loc_m0, loc_m1, loc_m2, loc_m3, loc_m4, loc_m5};
   struct RClass *ksing = mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(mrb->kernel_module)));
   mrb_func_t o;
 
-  pthread_mutex_lock(mu);
   o = bt_replace(mrb, mrb->eException_class, "backtrace", exc_backtrace_m, MRB_ARGS_NONE(), FALSE);
   if (o) exc_backtrace_orig = o;
   o = bt_replace(mrb, mrb->eException_class, "backtrace_locations", exc_locations_m, MRB_ARGS_NONE(), FALSE);
@@ -654,7 +653,6 @@ void _orb_bt_init(mrb_state *mrb, pthread_mutex_t *mu) {
     o = bt_replace(mrb, loc, "absolute_path", loc_absolute_path, MRB_ARGS_NONE(), FALSE);
     if (o) loc_abs_orig = o;
   }
-  pthread_mutex_unlock(mu);
   mrb_define_private_method(mrb, mrb->kernel_module, "caller", f_caller, MRB_ARGS_OPT(2));
   mrb_define_private_method(mrb, mrb->kernel_module, "caller_locations", f_caller_locations, MRB_ARGS_OPT(2));
   mrb_define_method(mrb, ksing, "caller", f_caller, MRB_ARGS_OPT(2));

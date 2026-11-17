@@ -160,10 +160,51 @@ func TestMutexSleepLockedAndWoken(t *testing.T) {
 		m = Mutex.new
 		m.lock
 		slept = m.sleep(0.01)
-		slept.is_a?(Integer) && m.locked?
+		slept.nil? && m.locked?
 	`)
 	if err != nil || !v.Bool() {
-		t.Fatalf("expected sleep to return Integer and relock mutex, got %v, err: %v", v, err)
+		t.Fatalf("expected a timed-out sleep to return nil (as MRI) and relock the mutex, got %v, err: %v", v, err)
+	}
+}
+
+func TestMutexLockReturnsSelfAndOwner(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`
+		m = Mutex.new
+		ok = m.lock.equal?(m) && m.owned?
+		f = Fiber.new { [m.locked?, m.owned?, (m.unlock rescue $!.class), (m.lock rescue $!.class)] }
+		ok && f.resume == [true, false, ThreadError, ThreadError] && m.unlock.equal?(m) && !m.owned?
+	`)
+	if err != nil || !v.Bool() {
+		t.Fatalf("lock/unlock must return self and the lock belongs to its Fiber: %v, err: %v", v, err)
+	}
+}
+
+func TestMutexSynchronizeUnlockedInBlockRaises(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`
+		m = Mutex.new
+		r = (m.synchronize { m.unlock; :done } rescue $!.class)
+		r == ThreadError && !m.locked?
+	`)
+	if err != nil || !v.Bool() {
+		t.Fatalf("synchronize whose block unlocked must raise ThreadError: %v, err: %v", v, err)
+	}
+}
+
+func TestMutexSleepForeverIsFatal(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`
+		m = Mutex.new
+		m.lock
+		e = begin; m.sleep; rescue Exception => x; x; end
+		[e.class.name, e.class.superclass, m.locked?, (m.sleep("1") rescue $!.class)] == ["fatal", Exception, true, TypeError]
+	`)
+	if err != nil || !v.Bool() {
+		t.Fatalf("sleep without timeout must raise fatal and keep the lock: %v, err: %v", v, err)
 	}
 }
 

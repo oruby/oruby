@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "bc3c7d6160e7941c"
+const presymTable = "9dda1ef3e530d373"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -253,6 +253,7 @@ const (
 	Sym_FNM_SHORTNAME                 MrbSym = C.MRB_SYM__FNM_SHORTNAME                 // "FNM_SHORTNAME"
 	Sym_FNM_SYSCASE                   MrbSym = C.MRB_SYM__FNM_SYSCASE                   // "FNM_SYSCASE"
 	Sym_Fcntl                         MrbSym = C.MRB_SYM__Fcntl                         // "Fcntl"
+	Sym_Fiber                         MrbSym = C.MRB_SYM__Fiber                         // "Fiber"
 	Sym_File                          MrbSym = C.MRB_SYM__File                          // "File"
 	Sym_FileTest                      MrbSym = C.MRB_SYM__FileTest                      // "FileTest"
 	Sym_FileUtils                     MrbSym = C.MRB_SYM__FileUtils                     // "FileUtils"
@@ -435,9 +436,11 @@ const (
 	Sym___open                        MrbSym = C.MRB_SYM____open                        // "__open"
 	Sym___oruby_bt__                  MrbSym = C.MRB_SYM____oruby_bt__                  // "__oruby_bt__"
 	Sym___oruby_crypt                 MrbSym = C.MRB_SYM____oruby_crypt                 // "__oruby_crypt"
+	Sym___oruby_deadlock              MrbSym = C.MRB_SYM____oruby_deadlock              // "__oruby_deadlock"
 	Sym___oruby_deliver__             MrbSym = C.MRB_SYM____oruby_deliver__             // "__oruby_deliver__"
 	Sym___oruby_enc_concat            MrbSym = C.MRB_SYM____oruby_enc_concat            // "__oruby_enc_concat"
 	Sym___oruby_errinfo__             MrbSym = C.MRB_SYM____oruby_errinfo__             // "__oruby_errinfo__"
+	Sym___oruby_fatal__               MrbSym = C.MRB_SYM____oruby_fatal__               // "__oruby_fatal__"
 	Sym___oruby_gv                    MrbSym = C.MRB_SYM____oruby_gv                    // "__oruby_gv"
 	Sym___oruby_gv_hook               MrbSym = C.MRB_SYM____oruby_gv_hook               // "__oruby_gv_hook"
 	Sym___oruby_gv_raw_set            MrbSym = C.MRB_SYM____oruby_gv_raw_set            // "__oruby_gv_raw_set"
@@ -727,7 +730,7 @@ const (
 	Sym_load_file                     MrbSym = C.MRB_SYM__load_file                     // "load_file"
 	Sym_local                         MrbSym = C.MRB_SYM__local                         // "local"
 	Sym_localtime                     MrbSym = C.MRB_SYM__localtime                     // "localtime"
-	Sym_locked                        MrbSym = C.MRB_SYM__locked                        // "locked"
+	Sym_lock                          MrbSym = C.MRB_SYM__lock                          // "lock"
 	Sym_lstat                         MrbSym = C.MRB_SYM__lstat                         // "lstat"
 	Sym_lstrip                        MrbSym = C.MRB_SYM__lstrip                        // "lstrip"
 	Sym_lutime                        MrbSym = C.MRB_SYM__lutime                        // "lutime"
@@ -933,6 +936,7 @@ const (
 	Sym_trim_mode                     MrbSym = C.MRB_SYM__trim_mode                     // "trim_mode"
 	Sym_truncate                      MrbSym = C.MRB_SYM__truncate                      // "truncate"
 	Sym_try_convert                   MrbSym = C.MRB_SYM__try_convert                   // "try_convert"
+	Sym_try_lock                      MrbSym = C.MRB_SYM__try_lock                      // "try_lock"
 	Sym_uid                           MrbSym = C.MRB_SYM__uid                           // "uid"
 	Sym_umask                         MrbSym = C.MRB_SYM__umask                         // "umask"
 	Sym_unary_minus_operator          MrbSym = C.MRB_SYM__unary_minus_operator          // "unary_minus_operator"
@@ -941,6 +945,7 @@ const (
 	Sym_ungetc                        MrbSym = C.MRB_SYM__ungetc                        // "ungetc"
 	Sym_union                         MrbSym = C.MRB_SYM__union                         // "union"
 	Sym_unlink                        MrbSym = C.MRB_SYM__unlink                        // "unlink"
+	Sym_unlock                        MrbSym = C.MRB_SYM__unlock                        // "unlock"
 	Sym_unmarshal                     MrbSym = C.MRB_SYM__unmarshal                     // "unmarshal"
 	Sym_unshift                       MrbSym = C.MRB_SYM__unshift                       // "unshift"
 	Sym_upcase                        MrbSym = C.MRB_SYM__upcase                        // "upcase"

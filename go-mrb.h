@@ -1008,3 +1008,5 @@ enum {
 void _mrb_wrap_string_encoding(mrb_state *mrb);
 void _mrb_wrap_string_concat(mrb_state *mrb);
 mrb_bool _mrb_gv_hook(mrb_state *mrb, const char *name, const char *canon, int kind);
+int _mrb_gv_slot(const char *name, const char *canon, int kind);
+void _mrb_gv_hook_slot(mrb_state *mrb, int i);

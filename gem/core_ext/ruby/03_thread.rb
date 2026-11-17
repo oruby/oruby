@@ -42,13 +42,6 @@ class Thread
   SizedQueue = ::SizedQueue
 end
 
-# oruby runs one Ruby thread, so a locked mutex is owned by the current thread
-class Mutex
-  def owned?
-    locked?
-  end
-end
-
 class Thread
   # only the current thread exists: raising in it raises here
   def raise(*args, **kw)

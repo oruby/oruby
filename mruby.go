@@ -83,6 +83,11 @@ type MrbState struct {
 	rubyErrors     map[*RubyError]struct{}
 }
 
+// coreMu serializes writes to go-mrb.c's process-wide tables (virtual
+// global slots, the mruby functions oruby wraps), which states opened from
+// different goroutines would otherwise fill at the same time.
+var coreMu sync.Mutex
+
 // NewCore create state is MrbState without gems,
 // leaving user to init subset of available gems
 func NewCore() (*MrbState, error) {
@@ -127,7 +132,9 @@ func NewCore() (*MrbState, error) {
 
 	// Store *MrbState pointer, so it can be retrieved from C callbacks
 	registerState(mrb)
+	coreMu.Lock()
 	C._mrb_init_oruby_core(mrb.p)
+	coreMu.Unlock()
 
 	// SystemCallError exception
 	// mruby code have SystemCallError::_sys_fail method, but it is not used
@@ -350,9 +357,13 @@ end
 	mrb.DefineClassMethod(mrb.KernelModule(), "__oruby_gv_hook", func(mrb *MrbState, self Value) MrbValue {
 		name := C.CString(mrb.GetArgsFirst().String())
 		defer C.free(unsafe.Pointer(name))
-		if !bool(C._mrb_gv_hook(mrb.p, name, name, 2)) {
+		coreMu.Lock()
+		slot := C._mrb_gv_slot(name, name, 2)
+		coreMu.Unlock()
+		if slot < 0 {
 			return mrb.Raise(mrb.ERuntimeError(), "too many traced global variables")
 		}
+		C._mrb_gv_hook_slot(mrb.p, slot)
 		return mrb.NilValue()
 	}, mrb.ArgsReq(1))
 

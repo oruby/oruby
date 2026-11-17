@@ -170,6 +170,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "FNM_SHORTNAME");
   (void)mrb_intern_lit(mrb, "FNM_SYSCASE");
   (void)mrb_intern_lit(mrb, "Fcntl");
+  (void)mrb_intern_lit(mrb, "Fiber");
   (void)mrb_intern_lit(mrb, "File");
   (void)mrb_intern_lit(mrb, "FileTest");
   (void)mrb_intern_lit(mrb, "FileUtils");
@@ -358,9 +359,11 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__open");
   (void)mrb_intern_lit(mrb, "__oruby_bt__");
   (void)mrb_intern_lit(mrb, "__oruby_crypt");
+  (void)mrb_intern_lit(mrb, "__oruby_deadlock");
   (void)mrb_intern_lit(mrb, "__oruby_deliver__");
   (void)mrb_intern_lit(mrb, "__oruby_enc_concat");
   (void)mrb_intern_lit(mrb, "__oruby_errinfo__");
+  (void)mrb_intern_lit(mrb, "__oruby_fatal__");
   (void)mrb_intern_lit(mrb, "__oruby_gv");
   (void)mrb_intern_lit(mrb, "__oruby_gv_hook");
   (void)mrb_intern_lit(mrb, "__oruby_gv_raw_set");
@@ -696,7 +699,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "load_file");
   (void)mrb_intern_lit(mrb, "local");
   (void)mrb_intern_lit(mrb, "localtime");
-  (void)mrb_intern_lit(mrb, "locked");
+  (void)mrb_intern_lit(mrb, "lock");
   (void)mrb_intern_lit(mrb, "locked?");
   (void)mrb_intern_lit(mrb, "lstat");
   (void)mrb_intern_lit(mrb, "lstrip");
@@ -933,6 +936,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "trim_mode");
   (void)mrb_intern_lit(mrb, "truncate");
   (void)mrb_intern_lit(mrb, "try_convert");
+  (void)mrb_intern_lit(mrb, "try_lock");
   (void)mrb_intern_lit(mrb, "tty?");
   (void)mrb_intern_lit(mrb, "tuesday?");
   (void)mrb_intern_lit(mrb, "uid");
@@ -944,6 +948,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "ungetc");
   (void)mrb_intern_lit(mrb, "union");
   (void)mrb_intern_lit(mrb, "unlink");
+  (void)mrb_intern_lit(mrb, "unlock");
   (void)mrb_intern_lit(mrb, "unmarshal");
   (void)mrb_intern_lit(mrb, "unshift");
   (void)mrb_intern_lit(mrb, "upcase");

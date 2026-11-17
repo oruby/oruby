@@ -338,7 +338,11 @@ end
 class Thread
   class ConditionVariable
     def wait(mutex, timeout = nil)
-      raise ThreadError, "No live threads left. Deadlock?" if timeout.nil?
+      if timeout.nil?
+        # MRI's fatal, as Mutex#sleep raises it
+        Thread.__oruby_deadlock if Thread.respond_to?(:__oruby_deadlock)
+        raise ThreadError, "No live threads left. Deadlock?"
+      end
       mutex.unlock
       begin
         sleep(timeout)

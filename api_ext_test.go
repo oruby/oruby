@@ -278,3 +278,32 @@ func TestGCSchedulerDriven(t *testing.T) {
 	}
 	mrb.GCEnable()
 }
+
+// trace_var (Kernel.__oruby_gv_hook) claims process-wide global slots (go-mrb.c) under coreMu while
+// other states do the same
+func TestConcurrentTraceVar(t *testing.T) {
+	done := make(chan error, 8)
+	for g := 0; g < 8; g++ {
+		go func(g int) {
+			mrb := MrbOpen()
+			defer mrb.Close()
+			// what trace_var does (core_ext): make the globals virtual
+			v, err := mrb.Eval(`
+				$oruby_traced_a = :before
+				Kernel.__oruby_gv_hook("$oruby_traced_a")
+				Kernel.__oruby_gv_hook("$oruby_traced_b")
+				kept = $oruby_traced_a == :before
+				$oruby_traced_a = 1; $oruby_traced_b = 2
+				kept && [$oruby_traced_a, $oruby_traced_b] == [1, 2]`)
+			if err == nil && !v.Bool() {
+				err = errors.New("hooked globals lost their values")
+			}
+			done <- err
+		}(g)
+	}
+	for g := 0; g < 8; g++ {
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}
+}
