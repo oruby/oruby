@@ -3,6 +3,7 @@ package file
 import (
 	"io/ioutil"
 	"os"
+	"strings"
 
 	"github.com/oruby/oruby"
 )
@@ -44,15 +45,28 @@ func openTmpFile(mrb *oruby.MrbState, args oruby.RArgs) (string, string, int, in
 	perm := 0600
 	opt := mrb.KeywordArgs()
 
+	var prefix, suffix string
 	if nameV.IsArray() {
-		name = mrb.String(mrb.AryEntry(nameV, 0)) + "*" +
-			mrb.String(mrb.AryEntry(nameV, 1))
+		prefix = mrb.String(mrb.AryEntry(nameV, 0))
+		if nameV.Len() > 1 {
+			suffix = mrb.String(mrb.AryEntry(nameV, 1))
+		}
+	} else if nameV.IsNil() {
+		prefix = "t"
 	} else {
-		name = nameV.String()
+		prefix = nameV.String()
 	}
+	prefix = strings.ReplaceAll(prefix, "/", "")
+	prefix = strings.ReplaceAll(prefix, "\\", "")
+	suffix = strings.ReplaceAll(suffix, "/", "")
+	suffix = strings.ReplaceAll(suffix, "\\", "")
+	name = prefix + "*" + suffix
 
 	if !opt.IsNil() {
 		flags = mrb.HashFetch(opt, mrb.Intern("mode"), oruby.Int(flags)).Int()
+		if dirV := mrb.HashFetch(opt, mrb.Intern("tmpdir"), oruby.Nil); dirV.IsString() {
+			dir = dirV.String()
+		}
 	}
 
 	return name, dir, flags, perm, err

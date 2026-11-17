@@ -15,6 +15,8 @@ class Dir
                      when Array then [prefix_suffix[0].to_s, prefix_suffix[1].to_s]
                      else raise ArgumentError, "unexpected prefix_suffix: #{prefix_suffix.inspect}"
                      end
+    prefix = prefix.delete("/\\")
+    suffix = suffix.delete("/\\")
     t = Time.now.strftime("%Y%m%d") rescue Time.now.to_i.to_s
     path = __mkdtemp(tmpdir || self.tmpdir, "#{prefix}#{t}-#{$$}-*#{suffix}")
     if block_given?
