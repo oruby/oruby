@@ -19,9 +19,22 @@ else
 	RM=rm
 endif
 
-all : libmruby.a $(DYN_LIB)
+all : libmruby.a $(DYN_LIB) bin
 	ruby scripts/check_api.rb
 	go build .
+
+# bin/ next to lib/oruby is the install layout, so bin/oruby runs in-tree
+bin : libmruby.a
+	go build -o bin/oruby ./cmd/oruby
+	go build -o bin/orbi ./cmd/orbi
+	go build -o bin/orubyc ./cmd/orubyc
+
+PREFIX ?= /usr/local
+
+install : bin
+	install -d $(PREFIX)/bin $(PREFIX)/lib
+	install bin/oruby bin/orbi bin/orubyc $(PREFIX)/bin
+	cp -R lib/oruby $(PREFIX)/lib/
 
 test:
 	go test
@@ -71,7 +84,7 @@ mruby.dll : libmruby.a # mruby.def
 	gcc -shared -static -dll -Wl,--export-all-symbols -o mruby.dll build\mruby.def libmruby.a build/mrubyver.o
 	dlltool -D mruby.dll -d build\mruby.def -l libmruby.dll.a
 
-install: mruby.dll
+install-dll: mruby.dll
 	$(COPY) $(DYN_LIB) $(GOBIN)
 
 clean :

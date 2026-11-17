@@ -17,6 +17,7 @@ make                                          # builds mruby/build/host/lib/libm
 
 - Requires: Go (see `go.mod`), a C toolchain (clang on macOS), Ruby + rake (mruby build), readline/ncurses.
 - `MRUBY_CONFIG` is selected by the Makefile: `scripts/build_config_{darwin,unix,win}.rb`. Gems compiled into libmruby are listed in `scripts/oruby.gembox`.
+- `make bin` — builds `bin/oruby`, `bin/orbi`, `bin/orubyc`; next to `lib/oruby` they run in-tree. `make install PREFIX=…` installs tools + `lib/oruby`. `oruby`/`orbi` load RubyGems at startup (`--disable-gems` skips it).
 - `make check` — `scripts/check_api.rb` lists `MRB_API` functions from mruby headers not yet wrapped in the matching `<header>.go` file.
 - `make update` — clean, pull latest submodule, rebuild libmruby.
 - Go's build cache does not track mruby's headers or `libmruby.a`: after rebuilding libmruby against a different mruby revision, run `go clean -cache` (or build/test with `-a`), otherwise cached cgo objects with the old struct layout crash at `mrb_open` ("allocation failure").
@@ -55,6 +56,7 @@ v, err := mrb.Eval(`ruby code`)
 | `cmd/oruby` | Script runner (mruby equivalent). |
 | `cmd/orubyc` | Compiler (mrbc equivalent). |
 | `scripts/` | mruby build configs, gembox, API-coverage and `.def` scripts. |
+| `lib/oruby/` | Install layout of the Ruby libraries ORuby ships as files: vendored RubyGems/Bundler 4.1.0.beta2 (`4.1.0/`) and MRI default gem specs (`gems/4.1.0/specifications/default`). Unmodified upstream copies — do not edit. `golayout.go` finds it from the executable (`<prefix>/bin/oruby`). |
 | `mruby/` | Submodule — **do not edit**. |
 
 ## Conventions

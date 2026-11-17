@@ -844,13 +844,7 @@ func getStat(mrb *oruby.MrbState, f oruby.Value) (os.FileInfo, error) {
 			return file.Stat()
 		}
 	}
-	if mrb.RespondTo(f, mrb.Intern("stat")) {
-		if st, err := mrb.Funcall(f, mrb.Intern("stat")); err == nil && st.IsData() {
-			if s, ok := mrb.Data(st).(os.FileInfo); ok {
-				return s, nil
-			}
-		}
-	}
+	// as in MRI: an IO (to_io) or a path (to_path / String), never obj.stat
 	s, err := pathString(mrb, f)
 	if err != nil {
 		return nil, err

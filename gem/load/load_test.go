@@ -157,3 +157,27 @@ func TestAutoloadRecursiveLookupFailsAndCanBeRetried(t *testing.T) {
 		t.Fatalf("lookup after recursive failure = %v, %v; want 17", got, err)
 	}
 }
+
+// A file required through a symlinked directory and through its real path is
+// one feature, as in MRI.
+func TestRequireDedupesSymlinkedPaths(t *testing.T) {
+	mrb := openLoadTestState(t)
+	realDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realDir, "once.rb"), []byte(`$once_count = ($once_count || 0) + 1`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	code := "require " + strconv.Quote(filepath.Join(link, "once")) + "\n" +
+		"r = require " + strconv.Quote(filepath.Join(realDir, "once")) + "\n" +
+		"[$once_count, r]"
+	got, err := mrb.Eval(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := mrb.String(mrb.Call(got, "inspect")); s != "[1, false]" {
+		t.Fatalf("symlinked require = %s, want [1, false]", s)
+	}
+}

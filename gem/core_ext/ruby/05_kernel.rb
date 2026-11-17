@@ -147,7 +147,7 @@ class BasicObject
   def instance_eval(*args, &block)
     if block
       __orig_instance_eval__(*args, &block)
-    elsif args[0].is_a?(String) && (args[0].include?("alias") || args[0].include?("undef") || args[0].include?("**nil"))
+    elsif args[0].is_a?(::String) && (args[0].include?("alias") || args[0].include?("undef") || args[0].include?("**nil"))
       args[0] = ::Kernel.__preprocess_ruby(args[0])
       __orig_instance_eval__(*args)
     else
@@ -161,7 +161,7 @@ class Module
   def class_eval(*args, &block)
     if block
       __orig_class_eval__(*args, &block)
-    elsif args[0].is_a?(String) && (args[0].include?("alias") || args[0].include?("undef") || args[0].include?("**nil"))
+    elsif args[0].is_a?(::String) && (args[0].include?("alias") || args[0].include?("undef") || args[0].include?("**nil"))
       args[0] = ::Kernel.__preprocess_ruby(args[0])
       __orig_class_eval__(*args)
     else

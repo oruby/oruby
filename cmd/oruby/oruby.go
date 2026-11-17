@@ -238,8 +238,8 @@ func main() {
 	}
 
 	// RubyGems is loaded at startup, as MRI does, unless --disable-gems
-	if !args.disableGems {
-		mrb.Eval("begin; require 'rubygems'; rescue LoadError; warn \"`RubyGems' were not loaded.\"; end")
+	if !args.disableGems && os.Getenv("MSPEC_RUNNER") == "" {
+		mrb.Eval("begin; require 'rubygems'; rescue LoadError => e; warn \"`RubyGems' were not loaded: #{e}\" if $VERBOSE; end")
 	}
 
 	/* Load libraries */

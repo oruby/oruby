@@ -244,21 +244,33 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 		return raiseCannotLoad(mrb, feature)
 	}
 
+	// A file reached through a symlink is the same feature as its real path,
+	// as in MRI: $LOADED_FEATURES keeps the expanded path, but the checks
+	// below also go by the realpath
+	real := name
+	if r, err := filepath.EvalSymlinks(name); err == nil {
+		real = r
+	}
+
 	// Check if fullpath name is already loaded
 	if _, err := mrb.Resolve(name); err == nil {
 		return mrb.FalseValue()
 	}
+	if _, err := mrb.Resolve(real); err == nil {
+		return mrb.FalseValue()
+	}
 
 	nameValue := mrb.StrNew(name)
+	realValue := mrb.StrNew(real)
 
 	// Check if file is set to be loaded
-	if loadingFilesFind(mrb, nameValue) {
+	if loadingFilesFind(mrb, realValue) {
 		return mrb.FalseValue()
 	}
 
 	// Load feature
-	loadingFilesAdd(mrb, nameValue)
-	defer loadingFilesDelete(mrb, nameValue)
+	loadingFilesAdd(mrb, realValue)
+	defer loadingFilesDelete(mrb, realValue)
 	if err := doLoad(mrb, name, false); err != nil {
 		return loadFailure(mrb, err)
 	}
@@ -267,6 +279,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	loadedFeatures := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
 	mrb.AryPush(loadedFeatures, nameValue)
 	mrb.FeatureAdd(name)
+	mrb.FeatureAdd(real)
 
 	return mrb.TrueValue()
 }

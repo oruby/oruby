@@ -147,6 +147,7 @@ type Args struct {
 	verbose bool
 	debug   bool
 	libs    []string
+	noGems  bool
 }
 
 func usage(name string) {
@@ -156,6 +157,7 @@ func usage(name string) {
 		"-r library   same as `oruby -r`",
 		"-v           print version number, then run in verbose mode",
 		"--verbose    run in verbose mode",
+		"--disable-gems  do not load RubyGems at startup",
 		"--version    print the version",
 		"--copyright  print the copyright",
 	}
@@ -170,6 +172,7 @@ func parseArgs(mrb *oruby.MrbState, args *Args) (bool, error) {
 	flag.BoolVar(&args.debug, "d", false, "set $DEBUG to true (same as `oruby -d`)")
 	flag.StringVar(&args.alib, "r", "", "same as `oruby -r`")
 	flag.BoolVar(&args.verbose, "verbose", false, "run in verbose mode")
+	flag.BoolVar(&args.noGems, "disable-gems", false, "do not load RubyGems at startup")
 	v := flag.Bool("v", false, "print version number, then run in verbose mode")
 	version := flag.Bool("version", false, "print the version")
 	copyright := flag.Bool("copyright", false, "print the copyright")
@@ -278,6 +281,11 @@ func main() {
 	ARGV := mrb.Value(os.Args)
 	mrb.DefineGlobalConst("ARGV", ARGV)
 	mrb.SetGV("$DEBUG", args.debug)
+
+	// RubyGems is loaded at startup, as irb does, unless --disable-gems
+	if !args.noGems && os.Getenv("MSPEC_RUNNER") == "" {
+		mrb.Eval("begin; require 'rubygems'; rescue LoadError => e; warn \"`RubyGems' were not loaded: #{e}\" if $VERBOSE; end")
+	}
 
 	historyPath, err := getHistoryPath()
 	if err != nil {
