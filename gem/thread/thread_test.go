@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,5 +102,87 @@ func TestThreadCreationUnsupported(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestMutexUnlockUnlockedRaisesThreadError(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`Mutex.new.unlock`)
+	if err == nil {
+		t.Fatal("expected unlock on unlocked mutex to raise ThreadError")
+	}
+	if !strings.Contains(err.Error(), "ThreadError") {
+		t.Fatalf("expected ThreadError, got: %v", err)
+	}
+}
+
+func TestMutexSleepUnlockedRaisesThreadError(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`Mutex.new.sleep`)
+	if err == nil {
+		t.Fatal("expected sleep on unlocked mutex to raise ThreadError")
+	}
+	if !strings.Contains(err.Error(), "ThreadError") {
+		t.Fatalf("expected ThreadError, got: %v", err)
+	}
+}
+
+func TestMutexRecursiveLockRaisesThreadError(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`m = Mutex.new; m.lock; m.lock`)
+	if err == nil {
+		t.Fatal("expected recursive lock to raise ThreadError")
+	}
+	if !strings.Contains(err.Error(), "ThreadError") {
+		t.Fatalf("expected ThreadError, got: %v", err)
+	}
+}
+
+func TestMutexSleepNegativeDurationRaisesArgumentError(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`Mutex.new.sleep(-1)`)
+	if err == nil {
+		t.Fatal("expected negative sleep to raise ArgumentError")
+	}
+	if !strings.Contains(err.Error(), "ArgumentError") {
+		t.Fatalf("expected ArgumentError, got: %v", err)
+	}
+}
+
+func TestMutexSleepLockedAndWoken(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`
+		m = Mutex.new
+		m.lock
+		slept = m.sleep(0.01)
+		slept.is_a?(Integer) && m.locked?
+	`)
+	if err != nil || !v.Bool() {
+		t.Fatalf("expected sleep to return Integer and relock mutex, got %v, err: %v", v, err)
+	}
+}
+
+func TestMutexSynchronizeNonRecursive(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`
+		m = Mutex.new
+		raised = false
+		m.synchronize do
+			begin
+				m.synchronize { }
+			rescue ThreadError
+				raised = true
+			end
+		end
+		raised && !m.locked?
+	`)
+	if err != nil || !v.Bool() {
+		t.Fatalf("expected nested synchronize to raise ThreadError and unlock cleanly, got %v, err: %v", v, err)
 	}
 }

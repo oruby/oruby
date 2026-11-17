@@ -476,6 +476,110 @@ _mrb_obj_new(mrb_state *mrb, struct RClass *c, mrb_int argc, const mrb_value *ar
   return _go_mrb_protect(mrb, _go_mrb_obj_new_body, &d, result);
 }
 
+/* Raising mruby API calls, run under mrb_protect_error so a raise comes back
+   to Go as an outcome instead of a longjmp across Go frames. */
+enum {
+  GO_MRB_OP_CHECK_FROZEN = 1,
+  GO_MRB_OP_ENSURE_STRING,
+  GO_MRB_OP_ENSURE_ARRAY,
+  GO_MRB_OP_ENSURE_HASH,
+  GO_MRB_OP_ENSURE_INTEGER,
+  GO_MRB_OP_ENSURE_INT,
+  GO_MRB_OP_ENSURE_FLOAT,
+  GO_MRB_OP_AS_INT64,
+  GO_MRB_OP_AS_UINT64,
+  GO_MRB_OP_ARY_DUP,
+  GO_MRB_OP_STR_DUP_FROZEN,
+};
+
+typedef struct { int op; mrb_value v; int64_t i64; uint64_t u64; } _go_mrb_op_data;
+
+static mrb_value
+_go_mrb_op_body(mrb_state *mrb, void *data) {
+  _go_mrb_op_data *d = (_go_mrb_op_data *)data;
+  switch (d->op) {
+  case GO_MRB_OP_CHECK_FROZEN: mrb_check_frozen_value(mrb, d->v); return d->v;
+  case GO_MRB_OP_ENSURE_STRING: return mrb_ensure_string_type(mrb, d->v);
+  case GO_MRB_OP_ENSURE_ARRAY: return mrb_ensure_array_type(mrb, d->v);
+  case GO_MRB_OP_ENSURE_HASH: return mrb_ensure_hash_type(mrb, d->v);
+  case GO_MRB_OP_ENSURE_INTEGER: return mrb_ensure_integer_type(mrb, d->v);
+  case GO_MRB_OP_ENSURE_INT: return mrb_ensure_int_type(mrb, d->v);
+  case GO_MRB_OP_ENSURE_FLOAT: return mrb_ensure_float_type(mrb, d->v);
+  case GO_MRB_OP_AS_INT64: d->i64 = mrb_as_int64(mrb, d->v); return d->v;
+  case GO_MRB_OP_AS_UINT64: d->u64 = mrb_as_uint64(mrb, d->v); return d->v;
+  case GO_MRB_OP_ARY_DUP: return mrb_ary_dup(mrb, d->v);
+  case GO_MRB_OP_STR_DUP_FROZEN: return mrb_str_dup_frozen(mrb, d->v);
+  }
+  return mrb_nil_value();
+}
+
+static int
+_mrb_protected_op(mrb_state *mrb, int op, mrb_value v, mrb_value *result, int64_t *i64, uint64_t *u64) {
+  _go_mrb_op_data d = { op, v, 0, 0 };
+  int status = _go_mrb_protect(mrb, _go_mrb_op_body, &d, result);
+  if (i64) *i64 = d.i64;
+  if (u64) *u64 = d.u64;
+  return status;
+}
+
+typedef struct { mrb_value ary; mrb_int len; const mrb_value *vals; } _go_mrb_unshift_data;
+
+static mrb_value
+_go_mrb_ary_unshift_values_body(mrb_state *mrb, void *data) {
+  _go_mrb_unshift_data *d = (_go_mrb_unshift_data *)data;
+  return mrb_ary_unshift_values(mrb, d->ary, d->len, d->vals);
+}
+
+static int
+_mrb_ary_unshift_values(mrb_state *mrb, mrb_value ary, mrb_int len, const mrb_value *vals, mrb_value *result) {
+  _go_mrb_unshift_data d = { ary, len, vals };
+  return _go_mrb_protect(mrb, _go_mrb_ary_unshift_values_body, &d, result);
+}
+
+typedef struct { mrb_value str; mrb_int beg; mrb_int len; } _go_mrb_subseq_data;
+
+static mrb_value
+_go_mrb_str_byte_subseq_body(mrb_state *mrb, void *data) {
+  _go_mrb_subseq_data *d = (_go_mrb_subseq_data *)data;
+  return mrb_str_byte_subseq(mrb, d->str, d->beg, d->len);
+}
+
+static int
+_mrb_str_byte_subseq(mrb_state *mrb, mrb_value str, mrb_int beg, mrb_int len, mrb_value *result) {
+  _go_mrb_subseq_data d = { str, beg, len };
+  return _go_mrb_protect(mrb, _go_mrb_str_byte_subseq_body, &d, result);
+}
+
+static mrb_value
+_go_mrb_gc_driven_body(mrb_state *mrb, void *data) {
+  mrb_gc_scheduler_driven(mrb, *(mrb_bool *)data);
+  return mrb_nil_value();
+}
+
+static int
+_mrb_gc_scheduler_driven(mrb_state *mrb, mrb_bool enable, mrb_value *result) {
+  return _go_mrb_protect(mrb, _go_mrb_gc_driven_body, &enable, result);
+}
+
+/* mrb_iv_foreach through Go: the callback gets the Go hook key */
+extern int go_iv_foreach_callback(mrb_state *mrb, mrb_sym sym, mrb_value val, void *data);
+
+static int
+_go_iv_foreach_trampoline(mrb_state *mrb, mrb_sym sym, mrb_value val, void *data) {
+  return go_iv_foreach_callback(mrb, sym, val, data);
+}
+
+static void
+_mrb_iv_foreach(mrb_state *mrb, mrb_value obj, void *data) {
+  mrb_iv_foreach(mrb, obj, _go_iv_foreach_trampoline, data);
+}
+
+/* clear a pending mrb_vm_interrupt that no VM consumed */
+static void
+_mrb_vm_interrupt_clear(mrb_state *mrb) {
+  mrb->vm_interrupt = FALSE;
+}
+
 static mrb_value
 _mrb_caller_receiver(mrb_state *mrb) {
   if (mrb->c->ci > mrb->c->cibase + 1) {

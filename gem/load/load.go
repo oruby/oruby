@@ -386,7 +386,7 @@ func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	var file string
 	res, err := mrb.Funcall(mrb.TopSelf(), oruby.Sym_caller, 0)
 	if err == nil && res.Type() == oruby.MrbTTArray {
-		ary := mrb.EnsureArrayType(res)
+		ary, _ := mrb.EnsureArrayType(res) // res is an Array: checked above
 		if ary.Len() > 0 {
 			loc := ary.Item(0).String()
 			if idx := strings.Index(loc, ":"); idx != -1 {

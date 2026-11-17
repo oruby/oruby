@@ -4,6 +4,7 @@ package oruby
 import "C"
 import (
 	"reflect"
+	"strings"
 	"unsafe"
 )
 
@@ -179,4 +180,25 @@ func (mrb *MrbState) VmDefineClass(outer, super Value, id MrbSym) RClass {
 // VmDefineModule defines or reopens a module
 func (mrb *MrbState) VmDefineModule(outer Value, id MrbSym) RClass {
 	return RClass{C.mrb_vm_define_module(mrb.p, outer.v, C.mrb_sym(id)), mrb}
+}
+
+// ClassOuter returns the class or module c is defined in: Outer for
+// Outer::Inner; ok is false at the top level and for anonymous classes.
+// mruby's mrb_class_outer only knows the outer of a class nested in a class
+// that has no name yet (a named class keeps its full path instead), so a
+// named class's outer is found from that path.
+func (mrb *MrbState) ClassOuter(c RClass) (RClass, bool) {
+	if o := C.mrb_class_outer(mrb.p, c.p); o != nil {
+		return RClass{o, mrb}, true
+	}
+	name := mrb.ClassName(c)
+	i := strings.LastIndex(name, "::")
+	if i <= 0 || strings.HasPrefix(name, "#") {
+		return RClass{}, false
+	}
+	v, err := mrb.Funcall(mrb.ObjectClass(), Sym_const_get, mrb.StrNew(name[:i]))
+	if err != nil || (v.Type() != MrbTTClass && v.Type() != MrbTTModule) {
+		return RClass{}, false
+	}
+	return RClass{(*C.struct_RClass)(C._mrb_ptr(v.v)), mrb}, true
 }

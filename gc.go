@@ -93,3 +93,28 @@ func (mrb *MrbState) GCDisable() { C._gc_set_disabled(mrb.p, iifmb(true)) }
 func (mrb *MrbState) GCArenaPeek(index int) RBasic {
 	return RBasic{C._gc_arena_peek(mrb.p, C.mrb_int(index))}
 }
+
+// GCStep advances the incremental collector by one unit of work and returns
+// how much it did, 0 while GC is disabled (mrb_gc_step). With generational
+// mode on, one step is a whole minor cycle; GCSchedulerDriven makes steps
+// small.
+func (mrb *MrbState) GCStep() int {
+	return int(C.mrb_gc_step(mrb.p))
+}
+
+// GCSchedulerDriven hands GC scheduling to the host: allocation stops
+// driving collection and generational mode is turned off, so the host calls
+// GCStep when it has time, e.g. while Go waits on IO. false gives allocation
+// back the driving (generational mode stays off). Fails while GC is disabled
+// or an ObjectSpace walk runs (mrb_gc_scheduler_driven).
+func (mrb *MrbState) GCSchedulerDriven(enable bool) error {
+	var result C.mrb_value
+	status := C._mrb_gc_scheduler_driven(mrb.p, iifmb(enable), &result)
+	return mrb.protectedOutcomeError(Value{result}, status)
+}
+
+// GCSchedulerPending tells whether, host-driven, GC has work worth a GCStep
+// now; always false when not host-driven (mrb_gc_scheduler_pending)
+func (mrb *MrbState) GCSchedulerPending() bool {
+	return C.mrb_gc_scheduler_pending(mrb.p) != false
+}

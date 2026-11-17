@@ -2,6 +2,7 @@ package oruby
 
 // #include "go-mrb.h"
 import "C"
+import "unsafe"
 
 //variable
 
@@ -202,6 +203,32 @@ func (mrb *MrbState) CVDefined(mod MrbValue, sym MrbSym) bool {
 	return C.mrb_cv_defined(mrb.p, mod.Value().v, C.mrb_sym(sym)) != false
 }
 
-/* return non-zero to break the loop */
-//typedef int (mrb_iv_foreach_func)(mrb_state*,mrb_sym,mrb_value,void*);
-//MRB_API void mrb_iv_foreach(mrb_state *mrb, mrb_value obj, mrb_iv_foreach_func *func, void *p);
+// IVForEachFunc gets each instance variable; returning false stops the walk
+type IVForEachFunc = func(name MrbSym, val Value) bool
+
+// IVForEach calls f for each instance variable of obj, without building the
+// instance_variables Array (mrb_iv_foreach). f must not add or remove
+// instance variables of obj.
+func (mrb *MrbState) IVForEach(obj MrbValue, f IVForEachFunc) {
+	v := obj.Value()
+	if !v.HasBasic() {
+		return
+	}
+	// a C byte as the key: no Go pointer goes to C, and no other hook
+	// (Go modules key theirs by class pointer) shares it
+	key := C.malloc(1)
+	defer C.free(key)
+	mrb.setHook(key, f)
+	defer mrb.setHook(key, nil)
+	C._mrb_iv_foreach(mrb.p, v.v, key)
+}
+
+//export go_iv_foreach_callback
+func go_iv_foreach_callback(cmrb *C.mrb_state, sym C.mrb_sym, val C.mrb_value, data unsafe.Pointer) C.int {
+	mrb := getMrbState(cmrb)
+	f, ok := mrb.getHook(data).(IVForEachFunc)
+	if !ok || !f(MrbSym(sym), Value{val}) {
+		return 1
+	}
+	return 0
+}

@@ -1,36 +1,54 @@
 package thread
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/oruby/oruby"
+)
 
 type rmutex struct {
-	mutex    sync.Mutex
-	IsLocked bool
+	mu       sync.Mutex
+	isLocked bool
 }
 
 func newMutex() *rmutex {
 	return &rmutex{}
 }
 
-func (rm *rmutex) Lock() *rmutex {
-	rm.mutex.Lock()
-	rm.IsLocked = true
-	return rm
+func (rm *rmutex) Lock() (*rmutex, error) {
+	rm.mu.Lock()
+	if rm.isLocked {
+		rm.mu.Unlock()
+		return nil, oruby.EThreadError("deadlock; recursive locking")
+	}
+	rm.isLocked = true
+	rm.mu.Unlock()
+	return rm, nil
 }
 
-func (rm *rmutex) Unlock() *rmutex {
-	rm.mutex.Unlock()
-	rm.IsLocked = false
-	return rm
+func (rm *rmutex) Unlock() (*rmutex, error) {
+	rm.mu.Lock()
+	if !rm.isLocked {
+		rm.mu.Unlock()
+		return nil, oruby.EThreadError("Attempt to unlock a mutex which is not locked")
+	}
+	rm.isLocked = false
+	rm.mu.Unlock()
+	return rm, nil
 }
 
 func (rm *rmutex) TryLock() bool {
-	if rm.IsLocked {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if rm.isLocked {
 		return false
 	}
-	rm.Lock()
+	rm.isLocked = true
 	return true
 }
 
 func (rm *rmutex) Locked() bool {
-	return rm.IsLocked
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	return rm.isLocked
 }

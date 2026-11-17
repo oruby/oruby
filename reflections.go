@@ -24,7 +24,11 @@ func (c RClass) attrSetter(idx int) MrbFuncT {
 		strct := mrb.DataCheckGetInterface(self)
 		field := reflect.ValueOf(strct).Elem().Field(idx)
 		v := mrb.GetArgsFirst()
-		field.Set(reflect.ValueOf(mrb.Intf(v)).Convert(field.Type()))
+		fv, err := assignValue(mrb.Intf(v), field.Type())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		field.Set(fv)
 
 		return v
 	}
@@ -359,8 +363,14 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 			case reflect.Int, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int8,
 				reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint8:
 				f = func(v MrbValue) reflect.Value {
-					in, _ := mrb.Integer(v)
-					return reflect.ValueOf(MrbFixnum(in)).Convert(velType.Elem())
+					iv, ok, err := assignInteger(mrb.Intf(v), velType.Elem())
+					if err != nil {
+						panic(err) // errorHandler (Scan) returns it
+					}
+					if !ok {
+						return reflect.ValueOf(mrb.Intf(v)).Convert(velType.Elem())
+					}
+					return iv
 				}
 			default:
 				f = func(v MrbValue) reflect.Value {
@@ -465,6 +475,13 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 
 	default:
 		govalue := mrb.Intf(o)
+		if iv, ok, err := assignInteger(govalue, velType); ok {
+			if err != nil {
+				return err
+			}
+			vel.Set(iv)
+			return nil
+		}
 		vel.Set(reflect.ValueOf(govalue).Convert(velType))
 	}
 	return nil

@@ -196,7 +196,10 @@ func (mrb *MrbState) KeywordArgs() RHash {
 		return mrb.HashNew()
 	}
 	if !raw.IsHash() {
-		return mrb.EnsureHashType(raw)
+		if h, err := mrb.EnsureHashType(raw); err == nil {
+			return h
+		}
+		return mrb.HashNew()
 	}
 	return RHash{RValue{raw.v, mrb}}
 }

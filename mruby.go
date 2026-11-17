@@ -11,6 +11,7 @@ package oruby
 // #include "go-mrb.h"
 import "C"
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -762,12 +763,13 @@ func (mrb *MrbState) valueValue(v reflect.Value) Value {
 		return Value{C.mrb_nil_value()}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32:
 		return Value{C.mrb_fixnum_value(C.mrb_int(v.Int()))}
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32:
+	case reflect.Uint8, reflect.Uint16, reflect.Uint32:
 		return Value{C.mrb_fixnum_value(C.mrb_int(v.Uint()))}
 	case reflect.Int64:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v.Int()))}
-	case reflect.Uint64:
-		return Value{C.mrb_fixnum_value(C.mrb_int(v.Uint()))}
+		return mrb.Int64Value(v.Int())
+	case reflect.Uint, reflect.Uint64:
+		// above MaxInt64 it is a Bignum, not a negative Fixnum
+		return mrb.Uint64Value(v.Uint())
 	case reflect.Uintptr:
 		return Value{C._mrb_uintptr_value(mrb.p, (C.uintptr_t)(v.Interface().(uintptr)))}
 	case reflect.UnsafePointer:
@@ -1024,6 +1026,67 @@ func (mrb *MrbState) Eval(code string) (result RValue, err error) {
 	}
 	value, err := mrb.LoadStringCxt(code, cxt)
 	return RValue{value.v, mrb}, err
+}
+
+// Interrupt asks the VM running in this state to stop (mrb_vm_interrupt).
+// It is safe from any goroutine: it sets one flag. The VM notices at its
+// next method call or jump and raises RuntimeError "interrupted" in the
+// running code, which ends an Eval with that error unless the script rescues
+// it. A Go method that blocks (sleep, IO) is not interrupted; the raise comes
+// once it returns to the VM. With no Ruby running, the next run stops at its
+// start; ClearInterrupt drops such a request.
+func (mrb *MrbState) Interrupt() {
+	C.mrb_vm_interrupt(mrb.p)
+}
+
+// ClearInterrupt drops an Interrupt no VM has acted on yet
+func (mrb *MrbState) ClearInterrupt() {
+	C._mrb_vm_interrupt_clear(mrb.p)
+}
+
+// EvalContext is Eval that is interrupted when ctx is done: a timeout or a
+// cancel stops the script at its next method call or jump. The error then
+// wraps ctx.Err(), so errors.Is(err, context.DeadlineExceeded) holds.
+func (mrb *MrbState) EvalContext(ctx context.Context, code string) (RValue, error) {
+	if err := ctx.Err(); err != nil {
+		return RValue{nilValue.v, mrb}, err
+	}
+	if ctx.Done() == nil {
+		return mrb.Eval(code)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			mrb.Interrupt()
+		case <-stop:
+		}
+	}()
+	v, err := mrb.Eval(code)
+	close(stop)
+	<-done
+	// a cancel that came after the script ended must not stop the next one
+	mrb.ClearInterrupt()
+	if ctxErr := ctx.Err(); ctxErr != nil && err != nil {
+		return v, fmt.Errorf("%w: %v", ctxErr, err)
+	}
+	return v, err
+}
+
+// RecursiveMethodP tells whether method mid is already running with self
+// obj1 (and first argument obj2, unless nil) further up the call stack
+// (mrb_recursive_method_p). A Go method uses it to stop on recursive data,
+// as inspect and == do.
+func (mrb *MrbState) RecursiveMethodP(mid MrbSym, obj1, obj2 MrbValue) bool {
+	return C.mrb_recursive_method_p(mrb.p, C.mrb_sym(mid), obj1.Value().v, obj2.Value().v) != false
+}
+
+// RecursiveFuncP is RecursiveMethodP skipping the caller's frame, for a Go
+// method that a Ruby override calls with super (mrb_recursive_func_p)
+func (mrb *MrbState) RecursiveFuncP(mid MrbSym, obj1, obj2 MrbValue) bool {
+	return C.mrb_recursive_func_p(mrb.p, C.mrb_sym(mid), obj1.Value().v, obj2.Value().v) != false
 }
 
 // procedure mrb_float_to_str(buf PChar, i mrb_float);
@@ -2200,32 +2263,47 @@ func (mrb *MrbState) Equal(v1, v2 MrbValue) bool {
 	return C.mrb_equal(mrb.p, v1.Value().v, v2.Value().v) != false
 }
 
-// EnsureIntegerType ensures returned Value is integer type, or error is returned
+// EnsureIntegerType converts val to an Integer as mruby does
+// (mrb_ensure_integer_type): Integer as is, Float, Rational and Complex
+// truncated, anything else TypeError. A Go object converts with to_i.
 func (mrb *MrbState) EnsureIntegerType(val MrbValue) (Value, error) {
-	switch val.Type() {
-	case MrbTTInteger:
-		return val.Value(), nil
-	case MrbTTFloat:
-		return mrb.FloatToInteger(val), nil
-	case MrbTTCData:
+	if val.Type() == MrbTTCData {
 		return mrb.Funcall(val, Sym_to_i)
 	}
-	return nilValue, ETypeError("%v cannot be converted to Integer", mrb.TypeName(val))
-	// C.mrb_ensure_integer_type() not called
+	return mrb.protectedOp(C.GO_MRB_OP_ENSURE_INTEGER, val)
 }
 
-// EnsureFloatType ensures returned Value is float type, or error is returned
+// EnsureIntType is EnsureIntegerType for an Integer that fits mrb_int
+// (mrb_ensure_int_type)
+func (mrb *MrbState) EnsureIntType(val MrbValue) (Value, error) {
+	if val.Type() == MrbTTCData {
+		v, err := mrb.Funcall(val, Sym_to_i)
+		if err != nil {
+			return v, err
+		}
+		val = v
+	}
+	return mrb.protectedOp(C.GO_MRB_OP_ENSURE_INT, val)
+}
+
+// EnsureFloatType converts val to a Float as mruby does
+// (mrb_ensure_float_type); a Go object converts with to_f
 func (mrb *MrbState) EnsureFloatType(val MrbValue) (Value, error) {
-	switch val.Type() {
-	case MrbTTInteger:
-		return mrb.FloatValue(val.Value().Float64()), nil
-	case MrbTTFloat:
-		return val.Value(), nil
-	case MrbTTCData:
+	if val.Type() == MrbTTCData {
 		return mrb.Funcall(val, Sym_to_f)
 	}
-	return nilValue, ETypeError("%v cannot be converted to Float", mrb.TypeName(val))
-	// C.mrb_ensure_float_type() not called
+	return mrb.protectedOp(C.GO_MRB_OP_ENSURE_FLOAT, val)
+}
+
+// protectedOp runs one mruby call that may raise (go-mrb.h
+// _mrb_protected_op); a raise comes back as the error
+func (mrb *MrbState) protectedOp(op C.int, val MrbValue) (Value, error) {
+	var result C.mrb_value
+	status := C._mrb_protected_op(mrb.p, op, val.Value().v, &result, nil, nil)
+	if err := mrb.protectedOutcomeError(Value{result}, status); err != nil {
+		return nilValue, err
+	}
+	return Value{result}, nil
 }
 
 // CheckStringType checks string type
@@ -2658,6 +2736,9 @@ func (mrb *MrbState) EFloatDomainError() RClass { return mrb.ExcGet("FloatDomain
 // EKeyError oruby error
 func (mrb *MrbState) EKeyError() RClass { return mrb.ExcGet("KeyError") }
 
+// EThreadError oruby error
+func (mrb *MrbState) EThreadError() RClass { return mrb.ExcGet("ThreadError") }
+
 // ESystemCallError oruby error
 func (mrb *MrbState) ESystemCallError() RClass { return mrb.ExcGet("SystemCallError") }
 
@@ -2801,10 +2882,9 @@ func (mrb *MrbState) CheckType(x MrbValue, ttype Type) error {
 
 // CheckFrozen raise exception if object is frozen
 func (mrb *MrbState) CheckFrozen(o MrbValue) error {
-	v := o.Value()
-
-	if v.HasBasic() && v.RBasic().IsFrozen() {
-		return EFrozenError("can't modify frozen %v", mrb.TypeName(v))
+	if _, err := mrb.protectedOp(C.GO_MRB_OP_CHECK_FROZEN, o); err != nil {
+		// mruby says "can't modify frozen String"; MRI adds the receiver
+		return EFrozenError("can't modify frozen %v: %v", mrb.ClassName(mrb.ClassOf(o)), mrb.String(mrb.Inspect(o)))
 	}
 	return nil
 }

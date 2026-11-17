@@ -74,14 +74,18 @@ func (c *MrbCcontext) Filename(filename string) string {
 	return C.GoString(C.mrb_ccontext_filename(c.mrb.p, c.p, cfn))
 }
 
-// PartialHook set parser hook
+// PartialHook set parser hook. It has no effect with the Prism compiler
+// this mruby uses: mrb_ccontext_partial_hook stores the hook, and nothing
+// calls it.
 func (c *MrbCcontext) PartialHook(partialHook PartialHookF) {
 	c.mrb.setHook(unsafe.Pointer(c.p), partialHook)
 }
 
-// CleanupLocalVariables clears local variables
+// CleanupLocalVariables drops the top-level local variable names the
+// context keeps between loads, so a reused context (a REPL) starts with none
+// (mrb_ccontext_cleanup_local_variables)
 func (c *MrbCcontext) CleanupLocalVariables() {
-	C.mrbc_cleanup_local_variables(c.p)
+	C.mrb_ccontext_cleanup_local_variables(c.p)
 }
 
 // LoadFile loads file into oruby context
@@ -125,14 +129,14 @@ func go_partial_hook_callback(p *C.struct_mrb_parser_state) C.int {
 	return C.int(f(MrbParserState{p}))
 }
 
-// MrbCcontextPartialHook set parser hook
+// MrbCcontextPartialHook set parser hook (no effect, see PartialHook)
 func (mrb *MrbState) MrbCcontextPartialHook(cxt *MrbCcontext, partialHook PartialHookF) {
 	mrb.setHook(unsafe.Pointer(cxt.p), partialHook)
 }
 
 // MrbCcontextCleanupLocalVariables clear local variables
 func (mrb *MrbState) MrbCcontextCleanupLocalVariables(cxt *MrbCcontext) {
-	C.mrbc_cleanup_local_variables(cxt.p)
+	cxt.CleanupLocalVariables()
 }
 
 // MrbAstNode AST node structure

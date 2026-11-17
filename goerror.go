@@ -25,6 +25,7 @@ var errFrozenError = errors.New("FrozenError")
 var errNotImplementedError = errors.New("NotImplementedError")
 var errFloatDomainError = errors.New("FloatDomainError")
 var errKeyError = errors.New("KeyError")
+var errThreadError = errors.New("ThreadError")
 var errSystemCallError = errors.New("SystemCallError")
 
 // ERuntimeError error helper for Go clases exported to oruby
@@ -100,6 +101,11 @@ func EFloatDomainError(format string, args ...interface{}) error {
 // EKeyError error helper for Go clases exported to oruby
 func EKeyError(format string, args ...interface{}) error {
 	return Raisef(errKeyError, format, args...)
+}
+
+// EThreadError error helper for Go classes exported to oruby
+func EThreadError(format string, args ...interface{}) error {
+	return Raisef(errThreadError, format, args...)
 }
 
 // ESystemCallError error helper for Go clases exported to oruby
@@ -272,6 +278,8 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 		return mrb.EFloatDomainError()
 	case errKeyError:
 		return mrb.EKeyError()
+	case errThreadError:
+		return mrb.ExcGet("ThreadError")
 	}
 
 	if e, ok := err.(*RaiseError); ok {
@@ -373,19 +381,20 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 	estr := sep[0]
 
 	// Class name should be non-empty, uppercase starting string, without whitespace
-	if estr == "" || estr[1] < 'A' || strings.ContainsAny(estr, " \t\r\n") {
+	if estr == "" || estr[0] < 'A' || estr[0] > 'Z' || strings.ContainsAny(estr, " \t\r\n") {
 		return mrb.EStandardErrorClass()
 	}
 
 	eid := mrb.Intern(estr)
 	if mrb.ConstDefined(mrb.ObjectClass(), eid) {
 		c := mrb.ConstGet(mrb.ObjectClass(), eid)
-		if c.Type() != MrbTTClass {
-			return mrb.EStandardErrorClass()
-		}
-
-		if mrb.ObjIsKindOf(c, mrb.EExceptionClass()) {
-			return mrb.ClassOf(c)
+		if c.Type() == MrbTTClass {
+			cls := mrb.ClassPtr(c)
+			for cur := cls.p; cur != nil; cur = cur.super {
+				if cur == mrb.EExceptionClass().p {
+					return cls
+				}
+			}
 		}
 	}
 

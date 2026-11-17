@@ -24,8 +24,8 @@ func init() {
 
 		mutexClass := mrb.DefineGoClass("Mutex", newMutex)
 		mrb.ConstSet(threadClass, oruby.Sym_Mutex, mutexClass.Value())
-		mutexClass.DefineMethod("sleep", mutexSleep, mrb.ArgsReq(1))
-		mutexClass.DefineMethod("synchronize", mutexSynchronize, mrb.ArgsReq(1))
+		mutexClass.DefineMethod("sleep", mutexSleep, mrb.ArgsOpt(1))
+		mutexClass.DefineMethod("synchronize", mutexSynchronize, mrb.ArgsNone()|mrb.ArgsBlock())
 		mutexClass.DefineAlias("locked?", "locked")
 
 		queueClass := mrb.DefineGoClass("Queue", &queue{})
@@ -96,38 +96,59 @@ func threadSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func mutexSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	mutex := mrb.Data(self).(*rmutex)
 	t := mrb.GetArgsFirst()
-	duration := time.Duration(math.MaxInt64)
-
-	mutex.Unlock()
-
-	if !t.IsNil() {
-		duration = time.Duration(t.Int()) * time.Second
+	var duration time.Duration
+	if t.IsNil() {
+		duration = time.Duration(math.MaxInt64)
+	} else {
+		secs := t.Float64()
+		if secs < 0 {
+			return mrb.Raise(mrb.EArgumentError(), "time interval must be positive")
+		}
+		duration = time.Duration(secs * float64(time.Second))
 	}
+
+	if !mutex.Locked() {
+		return mrb.Raise(mrb.ClassGet("ThreadError"), "Attempt to unlock a mutex which is not locked")
+	}
+
+	if _, err := mutex.Unlock(); err != nil {
+		return mrb.RaiseError(err)
+	}
+	defer func() {
+		_, _ = mutex.Lock()
+	}()
 
 	start := time.Now()
 
 	select {
 	case <-time.After(duration):
-		mutex.Lock()
 	case <-mrb.ExitChan():
+	case <-mrb.SignalWake():
+		_ = mrb.CheckSignals()
 	}
 
-	return mrb.FixnumValue(int(time.Since(start) / time.Second))
+	return mrb.FixnumValue(int(math.Round(time.Since(start).Seconds())))
 }
 
 func mutexSynchronize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	mutex := mrb.Data(self).(*rmutex)
 	proc := mrb.GetArgsBlock()
 
-	if !proc.IsNil() {
-		mutex.Lock()
-		ret := mrb.YieldArgv(proc)
-		mutex.Unlock()
-		if mrb.Exc() != nil {
-			return mrb.RaiseError(mrb.Err())
-		}
-
-		return ret
+	if proc.IsNil() {
+		return mrb.Raise(mrb.ClassGet("ThreadError"), "must be called with a block")
 	}
-	return mrb.NilValue()
+
+	if _, err := mutex.Lock(); err != nil {
+		return mrb.RaiseError(err)
+	}
+	defer func() {
+		_, _ = mutex.Unlock()
+	}()
+
+	ret := mrb.YieldArgv(proc)
+	if mrb.Exc() != nil {
+		return mrb.RaiseError(mrb.Err())
+	}
+
+	return ret
 }

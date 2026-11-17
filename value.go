@@ -5,6 +5,8 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"runtime"
 	"strconv"
 	"unsafe"
@@ -421,10 +423,29 @@ func mrbObjValue(p unsafe.Pointer) Value {
 // or NilValue is returned
 func MrbObjValue(p interface{}) (Value, error) {
 	switch v := p.(type) {
-	case int, int8, int16, int32, uint, uint8, uint16, uint32:
-		return MrbFixnumValue(v.(int)), nil
-	case int64, uint64:
-		return MrbFixnumValue(v.(int)), nil
+	case int:
+		return MrbFixnumValue(v), nil
+	case int8:
+		return MrbFixnumValue(int(v)), nil
+	case int16:
+		return MrbFixnumValue(int(v)), nil
+	case int32:
+		return MrbFixnumValue(int(v)), nil
+	case int64:
+		return MrbFixnumValue(int(v)), nil
+	case uint8:
+		return MrbFixnumValue(int(v)), nil
+	case uint16:
+		return MrbFixnumValue(int(v)), nil
+	case uint32:
+		return MrbFixnumValue(int(v)), nil
+	case uint, uint64:
+		// no state to make a Bignum in: fixnum range only
+		u := reflect.ValueOf(v).Uint()
+		if u > math.MaxInt64 {
+			return nilValue, ERangeError("integer %d too big for a Fixnum; use mrb.Uint64Value", u)
+		}
+		return MrbFixnumValue(int(u)), nil
 	case bool:
 		return Bool(v), nil
 	case nil:

@@ -4,6 +4,8 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"unicode"
 )
@@ -118,7 +120,21 @@ func assignValue(arg interface{}, outType reflect.Type) (reflect.Value, error) {
 
 	if arg == nil {
 		return reflect.Zero(outType), nil
-	} else if argValue.Type().ConvertibleTo(outType) {
+	}
+	if v, ok, err := assignInteger(arg, outType); ok {
+		return v, err
+	}
+	if outType.Kind() == reflect.Ptr {
+		if v, ok, err := assignInteger(arg, outType.Elem()); ok {
+			if err != nil {
+				return reflect.Zero(outType), err
+			}
+			p := reflect.New(outType.Elem())
+			p.Elem().Set(v)
+			return p, nil
+		}
+	}
+	if argValue.Type().ConvertibleTo(outType) {
 		return argValue.Convert(outType), nil
 	} else if argValue.Type().ConvertibleTo(outType.Elem()) {
 		v := reflect.New(outType.Elem())
@@ -127,6 +143,55 @@ func assignValue(arg interface{}, outType reflect.Type) (reflect.Value, error) {
 	}
 
 	return reflect.Zero(outType), EArgumentError("value %v cannot be converted to type %v", arg, outType)
+}
+
+// assignInteger converts a Ruby number (as Intf gives it: int, *big.Int or
+// float64) to a Go integer type, checking the range as mrb_as_int64 does
+// instead of wrapping: RangeError when it does not fit, a negative value
+// for an unsigned type included. ok is false for other types.
+func assignInteger(arg interface{}, t reflect.Type) (reflect.Value, bool, error) {
+	k := t.Kind()
+	signed := k >= reflect.Int && k <= reflect.Int64
+	unsigned := k >= reflect.Uint && k <= reflect.Uintptr
+	if !signed && !unsigned {
+		return reflect.Value{}, false, nil
+	}
+	var n *big.Int
+	switch a := arg.(type) {
+	case int:
+		n = big.NewInt(int64(a))
+	case int64:
+		n = big.NewInt(a)
+	case *big.Int:
+		n = a
+	case float64:
+		if math.IsNaN(a) || math.IsInf(a, 0) {
+			return reflect.Value{}, true, EError("FloatDomainError", "%v", a)
+		}
+		n, _ = new(big.Float).SetFloat64(math.Trunc(a)).Int(nil)
+	default:
+		return reflect.Value{}, false, nil
+	}
+	out := reflect.New(t).Elem()
+	if signed {
+		if !n.IsInt64() || out.OverflowInt(n.Int64()) {
+			return reflect.Value{}, true, ERangeError("integer %v too %s to convert to '%v'", n, bigOrSmall(n), t)
+		}
+		out.SetInt(n.Int64())
+		return out, true, nil
+	}
+	if n.Sign() < 0 || !n.IsUint64() || out.OverflowUint(n.Uint64()) {
+		return reflect.Value{}, true, ERangeError("integer %v too %s to convert to '%v'", n, bigOrSmall(n), t)
+	}
+	out.SetUint(n.Uint64())
+	return out, true, nil
+}
+
+func bigOrSmall(n *big.Int) string {
+	if n.Sign() < 0 {
+		return "small"
+	}
+	return "big"
 }
 
 func (mrb *MrbState) handleResults(result []reflect.Value) (Value, error) {

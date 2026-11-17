@@ -214,13 +214,12 @@ func (mrb *MrbState) ArySet(ary MrbValue, n int, val MrbValue) {
 func (mrb *MrbState) AryReplace(a, b MrbValue) { C.mrb_ary_replace(mrb.p, a.Value().v, b.Value().v) }
 
 // EnsureArrayType checks array value
-func (mrb *MrbState) EnsureArrayType(v MrbValue) RArray {
-	if !v.Value().IsArray() {
-		panic(mrb.TypeName(v) + " cannot be converted to Array")
+func (mrb *MrbState) EnsureArrayType(v MrbValue) (RArray, error) {
+	r, err := mrb.protectedOp(C.GO_MRB_OP_ENSURE_ARRAY, v)
+	if err != nil {
+		return RArray{}, err
 	}
-
-	return ary(v.Value().v, mrb)
-	//C.mrb_ensure_array_type() is never calles
+	return ary(r.v, mrb), nil
 }
 
 // CheckArrayType checks array value
@@ -261,4 +260,28 @@ func (mrb *MrbState) AryJoin(ary, sep MrbValue) Value {
 // AryResize update the capacity of the array
 func (mrb *MrbState) AryResize(ary MrbValue, newLen int) Value {
 	return Value{C.mrb_ary_resize(mrb.p, ary.Value().v, C.mrb_int(newLen))}
+}
+
+// AryDup returns a shallow copy of ary (mrb_ary_dup)
+func (mrb *MrbState) AryDup(a MrbValue) (RArray, error) {
+	r, err := mrb.protectedOp(C.GO_MRB_OP_ARY_DUP, a)
+	if err != nil {
+		return RArray{}, err
+	}
+	return ary(r.v, mrb), nil
+}
+
+// AryUnshiftValues inserts vals at the front of ary, in order
+// (mrb_ary_unshift_values); FrozenError for a frozen array
+func (mrb *MrbState) AryUnshiftValues(a MrbValue, vals ...MrbValue) error {
+	if len(vals) == 0 {
+		return nil
+	}
+	argv := make([]C.mrb_value, len(vals))
+	for i, v := range vals {
+		argv[i] = v.Value().v
+	}
+	var result C.mrb_value
+	status := C._mrb_ary_unshift_values(mrb.p, a.Value().v, C.mrb_int(len(argv)), &argv[0], &result)
+	return mrb.protectedOutcomeError(Value{result}, status)
 }

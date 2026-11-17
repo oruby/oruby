@@ -24,7 +24,7 @@ func Test_openLineReader(t *testing.T) {
 			assert.NilError(t, err)
 		}
 		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2))
-		options := mrb.EnsureHashType(mrb.Value(opt))
+		options, _ := mrb.EnsureHashType(mrb.Value(opt))
 		return openLineReader(mrb, mrb.Value(fd), args, options, 0)
 	}
 
@@ -80,7 +80,7 @@ func Test_openLineReader_reg1(t *testing.T) {
 			assert.NilError(t, err)
 		}
 		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2))
-		options := mrb.EnsureHashType(mrb.Value(opt))
+		options, _ := mrb.EnsureHashType(mrb.Value(opt))
 		return openLineReader(mrb, mrb.Value(fd), args, options, 0)
 	}
 
@@ -99,7 +99,7 @@ func Test_openLineReaderSepLimitChomp(t *testing.T) {
 
 	olr := func(fd, arg1, arg2 interface{}, opt h) (*bufio.Scanner, io.Closer, error) {
 		args := oruby.RArgsNew(mrb.Value(arg1), mrb.Value(arg2))
-		options := mrb.EnsureHashType(mrb.Value(opt))
+		options, _ := mrb.EnsureHashType(mrb.Value(opt))
 		return openLineReader(mrb, mrb.Value(fd), args, options, 0)
 	}
 

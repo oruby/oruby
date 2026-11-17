@@ -26,26 +26,22 @@ func (mrb *MrbState) HashNewCapa(capa int) RHash {
 	}}
 }
 
-// EnsureHashType new hash with capacity capa
-func (mrb *MrbState) EnsureHashType(hash MrbValue) RHash {
+// EnsureHashType returns hash as a Hash: one, or what its to_hash returns;
+// anything else is a TypeError (mrb_ensure_hash_type)
+func (mrb *MrbState) EnsureHashType(hash MrbValue) (RHash, error) {
 	v := hash.Value()
-	if !v.IsHash() {
-		if mrb.RespondTo(v, Sym_to_hash) {
-			h, err := mrb.Funcall(v, Sym_to_hash)
-			if err == nil && h.IsHash() {
-				return RHash{RValue{h.v, mrb}}
-			}
+	if !v.IsHash() && mrb.RespondTo(v, Sym_to_hash) {
+		h, err := mrb.Funcall(v, Sym_to_hash)
+		if err != nil {
+			return RHash{}, err
 		}
-		return RHash{RValue{
-			C.mrb_ensure_hash_type(mrb.p, v.v),
-			mrb,
-		}}
+		v = h
 	}
-
-	return RHash{RValue{
-		v.v,
-		mrb,
-	}}
+	r, err := mrb.protectedOp(C.GO_MRB_OP_ENSURE_HASH, v)
+	if err != nil {
+		return RHash{}, err
+	}
+	return RHash{RValue{r.v, mrb}}, nil
 }
 
 // CheckHashType new hash with capacity capa

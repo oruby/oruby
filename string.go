@@ -100,23 +100,19 @@ func (mrb *MrbState) StrSubstr(str MrbValue, beg, len int) Value {
 	return Value{C.mrb_str_substr(mrb.p, str.Value().v, C.mrb_int(beg), C.mrb_int(len))}
 }
 
-// EnsureStringType  Returns a Ruby string type
-func (mrb *MrbState) EnsureStringType(str MrbValue) RString {
-	if !str.Value().IsString() {
-		panic(mrb.TypeName(str) + " cannot be converted to String")
+// EnsureStringType returns str as a String, or a TypeError for anything else
+// (mrb_ensure_string_type; it does not call to_str)
+func (mrb *MrbState) EnsureStringType(str MrbValue) (RString, error) {
+	r, err := mrb.protectedOp(C.GO_MRB_OP_ENSURE_STRING, str)
+	if err != nil {
+		return RString{}, err
 	}
-
-	return RString{RValue{
-		str.Value().v,
-		mrb,
-	}}
-	// C.mrb_ensure_string_type() is never called
+	return RString{RValue{r.v, mrb}}, nil
 }
 
 // StringType is obsolete; use EnsureStringType
-func (mrb *MrbState) StringType(str MrbValue) RString {
+func (mrb *MrbState) StringType(str MrbValue) (RString, error) {
 	return mrb.EnsureStringType(str)
-	// C.mrb_string_type() is never called
 }
 
 // StrBufNew string new with buffer
@@ -255,4 +251,28 @@ func (mrb *MrbState) StrBufAppend(str, str2 MrbValue) Value {
 // the mruby-encoding gem in a state where core_ext is not loaded.
 func (mrb *MrbState) EncodingClass() RClass {
 	return mrb.ClassPtr(mrb.ObjectClass().ConstGet("Encoding"))
+}
+
+// StrDupFrozen returns str frozen: str itself when it already is, a frozen
+// copy otherwise (mrb_str_dup_frozen)
+func (mrb *MrbState) StrDupFrozen(str MrbValue) (Value, error) {
+	return mrb.protectedOp(C.GO_MRB_OP_STR_DUP_FROZEN, str)
+}
+
+// StrByteSubseq returns len bytes of str from byte offset beg, whatever the
+// encoding (mrb_str_byte_subseq); the caller keeps beg and len in range
+func (mrb *MrbState) StrByteSubseq(str MrbValue, beg, length int) (Value, error) {
+	v := str.Value()
+	if !v.IsString() {
+		return nilValue, ETypeError("expected String, got %v", mrb.TypeName(v))
+	}
+	if n := RStringLen(v); beg < 0 || length < 0 || beg+length > n {
+		return nilValue, EIndexError("byte range %d...%d outside string of %d bytes", beg, beg+length, n)
+	}
+	var result C.mrb_value
+	status := C._mrb_str_byte_subseq(mrb.p, v.v, C.mrb_int(beg), C.mrb_int(length), &result)
+	if err := mrb.protectedOutcomeError(Value{result}, status); err != nil {
+		return nilValue, err
+	}
+	return Value{result}, nil
 }

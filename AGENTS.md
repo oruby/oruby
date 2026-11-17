@@ -18,7 +18,7 @@ make                                          # builds mruby/build/host/lib/libm
 - Requires: Go (see `go.mod`), a C toolchain (clang on macOS), Ruby + rake (mruby build), readline/ncurses.
 - `MRUBY_CONFIG` is selected by the Makefile: `scripts/build_config_{darwin,unix,win}.rb`. Gems compiled into libmruby are listed in `scripts/oruby.gembox`.
 - `make bin` — builds `bin/oruby`, `bin/orbi`, `bin/orubyc`; next to `lib/oruby` they run in-tree. `make install PREFIX=…` installs tools + `lib/oruby`. `oruby`/`orbi` load RubyGems at startup (`--disable-gems` skips it).
-- `make check` — `scripts/check_api.rb` lists `MRB_API` functions from mruby headers not yet wrapped in the matching `<header>.go` file.
+- `make check` — `scripts/check_api.rb` lists `MRB_API` functions from mruby headers that oruby does not use (no `C.name(` in a root `.go` file, no call in the `go-*.c`/`go-*.h` shims); its `IGNORED` table holds the ones left out on purpose, with the reason. mruby calls that can raise go through a protected shim in `go-mrb.h` (`_mrb_protected_op` & co.) and come back to Go as an `error`, never as a longjmp across Go frames.
 - `make update` — clean, pull latest submodule, rebuild libmruby.
 - Symbol names: in C use `MRB_SYM(name)` (and `MRB_SYM_Q`, `MRB_IVSYM`, …), in Go the `oruby.Sym_name` constants, rather than interning a literal at run time; a new name becomes a constant after `make` (tools/gensym). A name missing from the table is a compile error, not a wrong symbol.
 - Go's build cache does not track mruby's headers or `libmruby.a`: after rebuilding libmruby against a different mruby revision, run `go clean -cache` (or build/test with `-a`), otherwise cached cgo objects with the old struct layout crash at `mrb_open` ("allocation failure").
@@ -65,7 +65,7 @@ v, err := mrb.Eval(`ruby code`)
 
 ## Conventions
 
-- **Naming:** mruby C `mrb_foo_bar(mrb, ...)` → Go `mrb.FooBar(...)` on `*MrbState` (or on `RClass`, etc.). Keep argument order, drop the `mrb_state*`. Each wrapper should call `C.mrb_foo_bar(` literally so `check_api.rb` detects it.
+- **Naming:** mruby C `mrb_foo_bar(mrb, ...)` → Go `mrb.FooBar(...)` on `*MrbState` (or on `RClass`, etc.). Keep argument order, drop the `mrb_state*`. Each wrapper should call `C.mrb_foo_bar(` literally, or a `go-mrb.h` shim that does, so `check_api.rb` detects it.
 - Put a new binding in the root file named after the mruby header that declares it (`mruby.h` APIs may also live in `class.go`).
 - mruby macros can't be called from cgo — add a `static inline` `_MACRO_NAME` wrapper in `go-mrb.h`.
 - Method callbacks have signature `func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue` (`MrbFuncT`). Raise errors with `return mrb.Raise(mrb.EArgumentError(), msg)`.

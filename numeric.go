@@ -99,3 +99,39 @@ func (mrb *MrbState) BigIntValue(z *big.Int) Value {
 	}
 	return mrb.IntegerFromBytes(z.Bytes(), z.Sign())
 }
+
+// Int64Value returns v as an Integer (mrb_int64_value)
+func (mrb *MrbState) Int64Value(v int64) Value {
+	return Value{C.mrb_int64_value(mrb.p, C.int64_t(v))}
+}
+
+// Uint64Value returns v as an Integer, a Bignum above MaxInt64
+// (mrb_uint64_value)
+func (mrb *MrbState) Uint64Value(v uint64) Value {
+	return Value{C.mrb_uint64_value(mrb.p, C.uint64_t(v))}
+}
+
+// AsInt64 returns the int64 an Integer holds; Float and Rational are
+// truncated, a value outside int64 is a RangeError, a non-number a TypeError
+// (mrb_as_int64)
+func (mrb *MrbState) AsInt64(v MrbValue) (int64, error) {
+	var result C.mrb_value
+	var i C.int64_t
+	status := C._mrb_protected_op(mrb.p, C.GO_MRB_OP_AS_INT64, v.Value().v, &result, &i, nil)
+	if err := mrb.protectedOutcomeError(Value{result}, status); err != nil {
+		return 0, err
+	}
+	return int64(i), nil
+}
+
+// AsUint64 is AsInt64 for uint64: a negative value is a RangeError
+// (mrb_as_uint64)
+func (mrb *MrbState) AsUint64(v MrbValue) (uint64, error) {
+	var result C.mrb_value
+	var u C.uint64_t
+	status := C._mrb_protected_op(mrb.p, C.GO_MRB_OP_AS_UINT64, v.Value().v, &result, nil, &u)
+	if err := mrb.protectedOutcomeError(Value{result}, status); err != nil {
+		return 0, err
+	}
+	return uint64(u), nil
+}

@@ -271,7 +271,13 @@ func makeReplacer(mrb *oruby.MrbState, replace, block oruby.Value) replacer {
 			return mrb.String(v), nil
 		}
 	default:
-		str := mrb.String(mrb.EnsureStringType(replace).Value())
+		rs, err := mrb.EnsureStringType(replace)
+		if err != nil {
+			return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
+				return "", mrb.RaiseError(err)
+			}
+		}
+		str := mrb.String(rs.Value())
 		return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
 			return expandReplacement(str, m), nil
 		}
