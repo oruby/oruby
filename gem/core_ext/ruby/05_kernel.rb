@@ -131,44 +131,4 @@ end
 # MRI defines Kernel#warn as a module function (also Kernel.warn)
 module Kernel
   module_function :warn
-
-  alias __orig_eval__ eval
-  def eval(code, *args)
-    if code.is_a?(String) && (code.include?("alias") || code.include?("undef") || code.include?("**nil"))
-      code = __preprocess_ruby(code)
-    end
-    __orig_eval__(code, *args)
-  end
-  module_function :eval
 end
-
-class BasicObject
-  alias __orig_instance_eval__ instance_eval
-  def instance_eval(*args, &block)
-    if block
-      __orig_instance_eval__(*args, &block)
-    elsif args[0].is_a?(::String) && (args[0].include?("alias") || args[0].include?("undef") || args[0].include?("**nil"))
-      args[0] = ::Kernel.__preprocess_ruby(args[0])
-      __orig_instance_eval__(*args)
-    else
-      __orig_instance_eval__(*args)
-    end
-  end
-end
-
-class Module
-  alias __orig_class_eval__ class_eval
-  def class_eval(*args, &block)
-    if block
-      __orig_class_eval__(*args, &block)
-    elsif args[0].is_a?(::String) && (args[0].include?("alias") || args[0].include?("undef") || args[0].include?("**nil"))
-      args[0] = ::Kernel.__preprocess_ruby(args[0])
-      __orig_class_eval__(*args)
-    else
-      __orig_class_eval__(*args)
-    end
-  end
-  alias module_eval class_eval
-end
-
-

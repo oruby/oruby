@@ -430,7 +430,7 @@ func fileReadlink(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.SysFail(err)
 	}
 	val := mrb.StrNew(ret)
-	return preserveEncoding(mrb, args[0], val)
+	return val // in the file system encoding, as MRI returns it
 }
 
 func fileIsSymlink(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -515,10 +515,6 @@ func pathString(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 		return "", &typeError{msg: fmt.Sprintf("no implicit conversion of %s into String", mrb.ClassOf(v).Name())}
 	}
 
-	if strings.Contains(s, "\x00") {
-		return "", &argumentError{msg: "string contains null byte"}
-	}
-
 	symEncoding := mrb.Intern("encoding")
 	if mrb.RespondTo(orig, symEncoding) {
 		if enc, err := mrb.Funcall(orig, symEncoding); err == nil && !mrb.NilP(enc) {
@@ -528,14 +524,13 @@ func pathString(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 					return "", &compatibilityError{msg: "ASCII incompatible encoding"}
 				}
 			}
-			if runtime.GOOS == "darwin" && mrb.RespondTo(orig, mrb.Intern("encode")) {
-				if encName, err := mrb.Funcall(enc, mrb.Intern("name")); err == nil && encName.String() != "UTF-8" {
-					if converted, err := mrb.Funcall(orig, mrb.Intern("encode"), mrb.StrNew("UTF-8")); err == nil && oruby.MrbStringP(converted) {
-						s = converted.String()
-					}
-				}
-			}
 		}
+	}
+	if strings.Contains(s, "\x00") {
+		return "", &argumentError{msg: "string contains null byte"}
+	}
+	if oruby.MrbStringP(orig) {
+		s = mrb.FSPath(orig)
 	}
 
 	return s, nil
@@ -546,10 +541,32 @@ func preserveEncoding(mrb *oruby.MrbState, src oruby.Value, dst oruby.MrbValue) 
 	symForceEnc := mrb.Intern("force_encoding")
 	if oruby.MrbStringP(src) && mrb.RespondTo(src, symEncoding) {
 		if enc, err := mrb.Funcall(src, symEncoding); err == nil && !mrb.NilP(enc) {
+			// on macOS a non-UTF-8 path was converted to UTF-8 (pathString);
+			// the result goes back to the path's encoding, as MRI returns it
+			if runtime.GOOS == "darwin" && !isASCII(src.String()) {
+				if name, err := mrb.Funcall(enc, mrb.Intern("name")); err == nil && name.String() != "UTF-8" && name.String() != "ASCII-8BIT" {
+					mrb.Funcall(dst, symForceEnc, mrb.StrNew("UTF-8"))
+					if back, err := mrb.Funcall(dst, mrb.Intern("encode"), enc); err == nil && oruby.MrbStringP(back) {
+						mrb.Funcall(dst, mrb.Intern("replace"), back) // in place: some callers keep dst
+						mrb.Funcall(dst, symForceEnc, enc)
+						return dst
+					}
+					mrb.ExcClear()
+				}
+			}
 			mrb.Funcall(dst, symForceEnc, enc)
 		}
 	}
 	return dst
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 func flattenFileJoin(mrb *oruby.MrbState, args []oruby.Value, seen map[int]bool) ([]string, error) {

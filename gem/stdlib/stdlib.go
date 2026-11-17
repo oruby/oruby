@@ -35,6 +35,7 @@ import (
 	_ "github.com/oruby/oruby/gem/socket"
 	_ "github.com/oruby/oruby/gem/thread"
 	_ "github.com/oruby/oruby/gem/time"
+	_ "github.com/oruby/oruby/gem/transcode"
 	_ "github.com/oruby/oruby/gem/uri"
 	_ "github.com/oruby/oruby/gem/yaml"
 	_ "github.com/oruby/oruby/gem/zlib"

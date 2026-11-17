@@ -139,3 +139,43 @@ func (s RString) Cmp(str2 MrbValue) int {
 func (s RString) String() string {
 	return C.GoStringN(C.mrb_str_to_cstr(s.mrb.p, s.v), C.int(s.Len()))
 }
+
+// FSPath returns path string v as the file system takes it. macOS file names
+// are UTF-8, and MRI converts a path in another encoding to UTF-8 first; on
+// other systems, and for UTF-8, binary and ASCII-only paths, the bytes are
+// used as they are.
+func (mrb *MrbState) FSPath(v Value) string {
+	if !MrbStringP(v) {
+		return mrb.String(v)
+	}
+	s := v.String()
+	if runtime.GOOS != "darwin" {
+		return s
+	}
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return s
+	}
+	enc, err := mrb.Funcall(v, mrb.Intern("encoding"))
+	if err != nil {
+		mrb.ExcClear()
+		return s
+	}
+	name, err := mrb.Funcall(enc, mrb.Intern("name"))
+	if err != nil || name.String() == "UTF-8" || name.String() == "ASCII-8BIT" {
+		mrb.ExcClear()
+		return s
+	}
+	conv, err := mrb.Funcall(v, mrb.Intern("encode"), mrb.StrNew("UTF-8"))
+	if err != nil || !MrbStringP(conv) {
+		mrb.ExcClear()
+		return s
+	}
+	return conv.String()
+}

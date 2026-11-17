@@ -68,7 +68,7 @@ func dirOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirInitialize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 	f, err := os.Open(dir)
 	if err != nil {
 		return mrb.RaiseError(err)
@@ -81,7 +81,7 @@ func dirInitialize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirEntries(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 	f, err := os.Open(dir)
 	if err != nil {
 		return mrb.FalseValue()
@@ -126,17 +126,17 @@ func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, skipDots bo
 }
 
 func dirForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 	return dirDoForeach(mrb, self, dir, false)
 }
 
 func dirSEachChild(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 	return dirDoForeach(mrb, self, dir, true)
 }
 
 func dirChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 	if dir == "" {
 		return mrb.EArgumentError().Raise("ENOENT empty directory not allowed")
 	}
@@ -164,7 +164,7 @@ func dirChdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.RaiseError(err)
 		}
 	} else {
-		dir = arg.String()
+		dir = mrb.FSPath(arg)
 	}
 
 	if block.IsNil() {
@@ -204,7 +204,7 @@ func dirGetwd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func dirMkdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	dir, perm := mrb.GetArgs2("", os.ModePerm)
-	err := os.Mkdir(dir.String(), os.FileMode(perm.Int()))
+	err := os.Mkdir(mrb.FSPath(dir), os.FileMode(perm.Int()))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -212,7 +212,7 @@ func dirMkdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirRmdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 	err := os.Remove(dir)
 	if err != nil {
 		return mrb.RaiseError(err)
@@ -352,7 +352,7 @@ func dirAref(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 	stat, err := os.Stat(dir)
 	if err != nil {
 		return oruby.False
@@ -361,7 +361,7 @@ func dirExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirIsEmpty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetArgsFirst().String()
+	dir := mrb.FSPath(mrb.GetArgsFirst())
 
 	f, err := os.Open(dir)
 	if err != nil {

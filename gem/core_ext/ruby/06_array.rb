@@ -12,7 +12,22 @@ class Array
 
   alias __orig_pack pack
   def pack(fmt, *args, **kw)
-    __orig_pack(Array.__native_long_template(fmt), *args, **kw).force_encoding(Encoding::BINARY)
+    __orig_pack(Array.__native_long_template(fmt), *args, **kw).force_encoding(Array.__pack_encoding(fmt))
+  end
+
+  # MRI's pack result encoding: US-ASCII while the directives are m, M and u,
+  # UTF-8 when U comes before any other, otherwise binary
+  def self.__pack_encoding(fmt)
+    enc = Encoding::US_ASCII
+    fmt = fmt.to_str unless fmt.is_a?(String)
+    fmt.gsub(/#[^\n]*/, "").each_char do |c|
+      case c
+      when "U" then enc = Encoding::UTF_8 if enc.equal?(Encoding::US_ASCII)
+      when "m", "M", "u"
+      when /[A-Za-z@]/ then return Encoding::BINARY
+      end
+    end
+    enc
   end
   def hash
     Thread.current[:__array_hash_stack] ||= []

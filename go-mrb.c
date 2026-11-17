@@ -197,7 +197,72 @@ static mrb_value str_enc_tag_set(mrb_state *mrb, mrb_value self) {
   return enc;
 }
 
+// eval, instance_eval, class_eval/module_eval and Binding#eval get source
+// mruby's code generator cannot compile as is (dynamic alias/undef, **nil),
+// which Kernel.__preprocess_ruby (preprocess.go) rewrites. The wrappers
+// rewrite the source argument in place and run mruby-eval's own function in
+// the same callinfo: that is where it finds the caller's locals, constant
+// scope and default visibility, which a Ruby wrapper would replace with its own.
+#define EVAL_WRAPPED 6
+static mrb_func_t eval_orig[EVAL_WRAPPED];
+
+static mrb_bool src_contains(const char *s, mrb_int len, const char *pat) {
+  mrb_int n = (mrb_int)strlen(pat);
+  for (mrb_int i = 0; i + n <= len; i++) {
+    if (s[i] == pat[0] && memcmp(s + i, pat, n) == 0) return TRUE;
+  }
+  return FALSE;
+}
+
+static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
+  if (mrb_get_argc(mrb) > 0) {
+    mrb_value *argv = (mrb_value *)mrb_get_argv(mrb);
+    if (mrb_string_p(argv[0])) {
+      const char *s = RSTRING_PTR(argv[0]);
+      mrb_int len = RSTRING_LEN(argv[0]);
+      if (src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
+          src_contains(s, len, "**nil") || src_contains(s, len, "..") ||
+          src_contains(s, len, "&.") || src_contains(s, len, "BEGIN")) {
+        argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), mrb_intern_lit(mrb, "__preprocess_ruby"), 1, argv[0]);
+      }
+    }
+  }
+  return eval_orig[which](mrb, self);
+}
+
+static mrb_value eval_w0(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 0); }
+static mrb_value eval_w1(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 1); }
+static mrb_value eval_w2(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 2); }
+static mrb_value eval_w3(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 3); }
+static mrb_value eval_w4(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 4); }
+static mrb_value eval_w5(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 5); }
+
+static void wrap_cfunc(mrb_state *mrb, struct RClass *c, const char *name, mrb_func_t wrapper, mrb_func_t *orig) {
+  struct RClass *owner = c;
+  mrb_sym mid = mrb_intern_cstr(mrb, name);
+  mrb_method_t m = mrb_method_search_vm(mrb, &owner, mid);
+  if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m) || MRB_METHOD_CFUNC(m) == wrapper) return;
+  *orig = MRB_METHOD_CFUNC(m);
+  mrb_method_t w = m;  /* keeps the original's flags, aspec and visibility */
+  w.as.func = wrapper;
+  mrb_define_method_raw(mrb, owner, mid, w);
+}
+
+static void wrap_eval_methods(mrb_state *mrb) {
+  mrb_func_t w[EVAL_WRAPPED] = {eval_w0, eval_w1, eval_w2, eval_w3, eval_w4, eval_w5};
+  struct RClass *basic = mrb->object_class->super;
+  wrap_cfunc(mrb, mrb->kernel_module, "eval", w[0], &eval_orig[0]);
+  wrap_cfunc(mrb, mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(mrb->kernel_module))), "eval", w[1], &eval_orig[1]);
+  if (basic) wrap_cfunc(mrb, basic, "instance_eval", w[2], &eval_orig[2]);
+  wrap_cfunc(mrb, mrb->module_class, "class_eval", w[3], &eval_orig[3]);
+  wrap_cfunc(mrb, mrb->module_class, "module_eval", w[4], &eval_orig[4]);
+  if (mrb_class_defined_id(mrb, mrb_intern_lit(mrb, "Binding"))) {
+    wrap_cfunc(mrb, mrb_class_get(mrb, "Binding"), "eval", w[5], &eval_orig[5]);
+  }
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  wrap_eval_methods(mrb);
   mrb_define_private_method(mrb, mrb->module_class, "__alias_from_object", mod_alias_from_object, MRB_ARGS_REQ(2));
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_binary?", str_enc_binary_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag", str_enc_tag, MRB_ARGS_NONE());

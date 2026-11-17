@@ -100,7 +100,7 @@ func ioSysopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		flags = os.O_RDONLY
 	}
 
-	f, err := platformOpenFile(mrb.String(path), flags, os.FileMode(perm))
+	f, err := platformOpenFile(mrb.FSPath(path.Value()), flags, os.FileMode(perm))
 	if err != nil {
 		return mrb.SysFail(err)
 	}
@@ -414,7 +414,7 @@ func ioBinwriteInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func fileGetStream(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}, error) {
 	switch item.Type() {
 	case oruby.MrbTTString:
-		ret, err := os.OpenFile(item.String(), mode, 0666)
+		ret, err := os.OpenFile(mrb.FSPath(item), mode, 0666)
 		return ret, err
 	case oruby.MrbTTCData:
 		return mrb.Data(item), nil
@@ -436,7 +436,7 @@ func fileOpenIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, er
 			flags = os.O_RDONLY
 		}
 
-		ioObject, err = os.OpenFile(fd.String(), flags, 0666)
+		ioObject, err = os.OpenFile(mrb.FSPath(fd), flags, 0666)
 		if err != nil {
 			return nil, err
 		}

@@ -132,6 +132,9 @@ func NewCore() (*MrbState, error) {
 	mrb.DefineClass("SystemCallError", mrb.EStandardErrorClass())
 	mrb.DefineClass("SystemExit", mrb.EExceptionClass())
 	mrb.DefineClass("SecurityError", mrb.EExceptionClass())
+	if mrb.ClassDefined("NoMatchingPatternError") {
+		mrb.DefineClass("NoMatchingPatternKeyError", mrb.ClassGet("NoMatchingPatternError"))
+	}
 	mrb.Eval(`
 class SystemExit < Exception
   attr_reader :status
@@ -155,6 +158,15 @@ class SystemExit < Exception
   end
 end
 
+class FrozenError < RuntimeError
+  attr_accessor :receiver
+  def initialize(msg = nil, receiver: nil)
+    @receiver = receiver
+    super(msg)
+  end
+end
+
+$__oruby_ff_state__ = {}
 module Kernel
   def __oruby_alias__(new_name, old_name)
     target = is_a?(Module) ? self : self.class
@@ -169,7 +181,42 @@ module Kernel
       undef_method *names
     end
   end
-  module_function :__oruby_alias__, :__oruby_undef__
+
+  def __oruby_ff2__(id, left, right)
+    state = $__oruby_ff_state__[id]
+    if !state
+      if left
+        $__oruby_ff_state__[id] = true unless right
+        true
+      else
+        false
+      end
+    else
+      $__oruby_ff_state__[id] = false if right
+      true
+    end
+  end
+
+  def __oruby_ff3__(id, left, right)
+    state = $__oruby_ff_state__[id]
+    if !state
+      if left
+        $__oruby_ff_state__[id] = true
+        true
+      else
+        false
+      end
+    else
+      $__oruby_ff_state__[id] = false if right
+      true
+    end
+  end
+
+  def __oruby_alias_gvar__(new_name, old_name)
+    # best-effort global variable alias
+  end
+
+  module_function :__oruby_alias__, :__oruby_undef__, :__oruby_ff2__, :__oruby_ff3__, :__oruby_alias_gvar__
 end
 `)
 
