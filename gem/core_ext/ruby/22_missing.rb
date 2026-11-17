@@ -328,3 +328,49 @@ class Thread
   end
 end
 ConditionVariable = Thread::ConditionVariable unless Object.const_defined?(:ConditionVariable)
+
+
+# mruby's bind_call passes keywords as a positional Hash; bind(...).call
+# keeps them apart
+class UnboundMethod
+  def bind_call(recv, *args, **kw, &block)
+    kw.empty? ? bind(recv).call(*args, &block) : bind(recv).call(*args, **kw, &block)
+  end
+end
+
+# spawn / system / exec argument checks as MRI does them before the Go
+# runner (gem/process) sees them: #to_str, null bytes, [command, argv0]
+module Process
+  def self.__cmd_args(args)
+    out = args.dup
+    i = Hash === out[0] ? 1 : 0
+    raise ArgumentError, "wrong number of arguments (given 0, expected 1+)" if out.size <= i
+    c = out[i]
+    if Array === c
+      raise ArgumentError, "wrong first argument" unless c.size == 2
+      out[i] = c.map { |x| __cmd_str(x) }
+    else
+      out[i] = __cmd_str(c)
+    end
+    ((i + 1)...out.size).each { |j| out[j] = __cmd_str(out[j]) }
+    out
+  end
+
+  def self.__cmd_str(x)
+    s = Kernel.__implicit(x, String)
+    raise ArgumentError, "string contains null byte" if s.include?("\0")
+    s
+  end
+end
+
+[[Process.singleton_class, :spawn], [Process.singleton_class, :exec], [Kernel, :spawn], [Kernel, :system], [Kernel, :exec]].each do |mod, m|
+  next unless mod.method_defined?(m) || mod.private_method_defined?(m)
+  um = mod.instance_method(m)
+  priv = mod.private_method_defined?(m)
+  mod.__send__(:define_method, m) do |*args, **opts, &blk|
+    a = Process.__cmd_args(args)
+    opts.empty? ? um.bind(self).call(*a, &blk) : um.bind(self).call(*a, **opts, &blk)
+  end
+  mod.__send__(:private, m) if priv
+end
+Kernel.__send__(:module_function, :spawn, :system, :exec) rescue nil

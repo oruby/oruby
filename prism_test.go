@@ -15,22 +15,22 @@ func TestPreprocessRuby(t *testing.T) {
 		{
 			name:     "dynamic alias lhs",
 			input:    `alias :"#{'a'}" value`,
-			expected: `__oruby_alias__(:"#{'a'}", :value)`,
+			expected: `::Kernel.__oruby_alias__(self, :"#{'a'}", :value)`,
 		},
 		{
 			name:     "dynamic alias lhs expression",
 			input:    `alias :"#{'a' + ''.to_s}" value`,
-			expected: `__oruby_alias__(:"#{'a' + ''.to_s}", :value)`,
+			expected: `::Kernel.__oruby_alias__(self, :"#{'a' + ''.to_s}", :value)`,
 		},
 		{
 			name:     "dynamic alias rhs",
 			input:    `alias a :"#{'value'}"`,
-			expected: `__oruby_alias__(:a, :"#{'value'}")`,
+			expected: `::Kernel.__oruby_alias__(self, :a, :"#{'value'}")`,
 		},
 		{
 			name:     "dynamic alias rhs expression",
 			input:    `alias a :"#{'value' + ''.to_s}"`,
-			expected: `__oruby_alias__(:a, :"#{'value' + ''.to_s}")`,
+			expected: `::Kernel.__oruby_alias__(self, :a, :"#{'value' + ''.to_s}")`,
 		},
 		{
 			name:     "static alias left bare right bare",
@@ -50,12 +50,12 @@ func TestPreprocessRuby(t *testing.T) {
 		{
 			name:     "dynamic undef simple",
 			input:    `undef :"#{'meth'}"`,
-			expected: `__oruby_undef__(:"#{'meth'}")`,
+			expected: `::Kernel.__oruby_undef__(self, :"#{'meth'}")`,
 		},
 		{
 			name:     "dynamic undef expression",
 			input:    `undef :"#{'meth'.to_sym}"`,
-			expected: `__oruby_undef__(:"#{'meth'.to_sym}")`,
+			expected: `::Kernel.__oruby_undef__(self, :"#{'meth'.to_sym}")`,
 		},
 		{
 			name:     "static undef single",
@@ -89,8 +89,8 @@ func TestPreprocessRuby(t *testing.T) {
 		},
 		{
 			name:     "rescue safe navigation target",
-			input:    `rescue => a&.b`,
-			expected: `rescue => __rescued_exc__; a&.b = __rescued_exc__`,
+			input:    `begin; rescue => a&.b; end`,
+			expected: `begin; rescue => __rescued_exc__; a&.b = __rescued_exc__; end`,
 		},
 		{
 			name:     "for safe navigation target",
@@ -100,22 +100,22 @@ func TestPreprocessRuby(t *testing.T) {
 		{
 			name:     "begin block desugaring",
 			input:    "BEGIN { x = 1 }",
-			expected: "begin; x = 1 end",
+			expected: "begin  x = 1  end",
 		},
 		{
 			name:     "alias global variable desugaring",
 			input:    "alias $new_var $&",
-			expected: `__oruby_alias_gvar__(:$new_var, :$&)`,
+			expected: `::Kernel.__oruby_alias_gvar__(:$new_var, :$&)`,
 		},
 		{
 			name:     "alias global variable backtick",
 			input:    "alias $predefined_spec_backquote $`",
-			expected: "__oruby_alias_gvar__(:$predefined_spec_backquote, :$`)",
+			expected: "::Kernel.__oruby_alias_gvar__(:$predefined_spec_backquote, :$`)",
 		},
 		{
 			name:     "alias global variable single quote",
 			input:    "alias $predefined_spec_single_quote $'",
-			expected: "__oruby_alias_gvar__(:$predefined_spec_single_quote, :$')",
+			expected: "::Kernel.__oruby_alias_gvar__(:$predefined_spec_single_quote, :$')",
 		},
 	}
 
@@ -132,20 +132,20 @@ func TestPreprocessRuby(t *testing.T) {
 func TestPreprocessRubyFlipFlop(t *testing.T) {
 	input2 := "if (i == 1)..(i == 3)\n  true\nend"
 	actual2 := PreprocessRuby(input2)
-	if !strings.Contains(actual2, "__oruby_ff2__") || !strings.Contains(actual2, "(i == 1)") || !strings.Contains(actual2, "(i == 3)") {
-		t.Errorf("expected __oruby_ff2__ call, got: %s", actual2)
+	if !strings.Contains(actual2, "::Kernel.__oruby_ff__(") || !strings.Contains(actual2, "(i == 1)") || !strings.Contains(actual2, "(i == 3)") {
+		t.Errorf("expected __oruby_ff__ call, got: %s", actual2)
 	}
 
 	input3 := "if (i == 1)...(i == 3)\n  true\nend"
 	actual3 := PreprocessRuby(input3)
-	if !strings.Contains(actual3, "__oruby_ff3__") || !strings.Contains(actual3, "(i == 1)") || !strings.Contains(actual3, "(i == 3)") {
-		t.Errorf("expected __oruby_ff3__ call, got: %s", actual3)
+	if !strings.Contains(actual3, ", true, ->{") || !strings.Contains(actual3, "(i == 1)") || !strings.Contains(actual3, "(i == 3)") {
+		t.Errorf("expected exclusive __oruby_ff__ call, got: %s", actual3)
 	}
 
 	inputTernary := "(from..to ? 3 : 4)"
 	actualTernary := PreprocessRuby(inputTernary)
-	if !strings.Contains(actualTernary, "__oruby_ff2__") {
-		t.Errorf("expected __oruby_ff2__ for ternary, got: %s", actualTernary)
+	if !strings.Contains(actualTernary, "::Kernel.__oruby_ff__(") {
+		t.Errorf("expected __oruby_ff__ for ternary, got: %s", actualTernary)
 	}
 }
 
@@ -168,6 +168,34 @@ func TestPredefinedSpecPreprocess(t *testing.T) {
 			if strings.Contains(line, "alias $") {
 				t.Errorf("line still contains alias $: %s", line)
 			}
+		}
+	}
+}
+
+func TestPrismRewriteRuns(t *testing.T) {
+	mrb, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mrb.Close()
+	for code, want := range map[string]string{
+		`(1..10).select { |i| true if (i == 3)..(i == 5) }.inspect`:        "[3, 4, 5]",
+		`(1..10).select { |i| true if (i == 3)...(i == 3) }.inspect`:       "[3, 4, 5, 6, 7, 8, 9, 10]",
+		`c = 0; (1..6).each { |i| true if (c += 1; i == 2)..(i == 4) }; c`: "4",
+		`module PM1; end; PM1::X ||= 1; PM1::X ||= 2; PM1::X`:              "1",
+		`module PM2; X = 1; end; PM2::X &&= 5; PM2::X += 3; PM2::X`:        "8",
+		`s = "a..b ||= x if $1"; s`:                                        "a..b ||= x if $1",
+		`alias $prism_test_out $stdout; $prism_test_out.equal?($stdout)`:   "true",
+		`(1` + strings.Repeat("0", 300) + ` % 7).to_s`:                     "1",
+		`class PM3; def a = 1; alias :"b#{1}" :a; end; PM3.new.b1`:         "1",
+	} {
+		v, err := mrb.Eval(code)
+		if err != nil {
+			t.Errorf("%s: %v", code, err)
+			continue
+		}
+		if got := v.String(); got != want {
+			t.Errorf("%s = %q, want %q", code, got, want)
 		}
 	}
 }

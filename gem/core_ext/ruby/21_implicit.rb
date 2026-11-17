@@ -45,3 +45,13 @@ class Integer
   __implicit_args :gcd, Integer
   __implicit_args :lcm, Integer
 end
+
+class IO
+  # IO.new / IO.for_fd / IO.open: the descriptor goes through #to_int
+  alias __oruby_initialize initialize
+  def initialize(fd, *rest, **kw, &block)
+    fd = Kernel.__implicit(fd, Integer) unless Integer === fd || IO === fd
+    kw.empty? ? __oruby_initialize(fd, *rest, &block) : __oruby_initialize(fd, *rest, **kw, &block)
+  end
+  private :initialize
+end

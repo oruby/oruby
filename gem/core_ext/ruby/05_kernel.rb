@@ -1,23 +1,23 @@
 module Kernel
   def warn(*messages, uplevel: nil, category: nil)
+    # Warning.warn(msg) resolves here when Warning is the receiver
+    return Warning::Base.instance_method(:warn).bind_call(self, *messages, category: category) if equal?(Warning) && defined?(Warning::Base)
     return nil if $VERBOSE.nil?
-    return nil if messages.empty?
-    if uplevel
+    msgs = messages.flatten
+    return nil if msgs.empty?
+    unless uplevel.nil?
+      uplevel = Kernel.__to_int(uplevel)
+      raise ArgumentError, "negative level (#{uplevel})" if uplevel < 0
       loc = (caller(uplevel + 1, 1) || [])[0]
       loc = loc.sub(/:in .*$/, "") if loc
-      if loc && !messages.empty?
-        messages = ["#{loc}: warning: #{messages[0].to_s.sub(/^warning:\s*/, "")}"] + messages[1..]
-      end
+      msgs[0] = "#{loc || 'warning'}: warning: #{msgs[0]}"
     end
-    cat_sym = category ? category.to_sym : nil
-    messages.each do |msg|
-      str = msg.to_s
-      str += "\n" unless str.end_with?("\n")
-      if self != Warning
-        Warning.warn(str, category: cat_sym)
-      else
-        $stderr.write(str)
-      end
+    category = category.to_sym unless category.nil? || Symbol === category
+    str = msgs.map { |m| s = m.to_s; s.end_with?("\n") ? s : s + "\n" }.join
+    if Warning.method(:warn).parameters.any? { |t, _| t == :key || t == :keyreq || t == :keyrest }
+      Warning.warn(str, category: category)
+    else
+      Warning.warn(str)
     end
     nil
   end

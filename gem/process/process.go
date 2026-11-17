@@ -225,9 +225,6 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
 
-	shell := platformGetShell()
-	runner.cmd.Path = shell
-
 	pid, err := runner.run()
 	if err != nil {
 		setStatus(mrb, errorState(err))

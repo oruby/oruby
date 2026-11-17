@@ -222,7 +222,9 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
       mrb_int len = RSTRING_LEN(argv[0]);
       if (src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
           src_contains(s, len, "**nil") || src_contains(s, len, "..") ||
-          src_contains(s, len, "&.") || src_contains(s, len, "BEGIN")) {
+          src_contains(s, len, "&.") || src_contains(s, len, "BEGIN") ||
+          src_contains(s, len, "||=") || src_contains(s, len, "&&=") ||
+          src_contains(s, len, "::") || src_contains(s, len, "$") || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), mrb_intern_lit(mrb, "__preprocess_ruby"), 1, argv[0]);
       }
     }

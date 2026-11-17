@@ -103,19 +103,29 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 
 	params := make([]string, 0, args.Len()-argStart+1)
 
-	// Params: from first arg after command, till options
-	for i := argStart; i < args.Len(); i++ {
+	// Params: from first arg after command, till options (a trailing Hash)
+	last := args.Len()
+	if last > argStart && args.Item(last-1).IsHash() {
+		last--
+		mrb.HashMerge(options, args.Item(last))
+	}
+	for i := argStart; i < last; i++ {
 		params = append(params, mrb.String(args.Item(i)))
 	}
 
 	var cmd string
 
 	if command.IsArray() {
+		// [command, argv0]: run command directly, argv[0] as given
 		params = append([]string{mrb.AryRef(command, 1).String()}, params...)
-		cmd = mrb.AryRef(command, 0).String()
+		cmd = lookPath(mrb.AryRef(command, 0).String())
+	} else if command.IsString() && len(params) > 0 {
+		// command plus arguments: run directly, no shell (as MRI)
+		params = append([]string{command.String()}, params...)
+		cmd = lookPath(command.String())
 	} else if command.IsString() {
 		shell := platformGetShell()
-		params = append([]string{shell, "-c", command.String()}, params...)
+		params = []string{shell, "-c", command.String()}
 		cmd = shell
 	} else {
 		cmd = command.String()
@@ -135,22 +145,30 @@ func (runner *cmdRunner) setENV(env oruby.Value) {
 		return
 	}
 
+	seen := map[string]bool{}
 	for _, v := range os.Environ() {
-		kv := strings.Split(v, "=")
-		key := mrb.StringValue(kv[1])
+		kv := strings.SplitN(v, "=", 2)
+		key := mrb.StrNew(kv[0])
+		seen[kv[0]] = true
 		if EnvIsHash && mrb.HashKeyP(env, key) {
 			// Env has variable - add if not nil
 			value := mrb.HashGet(env, key)
 			if !value.IsNil() {
-				runner.cmd.Env = append(runner.cmd.Env, kv[1]+"="+value.String())
+				runner.cmd.Env = append(runner.cmd.Env, kv[0]+"="+value.String())
 			}
-
-		} else {
+		} else if !runner.unsetenvOther {
 			// Variable not in env, add respecting :unsetenv_other option
-			if !runner.unsetenvOther {
-				runner.cmd.Env = append(runner.cmd.Env, v)
-			}
+			runner.cmd.Env = append(runner.cmd.Env, v)
 		}
+	}
+	if EnvIsHash {
+		// variables the env Hash adds
+		mrb.HashValueForEach(env, func(k, v oruby.Value) int {
+			if name := mrb.String(k); !seen[name] && !v.IsNil() {
+				runner.cmd.Env = append(runner.cmd.Env, name+"="+mrb.String(v))
+			}
+			return 0
+		})
 	}
 }
 
@@ -282,4 +300,16 @@ func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {
 	}
 
 	return mrb.FixnumValue(ret), lastState
+}
+
+// lookPath resolves a command name on PATH like execvp; names with a slash
+// are used as given
+func lookPath(name string) string {
+	if strings.ContainsRune(name, '/') {
+		return name
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return name
 }

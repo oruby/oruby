@@ -473,7 +473,12 @@ func (w *writer) classPath(value oruby.Value) (string, error) {
 	if value.Type() == oruby.MrbTTClass || value.Type() == oruby.MrbTTModule {
 		klass = w.mrb.ClassPtr(value)
 	} else {
-		klass = w.mrb.ClassOf(value)
+		// the real class: ClassOf is the singleton class of an extended object
+		c, err := w.mrb.Funcall(value, w.mrb.Intern("class"))
+		if err != nil {
+			return "", err
+		}
+		klass = w.mrb.ClassPtr(c)
 	}
 	path := w.mrb.ClassPath(klass)
 	if path.IsNil() {
@@ -502,9 +507,43 @@ func (w *writer) ivars(value oruby.Value) ([]oruby.Value, error) {
 	return items, nil
 }
 
+// writeExtended writes 'e' for each module an object's singleton class
+// includes; a singleton with methods can't be dumped (MRI's w_extended)
+func (w *writer) writeExtended(value oruby.Value) error {
+	mods, err := w.mrb.Eval(`->(o) {
+  sc = o.singleton_class
+  raise TypeError, "singleton can't be dumped" unless o.singleton_methods(false).empty?
+  mods = sc.ancestors.take_while { |m| !m.equal?(o.class) }.reject { |m| m.equal?(sc) || Class === m }
+  raise TypeError, "can't dump anonymous class" if mods.any? { |m| m.name.nil? }
+  mods.map(&:name).join("\0")
+}`)
+	if err != nil {
+		return err
+	}
+	names, err := w.mrb.Funcall(mods, w.mrb.Intern("call"), value)
+	if err != nil {
+		return err
+	}
+	if w.mrb.String(names) == "" {
+		return nil
+	}
+	for _, n := range strings.Split(w.mrb.String(names), "\x00") {
+		if err := w.writeByte('e'); err != nil {
+			return err
+		}
+		if err := w.writeSymbol(w.mrb.Intern(n)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (w *writer) writeObject(value oruby.Value, depth int) error {
 	name, err := w.classPath(value)
 	if err != nil {
+		return err
+	}
+	if err := w.writeExtended(value); err != nil {
 		return err
 	}
 	vars, err := w.ivars(value)
@@ -535,6 +574,9 @@ func (w *writer) writeObject(value oruby.Value, depth int) error {
 func (w *writer) writeStruct(value oruby.Value, depth int) error {
 	name, err := w.classPath(value)
 	if err != nil {
+		return err
+	}
+	if err := w.writeExtended(value); err != nil {
 		return err
 	}
 	klass := w.mrb.ClassOf(value)

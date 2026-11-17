@@ -67,12 +67,18 @@ func (mrb *MrbState) RunAtExitHandlers() {
 	}
 	list := mrb.GVGetObj(mrb.Intern("$__at_exit_list__")).RArray()
 	mrb.SetGV("$__at_exit_list__", mrb.NilValue())
+	// keep the list (and so its handlers) reachable while they run: a GC
+	// during a handler must not free the rest
+	mrb.SetGV("$__at_exit_running__", list.Value())
+	defer mrb.SetGV("$__at_exit_running__", mrb.NilValue())
 	for list.Len() > 0 {
 		handler := list.Shift()
 		if !handler.IsNil() {
+			mrb.SetGV("$__at_exit_current__", handler)
 			mrb.Yield(handler, mrb.NilValue())
 		}
 	}
+	mrb.SetGV("$__at_exit_current__", mrb.NilValue())
 }
 
 func kernelExit(mrb *MrbState, self Value) MrbValue {

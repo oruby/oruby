@@ -56,15 +56,21 @@ type reader struct {
 	symbols []oruby.MrbSym
 	nodes   int
 	read    int64
+	proc    oruby.Value // Marshal.load(src, proc): called with each loaded object
+	freeze  bool        // Marshal.load(src, freeze: true)
 }
 
 func loadValue(mrb *oruby.MrbState, source byteSource) (oruby.Value, error) {
+	return loadValueWith(mrb, source, oruby.Nil, false)
+}
+
+func loadValueWith(mrb *oruby.MrbState, source byteSource, proc oruby.Value, freeze bool) (oruby.Value, error) {
 	wasDisabled := mrb.GCDisabled()
 	if !wasDisabled {
 		mrb.GCDisable()
 		defer mrb.GCEnable()
 	}
-	r := &reader{mrb: mrb, source: source}
+	r := &reader{mrb: mrb, source: source, proc: proc, freeze: freeze}
 	var header [2]byte
 	if err := r.readFull(header[:]); err != nil {
 		return oruby.Nil, oruby.EArgumentError("marshal data too short")
@@ -183,7 +189,24 @@ func (r *reader) readBytes() ([]byte, error) {
 	return data, nil
 }
 
+// readValue reads one value and applies the load proc and freeze: option
 func (r *reader) readValue(depth int) (oruby.Value, error) {
+	v, err := r.readValue0(depth)
+	if err != nil || (r.proc.IsNil() && !r.freeze) || v.Type() == oruby.MrbTTSymbol {
+		return v, err
+	}
+	if r.freeze && v.Type() != oruby.MrbTTClass && v.Type() != oruby.MrbTTModule {
+		if _, err := r.mrb.Funcall(v, r.mrb.Intern("freeze")); err != nil {
+			return oruby.Nil, err
+		}
+	}
+	if !r.proc.IsNil() {
+		return r.mrb.Funcall(r.proc, r.mrb.Intern("call"), v)
+	}
+	return v, nil
+}
+
+func (r *reader) readValue0(depth int) (oruby.Value, error) {
 	r.nodes++
 	if r.nodes > maxNodes {
 		return oruby.Nil, oruby.ERangeError("Marshal object graph exceeds size limit")
@@ -270,8 +293,50 @@ func (r *reader) readValue(depth int) (oruby.Value, error) {
 		return r.readRegexp()
 	case 'l':
 		return r.readBignum()
-	case 'C', 'e':
-		return oruby.Nil, oruby.ETypeError("Marshal tag %q is not supported", tag)
+	case 'e':
+		// object extended with a module: 'e' module-name object
+		name, err := r.readClassSymbol(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		mod, err := r.lookupConstant(name)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		v, err := r.readValue0(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if _, err := r.mrb.Funcall(v, r.mrb.Intern("extend"), mod); err != nil {
+			return oruby.Nil, err
+		}
+		return v, nil
+	case 'C':
+		// instance of a user subclass of String, Array, Hash or Regexp
+		name, err := r.readClassSymbol(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		klass, err := r.lookupConstant(name)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		at := len(r.objects)
+		v, err := r.readValue0(depth + 1)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		obj, err := r.mrb.Funcall(klass, r.mrb.Intern("allocate"))
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if _, err := r.mrb.Funcall(obj, r.mrb.Intern("replace"), v); err != nil {
+			return oruby.Nil, err
+		}
+		if at < len(r.objects) {
+			r.objects[at] = obj
+		}
+		return obj, nil
 	default:
 		return oruby.Nil, oruby.EArgumentError("invalid/unknown Marshal format (0x%02x)", tag)
 	}

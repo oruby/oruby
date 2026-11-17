@@ -50,6 +50,7 @@ v, err := mrb.Eval(`ruby code`)
 | `go*.go` (root) | Go-side conveniences on top of the raw API: `goclass.go`, `goobject.go`, `goarray.go`, `gohash.go`, `gostring.go`, `goerror.go`, `goprint.go`. |
 | `reflections.go`, `value.go`, `args.go` | Go ↔ mruby value conversion (reflection), `Value`/`MrbValue`, argument parsing (`GetArgs*`, `Args*` aspecs). |
 | `go-mrb.h`, `go-mrb.c` | C shims: inline wrappers for mruby macros (`_MRB_...`) and Go↔C callback trampolines. |
+| `prism.go`, `go-prism.c` | Source rewriter: parses Ruby with Prism (inside libmruby) and rewrites, by exact node span, the constructs mruby's codegen rejects (flip-flops, `A::B \|\|=`, gvar aliases, dynamic alias/undef, …) into code it compiles; helpers are `Kernel.__oruby_*__` in `mruby.go`. |
 | `gems.go` | Go-gem registry: `oruby.Gem(name, initFn)`, `Resolve`, `Require`. |
 | `gem/<name>/` | Stdlib-like gems implemented in Go (base64, json, io, regexp, time, process, zlib, database (sqlite3), erubi, …). `gem/fullcore` blank-imports a standard set. |
 | `cmd/orbi` | REPL (mirb equivalent). |

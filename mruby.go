@@ -166,57 +166,62 @@ class FrozenError < RuntimeError
   end
 end
 
-$__oruby_ff_state__ = {}
+# Runtime support for the source rewrites in prism.go (constructs mruby's
+# code generator rejects); singleton methods, so Kernel's instance methods
+# stay as in MRI
 module Kernel
-  def __oruby_alias__(new_name, old_name)
-    target = is_a?(Module) ? self : self.class
-    target.class_eval do
-      alias_method new_name, old_name
+  class << self
+    def __oruby_alias__(scope, new_name, old_name)
+      target = Module === scope ? scope : scope.class
+      target.__send__(:alias_method, new_name, old_name)
+      nil
     end
-  end
 
-  def __oruby_undef__(*names)
-    target = is_a?(Module) ? self : self.class
-    target.class_eval do
-      undef_method *names
+    def __oruby_undef__(scope, *names)
+      target = Module === scope ? scope : scope.class
+      names.each { |n| target.__send__(:undef_method, n) }
+      nil
     end
-  end
 
-  def __oruby_ff2__(id, left, right)
-    state = $__oruby_ff_state__[id]
-    if !state
-      if left
-        $__oruby_ff_state__[id] = true unless right
+    # flip-flop condition: the state is kept per site, the operands are
+    # evaluated only when MRI evaluates them
+    def __oruby_ff__(id, exclusive, left, right)
+      st = (@__oruby_ff ||= {})
+      if st[id]
+        st[id] = false if right.call
+        true
+      elsif left.call
+        st[id] = true
+        st[id] = false if !exclusive && right.call
         true
       else
         false
       end
-    else
-      $__oruby_ff_state__[id] = false if right
-      true
     end
-  end
 
-  def __oruby_ff3__(id, left, right)
-    state = $__oruby_ff_state__[id]
-    if !state
-      if left
-        $__oruby_ff_state__[id] = true
-        true
+    # A::B ||= v, A::B &&= v, A::B op= v
+    def __oruby_cpath_or__(mod, name)
+      if mod.const_defined?(name) && (v = mod.const_get(name))
+        v
       else
-        false
+        mod.const_set(name, yield)
       end
-    else
-      $__oruby_ff_state__[id] = false if right
-      true
+    end
+
+    def __oruby_cpath_and__(mod, name)
+      v = mod.const_get(name)
+      v ? mod.const_set(name, yield) : v
+    end
+
+    def __oruby_cpath_op__(mod, name, op)
+      mod.const_set(name, mod.const_get(name).__send__(op, yield))
+    end
+
+    # alias $new $old: references are rewritten when compiled (prism.go)
+    def __oruby_alias_gvar__(new_name, old_name)
+      nil
     end
   end
-
-  def __oruby_alias_gvar__(new_name, old_name)
-    # best-effort global variable alias
-  end
-
-  module_function :__oruby_alias__, :__oruby_undef__, :__oruby_ff2__, :__oruby_ff3__, :__oruby_alias_gvar__
 end
 `)
 

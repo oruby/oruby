@@ -171,13 +171,14 @@ func proxyClassMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbA
 			if _, ok := err.(*argumentError); ok {
 				return raisePathError(mrb, err)
 			}
-			if strings.HasSuffix(name, "?") {
-				if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR) {
-					if name == "size?" || name == "world_readable?" || name == "world_writable?" {
-						return oruby.Nil
-					}
-					return oruby.False
+			// predicates answer false (or nil) for any failed stat, as
+			// MRI's do: ENOENT, ENOTDIR, ENAMETOOLONG, ELOOP, EACCES, ...
+			var pathErr *os.PathError
+			if strings.HasSuffix(name, "?") && (errors.As(err, &pathErr) || os.IsNotExist(err) || errors.Is(err, syscall.ENOENT)) {
+				if name == "size?" || name == "world_readable?" || name == "world_writable?" {
+					return oruby.Nil
 				}
+				return oruby.False
 			}
 			return mrb.SysFail(err)
 		}
@@ -219,13 +220,14 @@ func proxyMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec)
 
 		stat, err := f.Stat()
 		if err != nil {
-			if strings.HasSuffix(name, "?") {
-				if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR) {
-					if name == "size?" || name == "world_readable?" || name == "world_writable?" {
-						return oruby.Nil
-					}
-					return oruby.False
+			// predicates answer false (or nil) for any failed stat, as
+			// MRI's do: ENOENT, ENOTDIR, ENAMETOOLONG, ELOOP, EACCES, ...
+			var pathErr *os.PathError
+			if strings.HasSuffix(name, "?") && (errors.As(err, &pathErr) || os.IsNotExist(err) || errors.Is(err, syscall.ENOENT)) {
+				if name == "size?" || name == "world_readable?" || name == "world_writable?" {
+					return oruby.Nil
 				}
+				return oruby.False
 			}
 			return mrb.SysFail(err)
 		}
@@ -1596,7 +1598,7 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 			}
 		}
 		f := os.NewFile(uintptr(fd), fmt.Sprintf("fd:%d", fd))
-		return f, nil
+		return keepFD(f), nil
 	}
 	name, err := pathString(mrb, first)
 	if err != nil {

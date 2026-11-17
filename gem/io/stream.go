@@ -12,13 +12,20 @@ import (
 	"github.com/oruby/oruby"
 )
 
+// ioInitCopy is IO#initialize_copy(orig): self is the new copy, so the
+// descriptor to duplicate is orig's
 func ioInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	if f, ok := mrb.Data(self).(*os.File); ok {
+	src := self
+	if mrb.GetArgsCount() > 0 {
+		src = mrb.GetArgsFirst()
+	}
+	if f, ok := mrb.Data(src).(*os.File); ok {
 		f2, err := platformDup(f)
 		if err != nil {
 			return mrb.SysFail(err)
 		}
-		return mrb.Value(f2)
+		mrb.DataSetInterface(self, f2)
+		return self
 	}
 
 	return mrb.EArgumentError().Raise("IO stream is not a file and does not support cloning")

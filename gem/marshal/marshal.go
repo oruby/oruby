@@ -13,8 +13,12 @@ func init() {
 func initMarshal(mrb *oruby.MrbState) interface{} {
 	mod := mrb.DefineModule("Marshal")
 	mod.DefineClassMethod("dump", marshalDump, mrb.ArgsArg(1, 2))
-	mod.DefineClassMethod("load", marshalLoad, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
-	mod.DefineClassMethod("restore", marshalLoad, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())
+	mod.DefineClassMethod("load", marshalLoad, mrb.ArgsArg(1, 2)+mrb.ArgsBlock())
+	mod.DefineClassMethod("restore", marshalLoad, mrb.ArgsArg(1, 2)+mrb.ArgsBlock())
+	// freeze: keyword (the Go loader takes positional arguments only)
+	if _, err := mrb.Eval(loadFreezeRuby); err != nil {
+		panic(err)
+	}
 	mod.Const("MAJOR_VERSION", 4)
 	mod.Const("MINOR_VERSION", 8)
 	return nil
@@ -52,13 +56,15 @@ func marshalDump(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func marshalLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arguments, block := mrb.GetArgsWithBlock()
-	if !block.IsNil() {
-		return mrb.Raise(mrb.ExcGet("NotImplementedError"), "Marshal.load proc callbacks are not implemented")
-	}
+	arguments, _ := mrb.GetArgsWithBlock()
 	args := arguments.Slice()
-	if len(args) > 1 && !args[1].IsNil() {
-		return mrb.Raise(mrb.ExcGet("NotImplementedError"), "Marshal.load proc callbacks are not implemented")
+	proc, freeze := oruby.Nil, false
+	for _, a := range args[1:] {
+		if a.IsHash() {
+			freeze = mrb.HashFetch(a, mrb.Intern("freeze"), mrb.FalseValue()).Bool()
+		} else if !a.IsNil() {
+			proc = a
+		}
 	}
 	var source byteSource
 	if args[0].Type() == oruby.MrbTTString {
@@ -72,9 +78,33 @@ func marshalLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	} else {
 		return mrb.Raise(mrb.ETypeError(), "instance of IO needed")
 	}
-	value, err := loadValue(mrb, source)
+	value, err := loadValueWith(mrb, source, proc, freeze)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 	return value
 }
+
+const loadFreezeRuby = `
+  module Marshal
+    class << self
+      alias __oruby_load load
+      def load(source, proc = nil, freeze: false)
+        v = __oruby_load(source, proc)
+        freeze ? Marshal.__deep_freeze(v, {}) : v
+      end
+      alias restore load
+
+      def __deep_freeze(v, seen)
+        return v if Module === v || seen.key?(v.__id__)
+        seen[v.__id__] = true
+        case v
+        when Array then v.each { |e| __deep_freeze(e, seen) }
+        when Hash then v.each { |k, e| __deep_freeze(k, seen); __deep_freeze(e, seen) }
+        end
+        v.instance_variables.each { |iv| __deep_freeze(v.instance_variable_get(iv), seen) } unless String === v
+        v.freeze
+      end
+    end
+  end
+`

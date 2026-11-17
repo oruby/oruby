@@ -13,6 +13,7 @@ func init() {
 		t.RegisterGoClass(&time.Time{})
 		t.AttachType(time.Time{})
 		t.Include(mrb.ModuleGet("Comparable"))
+		initTZ(mrb, t)
 
 		t.DefineClassMethod("at", timeAt, mrb.ArgsArg(1, 1))
 		t.DefineClassMethod("gm", timeNewUTC, mrb.ArgsArg(1, 6))

@@ -242,10 +242,17 @@ func statIno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func statInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
 	ext := getExtendedStat(stat)
-	timeFmt := "2006-01-02 15:04:05 -0700"
+	// times as Time#inspect shows them (fractional seconds included)
+	inspect := func(t time.Time) string {
+		if v, err := mrb.Funcall(mrb.DataValue(t), mrb.Intern("inspect")); err == nil {
+			return v.String()
+		}
+		mrb.ExcClear()
+		return t.Format("2006-01-02 15:04:05 -0700")
+	}
 	birthtime := ""
 	if !ext.birthtime.IsZero() {
-		birthtime = ", birthtime=" + ext.birthtime.Format(timeFmt)
+		birthtime = ", birthtime=" + inspect(ext.birthtime)
 	}
 
 	mode := ext.mode
@@ -266,9 +273,9 @@ func statInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		stat.Size(),
 		ext.blksize,
 		ext.blocks,
-		ext.atime.Format(timeFmt),
-		stat.ModTime().Format(timeFmt),
-		ext.ctime.Format(timeFmt),
+		inspect(ext.atime),
+		inspect(stat.ModTime()),
+		inspect(ext.ctime),
 		birthtime,
 	))
 }

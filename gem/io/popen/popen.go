@@ -3,10 +3,12 @@ package popen
 import (
 	"github.com/oruby/oruby"
 	gemIO "github.com/oruby/oruby/gem/io"
-	"github.com/oruby/oruby/gem/process"
 
 	"errors"
+	"io"
+	"os"
 	"os/exec"
+	"strings"
 )
 
 func init() {
@@ -90,6 +92,19 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	}
 
+	// IO.popen(cmd, {err: ...}): a trailing Hash is the options, not a mode
+	if modeV.IsHash() {
+		mrb.HashMerge(opt, modeV)
+		modeV = mrb.NilValue()
+	}
+	if extra := args.Item(3); extra.IsHash() {
+		mrb.HashMerge(opt, extra)
+	}
+	errToOut := false
+	if e := mrb.HashFetch(opt.Value(), mrb.Intern("err"), mrb.NilValue()); e.IsArray() {
+		errToOut = mrb.String(mrb.AryEntry(e, 0)) == "child" && mrb.String(mrb.AryEntry(e, 1)) == "out"
+	}
+
 	mode, err := parseFlags(mrb, modeV, opt.Value())
 	if err != nil {
 		return mrb.RaiseError(err)
@@ -111,24 +126,37 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.ERuntimeError().Raise("Process::_get_cmd does not return command")
 	}
 
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-
-	r, err := cmd.StdoutPipe()
-	if err != nil {
-		return mrb.RaiseError(err)
+	// "r": the child reads the parent's stdin; "w": it writes to the
+	// parent's stdout; "r+": both ends are pipes
+	acc := mode & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR)
+	var r io.ReadCloser = io.NopCloser(eofReader{})
+	var w io.WriteCloser = nopWriteCloser{}
+	if acc != os.O_WRONLY {
+		cmd.Stdout = nil
+		r, err = cmd.StdoutPipe()
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		if errToOut {
+			cmd.Stderr = cmd.Stdout // err: [:child, :out]
+		}
+	} else if errToOut {
+		cmd.Stderr = cmd.Stdout
 	}
-
-	w, err := cmd.StdinPipe()
-	if err != nil {
-		return mrb.RaiseError(err)
+	if acc != os.O_RDONLY {
+		cmd.Stdin = nil
+		w, err = cmd.StdinPipe()
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
 	}
 
 	if err = cmd.Start(); err != nil {
 		return mrb.RaiseError(err)
 	}
 
-	ret := mrb.DataValue(&superPipe{r, w, cmd.Process.Pid, mode})
+	sp := &superPipe{ReadCloser: r, WriteCloser: w, pid: cmd.Process.Pid, mode: mode, cmd: cmd, mrb: mrb}
+	ret := mrb.DataValue(sp)
 	if block.IsNil() {
 		return ret
 	}
@@ -138,11 +166,9 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(mrb.Err())
 	}
 
-	_ = cmd.Wait()
-	if cmd.ProcessState != nil && cmd.Process != nil {
-		ps := cmd.ProcessState
-		process.SetLastStatus(mrb, cmd.Process.Pid, ps.ExitCode(), ps.Exited(), ps.Success())
-	}
+	_ = sp.WriteCloser.Close()
+	_ = sp.ReadCloser.Close()
+	sp.wait()
 	return result
 }
 
@@ -150,6 +176,10 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 	if mode.IsNil() {
 		// Default is RDONLY
 		return 0, nil
+
+	} else if mode.IsString() {
+		// mode string: "r", "w", "r+", "rb", "w:utf-8", ...
+		return popenModeString(mode.String())
 
 	} else if mode.IsInteger() {
 		// mode integer: File::RDONLY|File::EXCL
@@ -179,3 +209,40 @@ func parseFlags(mrb *oruby.MrbState, mode, optHash oruby.Value) (int, error) {
 
 	return flags | flagsOpt, nil
 }
+
+func popenModeString(m string) (int, error) {
+	if i := strings.IndexByte(m, ':'); i >= 0 {
+		m = m[:i]
+	}
+	if m == "" {
+		return 0, oruby.EArgumentError("illegal access mode %q", m)
+	}
+	flags := 0
+	switch m[0] {
+	case 'r':
+		flags = os.O_RDONLY
+	case 'w', 'a':
+		flags = os.O_WRONLY
+	default:
+		return 0, oruby.EArgumentError("illegal access mode %q", m)
+	}
+	for _, c := range m[1:] {
+		switch c {
+		case '+':
+			flags = os.O_RDWR
+		case 'b', 't':
+		default:
+			return 0, oruby.EArgumentError("illegal access mode %q", m)
+		}
+	}
+	return flags, nil
+}
+
+type eofReader struct{}
+
+func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+type nopWriteCloser struct{}
+
+func (nopWriteCloser) Write(b []byte) (int, error) { return len(b), nil }
+func (nopWriteCloser) Close() error                { return nil }

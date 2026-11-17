@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/oruby/oruby"
@@ -442,17 +443,17 @@ func fileOpenIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, er
 		}
 		return ioObject, nil
 	case oruby.MrbTTFixnum:
-		ioObject = os.NewFile(uintptr(fd.Int()), "fd")
-		if ioObject == nil {
+		f := os.NewFile(uintptr(fd.Int()), "fd")
+		if f == nil {
 			return nil, oruby.EArgumentError("invalid file descriptor")
 		}
-		return ioObject, nil
+		return keepFD(f), nil
 	case oruby.MrbTTCptr:
-		ioObject = os.NewFile(fd.Uintptr(), "fd")
-		if ioObject == nil {
+		f := os.NewFile(fd.Uintptr(), "fd")
+		if f == nil {
 			return nil, oruby.EArgumentError("invalid file descriptor")
 		}
-		return ioObject, nil
+		return keepFD(f), nil
 	case oruby.MrbTTCData:
 		ioObject = mrb.Data(fd)
 		switch ioObject.(type) {
@@ -535,4 +536,21 @@ func ioReopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	mrb.SetIV(self, "@lineno", 0)
 	mrb.DataSetInterface(self, reopened)
 	return self
+}
+
+// externalFiles keeps the *os.File values made for descriptor numbers
+// passed in from Ruby (IO.new(fd), IO.for_fd) reachable: Go's finalizer would
+// otherwise close the number when the value is collected, even after Ruby
+// closed it or the number was reused (the Go runtime's own kqueue/epoll
+// descriptor included). Ruby code closes them explicitly, as in MRI.
+var (
+	externalMu    sync.Mutex
+	externalFiles []*os.File
+)
+
+func keepFD(f *os.File) *os.File {
+	externalMu.Lock()
+	externalFiles = append(externalFiles, f)
+	externalMu.Unlock()
+	return f
 }

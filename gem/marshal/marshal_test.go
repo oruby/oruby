@@ -400,8 +400,6 @@ func TestMarshalCrossStateAndLimits(t *testing.T) {
 		`Marshal.dump([1], 0)`,
 		`Marshal.dump(Hash.new { |hash, key| key })`,
 		`Marshal.dump(proc {})`,
-		`Marshal.load(Marshal.dump(1)) { |value| value }`,
-		`Marshal.load(Marshal.dump(1), proc {})`,
 	} {
 		if _, err := from.Eval(ruby); err == nil {
 			t.Errorf("expected %s to fail", ruby)
@@ -423,5 +421,22 @@ func TestMarshalRejectsMalformedStreams(t *testing.T) {
 				t.Fatalf("Marshal.load(%q) unexpectedly succeeded", ruby)
 			}
 		})
+	}
+}
+
+func TestMarshalLoadProcAndTags(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	for code, want := range map[string]string{
+		`Marshal.load(Marshal.dump([1, 2]), proc { |v| Integer === v ? v * 10 : v }).inspect`:  "[10, 20]",
+		`Marshal.load("\x04\be:\vKernelo:\vObject\x00").singleton_class.include?(Kernel).to_s`: "true",
+		`class MSub < Array; end; Marshal.load("\x04\bC:\tMSub[\x06i\x06").class.name`:         "MSub",
+	} {
+		v, err := mrb.Eval(code)
+		if err != nil {
+			t.Errorf("%s: %v", code, err)
+		} else if v.String() != want {
+			t.Errorf("%s = %q, want %q", code, v.String(), want)
+		}
 	}
 }
