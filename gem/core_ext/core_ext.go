@@ -99,6 +99,7 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		for _, dep := range []string{"io", "io/file", "regexp", "time", "thread", "process"} {
 			mrb.Resolve(dep)
 		}
+		initFormat(mrb)
 		floatClass := mrb.FloatClass()
 		mrb.DefineMethod(floatClass, "prev_float", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			f := self.Float64()

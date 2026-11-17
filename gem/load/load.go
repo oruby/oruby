@@ -227,7 +227,29 @@ func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
 	return "", fmt.Errorf("cannot load such file -- %v", feature)
 }
 
+// upstreamLib returns the shipped upstream copy of library feature in the
+// install layout's rubylibdir (lib/oruby/<ruby_version>), or "". An upstream
+// copy is preferred over ORuby's embedded rewrite of the same library; the
+// rewrite stays the fallback for embedded use without the install layout.
+func upstreamLib(feature string) string {
+	if feature == "" || filepath.IsAbs(feature) || strings.HasPrefix(feature, ".") {
+		return ""
+	}
+	name := feature
+	if !strings.HasSuffix(name, ".rb") {
+		name += ".rb"
+	}
+	p := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion, name)
+	if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		return p
+	}
+	return ""
+}
+
 func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
+	if p := upstreamLib(feature); p != "" {
+		feature = p
+	}
 	// If there is implemented Go feature
 	if loaded, err := mrb.Resolve(feature); err == nil {
 		if loaded {

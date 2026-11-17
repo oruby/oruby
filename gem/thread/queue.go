@@ -13,6 +13,7 @@ type queue struct {
 	ch     chan interface{}
 	items  *list.List
 	closed bool
+	notify chan struct{} // wakes the worker after a push
 }
 
 type sizedQueue struct {
@@ -26,6 +27,7 @@ func newQueue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		make(chan interface{}),
 		list.New(),
 		false,
+		make(chan struct{}, 1),
 	}
 
 	go q.worker()
@@ -43,6 +45,7 @@ func newSizedQueue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			make(chan interface{}, size),
 			list.New(),
 			false,
+			make(chan struct{}, 1),
 		},
 	}
 
@@ -56,7 +59,12 @@ func (q *queue) worker() {
 	for {
 		el := q.fetchFirst()
 		if el == nil {
-			runtime.Gosched()
+			// wait for a push instead of spinning
+			select {
+			case <-q.notify:
+			case <-q.mrb.ExitChan():
+				return
+			}
 			continue
 		}
 
@@ -133,6 +141,10 @@ func (q *queue) Push(obj interface{}) error {
 	q.Lock()
 	q.items.PushBack(obj)
 	q.Unlock()
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
 
 	return nil
 }

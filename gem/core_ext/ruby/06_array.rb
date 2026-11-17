@@ -12,7 +12,79 @@ class Array
 
   alias __orig_pack pack
   def pack(fmt, *args, **kw)
-    __orig_pack(Array.__native_long_template(fmt), *args, **kw).force_encoding(Array.__pack_encoding(fmt))
+    fmt = Kernel.__implicit(fmt, String)
+    Array.__pack_coerce(self, fmt).__orig_pack(Array.__native_long_template(fmt), *args, **kw).force_encoding(Array.__pack_encoding(fmt))
+  end
+
+  # MRI converts each item for its directive (to_int, to_str, Float());
+  # mruby-pack only accepts the exact types, so convert a copy beforehand
+  def self.__pack_coerce(ary, fmt)
+    out = nil
+    i = 0
+    pos = 0
+    n = fmt.bytesize
+    while pos < n
+      c = fmt.getbyte(pos).chr
+      pos += 1
+      if c == "#"
+        pos += 1 while pos < n && fmt.getbyte(pos) != 10
+        next
+      end
+      pos += 1 while pos < n && "_!<>".include?(fmt.getbyte(pos).chr)
+      count = 1
+      star = false
+      if pos < n && fmt.getbyte(pos) == 42
+        star = true
+        pos += 1
+      elsif pos < n && (d = fmt.getbyte(pos)) >= 48 && d <= 57
+        count = 0
+        while pos < n && (d = fmt.getbyte(pos)) >= 48 && d <= 57
+          count = count * 10 + d - 48
+          pos += 1
+        end
+      end
+      kind = case c
+             when "c", "C", "s", "S", "l", "L", "q", "Q", "j", "J", "n", "N", "v", "V", "U", "w", "i", "I", "r", "R" then :int
+             when "d", "D", "f", "F", "e", "E", "g", "G" then :float
+             when "a", "A", "Z", "b", "B", "h", "H", "m", "u", "P", "p" then :str
+             when "M" then :obj
+             when "@", "x", "X", " ", "\t", "\n", "\v", "\f", "\r" then next
+             else
+               d = c.ord < 0x20 || c.ord > 0x7e ? format("\\x%02X", c.ord) : c
+               raise ArgumentError, "unknown pack directive '#{d}' in '#{fmt}'"
+             end
+      if kind == :str || kind == :obj
+        k = 1
+      else
+        k = star ? ary.size - i : count
+      end
+      k.times do
+        break if i >= ary.size
+        v = ary[i]
+        w = case kind
+            when :int
+              Integer === v ? v : (Float === v ? v.to_i : Kernel.__implicit(v, Integer))
+            when :float
+              Float === v ? v : (String === v || v.nil? ? raise(TypeError, "no implicit conversion to float from #{v.nil? ? "nil" : "string"}") : Float(v))
+            when :str
+              if String === v || (c == "p" || c == "P") && v.nil?
+                v
+              elsif v.nil? && (c == "a" || c == "A" || c == "Z")
+                ""
+              else
+                Kernel.__implicit(v, String)
+              end
+            else
+              v
+            end
+        unless w.equal?(v)
+          out ||= ary.dup
+          out[i] = w
+        end
+        i += 1
+      end
+    end
+    out || ary
   end
 
   # MRI's pack result encoding: US-ASCII while the directives are m, M and u,
@@ -1527,11 +1599,13 @@ class String
   # mruby-pack lacks
   alias __orig_unpack unpack
   def unpack(fmt, offset: 0, &block)
+    fmt = Kernel.__implicit(fmt, String)
     __unpack_from(offset).__orig_unpack(Array.__native_long_template(fmt), &block)
   end
 
   alias __orig_unpack1 unpack1
   def unpack1(fmt, offset: 0)
+    fmt = Kernel.__implicit(fmt, String)
     __unpack_from(offset).__orig_unpack1(Array.__native_long_template(fmt))
   end
 

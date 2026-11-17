@@ -146,7 +146,18 @@ func (s RString) String() string {
 // used as they are.
 func (mrb *MrbState) FSPath(v Value) string {
 	if !MrbStringP(v) {
-		return mrb.String(v)
+		// rb_get_path: #to_path, then #to_str; anything else is no path (an
+		// empty name fails in the OS call instead of naming a file after inspect)
+		for _, m := range []string{"to_path", "to_str"} {
+			if mrb.RespondTo(v, mrb.Intern(m)) {
+				if p, err := mrb.Funcall(v, mrb.Intern(m)); err == nil && MrbStringP(p) {
+					return mrb.FSPath(p)
+				}
+				mrb.ExcClear()
+				return ""
+			}
+		}
+		return ""
 	}
 	s := v.String()
 	if runtime.GOOS != "darwin" {

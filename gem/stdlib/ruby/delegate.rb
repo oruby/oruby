@@ -1,4 +1,9 @@
 class Delegator < BasicObject
+  # first: a bare rescue looks up StandardError, which BasicObject can't see
+  def self.const_missing(n)
+    ::Object.const_get(n)
+  end
+
   kernel = ::Kernel.dup
   kernel.class_eval do
     alias __raise__ raise
@@ -13,10 +18,6 @@ class Delegator < BasicObject
     end
   end
   include kernel
-
-  def self.const_missing(n)
-    ::Object.const_get(n)
-  end
 
   def initialize(obj)
     __setobj__(obj)
