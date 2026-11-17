@@ -2,6 +2,7 @@ package process
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
 	"math"
 	"os"
@@ -12,12 +13,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/oruby/oruby/gem/signal"
-
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 	//_ "github.com/oruby/oruby/gem/thread"
 	_ "github.com/oruby/oruby/gem/signal"
 )
+
+//go:embed process.rb
+var processRb []byte
 
 type processData struct {
 	sync.Mutex
@@ -84,7 +87,7 @@ func init() {
 		mrb.DefineClassMethod(mProc, "exit", procExit, mrb.ArgsOpt(1))
 		mrb.DefineClassMethod(mProc, "abort", procAbort, mrb.ArgsOpt(1))
 		mrb.DefineClassMethod(mProc, "last_status", procLastStatus, mrb.ArgsNone())
-		mrb.DefineClassMethod(mProc, "kill", procKill, mrb.ArgsReq(2)+mrb.ArgsRest())
+		mrb.DefineClassMethod(mProc, "__oruby_kill__", procKill, mrb.ArgsReq(2))
 		mrb.DefineClassMethod(mProc, "wait", procWait, mrb.ArgsOpt(2))
 		mrb.DefineClassMethod(mProc, "wait2", procWait2, mrb.ArgsOpt(2))
 		mrb.DefineClassMethod(mProc, "waitpid", procWait, mrb.ArgsOpt(2))
@@ -151,6 +154,7 @@ func init() {
 		mrb.DefineModuleFunc(mSys, "getegid", os.Getegid)
 
 		initPlatform(mrb, mProc, mProcUID, mProcGID, mSys)
+		rb.LoadRuby(mrb, "<internal:process>", processRb)
 
 		return mProcData
 	})
@@ -483,41 +487,30 @@ func procDetach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.FixnumValue(pid)
 }
 
+// Process.__oruby_kill__(signo, pid): one kill(2) for Process.kill
+// (process.rb); a negative signo signals the process group pid. Returns
+// whether the signal reaches this process, which then handles it before
+// Process.kill returns.
 func procKill(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
-	sig, _, err := signal.GetSignalFromArgument(mrb, args.Item(0))
-	if err != nil {
-		return mrb.RaiseError(err)
+	sig := args.Item(0).Int()
+	pid := args.Item(1).Int()
+	target := pid
+	if sig < 0 {
+		sig, target = -sig, -pid
 	}
 
 	procData := getProcData(mrb, self)
-
-	for i := 1; i < args.Len(); i++ {
-		pid := args.ItemDefInt(i, -1)
-		if pid < 0 {
-			continue
+	if runner := procData.getRunner(target); target > 0 && runner != nil {
+		if err := runner.cmd.Process.Signal(syscall.Signal(sig)); err != nil {
+			return mrb.RaiseError(err)
 		}
-
-		found := false
-		if pid > 0 {
-			runner := procData.getRunner(pid)
-			if runner != nil {
-				found = true
-				err := runner.cmd.Process.Signal(syscall.Signal(sig))
-				if err != nil {
-					return mrb.RaiseError(err)
-				}
-			}
-		}
-
-		if !found {
-			err := platformKill(pid, sig)
-			if err != nil {
-				return mrb.RaiseError(err)
-			}
-		}
+		return mrb.FalseValue()
 	}
-	return mrb.NilValue()
+	if err := platformKill(target, sig); err != nil {
+		return mrb.RaiseError(err)
+	}
+	return mrb.BoolValue(platformSelfTarget(target))
 }
 
 func procAbort(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -587,25 +580,43 @@ func procExitBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.NilValue()
 }
 
+// Kernel#sleep: signals that arrive meanwhile run their handlers, then the
+// sleep goes on, as in MRI; one that raises ends it. Returns the seconds
+// slept, rounded.
 func procSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.GetArgsFirst()
+	forever := t.IsNil()
 	var duration time.Duration
-	if t.IsNil() {
-		duration = time.Duration(math.MaxInt64)
-	} else {
+	if !forever {
 		duration = time.Duration(int64(t.Float64() * 1000000000))
 	}
 
 	procData := getProcData(mrb, self)
-
-	select {
-	case <-mrb.ExitChan():
-		break
-	case <-procData.wakeupChan:
-		break
-	case <-time.After(duration * time.Nanosecond):
-		break
+	start := time.Now()
+	var timer <-chan time.Time
+	if !forever {
+		tm := time.NewTimer(duration)
+		defer tm.Stop()
+		timer = tm.C
+	}
+	if err := mrb.CheckSignals(); err != nil {
+		return mrb.RaiseError(err)
+	}
+wait:
+	for {
+		select {
+		case <-mrb.ExitChan():
+			break wait
+		case <-procData.wakeupChan:
+			break wait
+		case <-timer:
+			break wait
+		case <-mrb.SignalWake():
+			if err := mrb.CheckSignals(); err != nil {
+				return mrb.RaiseError(err)
+			}
+		}
 	}
 
-	return mrb.NilValue()
+	return mrb.FixnumValue(int(math.Round(time.Since(start).Seconds())))
 }

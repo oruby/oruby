@@ -19,7 +19,8 @@ class Hash
           kh = kh.to_int if !kh.is_a?(Integer) && (kh.respond_to?(:to_int) rescue false)
           vh = vh.to_int if !vh.is_a?(Integer) && (vh.respond_to?(:to_int) rescue false)
         end
-        h = ((h * 31) + (kh.to_i & 0x3fffffff) + (vh.to_i & 0x3fffffff)) & 0x3fffffff
+        pair_h = (kh.to_i ^ (vh.to_i * 31)) & 0x3fffffff
+        h = (h + pair_h) & 0x3fffffff
       end
     ensure
       stack.pop

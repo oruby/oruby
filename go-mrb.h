@@ -877,6 +877,13 @@ static inline void _mrb_irep_catch_handler(const mrb_irep *irep, int i, int *typ
 }
 
 void _mrb_init_oruby_core(mrb_state *mrb);
+/* go-signal.c */
+int _orb_sig_take(void);
+void _orb_sig_post(mrb_state *mrb, int signo);
+int _orb_sig_pending_p(int signo);
+void _orb_sig_clear(mrb_state *mrb);
+void _orb_sig_dfl(int signo);
+void _orb_sig_kill_self(int signo);
 void _mrb_make_method_private(mrb_state *mrb, struct RClass *c, mrb_sym mid);
 
 // Numeric operators the AOT compiler evaluates inline for Integer and Float

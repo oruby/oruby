@@ -29,7 +29,7 @@ func (p *superPipe) wait() {
 	p.waited = true
 	_ = p.cmd.Wait()
 	if ps := p.cmd.ProcessState; ps != nil && p.mrb != nil {
-		process.SetLastStatus(p.mrb, p.pid, ps.ExitCode(), ps.Exited(), ps.Success())
+		process.SetLastStatusFrom(p.mrb, p.pid, ps)
 	}
 }
 

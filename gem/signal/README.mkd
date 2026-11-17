@@ -1,14 +1,8 @@
-# Signal gem for ORuby (EXPERIMENTAL)
+# Signal gem for ORuby
 
-This oruby gem is not part of the ORuby fullcore.
-
-This is EXPERIMENTAL code. MRuby does not have any support for concurrent access, and
-Go signal handling is done via goroutines and channels. So things are prone to race conditions.
-
-If you are using ORuby scripting, signals should (probably) not be handled via script code.
-
-Nice thing with ORuby gems is that this code can be separated in gem, where it can
-be played with, tested.
+Ruby's `Signal` module (`trap`, `list`, `signame`), `SignalException` and
+`Interrupt`, as MRI 4.1 has them (ruby/spec core/signal and core/exception pass,
+except the examples that need Ruby threads). The process gem loads it.
 
 ## Install
 
@@ -31,29 +25,26 @@ for Windows, Linux and macOS, plus SIGINT and SIGKILL which are supported on all
 
 ## Implementation
 
-At the moment, the implementation uses ```mrb.Inject(rproc)``` on signal receive to route
-proc to main mrb goroutine, where it is executed in VM, or out of VM if VM is not executing.
-This is still EXPERIMENTAL, and can lead to unexpected behaviour.
+Go receives OS signals on a goroutine (`signal.Notify`). That goroutine never
+runs Ruby: it marks the signal pending and arms a one-shot mruby
+`code_fetch_hook` (`go-signal.c`, `signal.go` in the root package). The VM calls
+the hook before its next instruction, on the goroutine that runs Ruby, and the
+hook calls `Signal.__oruby_signal__(signo)`, which runs the trap handler or
+raises `SignalException` / `Interrupt` right there, like any raise. No API call
+is made from the signal goroutine, so no locking is needed.
 
-Things that work, but need more testing:
+A state that is not running Ruby when a signal arrives handles it at its next
+instruction. Go code that waits can handle it earlier: select on
+`mrb.SignalWake()` and call `mrb.CheckSignals()`, raising what it returns
+(`sleep` does that; `Process.kill` to the own process does it before returning,
+as MRI does). A second default-handled signal (SIGINT, SIGTERM, ...) arriving
+while the first still waits for Ruby ends the process the OS way, so Ctrl-C
+twice works even when a Go call blocks.
 
-  * Signals received while VM is executing - serialized using channels and VM C callback in mruby
-  * EXIT Signals - these rprocs get executed on oruby.MrbState ```Close()```
-
-Things that can bomb:
-
-  * Signals received while VM is not executing. This is "gray" area, since in MRI Ruby
-    VM is executing always. This is a situation where signal handler is set, for example
-    via ```mrb.Eval()```, and signal is arriving after eval, when no oruby VM code is executing.
-    At that moment, code is just executed. But since mruby does not have sync primitives
-    some other C API code might be executing and accessing state.
-
-    Since Go handler is goroutine, only right thing to do is to lock every API call, which
-    is something I would like to avoid.
-
-    Alternative solution would be to have manual API call which will "drain" and execute signal
-    procs and leave it to the user to call it somewhere in context of goroutine where ORuby state
-    runs.
+`signal.InstallDefaults(mrb)` installs MRI's default handlers (SIGINT raises
+`Interrupt`, SIGHUP/QUIT/TERM/ALRM/USR1/USR2 raise `SignalException`); the
+`oruby` command calls it. Without it, untrapped signals keep the OS default.
+Signals are process-wide: the state that traps a signal last receives it.
 
 ## Usage
 

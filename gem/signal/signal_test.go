@@ -38,8 +38,13 @@ func TestTrap(t *testing.T) {
 		return
 	}
 
-	// Give some time for signal to be processed
-	<-time.After(10 * time.Millisecond)
+	// the handler runs at the next Ruby instruction, or when Go code that
+	// waits runs the pending signals itself
+	mrb.SignalWait(syscall.SIGUSR1, time.Second)
+	if err := mrb.CheckSignals(); err != nil {
+		t.Error(err)
+		return
+	}
 
 	v2 := mrb.GetGV("$testv")
 
@@ -131,7 +136,11 @@ func TestSignalExceptions(t *testing.T) {
 	defer mrb.Close()
 
 	eSignal := mrb.ClassGet("SignalException")
-	e, err := eSignal.New("INT", "Message")
+	// a message goes with a signal number; with a name it is an ArgumentError
+	if _, err := eSignal.New("INT", "Message"); err == nil {
+		t.Error("SignalException.new(name, message) should raise ArgumentError")
+	}
+	e, err := eSignal.New(int(syscall.SIGINT), "Message")
 	if err != nil {
 		t.Error(err)
 		return
@@ -140,8 +149,8 @@ func TestSignalExceptions(t *testing.T) {
 		t.Error("Signo: ", e.GetIV("@signo"))
 	}
 
-	if e.GetIV("mesg").String() != "Message" {
-		t.Error("Message: ", e.GetIV("mesg"))
+	if msg := e.Call("message").String(); msg != "Message" {
+		t.Error("Message: ", msg)
 	}
 
 	eInterrupt := mrb.ClassGet("Interrupt")
@@ -155,7 +164,7 @@ func TestSignalExceptions(t *testing.T) {
 		t.Error("Signo: ", e.GetIV("@signo"))
 	}
 
-	if e.GetIV("mesg").String() != "Message2" {
-		t.Error("Message2: ", e.GetIV("mesg"))
+	if msg := e.Call("message").String(); msg != "Message2" {
+		t.Error("Message2: ", msg)
 	}
 }

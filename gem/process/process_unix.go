@@ -283,3 +283,8 @@ func platformUpdateState(lastState *status, sysState interface{}) {
 func platformKill(pid, sig int) error {
 	return syscall.Kill(pid, syscall.Signal(sig))
 }
+
+// platformSelfTarget: kill(2) to pid reaches this process
+func platformSelfTarget(pid int) bool {
+	return pid == os.Getpid() || pid == 0 || pid == -1 || pid == -syscall.Getpgrp()
+}

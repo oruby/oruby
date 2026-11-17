@@ -593,6 +593,7 @@ func (mrb *MrbState) Close() {
 		}
 		mrb.rubyErrors = nil
 
+		mrb.signalRelease()
 		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
 

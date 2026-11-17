@@ -2,6 +2,7 @@ package process
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/oruby/oruby"
 )
@@ -73,6 +74,16 @@ func SetLastStatus(mrb *oruby.MrbState, pid, exitCode int, exited, success bool)
 	mrb.SetGV("$?", mrb.Value(st))
 }
 
+// SetLastStatusFrom sets $? from a finished child, with the signal that
+// ended or stopped it
+func SetLastStatusFrom(mrb *oruby.MrbState, pid int, ps *os.ProcessState) {
+	st := &status{Pid: pid, Exitstatus: ps.ExitCode(), ToI: uint32(ps.ExitCode()),
+		IsExited: ps.Exited(), IsSucess: ps.Success()}
+	platformUpdateState(st, ps.Sys())
+	st.Pid = pid
+	mrb.SetGV("$?", mrb.Value(st))
+}
+
 func initStatus(mProc oruby.RClass) {
 	mrb := mProc.Mrb()
 	cProcessStatus := mProc.DefineClassUnder("Status", mrb.ObjectClass())
@@ -85,4 +96,33 @@ func initStatus(mProc oruby.RClass) {
 	cProcessStatus.DefineAlias("signaled?", "is_signaled")
 	cProcessStatus.DefineAlias("stopped?", "is_stopped")
 	cProcessStatus.DefineAlias("success?", "is_sucess")
+
+	// nil unless the process ended that way, as in MRI
+	optInt := func(get func(*status) *int) oruby.MrbFuncT {
+		return func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			st, ok := mrb.Data(self).(*status)
+			if !ok || get(st) == nil {
+				return mrb.NilValue()
+			}
+			return mrb.FixnumValue(*get(st))
+		}
+	}
+	cProcessStatus.DefineMethod("termsig", optInt(func(st *status) *int {
+		if !st.IsSignaled {
+			return nil
+		}
+		return st.Termsig
+	}), mrb.ArgsNone())
+	cProcessStatus.DefineMethod("stopsig", optInt(func(st *status) *int {
+		if !st.IsStopped {
+			return nil
+		}
+		return st.Stopsig
+	}), mrb.ArgsNone())
+	cProcessStatus.DefineMethod("exitstatus", optInt(func(st *status) *int {
+		if !st.IsExited {
+			return nil
+		}
+		return &st.Exitstatus
+	}), mrb.ArgsNone())
 }

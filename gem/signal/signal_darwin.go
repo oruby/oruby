@@ -7,6 +7,7 @@ func platformInitSignals() {
 	signals["ALRM"] = int(syscall.SIGALRM)
 	signals["BUS"] = int(syscall.SIGBUS)
 	signals["CHLD"] = int(syscall.SIGCHLD)
+	signals["CLD"] = int(syscall.SIGCHLD)
 	signals["CONT"] = int(syscall.SIGCONT)
 	signals["EMT"] = int(syscall.SIGEMT)
 	signals["FPE"] = int(syscall.SIGFPE)
@@ -37,14 +38,5 @@ func platformInitSignals() {
 	signals["XFSZ"] = int(syscall.SIGXFSZ)
 }
 
-func platformReservedSignal(sig int) bool {
-	switch sig {
-	case int(syscall.SIGSEGV):
-	case int(syscall.SIGBUS):
-	case int(syscall.SIGILL):
-	case int(syscall.SIGFPE):
-	case int(syscall.SIGVTALRM):
-		return true
-	}
-	return false
-}
+// NSIG: signal numbers are below it
+const platformNSIG = 32

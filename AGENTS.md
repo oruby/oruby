@@ -53,6 +53,7 @@ v, err := mrb.Eval(`ruby code`)
 | `go-mrb.h`, `go-mrb.c` | C shims: inline wrappers for mruby macros (`_MRB_...`) and Go↔C callback trampolines. |
 | `prism.go`, `go-prism.c` | Source rewriter: parses Ruby with Prism (inside libmruby) and rewrites, by exact node span, the constructs mruby's codegen rejects (flip-flops, `A::B \|\|=`, gvar aliases, dynamic alias/undef, …) into code it compiles; helpers are `Kernel.__oruby_*__` in `mruby.go`. |
 | `tools/gensym`, `presym_gen.go` | Presyms for oruby: gensym collects the symbol names the Go and cgo C code look up by literal (`Intern("x")`, `mrb_intern_lit(mrb, "x")`, …) into the `scripts/mruby-oruby-presym` gem, so libmruby preallocates them, then writes `presym_gen.go`, a Go constant per name (`Sym_to_s`, `SymQ_nil`, `IvSym_name`, `GvSym_stdout`, `OpSym_add`). `make` runs both steps around the libmruby build; both outputs are generated, do not edit. |
+| `signal.go`, `go-signal.c` | OS signals into Ruby: Go receives them (`signal.Notify`) and arms a one-shot `code_fetch_hook`, which runs `Signal.__oruby_signal__` (trap handler or `SignalException`) at the VM's next instruction. Go code that blocks or signals itself calls `mrb.CheckSignals()` and raises what it returns. `gem/signal` holds the Ruby side; `cmd/oruby` installs MRI's default handlers (`signal.InstallDefaults`). |
 | `gems.go` | Go-gem registry: `oruby.Gem(name, initFn)`, `Resolve`, `Require`. |
 | `gem/<name>/` | Stdlib-like gems implemented in Go (base64, json, io, regexp, time, process, zlib, database (sqlite3), erubi, …). `gem/fullcore` blank-imports a standard set. |
 | `cmd/orbi` | REPL (mirb equivalent). |
@@ -79,3 +80,4 @@ v, err := mrb.Eval(`ruby code`)
 - `MrbState` is not goroutine-safe; it carries a `sync.Mutex`, and code from other goroutines/signal handlers should go through `mrb.Inject` / `mrb.InjectFunc` rather than calling the state directly.
 - Values returned to mruby must stay reachable; the state keeps Go callbacks/objects in maps (`mrbProcs`, `classmap`, `funcs`) to keep them from being GC'd. Follow existing patterns rather than passing Go pointers into C directly.
 - Always `defer mrb.Close()` in tests and examples.
+- A signal reaches Ruby only when the VM runs its next instruction: a Go method that blocks for long (sleep, waits) should select on `mrb.SignalWake()` and run `mrb.CheckSignals()`, or Ctrl-C waits until it returns (a second SIGINT still ends the process).

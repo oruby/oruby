@@ -1,21 +1,34 @@
+// Package signal implements Ruby's Signal module, SignalException and
+// Interrupt. The Ruby side (signal.rb) follows MRI's signal.c; this file
+// holds the platform signal table and the OS-level primitives, and
+// oruby.MrbState.SignalCatch & co. carry OS signals into the running VM.
 package signal
 
 import (
-	"os"
-	"os/signal"
-	"strings"
+	_ "embed"
+	"sort"
 	"syscall"
+	"time"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 )
+
+//go:embed signal.rb
+var signalRb []byte
 
 var signals map[string]int
 
-type sigHandlers struct {
-	c           chan os.Signal
-	current     map[os.Signal]oruby.Value
-	exitHandler oruby.Value
-}
+// names MRI lists after the canonical name of the same number
+var aliases = map[string]bool{"IOT": true, "CLD": true, "POLL": true, "UNUSED": true}
+
+// how Signal.__oruby_os__ sets a signal up at the OS level
+const (
+	osCatch      = 0 // pass to Ruby, a trap handler runs
+	osCatchRaise = 1 // pass to Ruby, the default handler raises SignalException
+	osIgnore     = 2
+	osDefault    = 3 // the OS default action (SYSTEM_DEFAULT)
+)
 
 func init() {
 	signals = make(map[string]int)
@@ -26,210 +39,76 @@ func init() {
 
 	oruby.Gem("signal", func(mrb *oruby.MrbState) interface{} {
 		mSignal := mrb.DefineModule("Signal")
-		mrb.DefineGlobalFunction("trap", sigTrap, mrb.ArgsArg(1, 1)|mrb.ArgsBlock())
-
-		mSignal.DefineModuleFunction("trap", sigTrap, mrb.ArgsArg(1, 1)|mrb.ArgsBlock())
-		mSignal.DefineModuleFunction("list", sigList, mrb.ArgsNone())
-		mSignal.DefineModuleFunction("signame", sigName, mrb.ArgsReq(1))
-
-		eSignal := mrb.DefineClass("SignalException", mrb.EExceptionClass())
-		eSignal.DefineMethod("initialize", esignalInit, mrb.ArgsArg(1, 1))
-		eSignal.DefineMethod("signo", esignalSigno, mrb.ArgsNone())
-		eSignal.DefineAlias("signm", "message")
-
-		eInterrupt := mrb.DefineClass("Interrupt", eSignal)
-		eInterrupt.DefineMethod("initialize", interruptInit, mrb.ArgsOpt(1))
-
-		return &sigHandlers{
-			current: make(map[os.Signal]oruby.Value),
-		}
+		mSignal.DefineModuleFunction("__oruby_list__", sigList, mrb.ArgsNone())
+		mSignal.DefineModuleFunction("__oruby_nsig__", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+			return mrb.FixnumValue(platformNSIG)
+		}, mrb.ArgsNone())
+		mSignal.DefineModuleFunction("__oruby_os__", sigOS, mrb.ArgsReq(2))
+		mSignal.DefineModuleFunction("__oruby_deliver__", sigDeliver, mrb.ArgsReq(1))
+		rb.LoadRuby(mrb, "<internal:signal>", signalRb)
+		return nil
 	})
 }
 
-func GetSignalFromArgument(mrb *oruby.MrbState, sv oruby.Value) (int, string, error) {
-	if sv.IsString() || sv.IsSymbol() {
-		name := mrb.String(sv)
-		if signo, ok := signals[name]; ok {
-			return signo, name, nil
-		}
-		// Sig name can have "SIG" prefix - SIGHUP, SIGKILL
-		if strings.HasPrefix(name, "SIG") {
-			if signo, ok := signals[name[3:]]; ok {
-				return signo, name[3:], nil
-			}
-		}
-
-		return 0, "", oruby.EArgumentError("unsupported signal `%v'", name)
+// InstallDefaults gives the process MRI's default handlers: SIGINT raises
+// Interrupt; SIGHUP, SIGQUIT, SIGTERM, SIGALRM, SIGUSR1 and SIGUSR2 raise
+// SignalException. Programs run by oruby get them; an embedding host that
+// handles signals itself does not call it.
+func InstallDefaults(mrb *oruby.MrbState) error {
+	if !mrb.ClassDefinedID(oruby.Sym_Signal) {
+		return nil
 	}
-
-	var sig int
-	if sv.IsInteger() {
-		sig = sv.Int()
-	} else {
-		sigv := mrb.Call(sv, "to_int")
-		if !sigv.IsInteger() {
-			return 0, "", oruby.EArgumentError("unsupported signal `%v'", mrb.Inspect(sv))
-		}
-		sig = sigv.Int()
-	}
-
-	for name, v := range signals {
-		if sig == v {
-			return sig, name, nil
-		}
-	}
-	return 0, "", oruby.EArgumentError("signal unknown: %v", sig)
+	_, err := mrb.Funcall(mrb.ModuleGetID(oruby.Sym_Signal), oruby.Sym___oruby_install_defaults__)
+	return err
 }
 
-func trap(mrb *oruby.MrbState, handlers *sigHandlers) {
-	if handlers.c != nil {
-		return
-	}
-
-	handlers.c = make(chan os.Signal, 5)
-	mrb.WaitGroup.Add(1)
-
-	go func() {
-		for {
-			select {
-			case sig, ok := <-handlers.c:
-				if ok && sig != nil {
-					cmd, ok := handlers.current[sig]
-					if ok && cmd.IsProc() {
-						//TODO: This doesn't work. It needs to inject into main thread
-						mrb.Inject(mrb.RProc(cmd))
-					}
-				}
-			case <-mrb.ExitChan():
-				// gracefull close goroutine on mrb state close
-				signal.Stop(handlers.c)
-				close(handlers.c)
-				// zero signal handler, executed at MrbState closing
-				if mrb.InjectChan != nil && !handlers.exitHandler.IsNil() {
-					mrb.InjectChan <- mrb.RProc(handlers.exitHandler)
-					mrb.InjectChan <- mrb.WaitGroupDone()
-				} else {
-					mrb.WaitGroup.Done()
-				}
-
-				handlers.current = nil
-				return
-			}
-		}
-	}()
-}
-
-func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args, block := mrb.GetArgsWithBlock()
-	sigValue := args.Item(0)
-	command := args.ItemDef(1, block)
-
-	sigID, name, err := GetSignalFromArgument(mrb, mrb.Value(sigValue))
-	if err != nil {
-		return mrb.RaiseError(err)
-	}
-
-	if platformReservedSignal(sigID) {
-		return mrb.EArgumentError().Raisef("can't trap reserved signal: %v", name)
-	}
-
-	handlers := mrb.GemData("signal").(*sigHandlers)
-	sig := syscall.Signal(sigID)
-	var prev oruby.Value
-
-	// EXIT signal 0 handler
-	if sigID == 0 {
-		prev = mrb.GetGV("$__exit_trap_proc__")
-		mrb.SetGV("$__exit_trap_proc__", command)
-		if command.IsProc() {
-			mrb.GCProtect(command)
-		}
-		return prev
-	}
-
-	prev = handlers.current[sig]
-	if prev.IsNil() {
-		if sig == syscall.SIGINT {
-			prev = mrb.StrNew("DEFAULT").Value()
-		} else if command.IsString() && command.String() == "DEFAULT" {
-			prev = mrb.StrNew("SYSTEM_DEFAULT").Value()
-		}
-	}
-	handlers.current[sig] = command
-
-	if command.IsProc() {
-		mrb.GCProtect(command)
-		trap(mrb, handlers)
-		signal.Notify(handlers.c, sig)
-		return prev
-	}
-
-	if command.IsString() {
-		switch command.String() {
-		case "IGNORE", "SIG_IGN":
-			signal.Ignore(sig)
-		case "DEFAULT", "SIG_DFL":
-			signal.Reset(sig)
-		case "EXIT":
-			mrb.Call(mrb.KernelModule(), "send", oruby.Sym_exit)
-		case "SYSTEM_DEFAULT":
-			signal.Reset(sig)
-		default:
-			return mrb.RaiseError(oruby.EArgumentError("unknown command '%v'", command))
-		}
-		return prev
-	}
-
-	return mrb.RaiseError(oruby.EArgumentError("unknown command '%v'", command))
-}
-
+// sigList: name => number, in MRI's order (by number, canonical name first)
 func sigList(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	ret := mrb.HashNewCapa(len(signals))
-	for k, v := range signals {
-		ret.Set(mrb.StrNew(k), mrb.FixnumValue(v))
+	names := make([]string, 0, len(signals))
+	for k := range signals {
+		names = append(names, k)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		a, b := names[i], names[j]
+		if signals[a] != signals[b] {
+			return signals[a] < signals[b]
+		}
+		if aliases[a] != aliases[b] {
+			return !aliases[a]
+		}
+		return a < b
+	})
+	ret := mrb.HashNewCapa(len(names))
+	for _, k := range names {
+		ret.Set(mrb.StrNew(k), mrb.FixnumValue(signals[k]))
 	}
 	return ret
 }
 
-func sigName(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	sig := mrb.GetArgsFirst().Int()
-	for k, v := range signals {
-		if v == sig {
-			return mrb.StrNew(k)
-		}
+// Signal.__oruby_os__(signo, mode)
+func sigOS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	sig := syscall.Signal(args.Item(0).Int())
+	switch args.Item(1).Int() {
+	case osCatch:
+		mrb.SignalCatch(sig, false)
+	case osCatchRaise:
+		mrb.SignalCatch(sig, true)
+	case osIgnore:
+		mrb.SignalIgnore(sig)
+	default:
+		mrb.SignalSystemDefault(sig)
 	}
-
 	return mrb.NilValue()
 }
 
-func esignalInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
-	signo, name, err := GetSignalFromArgument(mrb, args.Item(0))
-	if err != nil {
+// Signal.__oruby_deliver__(signo): after Process.kill to this process, run
+// the handler before kill returns, as MRI does
+func sigDeliver(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	sig := syscall.Signal(mrb.GetArgsFirst().Int())
+	mrb.SignalWait(sig, time.Second)
+	if err := mrb.CheckSignals(); err != nil {
 		return mrb.RaiseError(err)
 	}
-
-	obj := mrb.RValue(self)
-	obj.SetIV("@signo", signo)
-	obj.SetIV("mesg", args.ItemDef(1, mrb.Value("SIG"+name)))
-
-	return self
-}
-
-func esignalSigno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.RValue(self).GetIV("@signo")
-}
-
-func interruptInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	obj := mrb.RValue(self)
-	obj.SetIV("@signo", int(syscall.SIGINT))
-
-	name := mrb.GetArgsFirst()
-	if !name.IsNil() {
-		obj.SetIV("mesg", name)
-	} else {
-		obj.SetIV("mesg", "SIGINT")
-	}
-
-	return self
+	return mrb.NilValue()
 }

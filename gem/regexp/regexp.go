@@ -86,6 +86,7 @@ func init() {
 		cls.DefineClassMethod("union", regexUnion, mrb.ArgsAny())
 		cls.DefineClassMethod("timeout", regexTimeout, mrb.ArgsNone())
 		cls.DefineClassMethod("timeout=", regexSetTimeout, mrb.ArgsReq(1))
+		cls.DefineClassMethod("linear_time?", regexLinearTime, mrb.ArgsArg(1, 1))
 		mrb.DefineClassUnder(cls, "TimeoutError", mrb.ERegexpError())
 
 		mrb.DefineGlobalConst("Regexp", cls)
@@ -143,6 +144,35 @@ func regexCompile(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	options := args.ItemDef(1, mrb.NilValue())
 	ret, _ := mrb.FuncallWithBlock(self, oruby.Sym_new, source, options, block)
 	return ret
+}
+
+func regexLinearTime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	source := args.Item(0)
+
+	var r *Regexp
+	if other, ok := mrb.Data(source).(*Regexp); ok {
+		r = other
+		if args.Len() > 1 && !args.Item(1).IsNil() {
+			mrb.Call(mrb.ModuleGet("Kernel").Value(), "warn", mrb.StrNew("warning: flags ignored"))
+		}
+	} else {
+		if source.Type() != oruby.MrbTTString {
+			if !mrb.RespondTo(source, oruby.Sym_to_str) {
+				return mrb.Raise(mrb.ETypeError(), "no implicit conversion into String")
+			}
+			source = mrb.Call(source, "to_str")
+		}
+		src := mrb.String(source)
+		opts := rubyOptions(mrb, args.ItemDef(1, mrb.NilValue()))
+		compiled, err := compileRuby(src, opts)
+		if err != nil {
+			return raiseRegexpError(mrb, err)
+		}
+		r = compiled
+	}
+
+	return oruby.Bool(r != nil && r.re2 != nil)
 }
 
 // regexAfterInit is called when a Go-created *Regexp is passed to oruby

@@ -9,8 +9,10 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/signal"
 )
 
 // options holds the switches MRI's ruby accepts, as far as ORuby supports
@@ -542,6 +544,8 @@ func run() int {
 		return 1
 	}
 	defer mrb.Close()
+	// MRI's handlers: SIGINT raises Interrupt, SIGTERM & co. SignalException
+	signal.InstallDefaults(mrb)
 
 	if o.copyright {
 		mrb.ShowCopyright()
@@ -827,6 +831,19 @@ func reportException(mrb *oruby.MrbState, err error) (int, bool) {
 	// at_exit handlers run before the error is printed, as in MRI
 	mrb.RunAtExitHandlers()
 	mrb.ExcClear()
+	// an uncaught SignalException ends the process with its signal; only
+	// Interrupt is reported
+	signo := 0
+	if mrb.ClassDefined("SignalException") && exc.IsKindOf(mrb.ClassGet("SignalException")) {
+		if v := mrb.Call(exc.Value(), "signo"); v.IsInteger() {
+			signo = v.Int()
+		}
+		if !exc.IsKindOf(mrb.ClassGet("Interrupt")) {
+			mrb.SetGV("$__oruby_top_exc__", mrb.NilValue())
+			mrb.LoadString("$stdout.flush rescue nil; $stderr.flush rescue nil")
+			oruby.SignalKillSelf(syscall.Signal(signo))
+		}
+	}
 	_, perr := mrb.LoadString(`begin
   e = $__oruby_top_exc__
   $__oruby_top_exc__ = nil
@@ -837,6 +854,10 @@ rescue Exception
 end`)
 	if perr != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", progName(), err)
+	}
+	if signo > 0 {
+		mrb.LoadString("$stdout.flush rescue nil")
+		oruby.SignalKillSelf(syscall.Signal(signo))
 	}
 	return 1, true
 }

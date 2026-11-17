@@ -18,14 +18,5 @@ func platformInitSignals() {
 	signals["TERM"] = int(syscall.SIGTERM)
 }
 
-func platformReservedSignal(sig int) bool {
-	switch sig {
-	case int(syscall.SIGSEGV):
-	case int(syscall.SIGBUS):
-	case int(syscall.SIGILL):
-	case int(syscall.SIGFPE):
-		return true
-	default:
-		return false
-	}
-}
+// NSIG: signal numbers are below it
+const platformNSIG = 23
