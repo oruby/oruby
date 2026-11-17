@@ -71,7 +71,7 @@ func (e *AotError) Error() string {
 }
 
 func (mrb *MrbState) aotInspectMessage(exc Value) string {
-	sym := mrb.Intern("message")
+	sym := Sym_message
 	v := Value{C._aot_funcall(mrb.p, exc.v, C.mrb_sym(sym), 0, nil, C.mrb_nil_value())}
 	if mrb.p.exc != nil {
 		mrb.p.exc = nil
@@ -160,11 +160,11 @@ func (mrb *MrbState) AotInit() {
 	exc := mrb.EExceptionClass()
 	st.breakClass = mrb.DefineClass("ORubyAotBreak", exc)
 	st.returnClass = mrb.DefineClass("ORubyAotReturn", exc)
-	st.symVal = mrb.Intern("@__v")
-	st.symTag = mrb.Intern("@__t")
-	st.symIdx = mrb.Intern("@__i")
-	st.symDispatch = mrb.Intern("__aot_dispatch__")
-	st.symCall = mrb.Intern("call")
+	st.symVal = IvSym___v
+	st.symTag = IvSym___t
+	st.symIdx = IvSym___i
+	st.symDispatch = Sym___aot_dispatch__
+	st.symCall = Sym_call
 	st.topCx = &AotCtx{}
 	st.blocks = make(map[int64]*aotBlockData)
 	st.methods = make(map[int]*aotMethod)

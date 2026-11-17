@@ -337,7 +337,7 @@ func (mrb *MrbState) getErrorKlass(err error) RClass {
 			return mrb.getErrnoClass("ETIMEDOUT")
 		default:
 			// SystemCallError.new(nil, errno) resolves the Errno::EXXX class
-			if exc, err := mrb.Funcall(mrb.ESystemCallError().Value(), mrb.Intern("new"), nil, int(sysErr)); err == nil {
+			if exc, err := mrb.Funcall(mrb.ESystemCallError().Value(), Sym_new, nil, int(sysErr)); err == nil {
 				return mrb.ClassOf(exc)
 			}
 			mrb.ExcClear()

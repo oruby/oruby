@@ -75,7 +75,7 @@ func legacyNewThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	c.alive = true
 	threadClass := c.mrb.ClassGet("Thread")
 	if !threadClass.IsNil() {
-		c.mrb.CVSet(threadClass, c.mrb.Intern("@@current"), c.mrb.DataWrapInterface(threadClass, c).Value())
+		c.mrb.CVSet(threadClass, oruby.CvSym_current, c.mrb.DataWrapInterface(threadClass, c).Value())
 	}
 	c.mrb.WaitGroup.Add(1)
 	go c.worker()
@@ -88,7 +88,7 @@ func legacyNewThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 // threadCurrent returns current thread
 func threadCurrent(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	threadClass := mrb.ClassGet("Thread")
-	sym := mrb.Intern("@@current")
+	sym := oruby.CvSym_current
 	val := mrb.ModCVGet(threadClass, sym)
 	if !val.IsNil() {
 		return val

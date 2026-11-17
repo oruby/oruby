@@ -433,7 +433,7 @@ func main() {
 					mrb.ExcClear()
 				} else {
 					/* no */
-					if !mrb.RespondTo(result, mrb.Intern("inspect")) {
+					if !mrb.RespondTo(result, oruby.Sym_inspect) {
 						result = mrb.AnyToS(result)
 					}
 					p(mrb, result, 1)

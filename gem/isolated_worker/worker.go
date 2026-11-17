@@ -191,7 +191,7 @@ func workerValue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if w.failure != "" {
 		return mrb.Raise(mrb.ERuntimeError(), w.failure)
 	}
-	key := mrb.Intern("@__isolated_worker_result")
+	key := oruby.IvSym___isolated_worker_result
 	if !w.valueReady {
 		mrb.IVSet(self, key, w.result.materialize(mrb))
 		w.valueReady = true

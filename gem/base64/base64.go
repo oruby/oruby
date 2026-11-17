@@ -47,7 +47,7 @@ func base64Encode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringWithEncoding(mrb *oruby.MrbState, value oruby.MrbValue, encoding string) oruby.MrbValue {
-	if mrb.RespondTo(value.Value(), mrb.Intern("force_encoding")) {
+	if mrb.RespondTo(value.Value(), oruby.Sym_force_encoding) {
 		return mrb.Call(value, "force_encoding", encoding)
 	}
 	return value
@@ -149,7 +149,7 @@ func base64UrlSafeEncode(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	str := mrb.String(mrb.GetArgsFirst())
 	kwargs := mrb.KeywordArgs()
-	paddingKey := mrb.SymbolValue(mrb.Intern("padding"))
+	paddingKey := mrb.SymbolValue(oruby.Sym_padding)
 	if kwargs.Size(kwargs.Value()) > 1 || (!kwargs.EmptyP() && !kwargs.KeyP(paddingKey)) {
 		return mrb.Raise(mrb.EArgumentError(), "unknown keyword")
 	}

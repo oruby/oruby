@@ -63,8 +63,8 @@ func openTmpFile(mrb *oruby.MrbState, args oruby.RArgs) (string, string, int, in
 	name = prefix + "*" + suffix
 
 	if !opt.IsNil() {
-		flags = mrb.HashFetch(opt, mrb.Intern("mode"), oruby.Int(flags)).Int()
-		if dirV := mrb.HashFetch(opt, mrb.Intern("tmpdir"), oruby.Nil); dirV.IsString() {
+		flags = mrb.HashFetch(opt, oruby.Sym_mode, oruby.Int(flags)).Int()
+		if dirV := mrb.HashFetch(opt, oruby.Sym_tmpdir, oruby.Nil); dirV.IsString() {
 			dir = dirV.String()
 		}
 	}

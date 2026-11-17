@@ -160,8 +160,8 @@ func (w *writer) writeValue(value oruby.Value, depth int) error {
 	case oruby.MrbTTSymbol:
 		return w.writeSymbol(value.Symbol())
 	}
-	hasMarshalDump := w.mrb.RespondTo(value, w.mrb.Intern("marshal_dump"))
-	hasUserDump := w.mrb.RespondTo(value, w.mrb.Intern("_dump"))
+	hasMarshalDump := w.mrb.RespondTo(value, oruby.Sym_marshal_dump)
+	hasUserDump := w.mrb.RespondTo(value, oruby.Sym__dump)
 	if value.HasBasic() {
 		linked, err := w.reference(value)
 		if err != nil || linked {
@@ -319,15 +319,15 @@ func (w *writer) writeString(value oruby.Value, depth int) error {
 		return err
 	}
 	encoding := "UTF-8"
-	if w.mrb.RespondTo(value, w.mrb.Intern("encoding")) {
-		enc, err := w.mrb.Funcall(value, w.mrb.Intern("encoding"))
+	if w.mrb.RespondTo(value, oruby.Sym_encoding) {
+		enc, err := w.mrb.Funcall(value, oruby.Sym_encoding)
 		if err != nil {
 			return err
 		}
 		if enc.Type() == oruby.MrbTTString {
 			encoding = w.mrb.String(enc)
-		} else if w.mrb.RespondTo(enc, w.mrb.Intern("name")) {
-			name, err := w.mrb.Funcall(enc, w.mrb.Intern("name"))
+		} else if w.mrb.RespondTo(enc, oruby.Sym_name) {
+			name, err := w.mrb.Funcall(enc, oruby.Sym_name)
 			if err != nil {
 				return err
 			}
@@ -379,7 +379,7 @@ func (w *writer) writeMarshalDump(value oruby.Value, depth int) error {
 	if err != nil {
 		return err
 	}
-	payload, err := w.mrb.Funcall(value, w.mrb.Intern("marshal_dump"))
+	payload, err := w.mrb.Funcall(value, oruby.Sym_marshal_dump)
 	if err != nil {
 		return err
 	}
@@ -397,7 +397,7 @@ func (w *writer) writeUserDump(value oruby.Value) error {
 	if err != nil {
 		return err
 	}
-	payload, err := w.mrb.Funcall(value, w.mrb.Intern("_dump"), -1)
+	payload, err := w.mrb.Funcall(value, oruby.Sym__dump, -1)
 	if err != nil {
 		return err
 	}
@@ -421,11 +421,11 @@ func (w *writer) writeUserDump(value oruby.Value) error {
 }
 
 func (w *writer) writeRegexp(value oruby.Value) error {
-	source := w.mrb.IVGet(value, w.mrb.Intern("@source"))
-	options := w.mrb.IVGet(value, w.mrb.Intern("@options"))
-	if source.Type() != oruby.MrbTTString && w.mrb.RespondTo(value, w.mrb.Intern("source")) {
+	source := w.mrb.IVGet(value, oruby.IvSym_source)
+	options := w.mrb.IVGet(value, oruby.IvSym_options)
+	if source.Type() != oruby.MrbTTString && w.mrb.RespondTo(value, oruby.Sym_source) {
 		var err error
-		source, err = w.mrb.Funcall(value, w.mrb.Intern("source"))
+		source, err = w.mrb.Funcall(value, oruby.Sym_source)
 		if err != nil {
 			return err
 		}
@@ -462,7 +462,7 @@ func (w *writer) writeRegexp(value oruby.Value) error {
 	if err := w.writeLong(1); err != nil {
 		return err
 	}
-	if err := w.writeSymbol(w.mrb.Intern("E")); err != nil {
+	if err := w.writeSymbol(oruby.Sym_E); err != nil {
 		return err
 	}
 	return w.writeByte('F')
@@ -474,7 +474,7 @@ func (w *writer) classPath(value oruby.Value) (string, error) {
 		klass = w.mrb.ClassPtr(value)
 	} else {
 		// the real class: ClassOf is the singleton class of an extended object
-		c, err := w.mrb.Funcall(value, w.mrb.Intern("class"))
+		c, err := w.mrb.Funcall(value, oruby.Sym_class)
 		if err != nil {
 			return "", err
 		}
@@ -488,7 +488,7 @@ func (w *writer) classPath(value oruby.Value) (string, error) {
 }
 
 func (w *writer) ivars(value oruby.Value) ([]oruby.Value, error) {
-	result, err := w.mrb.Funcall(value, w.mrb.Intern("instance_variables"))
+	result, err := w.mrb.Funcall(value, oruby.Sym_instance_variables)
 	if err != nil {
 		return nil, err
 	}
@@ -520,7 +520,7 @@ func (w *writer) writeExtended(value oruby.Value) error {
 	if err != nil {
 		return err
 	}
-	names, err := w.mrb.Funcall(mods, w.mrb.Intern("call"), value)
+	names, err := w.mrb.Funcall(mods, oruby.Sym_call, value)
 	if err != nil {
 		return err
 	}
@@ -580,7 +580,7 @@ func (w *writer) writeStruct(value oruby.Value, depth int) error {
 		return err
 	}
 	klass := w.mrb.ClassOf(value)
-	members, err := w.mrb.Funcall(klass, w.mrb.Intern("members"))
+	members, err := w.mrb.Funcall(klass, oruby.Sym_members)
 	if err != nil {
 		return fmt.Errorf("Marshal Struct members: %w", err)
 	}
@@ -601,7 +601,7 @@ func (w *writer) writeStruct(value oruby.Value, depth int) error {
 		if field.Type() != oruby.MrbTTSymbol {
 			return fmt.Errorf("unsupported Struct member %s", w.mrb.TypeName(field))
 		}
-		item, err := w.mrb.Funcall(value, w.mrb.Intern("[]"), field)
+		item, err := w.mrb.Funcall(value, oruby.OpSym_aref, field)
 		if err != nil {
 			return fmt.Errorf("Marshal Struct member %s: %w", w.mrb.SymName(field.Symbol()), err)
 		}
@@ -623,7 +623,7 @@ func (w *writer) writeRange(value oruby.Value, depth int) error {
 	if err := w.writeByte('o'); err != nil {
 		return err
 	}
-	if err := w.writeSymbol(w.mrb.Intern("Range")); err != nil {
+	if err := w.writeSymbol(oruby.Sym_Range); err != nil {
 		return err
 	}
 	if err := w.writeLong(3); err != nil {

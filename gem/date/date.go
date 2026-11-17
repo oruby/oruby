@@ -278,7 +278,7 @@ func (p parsed) toRuby(mrb *oruby.MrbState) oruby.Value {
 		case bool:
 			rv = mrb.BoolValue(x)
 		case [2]int64: // rational numerator/denominator
-			r, err := mrb.Funcall(mrb.ObjectClass().Value(), mrb.Intern("Rational"), mrb.FixnumValue(int(x[0])), mrb.FixnumValue(int(x[1])))
+			r, err := mrb.Funcall(mrb.ObjectClass().Value(), oruby.Sym_Rational, mrb.FixnumValue(int(x[0])), mrb.FixnumValue(int(x[1])))
 			if err != nil {
 				mrb.ExcClear()
 				continue

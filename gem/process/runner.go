@@ -205,11 +205,11 @@ func (runner *cmdRunner) parseFd(key, val oruby.Value) {
 
 	if key.IsSymbol() {
 		switch key.Symbol() {
-		case mrb.Intern("in"):
+		case oruby.Sym_in:
 			runner.cmd.Stdin = runner.getReader(val)
-		case mrb.Intern("out"):
+		case oruby.Sym_out:
 			runner.cmd.Stdout = runner.getWriter(val)
-		case mrb.Intern("err"):
+		case oruby.Sym_err:
 			runner.cmd.Stderr = runner.getWriter(val)
 		}
 		return

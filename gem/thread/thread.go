@@ -23,7 +23,7 @@ func init() {
 		threadClass.DefineClassMethod("stop", unsupportedThread, mrb.ArgsNone())
 
 		mutexClass := mrb.DefineGoClass("Mutex", newMutex)
-		mrb.ConstSet(threadClass, mrb.Intern("Mutex"), mutexClass.Value())
+		mrb.ConstSet(threadClass, oruby.Sym_Mutex, mutexClass.Value())
 		mutexClass.DefineMethod("sleep", mutexSleep, mrb.ArgsReq(1))
 		mutexClass.DefineMethod("synchronize", mutexSynchronize, mrb.ArgsReq(1))
 		mutexClass.DefineAlias("locked?", "locked")
@@ -57,7 +57,7 @@ func threadMain(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func threadCurrent(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	klass := mrb.ClassGet("Thread")
-	key := mrb.Intern("@__main_thread")
+	key := oruby.IvSym___main_thread
 	current := mrb.IVGet(klass, key)
 	if current.IsNil() {
 		current = mrb.ObjAlloc(oruby.MrbTTObject, klass).Value()

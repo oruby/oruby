@@ -164,7 +164,7 @@ func tlsRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		var ne net.Error
 		if errors.As(err, &ne) && ne.Timeout() {
-			return mrb.SymbolValue(mrb.Intern("timeout"))
+			return mrb.SymbolValue(oruby.Sym_timeout)
 		}
 		if errors.Is(err, os.ErrClosed) || strings.Contains(err.Error(), "EOF") {
 			return mrb.NilValue()

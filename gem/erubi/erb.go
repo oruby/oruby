@@ -48,8 +48,8 @@ func erbInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.Raise(mrb.EArgumentError(), "ERB positional options are not supported")
 	}
 	kwargs := mrb.KeywordArgs()
-	trimKey := mrb.SymbolValue(mrb.Intern("trim_mode"))
-	outvarKey := mrb.SymbolValue(mrb.Intern("eoutvar"))
+	trimKey := mrb.SymbolValue(oruby.Sym_trim_mode)
+	outvarKey := mrb.SymbolValue(oruby.Sym_eoutvar)
 	known := 0
 	if kwargs.KeyP(trimKey) {
 		known++
@@ -85,17 +85,17 @@ func erbInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func erbSrc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.IVGet(self, mrb.Intern("@src"))
+	return mrb.IVGet(self, oruby.IvSym_src)
 }
 
 func erbResult(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	source := mrb.IVGet(self, mrb.Intern("@src"))
+	source := mrb.IVGet(self, oruby.IvSym_src)
 	binding := mrb.GetArgs().Item(0)
-	filename := mrb.IVGet(self, mrb.Intern("@filename"))
+	filename := mrb.IVGet(self, oruby.IvSym_filename)
 	if filename.IsNil() {
 		filename = mrb.StringValue("(erb)").Value()
 	}
-	lineno := mrb.IVGet(self, mrb.Intern("@lineno"))
+	lineno := mrb.IVGet(self, oruby.IvSym_lineno)
 	return mrb.Call(mrb.KernelModule(), "eval", source, binding, filename, lineno)
 }
 

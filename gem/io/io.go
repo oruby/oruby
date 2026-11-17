@@ -173,8 +173,8 @@ func parseCopyStreamInt(mrb *oruby.MrbState, v oruby.Value) (int64, error) {
 	if v.IsInteger() {
 		return int64(v.Int()), nil
 	}
-	if mrb.RespondTo(v, mrb.Intern("to_int")) {
-		res, err := mrb.Funcall(v, mrb.Intern("to_int"))
+	if mrb.RespondTo(v, oruby.Sym_to_int) {
+		res, err := mrb.Funcall(v, oruby.Sym_to_int)
 		if err != nil {
 			return 0, err
 		}
@@ -190,8 +190,8 @@ func resolveStreamArg(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
 	if v.IsString() || v.IsData() {
 		return v, nil
 	}
-	if mrb.RespondTo(v, mrb.Intern("to_path")) {
-		res, err := mrb.Funcall(v, mrb.Intern("to_path"))
+	if mrb.RespondTo(v, oruby.Sym_to_path) {
+		res, err := mrb.Funcall(v, oruby.Sym_to_path)
 		if err != nil {
 			return v, err
 		}
@@ -200,8 +200,8 @@ func resolveStreamArg(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
 		}
 		return res, nil
 	}
-	if mrb.RespondTo(v, mrb.Intern("to_io")) {
-		res, err := mrb.Funcall(v, mrb.Intern("to_io"))
+	if mrb.RespondTo(v, oruby.Sym_to_io) {
+		res, err := mrb.Funcall(v, oruby.Sym_to_io)
 		if err != nil {
 			return v, err
 		}
@@ -453,7 +453,7 @@ func ioForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 
-	ret, err := mrb.FuncallWithBlock(lines, mrb.Intern("to_enum"))
+	ret, err := mrb.FuncallWithBlock(lines, oruby.Sym_to_enum)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -495,19 +495,19 @@ func openIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, error)
 		case io.Reader, io.Writer, *os.File, *io.PipeReader, *io.PipeWriter:
 			return ioObject, nil
 		default:
-			ret, err := mrb.FuncallWithBlock(fd, mrb.Intern("to_io"))
+			ret, err := mrb.FuncallWithBlock(fd, oruby.Sym_to_io)
 			if err == nil {
 				return mrb.Data(ret), nil
 			}
 		}
 	case oruby.MrbTTObject:
-		if path, err := mrb.Funcall(fd, mrb.Intern("to_path")); err == nil && path.IsString() {
+		if path, err := mrb.Funcall(fd, oruby.Sym_to_path); err == nil && path.IsString() {
 			return os.Open(mrb.FSPath(path))
 		}
-		if path, err := mrb.Funcall(fd, mrb.Intern("to_str")); err == nil && path.IsString() {
+		if path, err := mrb.Funcall(fd, oruby.Sym_to_str); err == nil && path.IsString() {
 			return os.Open(mrb.FSPath(path))
 		}
-		ret, err := mrb.FuncallWithBlock(fd, mrb.Intern("to_io"))
+		ret, err := mrb.FuncallWithBlock(fd, oruby.Sym_to_io)
 		if err == nil {
 			return mrb.Data(ret), nil
 		}

@@ -21,7 +21,7 @@ func openLineReader(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, kwarg
 
 	arg1 := args.ItemDef(index, globalSeparator)
 	arg2 := args.Item(index + 1)
-	chomp := kwargs.Get(mrb.Intern("chomp")).Bool()
+	chomp := kwargs.Get(oruby.Sym_chomp).Bool()
 
 	switch arg1.Type() {
 	case oruby.MrbTTString:
@@ -72,7 +72,7 @@ func readLine(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, kwargs orub
 
 	arg1 := args.ItemDef(index, globalSeparator)
 	arg2 := args.Item(index + 1)
-	chomp := kwargs.Get(mrb.Intern("chomp")).Bool()
+	chomp := kwargs.Get(oruby.Sym_chomp).Bool()
 
 	switch arg1.Type() {
 	case oruby.MrbTTString:

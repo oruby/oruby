@@ -148,7 +148,7 @@ func ioReadNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	n, err := withNonblock(fd, func() (int, error) { return syscall.Read(fd, buf) })
 	if err != nil {
 		if errors.Is(err, syscall.EAGAIN) {
-			return mrb.SymbolValue(mrb.Intern("wait_readable"))
+			return mrb.SymbolValue(oruby.Sym_wait_readable)
 		}
 		return mrb.SysFail(err)
 	}
@@ -168,7 +168,7 @@ func ioWriteNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	n, err := withNonblock(fd, func() (int, error) { return syscall.Write(fd, data) })
 	if err != nil {
 		if errors.Is(err, syscall.EAGAIN) {
-			return mrb.SymbolValue(mrb.Intern("wait_writable"))
+			return mrb.SymbolValue(oruby.Sym_wait_writable)
 		}
 		return mrb.SysFail(err)
 	}

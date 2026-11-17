@@ -334,7 +334,7 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern(old), pattern, replace, block)
 		return ret, false
 	}
-	if mrb.RespondTo(self, mrb.Intern("valid_encoding?")) {
+	if mrb.RespondTo(self, oruby.SymQ_valid_encoding) {
 		if valid := mrb.Call(self, "valid_encoding?"); !valid.IsNil() && !valid.Bool() {
 			enc := mrb.Call(self, "encoding")
 			encName := "UTF-8"
@@ -450,7 +450,7 @@ func stringMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	md := doMatch(mrb, re, s, pos)
 	if !md.Value().IsNil() && md.Value().Type() == oruby.MrbTTCData {
-		_ = mrb.IVSet(md.Value(), mrb.Intern("@regexp"), reValue)
+		_ = mrb.IVSet(md.Value(), oruby.IvSym_regexp, reValue)
 		if !block.IsNil() {
 			return mrb.Yield(block, md)
 		}

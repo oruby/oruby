@@ -283,7 +283,7 @@ func mrbServerAddr(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func writeHTTPResponse(mrb *oruby.MrbState, w http.ResponseWriter, res oruby.Value) {
 	if exc := mrb.Exc(); exc != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		msg, _ := mrb.Funcall(exc.Value(), mrb.Intern("inspect"))
+		msg, _ := mrb.Funcall(exc.Value(), oruby.Sym_inspect)
 		_, _ = w.Write([]byte("Internal Server Error: " + mrb.String(msg)))
 		mrb.ExcClear()
 		return

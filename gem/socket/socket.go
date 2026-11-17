@@ -112,7 +112,7 @@ func resErr(mrb *oruby.MrbState, msg string, code int) oruby.MrbValue {
 	if cls.IsNil() {
 		return mrb.Raise(rb.ClassPath(mrb, "SocketError"), msg)
 	}
-	exc, err := mrb.Funcall(cls.Value(), mrb.Intern("new"), mrb.StrNew(msg), code)
+	exc, err := mrb.Funcall(cls.Value(), oruby.Sym_new, mrb.StrNew(msg), code)
 	if err != nil {
 		return mrb.Exc().Value()
 	}

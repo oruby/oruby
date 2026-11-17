@@ -111,13 +111,13 @@ func ioSysopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func binaryStringValue(mrb *oruby.MrbState, buf []byte) oruby.Value {
 	v := mrb.BytesValue(buf)
-	if mrb.RespondTo(v, mrb.Intern("force_encoding")) {
+	if mrb.RespondTo(v, oruby.Sym_force_encoding) {
 		modEnc := mrb.EncodingClass()
-		if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
-			binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
-			mrb.Funcall(v, mrb.Intern("force_encoding"), binEnc)
+		if !modEnc.IsNil() && mrb.ConstDefined(modEnc, oruby.Sym_BINARY) {
+			binEnc := mrb.ConstGet(modEnc, oruby.Sym_BINARY)
+			mrb.Funcall(v, oruby.Sym_force_encoding, binEnc)
 		} else {
-			mrb.Funcall(v, mrb.Intern("force_encoding"), mrb.StringValue("ASCII-8BIT"))
+			mrb.Funcall(v, oruby.Sym_force_encoding, mrb.StringValue("ASCII-8BIT"))
 		}
 	}
 	return v
@@ -245,7 +245,7 @@ func ioReadInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if len(rawArgs) >= 4 && !rawArgs[3].IsNil() {
 		opts = rawArgs[3]
 		if opts.Type() == oruby.MrbTTHash {
-			modeVal := mrb.HashGet(opts, mrb.SymbolValue(mrb.Intern("mode")))
+			modeVal := mrb.HashGet(opts, mrb.SymbolValue(oruby.Sym_mode))
 			if modeVal.IsNil() {
 				modeVal = mrb.HashGet(opts, mrb.StringValue("mode"))
 			}
@@ -291,26 +291,26 @@ func ioReadInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	ret := mrb.StrNew(string(buf[:n]))
 	if hasLength {
-		if mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
+		if mrb.RespondTo(ret, oruby.Sym_force_encoding) {
 			modEnc := mrb.EncodingClass()
-			if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
-				binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
-				mrb.Funcall(ret, mrb.Intern("force_encoding"), binEnc)
+			if !modEnc.IsNil() && mrb.ConstDefined(modEnc, oruby.Sym_BINARY) {
+				binEnc := mrb.ConstGet(modEnc, oruby.Sym_BINARY)
+				mrb.Funcall(ret, oruby.Sym_force_encoding, binEnc)
 			}
 		}
 	} else if !opts.IsNil() && opts.Type() == oruby.MrbTTHash {
-		encVal := mrb.HashGet(opts, mrb.SymbolValue(mrb.Intern("encoding")))
+		encVal := mrb.HashGet(opts, mrb.SymbolValue(oruby.Sym_encoding))
 		if encVal.IsNil() {
 			encVal = mrb.HashGet(opts, mrb.StringValue("encoding"))
 		}
 		if encVal.IsNil() {
-			encVal = mrb.HashGet(opts, mrb.SymbolValue(mrb.Intern("external_encoding")))
+			encVal = mrb.HashGet(opts, mrb.SymbolValue(oruby.Sym_external_encoding))
 			if encVal.IsNil() {
 				encVal = mrb.HashGet(opts, mrb.StringValue("external_encoding"))
 			}
 		}
-		if !encVal.IsNil() && mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
-			mrb.Funcall(ret, mrb.Intern("force_encoding"), encVal)
+		if !encVal.IsNil() && mrb.RespondTo(ret, oruby.Sym_force_encoding) {
+			mrb.Funcall(ret, oruby.Sym_force_encoding, encVal)
 		}
 	}
 	return ret
@@ -333,7 +333,7 @@ func ioBinwriteInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if oruby.MrbStringP(strVal) {
 		strBytes = []byte(mrb.String(strVal))
 	} else {
-		s, err := mrb.Funcall(strVal, mrb.Intern("to_s"))
+		s, err := mrb.Funcall(strVal, oruby.Sym_to_s)
 		if err != nil {
 			return mrb.Raise(mrb.ETypeError(), "cannot convert to string")
 		}
@@ -353,7 +353,7 @@ func ioBinwriteInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if len(rawArgs) >= 4 && !rawArgs[3].IsNil() {
 		opts := rawArgs[3]
 		if opts.Type() == oruby.MrbTTHash {
-			modeVal := mrb.HashGet(opts, mrb.SymbolValue(mrb.Intern("mode")))
+			modeVal := mrb.HashGet(opts, mrb.SymbolValue(oruby.Sym_mode))
 			if modeVal.IsNil() {
 				modeVal = mrb.HashGet(opts, mrb.StringValue("mode"))
 			}
@@ -370,7 +370,7 @@ func ioBinwriteInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				}
 			}
 
-			flagsVal := mrb.HashGet(opts, mrb.SymbolValue(mrb.Intern("flags")))
+			flagsVal := mrb.HashGet(opts, mrb.SymbolValue(oruby.Sym_flags))
 			if flagsVal.IsNil() {
 				flagsVal = mrb.HashGet(opts, mrb.StringValue("flags"))
 			}
@@ -378,7 +378,7 @@ func ioBinwriteInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				flags |= flagsVal.Int()
 			}
 
-			permVal := mrb.HashGet(opts, mrb.SymbolValue(mrb.Intern("perm")))
+			permVal := mrb.HashGet(opts, mrb.SymbolValue(oruby.Sym_perm))
 			if permVal.IsNil() {
 				permVal = mrb.HashGet(opts, mrb.StringValue("perm"))
 			}
@@ -460,13 +460,13 @@ func fileOpenIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, er
 		case io.Reader, io.Writer, *os.File, *io.PipeReader, *io.PipeWriter:
 			return ioObject, nil
 		default:
-			ret, err := mrb.FuncallWithBlock(fd, mrb.Intern("to_io"))
+			ret, err := mrb.FuncallWithBlock(fd, oruby.Sym_to_io)
 			if err == nil {
 				return mrb.Data(ret), nil
 			}
 		}
 	case oruby.MrbTTObject:
-		ret, err := mrb.FuncallWithBlock(fd, mrb.Intern("to_io"))
+		ret, err := mrb.FuncallWithBlock(fd, oruby.Sym_to_io)
 		if err == nil {
 			return mrb.Data(ret), nil
 		}
@@ -501,8 +501,8 @@ func ioReopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	target := rawArgs[0]
-	if mrb.RespondTo(target, mrb.Intern("to_io")) {
-		otherVal, err := mrb.Funcall(target, mrb.Intern("to_io"))
+	if mrb.RespondTo(target, oruby.Sym_to_io) {
+		otherVal, err := mrb.Funcall(target, oruby.Sym_to_io)
 		if err == nil {
 			if otherFile, ok := mrb.Data(otherVal).(*os.File); ok {
 				_ = syscall.Dup2(int(otherFile.Fd()), int(f.Fd()))

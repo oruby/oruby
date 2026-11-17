@@ -96,11 +96,11 @@ func unsafeMigrateValue(mrb, mrb2 *oruby.MrbState, v oruby.Value) (oruby.MrbValu
 		}
 
 		if v.Type() == oruby.MrbTTException {
-			msg, err := migrateValue(mrb, mrb2, mrb.IVGet(v, mrb.Intern("mesg")))
+			msg, err := migrateValue(mrb, mrb2, mrb.IVGet(v, oruby.Sym_mesg))
 			if err != nil {
 				return mrb.NilValue(), err
 			}
-			err = mrb2.IVSet(nv, mrb2.Intern("mesg"), msg)
+			err = mrb2.IVSet(nv, oruby.Sym_mesg, msg)
 			if err != nil {
 				return mrb.NilValue(), err
 			}

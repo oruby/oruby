@@ -173,17 +173,17 @@ func (mrb *MrbState) FSPath(v Value) string {
 	if ascii {
 		return s
 	}
-	enc, err := mrb.Funcall(v, mrb.Intern("encoding"))
+	enc, err := mrb.Funcall(v, Sym_encoding)
 	if err != nil {
 		mrb.ExcClear()
 		return s
 	}
-	name, err := mrb.Funcall(enc, mrb.Intern("name"))
+	name, err := mrb.Funcall(enc, Sym_name)
 	if err != nil || name.String() == "UTF-8" || name.String() == "ASCII-8BIT" {
 		mrb.ExcClear()
 		return s
 	}
-	conv, err := mrb.Funcall(v, mrb.Intern("encode"), mrb.StrNew("UTF-8"))
+	conv, err := mrb.Funcall(v, Sym_encode, mrb.StrNew("UTF-8"))
 	if err != nil || !MrbStringP(conv) {
 		mrb.ExcClear()
 		return s

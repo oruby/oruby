@@ -28,7 +28,7 @@ func (e RException) ExcExit() bool {
 }
 
 func (e RException) ExitStatus() int {
-	return e.mrb.IVGet(e, e.mrb.Intern("status")).Int()
+	return e.mrb.IVGet(e, Sym_status).Int()
 }
 
 func (e RException) Backtrace() RValue {

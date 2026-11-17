@@ -25,8 +25,8 @@ func fileUmask(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	var newMask int
 	if arg.IsInt() {
 		newMask = arg.Int()
-	} else if mrb.RespondTo(arg, mrb.Intern("to_int")) {
-		v, err := mrb.Funcall(arg, mrb.Intern("to_int"))
+	} else if mrb.RespondTo(arg, oruby.Sym_to_int) {
+		v, err := mrb.Funcall(arg, oruby.Sym_to_int)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}

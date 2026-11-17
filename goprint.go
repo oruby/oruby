@@ -17,17 +17,17 @@ func initPrint(mrb *MrbState) interface{} {
 	kernel.DefineModuleFunction("printf", printPrintf, mrb.ArgsAny())
 	kernel.DefineMethod("defined?", mrubyDefined, mrb.ArgsAny())
 
-	if mrb.RespondTo(kernel.Value(), mrb.Intern("Integer")) {
+	if mrb.RespondTo(kernel.Value(), Sym_Integer) {
 		kernel.DefineAlias("_mrb_original_Integer", "Integer")
 		kernel.DefineMethod("Integer", kernelInteger, mrb.ArgsAny())
 	}
-	if mrb.RespondTo(kernel.Value(), mrb.Intern("Float")) {
+	if mrb.RespondTo(kernel.Value(), Sym_Float) {
 		kernel.DefineAlias("_mrb_original_Float", "Float")
 		kernel.DefineMethod("Float", kernelFloat, mrb.ArgsAny())
 	}
 
 	kernel.DefineMethod("at_exit", kernelAtExit, mrb.ArgsBlock())
-	if mrb.RespondTo(kernel.Value(), mrb.Intern("exit")) {
+	if mrb.RespondTo(kernel.Value(), Sym_exit) {
 		kernel.DefineAlias("_mrb_original_exit", "exit")
 		kernel.DefineMethod("exit", kernelExit, mrb.ArgsOpt(1))
 	}
@@ -47,7 +47,7 @@ func kernelAtExit(mrb *MrbState, self Value) MrbValue {
 		list = mrb.AryNew()
 		mrb.SetGV("$__at_exit_list__", list.Value())
 	} else {
-		list = mrb.GVGetObj(mrb.Intern("$__at_exit_list__")).RArray()
+		list = mrb.GVGetObj(GvSym___at_exit_list__).RArray()
 	}
 
 	list.Unshift(block)
@@ -66,7 +66,7 @@ func (mrb *MrbState) RunAtExitHandlers() {
 	if listVal.IsNil() {
 		return
 	}
-	list := mrb.GVGetObj(mrb.Intern("$__at_exit_list__")).RArray()
+	list := mrb.GVGetObj(GvSym___at_exit_list__).RArray()
 	mrb.SetGV("$__at_exit_list__", mrb.NilValue())
 	// keep the list (and so its handlers) reachable while they run: a GC
 	// during a handler must not free the rest
@@ -95,7 +95,7 @@ func kernelInteger(mrb *MrbState, self Value) MrbValue {
 	}
 	arg := args.Item(0)
 
-	to_int := mrb.Intern("to_int")
+	to_int := Sym_to_int
 	if mrb.RespondTo(arg, to_int) {
 		res, err := mrb.FuncallWithBlock(arg, to_int)
 		if err != nil {
@@ -105,7 +105,7 @@ func kernelInteger(mrb *MrbState, self Value) MrbValue {
 	}
 
 	if arg.Type() != MrbTTString {
-		to_i := mrb.Intern("to_i")
+		to_i := Sym_to_i
 		if mrb.RespondTo(arg, to_i) {
 			res, err := mrb.FuncallWithBlock(arg, to_i)
 			if err != nil {
@@ -115,7 +115,7 @@ func kernelInteger(mrb *MrbState, self Value) MrbValue {
 		}
 	}
 
-	res, err := mrb.FuncallWithBlock(self, mrb.Intern("_mrb_original_Integer"), args.SliceIntf()...)
+	res, err := mrb.FuncallWithBlock(self, Sym__mrb_original_Integer, args.SliceIntf()...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -129,7 +129,7 @@ func kernelFloat(mrb *MrbState, self Value) MrbValue {
 	}
 	arg := args.Item(0)
 
-	to_f := mrb.Intern("to_f")
+	to_f := Sym_to_f
 	if arg.Type() != MrbTTString && mrb.RespondTo(arg, to_f) {
 		res, err := mrb.FuncallWithBlock(arg, to_f)
 		if err != nil {
@@ -138,7 +138,7 @@ func kernelFloat(mrb *MrbState, self Value) MrbValue {
 		return res
 	}
 
-	res, err := mrb.FuncallWithBlock(self, mrb.Intern("_mrb_original_Float"), args.SliceIntf()...)
+	res, err := mrb.FuncallWithBlock(self, Sym__mrb_original_Float, args.SliceIntf()...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -168,19 +168,19 @@ func printStr(mrb *MrbState, self Value) MrbValue {
 // without gem/io writes to Go's os.Stdout.
 func (mrb *MrbState) stdout() (Value, bool) {
 	out := mrb.GetGV("$stdout")
-	return out, !out.IsNil() && mrb.RespondTo(out, mrb.Intern("write"))
+	return out, !out.IsNil() && mrb.RespondTo(out, Sym_write)
 }
 
 func printPrint(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
 	if out, ok := mrb.stdout(); ok {
-		if _, err := mrb.Funcall(out, mrb.Intern("print"), args.SliceIntf()...); err != nil {
+		if _, err := mrb.Funcall(out, Sym_print, args.SliceIntf()...); err != nil {
 			return mrb.RaiseError(err)
 		}
 		return mrb.NilValue()
 	}
 	for i := 0; i < args.Len(); i++ {
-		v, err := mrb.Funcall(args.Item(i), mrb.Intern("to_s"))
+		v, err := mrb.Funcall(args.Item(i), Sym_to_s)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -192,12 +192,12 @@ func printPrint(mrb *MrbState, self Value) MrbValue {
 func printPuts(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
 	if out, ok := mrb.stdout(); ok {
-		if _, err := mrb.Funcall(out, mrb.Intern("puts"), args.SliceIntf()...); err != nil {
+		if _, err := mrb.Funcall(out, Sym_puts, args.SliceIntf()...); err != nil {
 			return mrb.RaiseError(err)
 		}
 		return mrb.NilValue()
 	}
-	toS := mrb.Intern("to_s")
+	toS := Sym_to_s
 	for i := 0; i < args.Len(); i++ {
 		v, err := mrb.FuncallWithBlock(args.Item(i), toS)
 		if err != nil {
@@ -219,7 +219,7 @@ func printPuts(mrb *MrbState, self Value) MrbValue {
 // write sends s to $stdout, or to Go's os.Stdout without one
 func (mrb *MrbState) writeStdout(s string) error {
 	if out, ok := mrb.stdout(); ok {
-		_, err := mrb.Funcall(out, mrb.Intern("write"), mrb.StrNew(s))
+		_, err := mrb.Funcall(out, Sym_write, mrb.StrNew(s))
 		return err
 	}
 	fmt.Print(s)
@@ -228,7 +228,7 @@ func (mrb *MrbState) writeStdout(s string) error {
 
 func printP(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
-	inspect := mrb.Intern("inspect")
+	inspect := Sym_inspect
 	var b strings.Builder
 	for i := 0; i < args.Len(); i++ {
 		v, err := mrb.FuncallWithBlock(args.Item(i), inspect)
@@ -257,7 +257,7 @@ func printPrintf(mrb *MrbState, self Value) MrbValue {
 	if args.Len() == 0 {
 		return mrb.NilValue()
 	}
-	v, err := mrb.FuncallWithBlock(mrb.KernelModule(), mrb.Intern("sprintf"), args.SliceIntf()...)
+	v, err := mrb.FuncallWithBlock(mrb.KernelModule(), Sym_sprintf, args.SliceIntf()...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

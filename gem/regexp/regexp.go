@@ -141,7 +141,7 @@ func regexCompile(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, block := mrb.GetArgsWithBlock()
 	source := args.Item(0)
 	options := args.ItemDef(1, mrb.NilValue())
-	ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("new"), source, options, block)
+	ret, _ := mrb.FuncallWithBlock(self, oruby.Sym_new, source, options, block)
 	return ret
 }
 
@@ -151,8 +151,8 @@ func regexAfterInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok {
 		return self
 	}
-	_ = mrb.IVSet(self, mrb.Intern("@source"), mrb.StrNew(r.source))
-	_ = mrb.IVSet(self, mrb.Intern("@options"), mrb.FixnumValue(r.options))
+	_ = mrb.IVSet(self, oruby.IvSym_source, mrb.StrNew(r.source))
+	_ = mrb.IVSet(self, oruby.IvSym_options, mrb.FixnumValue(r.options))
 	return self
 }
 
@@ -167,7 +167,7 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		src, opts = other.source, other.options
 	} else {
 		if source.Type() != oruby.MrbTTString {
-			if !mrb.RespondTo(source, mrb.Intern("to_str")) {
+			if !mrb.RespondTo(source, oruby.Sym_to_str) {
 				return mrb.Raise(mrb.ETypeError(), "no implicit conversion into String")
 			}
 			source = mrb.Call(source, "to_str")
@@ -190,8 +190,8 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return raiseRegexpError(mrb, err)
 	}
 	mrb.DataSetInterface(self, r)
-	_ = mrb.IVSet(self, mrb.Intern("@source"), mrb.StrNew(src))
-	_ = mrb.IVSet(self, mrb.Intern("@options"), mrb.FixnumValue(opts))
+	_ = mrb.IVSet(self, oruby.IvSym_source, mrb.StrNew(src))
+	_ = mrb.IVSet(self, oruby.IvSym_options, mrb.FixnumValue(opts))
 	return self
 }
 
@@ -200,8 +200,8 @@ func regexInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if r, ok := mrb.Data(src).(*Regexp); ok {
 		// compiled patterns are immutable and safe to share
 		mrb.DataSetInterface(self, r)
-		_ = mrb.IVSet(self, mrb.Intern("@source"), mrb.StrNew(r.source))
-		_ = mrb.IVSet(self, mrb.Intern("@options"), mrb.FixnumValue(r.options))
+		_ = mrb.IVSet(self, oruby.IvSym_source, mrb.StrNew(r.source))
+		_ = mrb.IVSet(self, oruby.IvSym_options, mrb.FixnumValue(r.options))
 	}
 	return self
 }
@@ -235,7 +235,7 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 		}
 		return mrb.NilValue()
 	default:
-		if mrb.RespondTo(idx, mrb.Intern("to_int")) {
+		if mrb.RespondTo(idx, oruby.Sym_to_int) {
 			toI := mrb.Call(idx, "to_int")
 			if toI.Type() != oruby.MrbTTFixnum {
 				return mrb.NilValue()
@@ -269,7 +269,7 @@ func matchDataIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func matchDataRegexp(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	if v := mrb.IVGet(self, mrb.Intern("@regexp")); !v.IsNil() {
+	if v := mrb.IVGet(self, oruby.IvSym_regexp); !v.IsNil() {
 		return v
 	}
 	data := mrb.Data(self).(*MatchData)
@@ -313,7 +313,7 @@ func ivString(mrb *oruby.MrbState, self oruby.Value, name string) string {
 }
 
 func ivOptions(mrb *oruby.MrbState, self oruby.Value) int {
-	if v := mrb.IVGet(self, mrb.Intern("@options")); v.Type() == oruby.MrbTTFixnum {
+	if v := mrb.IVGet(self, oruby.IvSym_options); v.Type() == oruby.MrbTTFixnum {
 		return oruby.MrbFixnum(v)
 	}
 	if r := regexpOf(mrb, self); r != nil {
@@ -433,7 +433,7 @@ func byteIndex(s string, pos int) (int, bool) {
 
 func setLastMatch(mrb *oruby.MrbState, matchData oruby.Value) {
 	regexpClass := mrb.ClassGet("Regexp")
-	_ = mrb.IVSet(regexpClass, mrb.Intern("@last_match"), matchData)
+	_ = mrb.IVSet(regexpClass, oruby.IvSym_last_match, matchData)
 	mrb.GVSet(mrb.Intern("$~"), matchData)
 }
 
@@ -476,8 +476,8 @@ func subject(mrb *oruby.MrbState, v oruby.Value) (string, bool) {
 	if v.IsNil() {
 		return "", false
 	}
-	if mrb.RespondTo(v, mrb.Intern("to_str")) {
-		if s, err := mrb.Funcall(v, mrb.Intern("to_str")); err == nil && s.Type() == oruby.MrbTTString {
+	if mrb.RespondTo(v, oruby.Sym_to_str) {
+		if s, err := mrb.Funcall(v, oruby.Sym_to_str); err == nil && s.Type() == oruby.MrbTTString {
 			return rstr(s), true
 		}
 		mrb.ExcClear()
@@ -505,7 +505,7 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	regx := regexpOf(mrb, self)
 	matchData := doMatch(mrb, regx, s, pos)
 	if !matchData.Value().IsNil() && matchData.Value().Type() == oruby.MrbTTCData {
-		_ = mrb.IVSet(matchData.Value(), mrb.Intern("@regexp"), self)
+		_ = mrb.IVSet(matchData.Value(), oruby.IvSym_regexp, self)
 	}
 
 	if !block.IsNil() && !matchData.Value().IsNil() {
@@ -537,11 +537,11 @@ func regexCaseEq(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	case oruby.MrbTTString:
 		s = rstr(dest)
 	default:
-		if dest.IsNil() || !mrb.RespondTo(dest, mrb.Intern("to_str")) {
+		if dest.IsNil() || !mrb.RespondTo(dest, oruby.Sym_to_str) {
 			setLastMatch(mrb, mrb.NilValue())
 			return oruby.False
 		}
-		v, err := mrb.Funcall(dest, mrb.Intern("to_str"))
+		v, err := mrb.Funcall(dest, oruby.Sym_to_str)
 		if err != nil || v.Type() != oruby.MrbTTString {
 			mrb.ExcClear()
 			return oruby.False
@@ -617,7 +617,7 @@ func regexTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return arg
 	}
 
-	toRegexp := mrb.Intern("to_regexp")
+	toRegexp := oruby.Sym_to_regexp
 	if !mrb.RespondTo(arg, toRegexp) {
 		return mrb.NilValue()
 	}
@@ -651,7 +651,7 @@ func regexUnion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			continue
 		}
 		if a.Type() != oruby.MrbTTString {
-			if !mrb.RespondTo(a, mrb.Intern("to_str")) {
+			if !mrb.RespondTo(a, oruby.Sym_to_str) {
 				return mrb.Raise(mrb.ETypeError(), "no implicit conversion of "+mrb.ClassOf(a).Name()+" into String")
 			}
 			a = mrb.Call(a, "to_str")
@@ -670,7 +670,7 @@ func regexUnion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexLastMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	matchValue := mrb.IVGet(self, mrb.Intern("@last_match"))
+	matchValue := mrb.IVGet(self, oruby.IvSym_last_match)
 	m, ok := mrb.Data(matchValue).(*MatchData)
 	if !ok {
 		return mrb.NilValue()

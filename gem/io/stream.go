@@ -36,7 +36,7 @@ func valueToS(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
 		return v, nil
 	}
 
-	sv, err := mrb.FuncallWithBlock(v, mrb.Intern("to_s"))
+	sv, err := mrb.FuncallWithBlock(v, oruby.Sym_to_s)
 	if err != nil {
 		return mrb.NilValue(), err
 	}
@@ -97,8 +97,8 @@ func ioExternalEncoding(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return v
 	}
 	encMod := mrb.EncodingClass()
-	if !encMod.IsNil() && mrb.RespondTo(encMod, mrb.Intern("default_external")) {
-		defExt, err := mrb.Funcall(encMod, mrb.Intern("default_external"))
+	if !encMod.IsNil() && mrb.RespondTo(encMod, oruby.Sym_default_external) {
+		defExt, err := mrb.Funcall(encMod, oruby.Sym_default_external)
 		if err == nil && !defExt.IsNil() {
 			return defExt
 		}
@@ -158,7 +158,7 @@ func ioIsClosed(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func ioEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a, kwargs, block := mrb.GetAllArgs()
 	if block.IsNil() {
-		return mrb.Call(self, "to_enum", mrb.Intern("each_line"))
+		return mrb.Call(self, "to_enum", oruby.Sym_each_line)
 	}
 
 	for {
@@ -206,7 +206,7 @@ func ioEachByte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return self
 	}
 
-	ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("to_enum"), mrb.Intern("getbyte"))
+	ret, _ := mrb.FuncallWithBlock(self, oruby.Sym_to_enum, oruby.Sym_getbyte)
 	return ret
 }
 
@@ -236,7 +236,7 @@ func ioEachChar(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return self
 	}
 
-	ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("to_enum"), mrb.Intern("getc"))
+	ret, _ := mrb.FuncallWithBlock(self, oruby.Sym_to_enum, oruby.Sym_getc)
 	return ret
 }
 
@@ -266,7 +266,7 @@ func ioEachCodepoint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return self
 	}
 
-	ret, _ := mrb.FuncallWithBlock(self, mrb.Intern("to_enum"), mrb.Intern("getc"))
+	ret, _ := mrb.FuncallWithBlock(self, oruby.Sym_to_enum, oruby.Sym_getc)
 	return ret
 }
 
@@ -412,9 +412,9 @@ func ioGetc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func setLastLine(mrb *oruby.MrbState, self oruby.Value, line string) oruby.Value {
 	v := mrb.StrNew(line)
-	mrb.GVSet(mrb.Intern("$_"), v)
+	mrb.GVSet(oruby.GvSym__, v)
 
-	lineno := mrb.Intern("@lineno")
+	lineno := oruby.IvSym_lineno
 	noV := mrb.IVGet(self, lineno)
 	no := 0
 	if !noV.IsNil() {
@@ -426,7 +426,7 @@ func setLastLine(mrb *oruby.MrbState, self oruby.Value, line string) oruby.Value
 }
 
 func setLineNo(mrb *oruby.MrbState, self oruby.Value, v int) {
-	_ = mrb.IVSet(self, mrb.Intern("@lineno"), mrb.FixnumValue(v))
+	_ = mrb.IVSet(self, oruby.IvSym_lineno, mrb.FixnumValue(v))
 }
 
 func ioGets(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -462,7 +462,7 @@ func ioInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioLineno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.IVGet(self, mrb.Intern("@lineno"))
+	return mrb.IVGet(self, oruby.IvSym_lineno)
 }
 
 func ioSetLineno(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -604,7 +604,7 @@ func ioPrintf(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 
-	s, err := mrb.FuncallWithBlock(mrb.KernelModule(), mrb.Intern("sprintf"), args.SliceIntf()...)
+	s, err := mrb.FuncallWithBlock(mrb.KernelModule(), oruby.Sym_sprintf, args.SliceIntf()...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -741,13 +741,13 @@ func ioPwrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func binaryStringValue(mrb *oruby.MrbState, buf []byte) oruby.Value {
 	v := mrb.BytesValue(buf)
-	if mrb.RespondTo(v, mrb.Intern("force_encoding")) {
+	if mrb.RespondTo(v, oruby.Sym_force_encoding) {
 		modEnc := mrb.EncodingClass()
-		if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
-			binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
-			mrb.Funcall(v, mrb.Intern("force_encoding"), binEnc)
+		if !modEnc.IsNil() && mrb.ConstDefined(modEnc, oruby.Sym_BINARY) {
+			binEnc := mrb.ConstGet(modEnc, oruby.Sym_BINARY)
+			mrb.Funcall(v, oruby.Sym_force_encoding, binEnc)
 		} else {
-			mrb.Funcall(v, mrb.Intern("force_encoding"), mrb.StringValue("ASCII-8BIT"))
+			mrb.Funcall(v, oruby.Sym_force_encoding, mrb.StringValue("ASCII-8BIT"))
 		}
 	}
 	return v
@@ -771,8 +771,8 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	if !l.IsNil() {
 		if !l.IsInteger() {
-			if mrb.RespondTo(l, mrb.Intern("to_int")) {
-				res, err := mrb.Funcall(l, mrb.Intern("to_int"))
+			if mrb.RespondTo(l, oruby.Sym_to_int) {
+				res, err := mrb.Funcall(l, oruby.Sym_to_int)
 				if err != nil {
 					return mrb.RaiseError(err)
 				}
@@ -791,8 +791,8 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	if !outbuf.IsNil() {
-		if !outbuf.IsString() && mrb.RespondTo(outbuf, mrb.Intern("to_str")) {
-			res, err := mrb.Funcall(outbuf, mrb.Intern("to_str"))
+		if !outbuf.IsString() && mrb.RespondTo(outbuf, oruby.Sym_to_str) {
+			res, err := mrb.Funcall(outbuf, oruby.Sym_to_str)
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
@@ -830,8 +830,8 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		mrb.StrCatBytes(outbuf, buf)
 		if l.IsNil() {
 			extEnc := ioExternalEncoding(mrb, self)
-			if !extEnc.IsNil() && mrb.RespondTo(outbuf, mrb.Intern("force_encoding")) {
-				mrb.Funcall(outbuf, mrb.Intern("force_encoding"), extEnc)
+			if !extEnc.IsNil() && mrb.RespondTo(outbuf, oruby.Sym_force_encoding) {
+				mrb.Funcall(outbuf, oruby.Sym_force_encoding, extEnc)
 			}
 		}
 		if len(buf) == 0 && !l.IsNil() {
@@ -847,15 +847,15 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ret := mrb.BytesValue(buf)
 	if l.IsNil() {
 		extEnc := ioExternalEncoding(mrb, self)
-		if !extEnc.IsNil() && mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
-			mrb.Funcall(ret, mrb.Intern("force_encoding"), extEnc)
+		if !extEnc.IsNil() && mrb.RespondTo(ret, oruby.Sym_force_encoding) {
+			mrb.Funcall(ret, oruby.Sym_force_encoding, extEnc)
 		}
 	} else {
-		if mrb.RespondTo(ret, mrb.Intern("force_encoding")) {
+		if mrb.RespondTo(ret, oruby.Sym_force_encoding) {
 			modEnc := mrb.EncodingClass()
-			if !modEnc.IsNil() && mrb.ConstDefined(modEnc, mrb.Intern("BINARY")) {
-				binEnc := mrb.ConstGet(modEnc, mrb.Intern("BINARY"))
-				mrb.Funcall(ret, mrb.Intern("force_encoding"), binEnc)
+			if !modEnc.IsNil() && mrb.ConstDefined(modEnc, oruby.Sym_BINARY) {
+				binEnc := mrb.ConstGet(modEnc, oruby.Sym_BINARY)
+				mrb.Funcall(ret, oruby.Sym_force_encoding, binEnc)
 			}
 		}
 	}

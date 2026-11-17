@@ -121,8 +121,8 @@ func NewCore() (*MrbState, error) {
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
-	mrb.afterInitSym = mrb.Sym("after_init")
-	mrb.callSym = mrb.Sym("call")
+	mrb.afterInitSym = Sym_after_init
+	mrb.callSym = Sym_call
 
 	// Store *MrbState pointer, so it can be retrieved from C callbacks
 	registerState(mrb)
@@ -595,7 +595,6 @@ func (mrb *MrbState) Close() {
 
 		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
-		C._orb_bt_state_closed(C.mrb_int(idx))
 
 		removeStateIndex(idx)
 
@@ -863,7 +862,7 @@ func (mrb *MrbState) String(v MrbValue) string {
 	case C.MRB_TT_ENV:
 		return mrb.StrToCstr(mrb.AnyToS(v))
 	case C.MRB_TT_EXCEPTION:
-		return fmt.Sprintf("%v %v", mrb.StrToCstr(mrb.AnyToS(v)), mrb.IVGet(v, mrb.Intern("mesg")))
+		return fmt.Sprintf("%v %v", mrb.StrToCstr(mrb.AnyToS(v)), mrb.IVGet(v, Sym_mesg))
 	case C.MRB_TT_FIBER:
 		return mrb.StrToCstr(mrb.AnyToS(v))
 	default:
@@ -964,7 +963,7 @@ func (mrb *MrbState) Intf(o MrbValue) interface{} {
 	case C.MRB_TT_RANGE:
 		return MrbRangePtr(o)
 	case C.MRB_TT_EXCEPTION:
-		return errors.New(mrb.IVGet(o, mrb.Intern("mesg")).String())
+		return errors.New(mrb.IVGet(o, Sym_mesg).String())
 	case C.MRB_TT_ENV:
 		return REnv{(*C.struct_REnv)(C._mrb_ptr(o.Value().v)), mrb}
 	case C.MRB_TT_FIBER:
@@ -1163,7 +1162,7 @@ func (mrb *MrbState) KernelModule() RClass { return RClass{mrb.p.kernel_module, 
 // is '<main>' in backtraces, the top level of other files '<top (required)>'
 func (mrb *MrbState) SetMainScript(name string) {
 	k := mrb.KernelModule().Value()
-	C.mrb_iv_set(mrb.p, k.v, C.mrb_sym(mrb.Intern("__oruby_main__")), mrb.StrNew(name).v)
+	C.mrb_iv_set(mrb.p, k.v, C.mrb_sym(Sym___oruby_main__), mrb.StrNew(name).v)
 }
 
 // EExceptionClass in state
@@ -2208,7 +2207,7 @@ func (mrb *MrbState) EnsureIntegerType(val MrbValue) (Value, error) {
 	case MrbTTFloat:
 		return mrb.FloatToInteger(val), nil
 	case MrbTTCData:
-		return mrb.Funcall(val, mrb.Sym("to_i"))
+		return mrb.Funcall(val, Sym_to_i)
 	}
 	return nilValue, ETypeError("%v cannot be converted to Integer", mrb.TypeName(val))
 	// C.mrb_ensure_integer_type() not called
@@ -2222,7 +2221,7 @@ func (mrb *MrbState) EnsureFloatType(val MrbValue) (Value, error) {
 	case MrbTTFloat:
 		return val.Value(), nil
 	case MrbTTCData:
-		return mrb.Funcall(val, mrb.Sym("to_f"))
+		return mrb.Funcall(val, Sym_to_f)
 	}
 	return nilValue, ETypeError("%v cannot be converted to Float", mrb.TypeName(val))
 	// C.mrb_ensure_float_type() not called

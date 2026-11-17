@@ -424,7 +424,7 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 
 	case MrbTTObject:
 		{
-			unmarshalSym := mrb.Intern("unmarshal")
+			unmarshalSym := Sym_unmarshal
 			if !mrb.MethodExists(mrb.ClassOf(o), unmarshalSym) {
 				return errors.New("oruby Object does not support unmarshaling")
 			}
@@ -448,7 +448,7 @@ func (mrb *MrbState) scanValue(o MrbValue, vel reflect.Value) (err error) {
 				return nil
 			}
 
-			unmarshalSym := mrb.Intern("unmarshal")
+			unmarshalSym := Sym_unmarshal
 			if mrb.MethodExists(mrb.ClassOf(o), unmarshalSym) {
 				_, err = mrb.Funcall(o, unmarshalSym, vel.Interface())
 				return err

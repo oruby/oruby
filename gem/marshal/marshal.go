@@ -43,13 +43,13 @@ func marshalDump(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 	value := mrb.BytesValue(data)
-	if mrb.RespondTo(value, mrb.Intern("force_encoding")) {
+	if mrb.RespondTo(value, oruby.Sym_force_encoding) {
 		value = mrb.Call(value, "force_encoding", "ASCII-8BIT")
 	}
 	if output.IsNil() {
 		return value
 	}
-	if _, err := mrb.Funcall(output, mrb.Intern("write"), value); err != nil {
+	if _, err := mrb.Funcall(output, oruby.Sym_write, value); err != nil {
 		return mrb.RaiseError(err)
 	}
 	return output
@@ -61,7 +61,7 @@ func marshalLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	proc, freeze := oruby.Nil, false
 	for _, a := range args[1:] {
 		if a.IsHash() {
-			freeze = mrb.HashFetch(a, mrb.Intern("freeze"), mrb.FalseValue()).Bool()
+			freeze = mrb.HashFetch(a, oruby.Sym_freeze, mrb.FalseValue()).Bool()
 		} else if !a.IsNil() {
 			proc = a
 		}
@@ -73,7 +73,7 @@ func marshalLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 		data := rubyBytes(args[0])
 		source = bytes.NewReader(data)
-	} else if mrb.RespondTo(args[0], mrb.Intern("read")) {
+	} else if mrb.RespondTo(args[0], oruby.Sym_read) {
 		source = &rubyReader{mrb: mrb, object: args[0]}
 	} else {
 		return mrb.Raise(mrb.ETypeError(), "instance of IO needed")

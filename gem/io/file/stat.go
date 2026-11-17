@@ -244,7 +244,7 @@ func statInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ext := getExtendedStat(stat)
 	// times as Time#inspect shows them (fractional seconds included)
 	inspect := func(t time.Time) string {
-		if v, err := mrb.Funcall(mrb.DataValue(t), mrb.Intern("inspect")); err == nil {
+		if v, err := mrb.Funcall(mrb.DataValue(t), oruby.Sym_inspect); err == nil {
 			return v.String()
 		}
 		mrb.ExcClear()

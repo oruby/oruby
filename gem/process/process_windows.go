@@ -34,7 +34,7 @@ func (runner *cmdRunner) parseOptionsOS(options oruby.Value) func() {
 		return ret
 	}
 
-	if o := mrb.HashGet(options, mrb.Intern("new_pgroup")); o.Bool() {
+	if o := mrb.HashGet(options, oruby.Sym_new_pgroup); o.Bool() {
 		runner.cmd.SysProcAttr.CreationFlags += CREATE_NEW_PROCESS_GROUP
 	}
 

@@ -293,7 +293,7 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	opt := mrb.KeywordArgs()
 	if !opt.IsNil() {
-		if base := mrb.HashFetch(opt, mrb.Intern("base"), oruby.Nil); base.IsString() {
+		if base := mrb.HashFetch(opt, oruby.Sym_base, oruby.Nil); base.IsString() {
 			basePath = base.String()
 			if strings.ContainsRune(basePath, 0) {
 				return mrb.EArgumentError().Raise("string contains null byte")
@@ -343,7 +343,7 @@ func dirAref(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	basePath := ""
 	opt := mrb.KeywordArgs()
 	if !opt.IsNil() {
-		if base := mrb.HashFetch(opt, mrb.Intern("base"), oruby.Nil); base.IsString() {
+		if base := mrb.HashFetch(opt, oruby.Sym_base, oruby.Nil); base.IsString() {
 			basePath = base.String()
 		}
 	}
@@ -416,7 +416,7 @@ func dirClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirCollectChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	ret, _ := mrb.FuncallWithBlock(mrb.ClassOf(self), mrb.Intern("children"), mrb.GetIV(self, "@path"))
+	ret, _ := mrb.FuncallWithBlock(mrb.ClassOf(self), oruby.Sym_children, mrb.GetIV(self, "@path"))
 	return ret
 }
 

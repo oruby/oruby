@@ -19,6 +19,10 @@ MRuby::Build.new do |conf|
   # include the default GEMs
   conf.gembox __dir__ + "/oruby"
 
+  # the symbol names oruby's C and Go code look up, as presyms (tools/gensym
+  # writes its source; last, so the numbers of the other gems' stay)
+  conf.gem __dir__ + "/mruby-oruby-presym"
+
   # C compiler settings
   conf.cc do |cc|
   #   cc.command = ENV['CC'] || 'gcc'

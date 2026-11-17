@@ -171,7 +171,7 @@ func sigTrap(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		case "DEFAULT", "SIG_DFL":
 			signal.Reset(sig)
 		case "EXIT":
-			mrb.Call(mrb.KernelModule(), "send", mrb.Intern("exit"))
+			mrb.Call(mrb.KernelModule(), "send", oruby.Sym_exit)
 		case "SYSTEM_DEFAULT":
 			signal.Reset(sig)
 		default:

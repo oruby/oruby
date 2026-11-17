@@ -52,44 +52,6 @@ static void bt_free(mrb_state *mrb, void *ptr) {
 
 static const struct mrb_data_type bt_type = {"oruby_backtrace", bt_free};
 
-/* The names used on every raise and rescue, interned once per state: the
-   symbol lookup is slow enough to dominate `$!` otherwise. Indexed by the
-   state's index (mrb->ud), cleared by _orb_bt_state_closed; an unregistered
-   state (index 0) interns each time. */
-typedef struct {
-  mrb_state *mrb;
-  mrb_sym errinfo, bt, owners, main, path, lineno, label, base_label, to_s, abs, locations;
-} bt_syms;
-
-#define BT_SYM_CACHE 1024
-static bt_syms bt_sym_cache[BT_SYM_CACHE];
-
-static const bt_syms *bt_syms_of(mrb_state *mrb, bt_syms *tmp) {
-  mrb_int idx = _mrb_get_idx(mrb);
-  bt_syms *s = (idx > 0 && idx < BT_SYM_CACHE) ? &bt_sym_cache[idx] : tmp;
-  if (s == tmp || s->mrb != mrb) {
-    s->errinfo = mrb_intern_lit(mrb, "__oruby_errinfo__");
-    s->bt = mrb_intern_lit(mrb, "__oruby_bt__");
-    s->owners = mrb_intern_lit(mrb, "__owners__");
-    s->main = mrb_intern_lit(mrb, "__oruby_main__");
-    s->path = mrb_intern_lit(mrb, "__path__");
-    s->lineno = mrb_intern_lit(mrb, "__lineno__");
-    s->label = mrb_intern_lit(mrb, "__label__");
-    s->base_label = mrb_intern_lit(mrb, "__base_label__");
-    s->to_s = mrb_intern_lit(mrb, "__to_s__");
-    s->abs = mrb_intern_lit(mrb, "__abs__");
-    s->locations = mrb_intern_lit(mrb, "__bt_locations__");
-    s->mrb = mrb;
-  }
-  return s;
-}
-
-#define BT_SYMS(mrb) bt_syms _bt_tmp; const bt_syms *syms = bt_syms_of(mrb, &_bt_tmp)
-
-void _orb_bt_state_closed(mrb_int idx) {
-  if (idx > 0 && idx < BT_SYM_CACHE) bt_sym_cache[idx].mrb = NULL;
-}
-
 static mrb_bool bt_internal_file(const char *f) {
   return f && (strncmp(f, "mrblib/", 7) == 0 || strncmp(f, "mrbgems/", 8) == 0 ||
                strncmp(f, "<internal:", 10) == 0);
@@ -174,8 +136,7 @@ static struct RClass *bt_def_owner(mrb_state *mrb, struct RClass *found, const s
 }
 
 static mrb_bool bt_top_main(mrb_state *mrb, const struct RProc *p, mrb_callinfo *cibase, ptrdiff_t i) {
-  BT_SYMS(mrb);
-  mrb_value main = mrb_iv_get(mrb, mrb_obj_value(mrb->kernel_module), syms->main);
+  mrb_value main = mrb_iv_get(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_main__));
   if (mrb_string_p(main)) {
     const char *f = p->body.irep ? mrb_debug_get_filename(mrb, p->body.irep, 0) : NULL;
     return f && strlen(f) == (size_t)RSTRING_LEN(main) && memcmp(f, RSTRING_PTR(main), RSTRING_LEN(main)) == 0;
@@ -314,21 +275,18 @@ static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value 
 
 /* The stack from ci index top down, as a Data object */
 static mrb_value bt_capture(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp) {
-  BT_SYMS(mrb);
   mrb_value owners = mrb_ary_new(mrb);
   struct RData *d = mrb_data_object_alloc(mrb, NULL, NULL, &bt_type);
   mrb_value obj = mrb_obj_value(d);
-  mrb_iv_set(mrb, obj, syms->owners, owners);
+  mrb_iv_set(mrb, obj, MRB_SYM(__owners__), owners);
   d->data = bt_walk(mrb, top, rawp, owners);
   return obj;
 }
 
-#define BT_IVAR(mrb) (bt_syms_of(mrb, &_bt_tmp)->bt)
-#define BT_TMP bt_syms _bt_tmp
+#define BT_IVAR(mrb) MRB_SYM(__oruby_bt__)
 
 /* Keeps the current stack for exc, which is being raised */
 void _orb_bt_keep(mrb_state *mrb, mrb_value exc) {
-  BT_TMP;
   if (!mrb_exception_p(exc) || mrb_frozen_p(mrb_obj_ptr(exc))) return;
   struct RException *e = mrb_exc_ptr(exc);
   if (!e->backtrace || e->backtrace->tt != MRB_TT_BACKTRACE) return;
@@ -349,7 +307,6 @@ void _orb_bt_keep(mrb_state *mrb, mrb_value exc) {
 /* Keeps the current stack for exc, about to be raised from the C function
    running now (raise with cause:, which mruby raises without reading `$!`) */
 void _orb_bt_keep_now(mrb_state *mrb, mrb_value exc) {
-  BT_TMP;
   if (!mrb_exception_p(exc) || mrb_frozen_p(mrb_obj_ptr(exc))) return;
   if (mrb_exc_ptr(exc)->backtrace || !mrb->c->ci) return;
   int ai = mrb_gc_arena_save(mrb);
@@ -360,7 +317,6 @@ void _orb_bt_keep_now(mrb_state *mrb, mrb_value exc) {
 }
 
 void _orb_bt_forget(mrb_state *mrb, mrb_value exc) {
-  BT_TMP;
   mrb_iv_remove(mrb, exc, BT_IVAR(mrb));
 }
 
@@ -368,13 +324,11 @@ void _orb_bt_forget(mrb_state *mrb, mrb_value exc) {
 // the stack of the exception being raised
 static mrb_value errinfo_get(mrb_state *mrb) {
   if (mrb->exc && mrb->exc->tt == MRB_TT_EXCEPTION) _orb_bt_keep(mrb, mrb_obj_value(mrb->exc));
-  BT_SYMS(mrb);
-  return mrb_iv_get(mrb, mrb_obj_value(mrb->kernel_module), syms->errinfo);
+  return mrb_iv_get(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_errinfo__));
 }
 
 static void errinfo_set(mrb_state *mrb, mrb_value v) {
-  BT_SYMS(mrb);
-  mrb_iv_set(mrb, mrb_obj_value(mrb->kernel_module), syms->errinfo, v);
+  mrb_iv_set(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_errinfo__), v);
 }
 
 /* Labels */
@@ -482,17 +436,16 @@ static struct RClass *bt_location_class(mrb_state *mrb) {
 
 static mrb_value bt_location(mrb_state *mrb, struct RClass *cls, const bt_frame *f) {
   struct RObject *loc = MRB_OBJ_ALLOC(mrb, MRB_TT_OBJECT, cls);
-  BT_SYMS(mrb);
   mrb_value label = bt_full_label(mrb, f);
   int32_t line;
   const char *file = bt_file_line(mrb, f, &line);
-  mrb_obj_iv_set_force(mrb, loc, syms->path,
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__path__),
                        file ? mrb_str_new_cstr(mrb, file) : mrb_str_new_lit(mrb, "(unknown)"));
-  mrb_obj_iv_set_force(mrb, loc, syms->lineno, mrb_fixnum_value(line));
-  mrb_obj_iv_set_force(mrb, loc, syms->label, label);
-  mrb_obj_iv_set_force(mrb, loc, syms->base_label, bt_base_label(mrb, f));
-  mrb_obj_iv_set_force(mrb, loc, syms->to_s, bt_string_at(mrb, file, line, label));
-  mrb_obj_iv_set_force(mrb, loc, syms->abs, mrb_bool_value(!f->eval && !f->internal && file));
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__lineno__), mrb_fixnum_value(line));
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__label__), label);
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__base_label__), bt_base_label(mrb, f));
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__to_s__), bt_string_at(mrb, file, line, label));
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__abs__), mrb_bool_value(!f->eval && !f->internal && file));
   return mrb_obj_value(loc);
 }
 
@@ -512,7 +465,6 @@ static mrb_value bt_locations(mrb_state *mrb, bt_data *bt, mrb_int lev, mrb_int 
 static mrb_func_t exc_backtrace_orig, exc_locations_orig;
 
 static mrb_value exc_backtrace_m(mrb_state *mrb, mrb_value exc) {
-  BT_TMP;
   struct RException *e = mrb_exc_ptr(exc);
   if (e->backtrace && e->backtrace->tt == MRB_TT_BACKTRACE) {
     mrb_sym cache = MRB_SYM(__backtrace__);
@@ -548,8 +500,7 @@ static mrb_value exc_backtrace_m(mrb_state *mrb, mrb_value exc) {
 }
 
 static mrb_value exc_locations_m(mrb_state *mrb, mrb_value exc) {
-  BT_TMP;
-  mrb_sym cache = bt_syms_of(mrb, &_bt_tmp)->locations;
+  mrb_sym cache = MRB_SYM(__bt_locations__);
   mrb_value locs = mrb_iv_get(mrb, exc, cache);
   if (mrb_array_p(locs)) return locs;
   struct RException *e = mrb_exc_ptr(exc);
@@ -661,12 +612,12 @@ static mrb_value loc_m5(mrb_state *mrb, mrb_value self) { return loc_call(mrb, s
 static mrb_func_t loc_abs_orig;
 
 static mrb_value loc_absolute_path(mrb_state *mrb, mrb_value self) {
-  mrb_sym abs = mrb_intern_lit(mrb, "__abs__");
+  mrb_sym abs = MRB_SYM(__abs__);
   if (!mrb_iv_defined(mrb, self, abs)) {
     return loc_abs_orig ? loc_abs_orig(mrb, self) : mrb_nil_value();
   }
   if (!mrb_test(mrb_iv_get(mrb, self, abs))) return mrb_nil_value();
-  mrb_value path = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "__path__"));
+  mrb_value path = mrb_iv_get(mrb, self, MRB_SYM(__path__));
   if (!mrb_string_p(path)) return mrb_nil_value();
   char buf[PATH_MAX];
   if (realpath(mrb_string_cstr(mrb, path), buf)) return mrb_str_new_cstr(mrb, buf);

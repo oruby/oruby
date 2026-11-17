@@ -144,7 +144,7 @@ end
 		proxyMethodToStat(fileClass, "mtime", mrb.ArgsNone())
 		proxyMethodToStat(fileClass, "size", mrb.ArgsNone())
 		mrb.DefineMethod(fileClass, "to_path", fileToPath, mrb.ArgsNone())
-		mrb.AliasMethod(fileClass, mrb.Intern("path"), mrb.Intern("to_path"))
+		mrb.AliasMethod(fileClass, oruby.Sym_path, oruby.Sym_to_path)
 		mrb.DefineMethod(fileClass, "truncate", fileFTruncate, mrb.ArgsReq(1))
 		return nil
 	})
@@ -205,7 +205,7 @@ func proxyMethodToStat(fileClass oruby.RClass, name string, args oruby.MrbAspec)
 			return mrb.Raisef(mrb.EArgumentError(), "wrong number of arguments (given %d, expected 0)", len(rawArgs))
 		}
 
-		if res, err := mrb.Funcall(self, mrb.Intern("closed?")); err == nil && res.Bool() {
+		if res, err := mrb.Funcall(self, oruby.SymQ_closed); err == nil && res.Bool() {
 			return mrb.Raise(mrb.ClassGet("IOError"), "closed stream")
 		}
 		data := mrb.Data(self)
@@ -322,8 +322,8 @@ func parseMode(mrb *oruby.MrbState, arg oruby.Value) (int, error) {
 	if arg.IsInt() {
 		return arg.Int(), nil
 	}
-	if mrb.RespondTo(arg, mrb.Intern("to_int")) {
-		v, err := mrb.Funcall(arg, mrb.Intern("to_int"))
+	if mrb.RespondTo(arg, oruby.Sym_to_int) {
+		v, err := mrb.Funcall(arg, oruby.Sym_to_int)
 		if err != nil {
 			return 0, err
 		}
@@ -493,8 +493,8 @@ func pathString(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 	var orig oruby.Value = v
 	if oruby.MrbStringP(v) {
 		s = v.String()
-	} else if mrb.RespondTo(v, mrb.Intern("to_path")) {
-		ret, err := mrb.Funcall(v, mrb.Intern("to_path"))
+	} else if mrb.RespondTo(v, oruby.Sym_to_path) {
+		ret, err := mrb.Funcall(v, oruby.Sym_to_path)
 		if err != nil {
 			return "", err
 		}
@@ -503,8 +503,8 @@ func pathString(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 		}
 		orig = ret
 		s = ret.String()
-	} else if mrb.RespondTo(v, mrb.Intern("to_str")) {
-		ret, err := mrb.Funcall(v, mrb.Intern("to_str"))
+	} else if mrb.RespondTo(v, oruby.Sym_to_str) {
+		ret, err := mrb.Funcall(v, oruby.Sym_to_str)
 		if err != nil {
 			return "", err
 		}
@@ -517,10 +517,10 @@ func pathString(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 		return "", &typeError{msg: fmt.Sprintf("no implicit conversion of %s into String", mrb.ClassOf(v).Name())}
 	}
 
-	symEncoding := mrb.Intern("encoding")
+	symEncoding := oruby.Sym_encoding
 	if mrb.RespondTo(orig, symEncoding) {
 		if enc, err := mrb.Funcall(orig, symEncoding); err == nil && !mrb.NilP(enc) {
-			symAsciiCompat := mrb.Intern("ascii_compatible?")
+			symAsciiCompat := oruby.SymQ_ascii_compatible
 			if mrb.RespondTo(enc, symAsciiCompat) {
 				if compat, err := mrb.Funcall(enc, symAsciiCompat); err == nil && !compat.Bool() {
 					return "", &compatibilityError{msg: "ASCII incompatible encoding"}
@@ -539,17 +539,17 @@ func pathString(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 }
 
 func preserveEncoding(mrb *oruby.MrbState, src oruby.Value, dst oruby.MrbValue) oruby.MrbValue {
-	symEncoding := mrb.Intern("encoding")
-	symForceEnc := mrb.Intern("force_encoding")
+	symEncoding := oruby.Sym_encoding
+	symForceEnc := oruby.Sym_force_encoding
 	if oruby.MrbStringP(src) && mrb.RespondTo(src, symEncoding) {
 		if enc, err := mrb.Funcall(src, symEncoding); err == nil && !mrb.NilP(enc) {
 			// on macOS a non-UTF-8 path was converted to UTF-8 (pathString);
 			// the result goes back to the path's encoding, as MRI returns it
 			if runtime.GOOS == "darwin" && !isASCII(src.String()) {
-				if name, err := mrb.Funcall(enc, mrb.Intern("name")); err == nil && name.String() != "UTF-8" && name.String() != "ASCII-8BIT" {
+				if name, err := mrb.Funcall(enc, oruby.Sym_name); err == nil && name.String() != "UTF-8" && name.String() != "ASCII-8BIT" {
 					mrb.Funcall(dst, symForceEnc, mrb.StrNew("UTF-8"))
-					if back, err := mrb.Funcall(dst, mrb.Intern("encode"), enc); err == nil && oruby.MrbStringP(back) {
-						mrb.Funcall(dst, mrb.Intern("replace"), back) // in place: some callers keep dst
+					if back, err := mrb.Funcall(dst, oruby.Sym_encode, enc); err == nil && oruby.MrbStringP(back) {
+						mrb.Funcall(dst, oruby.Sym_replace, back) // in place: some callers keep dst
 						mrb.Funcall(dst, symForceEnc, enc)
 						return dst
 					}
@@ -632,8 +632,8 @@ func fileJoin(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		res = joinTwoPaths(res, elem)
 	}
 	ret := mrb.StrNew(res)
-	symEncoding := mrb.Intern("encoding")
-	symForceEnc := mrb.Intern("force_encoding")
+	symEncoding := oruby.Sym_encoding
+	symForceEnc := oruby.Sym_force_encoding
 	for _, arg := range args {
 		if oruby.MrbStringP(arg) && mrb.RespondTo(arg, symEncoding) {
 			if enc, err := mrb.Funcall(arg, symEncoding); err == nil && !mrb.NilP(enc) {
@@ -652,9 +652,9 @@ func fileExpandPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	if modEnc := mrb.EncodingClass(); !modEnc.IsNil() {
-		if mrb.RespondTo(modEnc, mrb.Intern("default_external")) {
-			if defExt, err := mrb.Funcall(modEnc, mrb.Intern("default_external")); err == nil && !mrb.NilP(defExt) {
-				if compat, err := mrb.Funcall(defExt, mrb.Intern("ascii_compatible?")); err == nil && !compat.Bool() {
+		if mrb.RespondTo(modEnc, oruby.Sym_default_external) {
+			if defExt, err := mrb.Funcall(modEnc, oruby.Sym_default_external); err == nil && !mrb.NilP(defExt) {
+				if compat, err := mrb.Funcall(defExt, oruby.SymQ_ascii_compatible); err == nil && !compat.Bool() {
 					compatClass := mrb.ClassGetUnder(modEnc, "CompatibilityError")
 					return mrb.Raise(compatClass, "ASCII incompatible encoding: "+mrb.String(defExt))
 				}
@@ -850,8 +850,8 @@ func filePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func getStat(mrb *oruby.MrbState, f oruby.Value) (os.FileInfo, error) {
-	if mrb.RespondTo(f, mrb.Intern("to_io")) {
-		if v, err := mrb.Funcall(f, mrb.Intern("to_io")); err == nil && !mrb.NilP(v) {
+	if mrb.RespondTo(f, oruby.Sym_to_io) {
+		if v, err := mrb.Funcall(f, oruby.Sym_to_io); err == nil && !mrb.NilP(v) {
 			f = v
 		}
 	}
@@ -965,8 +965,8 @@ func fileDirname(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		lArg := args[1]
 		if lArg.IsInt() {
 			level = lArg.Int()
-		} else if mrb.RespondTo(lArg, mrb.Intern("to_int")) {
-			v, err := mrb.Funcall(lArg, mrb.Intern("to_int"))
+		} else if mrb.RespondTo(lArg, oruby.Sym_to_int) {
+			v, err := mrb.Funcall(lArg, oruby.Sym_to_int)
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
@@ -1009,8 +1009,8 @@ func parseTruncateSize(mrb *oruby.MrbState, arg oruby.Value) (int64, error) {
 	if arg.IsInt() {
 		return int64(arg.Int()), nil
 	}
-	if mrb.RespondTo(arg, mrb.Intern("to_int")) {
-		v, err := mrb.Funcall(arg, mrb.Intern("to_int"))
+	if mrb.RespondTo(arg, oruby.Sym_to_int) {
+		v, err := mrb.Funcall(arg, oruby.Sym_to_int)
 		if err != nil {
 			return 0, err
 		}
@@ -1364,10 +1364,10 @@ func fileRealdirpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	// Check encoding
 	if oruby.MrbStringP(rawArgs[0]) {
 		src := rawArgs[0]
-		encVal, _ := mrb.Funcall(src, mrb.Intern("encoding"))
+		encVal, _ := mrb.Funcall(src, oruby.Sym_encoding)
 		encName := ""
 		if !mrb.NilP(encVal) {
-			if s, err := mrb.Funcall(encVal, mrb.Intern("to_s")); err == nil && oruby.MrbStringP(s) {
+			if s, err := mrb.Funcall(encVal, oruby.Sym_to_s); err == nil && oruby.MrbStringP(s) {
 				encName = s.String()
 			}
 		}
@@ -1476,7 +1476,7 @@ func fileIsAbsolutePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func fileFTruncate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	if res, err := mrb.Funcall(self, mrb.Intern("closed?")); err == nil && res.Bool() {
+	if res, err := mrb.Funcall(self, oruby.SymQ_closed); err == nil && res.Bool() {
 		return mrb.Raise(mrb.ClassGet("IOError"), "closed stream")
 	}
 	data := mrb.Data(self)
@@ -1572,10 +1572,10 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 		return nil, &argumentError{msg: fmt.Sprintf("wrong number of arguments (given %d, expected 1..3)", args.Len())}
 	}
 	first := args.Item(0)
-	if first.IsInt() || (!first.IsNil() && mrb.RespondTo(first, mrb.Intern("to_int"))) {
+	if first.IsInt() || (!first.IsNil() && mrb.RespondTo(first, oruby.Sym_to_int)) {
 		fd := first.Int()
 		if !first.IsInt() {
-			v, err := mrb.Funcall(first, mrb.Intern("to_int"))
+			v, err := mrb.Funcall(first, oruby.Sym_to_int)
 			if err != nil {
 				return nil, err
 			}
@@ -1616,8 +1616,8 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 		last := args.Item(-1)
 		if last.IsHash() {
 			optHash = last
-		} else if mrb.RespondTo(last, mrb.Intern("to_hash")) {
-			h, err := mrb.Funcall(last, mrb.Intern("to_hash"))
+		} else if mrb.RespondTo(last, oruby.Sym_to_hash) {
+			h, err := mrb.Funcall(last, oruby.Sym_to_hash)
 			if err == nil && h.IsHash() {
 				optHash = h
 			}
@@ -1695,7 +1695,7 @@ func fileOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	res := mrb.Yield(block, file)
 	blockExc := mrb.Exc()
 
-	ret, err := mrb.Funcall(file, mrb.Intern("close"))
+	ret, err := mrb.Funcall(file, oruby.Sym_close)
 	_ = ret
 	if blockExc != nil {
 		mrb.SetExc(blockExc)
@@ -1719,7 +1719,7 @@ func fileOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, block := mrb.GetArgsWithBlock()
 	if !block.IsNil() {
-		_, _ = mrb.Funcall(mrb.KernelModule(), mrb.Intern("warn"), mrb.StrNew("warning: File::new() does not take block; use File::open() instead"))
+		_, _ = mrb.Funcall(mrb.KernelModule(), oruby.Sym_warn, mrb.StrNew("warning: File::new() does not take block; use File::open() instead"))
 	}
 	f, err := openFile(mrb, args)
 	if err != nil {
@@ -1727,7 +1727,7 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	first := args.Item(0)
-	if first.IsInt() || (!first.IsNil() && mrb.RespondTo(first, mrb.Intern("to_int"))) {
+	if first.IsInt() || (!first.IsNil() && mrb.RespondTo(first, oruby.Sym_to_int)) {
 		mrb.SetIV(self, "@path", mrb.NilValue())
 	} else {
 		mrb.SetIV(self, "@path", first)
@@ -1755,7 +1755,7 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		optHash = args.Item(-1)
 	}
 	if !optHash.IsNil() {
-		encVal := mrb.HashFetch(optHash, mrb.Intern("encoding"), mrb.NilValue())
+		encVal := mrb.HashFetch(optHash, oruby.Sym_encoding, mrb.NilValue())
 		if encVal.IsString() {
 			parts := strings.Split(encVal.String(), ":")
 			extEnc = findEncoding(mrb, parts[0])
@@ -1765,11 +1765,11 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		} else if !encVal.IsNil() {
 			extEnc = encVal
 		}
-		extVal := mrb.HashFetch(optHash, mrb.Intern("external_encoding"), mrb.NilValue())
+		extVal := mrb.HashFetch(optHash, oruby.Sym_external_encoding, mrb.NilValue())
 		if !extVal.IsNil() {
 			extEnc = extVal
 		}
-		intVal := mrb.HashFetch(optHash, mrb.Intern("internal_encoding"), mrb.NilValue())
+		intVal := mrb.HashFetch(optHash, oruby.Sym_internal_encoding, mrb.NilValue())
 		if !intVal.IsNil() {
 			intEnc = intVal
 		}
@@ -1785,19 +1785,19 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	}
 	if !optHash.IsNil() {
-		bm := mrb.HashFetch(optHash, mrb.Intern("binmode"), mrb.NilValue())
+		bm := mrb.HashFetch(optHash, oruby.Sym_binmode, mrb.NilValue())
 		if bm.Type() == oruby.MrbTTTrue {
 			isBinary = true
 		}
-		tm := mrb.HashFetch(optHash, mrb.Intern("textmode"), mrb.NilValue())
+		tm := mrb.HashFetch(optHash, oruby.Sym_textmode, mrb.NilValue())
 		if tm.Type() == oruby.MrbTTTrue {
 			isBinary = false
 		}
-		flagsVal := mrb.HashFetch(optHash, mrb.Intern("flags"), mrb.NilValue())
+		flagsVal := mrb.HashFetch(optHash, oruby.Sym_flags, mrb.NilValue())
 		if flagsVal.IsInteger() && flagsVal.Int()&0x8000 != 0 {
 			isBinary = true
 		}
-		nl := mrb.HashFetch(optHash, mrb.Intern("newline"), mrb.NilValue())
+		nl := mrb.HashFetch(optHash, oruby.Sym_newline, mrb.NilValue())
 		if !nl.IsNil() && isBinary {
 			return mrb.Raise(mrb.EArgumentError(), "newline decorator with binary mode")
 		}
@@ -1807,7 +1807,7 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		mrb.SetIV(self, "@binmode", oruby.True)
 		if extEnc.IsNil() {
 			encClass := mrb.EncodingClass()
-			extEnc, _ = mrb.Funcall(encClass, mrb.Intern("find"), mrb.StrNew("ASCII-8BIT"))
+			extEnc, _ = mrb.Funcall(encClass, oruby.Sym_find, mrb.StrNew("ASCII-8BIT"))
 		}
 	}
 
@@ -1870,8 +1870,8 @@ func parseTimeArg(mrb *oruby.MrbState, val oruby.Value) (time.Time, error) {
 		nsec := int64((f - float64(sec)) * 1e9)
 		return time.Unix(sec, nsec), nil
 	}
-	if mrb.RespondTo(val, mrb.Intern("to_f")) {
-		if fv, err := mrb.Funcall(val, mrb.Intern("to_f")); err == nil {
+	if mrb.RespondTo(val, oruby.Sym_to_f) {
+		if fv, err := mrb.Funcall(val, oruby.Sym_to_f); err == nil {
 			if fl, err := mrb.Float(fv); err == nil {
 				f := fl.Float64()
 				sec := int64(f)
@@ -1880,8 +1880,8 @@ func parseTimeArg(mrb *oruby.MrbState, val oruby.Value) (time.Time, error) {
 			}
 		}
 	}
-	if mrb.RespondTo(val, mrb.Intern("to_i")) {
-		if iv, err := mrb.Funcall(val, mrb.Intern("to_i")); err == nil && iv.IsInteger() {
+	if mrb.RespondTo(val, oruby.Sym_to_i) {
+		if iv, err := mrb.Funcall(val, oruby.Sym_to_i); err == nil && iv.IsInteger() {
 			return time.Unix(iv.Int64(), 0), nil
 		}
 	}
@@ -1924,7 +1924,7 @@ func findEncoding(mrb *oruby.MrbState, name string) oruby.Value {
 	if name == "" || name == "-" {
 		return mrb.NilValue()
 	}
-	v, err := mrb.Funcall(mrb.EncodingClass(), mrb.Intern("find"), mrb.StrNew(name))
+	v, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_find, mrb.StrNew(name))
 	if err != nil {
 		mrb.ExcClear()
 		return mrb.NilValue()

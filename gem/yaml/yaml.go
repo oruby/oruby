@@ -66,7 +66,7 @@ func initYAML(mrb *oruby.MrbState) interface{} {
 	psych.DefineClassMethod("dump", yamlDump, mrb.ArgsArg(1, 1))
 	psych.DefineClassMethod("safe_dump", yamlDump, mrb.ArgsArg(1, 1))
 	mrb.ObjectClass().DefineMethod("to_yaml", yamlToYAML, mrb.ArgsOpt(1))
-	mrb.ConstSet(mrb.ObjectClass(), mrb.Intern("YAML"), psych)
+	mrb.ConstSet(mrb.ObjectClass(), oruby.Sym_YAML, psych)
 	return nil
 }
 
@@ -109,7 +109,7 @@ func yamlLoadFile(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 
 func yamlAliasesEnabled(mrb *oruby.MrbState) (bool, error) {
 	kwargs := mrb.KeywordArgs()
-	key := mrb.SymbolValue(mrb.Intern("aliases"))
+	key := mrb.SymbolValue(oruby.Sym_aliases)
 	known := 0
 	if kwargs.KeyP(key) {
 		known = 1

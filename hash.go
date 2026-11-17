@@ -30,8 +30,8 @@ func (mrb *MrbState) HashNewCapa(capa int) RHash {
 func (mrb *MrbState) EnsureHashType(hash MrbValue) RHash {
 	v := hash.Value()
 	if !v.IsHash() {
-		if mrb.RespondTo(v, mrb.Intern("to_hash")) {
-			h, err := mrb.Funcall(v, mrb.Intern("to_hash"))
+		if mrb.RespondTo(v, Sym_to_hash) {
+			h, err := mrb.Funcall(v, Sym_to_hash)
 			if err == nil && h.IsHash() {
 				return RHash{RValue{h.v, mrb}}
 			}
@@ -189,7 +189,7 @@ func (mrb *MrbState) HashMerge(hash1, hash2 MrbValue) {
 
 // RHashIfNone get ifnone value from hash
 func (mrb *MrbState) RHashIfNone(h MrbValue) Value {
-	return mrb.IVGet(h, mrb.Intern("ifnone"))
+	return mrb.IVGet(h, Sym_ifnone)
 }
 
 // RHashProcDefault alias for RHashIfNone

@@ -25,7 +25,7 @@ func (r *rubyReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	value, err := r.mrb.Funcall(r.object, r.mrb.Intern("read"), len(p))
+	value, err := r.mrb.Funcall(r.object, oruby.Sym_read, len(p))
 	if err != nil {
 		return 0, err
 	}
@@ -196,12 +196,12 @@ func (r *reader) readValue(depth int) (oruby.Value, error) {
 		return v, err
 	}
 	if r.freeze && v.Type() != oruby.MrbTTClass && v.Type() != oruby.MrbTTModule {
-		if _, err := r.mrb.Funcall(v, r.mrb.Intern("freeze")); err != nil {
+		if _, err := r.mrb.Funcall(v, oruby.Sym_freeze); err != nil {
 			return oruby.Nil, err
 		}
 	}
 	if !r.proc.IsNil() {
-		return r.mrb.Funcall(r.proc, r.mrb.Intern("call"), v)
+		return r.mrb.Funcall(r.proc, oruby.Sym_call, v)
 	}
 	return v, nil
 }
@@ -307,7 +307,7 @@ func (r *reader) readValue0(depth int) (oruby.Value, error) {
 		if err != nil {
 			return oruby.Nil, err
 		}
-		if _, err := r.mrb.Funcall(v, r.mrb.Intern("extend"), mod); err != nil {
+		if _, err := r.mrb.Funcall(v, oruby.Sym_extend, mod); err != nil {
 			return oruby.Nil, err
 		}
 		return v, nil
@@ -326,11 +326,11 @@ func (r *reader) readValue0(depth int) (oruby.Value, error) {
 		if err != nil {
 			return oruby.Nil, err
 		}
-		obj, err := r.mrb.Funcall(klass, r.mrb.Intern("allocate"))
+		obj, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
 		if err != nil {
 			return oruby.Nil, err
 		}
-		if _, err := r.mrb.Funcall(obj, r.mrb.Intern("replace"), v); err != nil {
+		if _, err := r.mrb.Funcall(obj, oruby.Sym_replace, v); err != nil {
 			return oruby.Nil, err
 		}
 		if at < len(r.objects) {
@@ -430,7 +430,7 @@ func (r *reader) readHash(hasDefault bool, depth int) (oruby.Value, error) {
 		if err != nil {
 			return oruby.Nil, err
 		}
-		if _, err := r.mrb.Funcall(hash, r.mrb.Intern("default="), value); err != nil {
+		if _, err := r.mrb.Funcall(hash, oruby.SymE_default, value); err != nil {
 			return oruby.Nil, err
 		}
 	}
@@ -505,10 +505,10 @@ func (r *reader) readIvars(depth int) (oruby.Value, error) {
 					return oruby.Nil, oruby.EArgumentError("String encoding flag is not boolean")
 				}
 			}
-			if !r.mrb.RespondTo(value, r.mrb.Intern("force_encoding")) {
+			if !r.mrb.RespondTo(value, oruby.Sym_force_encoding) {
 				return oruby.Nil, oruby.ETypeError("String encoding metadata cannot be restored")
 			}
-			if _, err := r.mrb.Funcall(value, r.mrb.Intern("force_encoding"), encoding); err != nil {
+			if _, err := r.mrb.Funcall(value, oruby.Sym_force_encoding, encoding); err != nil {
 				return oruby.Nil, err
 			}
 			continue
@@ -538,7 +538,7 @@ func (r *reader) readObject(depth int) (oruby.Value, error) {
 	if name == "Range" {
 		return r.readRange(klass, depth)
 	}
-	value, err := r.mrb.Funcall(klass, r.mrb.Intern("allocate"))
+	value, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
 	if err != nil {
 		return oruby.Nil, err
 	}
@@ -570,7 +570,7 @@ func (r *reader) readObject(depth int) (oruby.Value, error) {
 }
 
 func (r *reader) readRange(klass oruby.Value, depth int) (oruby.Value, error) {
-	value, err := r.mrb.Funcall(klass, r.mrb.Intern("allocate"))
+	value, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
 	if err != nil {
 		return oruby.Nil, err
 	}
@@ -624,7 +624,7 @@ func (r *reader) readRange(klass oruby.Value, depth int) (oruby.Value, error) {
 			return oruby.Nil, oruby.EArgumentError("missing Range field %s in Marshal data", name)
 		}
 	}
-	if _, err := r.mrb.Funcall(value, r.mrb.Intern("initialize"), begin, end, exclusive); err != nil {
+	if _, err := r.mrb.Funcall(value, oruby.Sym_initialize, begin, end, exclusive); err != nil {
 		return oruby.Nil, err
 	}
 	return value, nil
@@ -704,7 +704,7 @@ func (r *reader) readStruct(depth int) (oruby.Value, error) {
 	for i := range args {
 		args[i] = oruby.Nil
 	}
-	value, err := r.mrb.Funcall(klass, r.mrb.Intern("new"), args...)
+	value, err := r.mrb.Funcall(klass, oruby.Sym_new, args...)
 	if err != nil {
 		return oruby.Nil, err
 	}
@@ -721,7 +721,7 @@ func (r *reader) readStruct(depth int) (oruby.Value, error) {
 		if err != nil {
 			return oruby.Nil, err
 		}
-		if _, err := r.mrb.Funcall(value, r.mrb.Intern("[]="), member, item); err != nil {
+		if _, err := r.mrb.Funcall(value, oruby.OpSym_aset, member, item); err != nil {
 			return oruby.Nil, err
 		}
 	}
@@ -737,7 +737,7 @@ func (r *reader) readMarshalLoad(depth int) (oruby.Value, error) {
 	if err != nil {
 		return oruby.Nil, err
 	}
-	value, err := r.mrb.Funcall(klass, r.mrb.Intern("allocate"))
+	value, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
 	if err != nil {
 		return oruby.Nil, err
 	}
@@ -746,7 +746,7 @@ func (r *reader) readMarshalLoad(depth int) (oruby.Value, error) {
 	if err != nil {
 		return oruby.Nil, err
 	}
-	if _, err := r.mrb.Funcall(value, r.mrb.Intern("marshal_load"), payload); err != nil {
+	if _, err := r.mrb.Funcall(value, oruby.Sym_marshal_load, payload); err != nil {
 		return oruby.Nil, err
 	}
 	r.objects[link] = value
@@ -773,7 +773,7 @@ func (r *reader) readUserLoad() (oruby.Value, error) {
 	if err := r.readFull(data); err != nil {
 		return oruby.Nil, oruby.EArgumentError("marshal data too short")
 	}
-	value, err := r.mrb.Funcall(klass, r.mrb.Intern("_load"), r.mrb.BytesValue(data))
+	value, err := r.mrb.Funcall(klass, oruby.Sym__load, r.mrb.BytesValue(data))
 	if err != nil {
 		return oruby.Nil, err
 	}
@@ -794,7 +794,7 @@ func (r *reader) readRegexp() (oruby.Value, error) {
 		return oruby.Nil, oruby.ETypeError("Regexp class is not available")
 	}
 	klass := r.mrb.ClassGet("Regexp")
-	value, err := r.mrb.Funcall(klass, r.mrb.Intern("new"), r.mrb.BytesValue(pattern), int(optionByte))
+	value, err := r.mrb.Funcall(klass, oruby.Sym_new, r.mrb.BytesValue(pattern), int(optionByte))
 	if err != nil {
 		return oruby.Nil, err
 	}

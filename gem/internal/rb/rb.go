@@ -59,8 +59,8 @@ func Bytes(mrb *oruby.MrbState, v oruby.Value) ([]byte, error) {
 	if v.Type() == oruby.MrbTTString {
 		return v.Bytes(), nil
 	}
-	if !v.IsNil() && mrb.RespondTo(v, mrb.Intern("to_str")) {
-		s, err := mrb.Funcall(v, mrb.Intern("to_str"))
+	if !v.IsNil() && mrb.RespondTo(v, oruby.Sym_to_str) {
+		s, err := mrb.Funcall(v, oruby.Sym_to_str)
 		if err != nil {
 			return nil, err
 		}
@@ -85,8 +85,8 @@ func Int(mrb *oruby.MrbState, v oruby.Value) (int64, error) {
 	case oruby.MrbTTFloat:
 		return int64(v.Float64()), nil
 	}
-	if !v.IsNil() && mrb.RespondTo(v, mrb.Intern("to_int")) {
-		i, err := mrb.Funcall(v, mrb.Intern("to_int"))
+	if !v.IsNil() && mrb.RespondTo(v, oruby.Sym_to_int) {
+		i, err := mrb.Funcall(v, oruby.Sym_to_int)
 		if err != nil {
 			return 0, err
 		}
@@ -124,7 +124,7 @@ func ClassPath(mrb *oruby.MrbState, path string) oruby.RClass {
 			v = cur.ConstGet(name)
 		} else {
 			var err error
-			v, err = mrb.Funcall(cur.Value(), mrb.Intern("const_get"), mrb.SymbolValue(mrb.Intern(name)))
+			v, err = mrb.Funcall(cur.Value(), oruby.Sym_const_get, mrb.SymbolValue(mrb.Intern(name)))
 			if err != nil {
 				mrb.ExcClear()
 				return oruby.RClass{}

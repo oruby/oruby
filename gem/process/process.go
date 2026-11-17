@@ -59,10 +59,10 @@ func init() {
 		mrb.DefineGlobalFunction("abort", procAbort, mrb.ArgsOpt(1))
 
 		tmsV := mrb.Class("Struct").Call("new",
-			mrb.Intern("utime"),
-			mrb.Intern("stime"),
-			mrb.Intern("cutime"),
-			mrb.Intern("cstime"),
+			oruby.Sym_utime,
+			oruby.Sym_stime,
+			oruby.Sym_cutime,
+			oruby.Sym_cstime,
 		)
 
 		mProcData := &processData{
@@ -550,7 +550,7 @@ func procExit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !sysExitClass.IsNil() {
 		exc, err := mrb.ObjNew(sysExitClass, code)
 		if err == nil {
-			mrb.IVSet(exc, mrb.Intern("@status"), mrb.FixnumValue(code))
+			mrb.IVSet(exc, oruby.IvSym_status, mrb.FixnumValue(code))
 			return mrb.RaiseObj(exc)
 		}
 	}

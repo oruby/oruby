@@ -20,6 +20,7 @@ make                                          # builds mruby/build/host/lib/libm
 - `make bin` — builds `bin/oruby`, `bin/orbi`, `bin/orubyc`; next to `lib/oruby` they run in-tree. `make install PREFIX=…` installs tools + `lib/oruby`. `oruby`/`orbi` load RubyGems at startup (`--disable-gems` skips it).
 - `make check` — `scripts/check_api.rb` lists `MRB_API` functions from mruby headers not yet wrapped in the matching `<header>.go` file.
 - `make update` — clean, pull latest submodule, rebuild libmruby.
+- Symbol names: in C use `MRB_SYM(name)` (and `MRB_SYM_Q`, `MRB_IVSYM`, …), in Go the `oruby.Sym_name` constants, rather than interning a literal at run time; a new name becomes a constant after `make` (tools/gensym). A name missing from the table is a compile error, not a wrong symbol.
 - Go's build cache does not track mruby's headers or `libmruby.a`: after rebuilding libmruby against a different mruby revision, run `go clean -cache` (or build/test with `-a`), otherwise cached cgo objects with the old struct layout crash at `mrb_open` ("allocation failure").
 - Windows (`mingw32-make`, `mruby.dll`) is unsupported/WIP.
 
@@ -51,6 +52,7 @@ v, err := mrb.Eval(`ruby code`)
 | `reflections.go`, `value.go`, `args.go` | Go ↔ mruby value conversion (reflection), `Value`/`MrbValue`, argument parsing (`GetArgs*`, `Args*` aspecs). |
 | `go-mrb.h`, `go-mrb.c` | C shims: inline wrappers for mruby macros (`_MRB_...`) and Go↔C callback trampolines. |
 | `prism.go`, `go-prism.c` | Source rewriter: parses Ruby with Prism (inside libmruby) and rewrites, by exact node span, the constructs mruby's codegen rejects (flip-flops, `A::B \|\|=`, gvar aliases, dynamic alias/undef, …) into code it compiles; helpers are `Kernel.__oruby_*__` in `mruby.go`. |
+| `tools/gensym`, `presym_gen.go` | Presyms for oruby: gensym collects the symbol names the Go and cgo C code look up by literal (`Intern("x")`, `mrb_intern_lit(mrb, "x")`, …) into the `scripts/mruby-oruby-presym` gem, so libmruby preallocates them, then writes `presym_gen.go`, a Go constant per name (`Sym_to_s`, `SymQ_nil`, `IvSym_name`, `GvSym_stdout`, `OpSym_add`). `make` runs both steps around the libmruby build; both outputs are generated, do not edit. |
 | `gems.go` | Go-gem registry: `oruby.Gem(name, initFn)`, `Resolve`, `Require`. |
 | `gem/<name>/` | Stdlib-like gems implemented in Go (base64, json, io, regexp, time, process, zlib, database (sqlite3), erubi, …). `gem/fullcore` blank-imports a standard set. |
 | `cmd/orbi` | REPL (mirb equivalent). |

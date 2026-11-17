@@ -30,7 +30,7 @@ func init() {
 		bignumClass.Populate()
 
 		mrb.DefineGlobalConst("Bignum", bignumClass)
-		if !mrb.ConstDefined(mrb.ObjectClass(), mrb.Intern("BigInt")) {
+		if !mrb.ConstDefined(mrb.ObjectClass(), oruby.Sym_BigInt) {
 			mrb.DefineGlobalConst("BigInt", bignumClass)
 		}
 
@@ -64,14 +64,14 @@ func init() {
 				bi = newBigIntFromBig(b)
 			} else {
 				// try to_int or to_s
-				if mrb.RespondTo(arg, mrb.Intern("to_int")) {
+				if mrb.RespondTo(arg, oruby.Sym_to_int) {
 					iv := mrb.Call(arg, "to_int")
 					if iv.Type() == oruby.MrbTTFixnum {
 						bi = newBigIntFromInt64(int64(iv.Int()))
 					} else {
 						bi = newBigInt()
 					}
-				} else if mrb.RespondTo(arg, mrb.Intern("to_s")) {
+				} else if mrb.RespondTo(arg, oruby.Sym_to_s) {
 					sv := mrb.Call(arg, "to_s")
 					b, e := toBigInt(sv.String())
 					if e != nil {
@@ -157,7 +157,7 @@ func init() {
 				}
 
 				if op == "==" && arg.Type() != oruby.MrbTTFixnum && arg.Type() != oruby.MrbTTFloat {
-					if mrb.RespondTo(arg, mrb.Intern("==")) {
+					if mrb.RespondTo(arg, oruby.OpSym_eq) {
 						return mrb.Call(arg, "==", self)
 					}
 				}

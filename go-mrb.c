@@ -182,13 +182,13 @@ static mrb_value str_enc_binary_p(mrb_state *mrb, mrb_value self) {
 }
 
 static mrb_value str_enc_tag(mrb_state *mrb, mrb_value self) {
-  return mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "__encoding"));
+  return mrb_iv_get(mrb, self, MRB_SYM(__encoding));
 }
 
 static mrb_value str_enc_tag_set(mrb_state *mrb, mrb_value self) {
   mrb_value enc;
   mrb_get_args(mrb, "o", &enc);
-  mrb_sym sym = mrb_intern_lit(mrb, "__encoding");
+  mrb_sym sym = MRB_SYM(__encoding);
   if (mrb_nil_p(enc)) {
     if (mrb_iv_defined(mrb, self, sym)) mrb_iv_remove(mrb, self, sym);
   }
@@ -228,7 +228,7 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, "frozen_string_literal") ||
           src_contains(s, len, "||=") || src_contains(s, len, "&&=") ||
           src_contains(s, len, "::") || src_contains(s, len, "$") || len > 255) {
-        argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), mrb_intern_lit(mrb, "__preprocess_ruby"), 1, argv[0]);
+        argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
     }
   }
@@ -261,7 +261,7 @@ static void wrap_eval_methods(mrb_state *mrb) {
   if (basic) wrap_cfunc(mrb, basic, "instance_eval", w[2], &eval_orig[2]);
   wrap_cfunc(mrb, mrb->module_class, "class_eval", w[3], &eval_orig[3]);
   wrap_cfunc(mrb, mrb->module_class, "module_eval", w[4], &eval_orig[4]);
-  if (mrb_class_defined_id(mrb, mrb_intern_lit(mrb, "Binding"))) {
+  if (mrb_class_defined_id(mrb, MRB_SYM(Binding))) {
     wrap_cfunc(mrb, mrb_class_get(mrb, "Binding"), "eval", w[5], &eval_orig[5]);
   }
 }
@@ -276,18 +276,18 @@ mrb_noreturn void mrb_exc_raise_with_cause(mrb_state *mrb, mrb_value exc, mrb_va
 static mrb_value raise_call(mrb_state *mrb, mrb_value self, int which) {
   if (mrb_get_argc(mrb) == 3) {
     mrb_value exc, mesg, bt, cause = mrb_undef_value(), rest = mrb_nil_value();
-    mrb_sym kw_names[] = { mrb_intern_lit(mrb, "cause") };
+    mrb_sym kw_names[] = { MRB_SYM(cause) };
     mrb_kwargs kw = { 1, 0, kw_names, &cause, &rest };
     if (mrb->c->ci->kw) mrb_get_args(mrb, "ooo:", &exc, &mesg, &bt, &kw);
     else mrb_get_args(mrb, "ooo", &exc, &mesg, &bt);
-    if (!mrb_respond_to(mrb, exc, mrb_intern_lit(mrb, "exception"))) {
+    if (!mrb_respond_to(mrb, exc, MRB_SYM(exception))) {
       mrb_raise(mrb, E_TYPE_ERROR, "exception class/object expected");
     }
-    exc = mrb_funcall_id(mrb, exc, mrb_intern_lit(mrb, "exception"), 1, mesg);
+    exc = mrb_funcall_id(mrb, exc, MRB_SYM(exception), 1, mesg);
     if (!mrb_obj_is_kind_of(mrb, exc, E_EXCEPTION)) {
       mrb_raise(mrb, E_TYPE_ERROR, "exception object expected");
     }
-    if (!mrb_nil_p(bt)) mrb_funcall_id(mrb, exc, mrb_intern_lit(mrb, "set_backtrace"), 1, bt);
+    if (!mrb_nil_p(bt)) mrb_funcall_id(mrb, exc, MRB_SYM(set_backtrace), 1, bt);
     mrb->c->ci->mid = 0;
     if (!mrb_undef_p(cause)) {
       _orb_bt_keep_now(mrb, exc);
@@ -299,7 +299,7 @@ static mrb_value raise_call(mrb_state *mrb, mrb_value self, int which) {
     /* raise(exc[, mesg], cause: c), as mrb_f_raise (kernel.c) raises it,
        with the stack kept for the backtrace labels */
     mrb_value exc = mrb_nil_value(), mesg = mrb_nil_value(), cause = mrb_undef_value(), rest = mrb_nil_value();
-    mrb_sym kw_names[] = { mrb_intern_lit(mrb, "cause") };
+    mrb_sym kw_names[] = { MRB_SYM(cause) };
     mrb_kwargs kw = { 1, 0, kw_names, &cause, &rest };
     mrb_int argc = mrb_get_args(mrb, "|oo:", &exc, &mesg, &kw);
     if (!mrb_undef_p(cause) && !(mrb_hash_p(rest) && !mrb_hash_empty_p(mrb, rest)) && argc > 0) {
@@ -327,7 +327,7 @@ void _orb_bt_forget(mrb_state *mrb, mrb_value exc);
 
 static mrb_value exc_set_backtrace_m(mrb_state *mrb, mrb_value exc) {
   mrb_value bt = mrb_get_arg1(mrb), strs = bt;
-  mrb_sym cache = mrb_intern_lit(mrb, "__backtrace__"), locs = mrb_intern_lit(mrb, "__bt_locations__");
+  mrb_sym cache = MRB_SYM(__backtrace__), locs = MRB_SYM(__bt_locations__);
   struct RException *e = mrb_exc_ptr(exc);
   mrb_iv_remove(mrb, exc, cache);
   mrb_iv_remove(mrb, exc, locs);
@@ -343,12 +343,12 @@ static mrb_value exc_set_backtrace_m(mrb_state *mrb, mrb_value exc) {
     mrb_int n = RARRAY_LEN(bt), nstr = 0, nloc = 0;
     struct RClass *loc_class = NULL;
     mrb_value th = mrb_obj_value(mrb->object_class);
-    if (mrb_const_defined(mrb, th, mrb_intern_lit(mrb, "Thread"))) {
-      mrb_value t = mrb_const_get(mrb, th, mrb_intern_lit(mrb, "Thread"));
-      if (mrb_const_defined(mrb, t, mrb_intern_lit(mrb, "Backtrace"))) {
-        mrb_value b = mrb_const_get(mrb, t, mrb_intern_lit(mrb, "Backtrace"));
-        if (mrb_const_defined(mrb, b, mrb_intern_lit(mrb, "Location"))) {
-          loc_class = mrb_class_ptr(mrb_const_get(mrb, b, mrb_intern_lit(mrb, "Location")));
+    if (mrb_const_defined(mrb, th, MRB_SYM(Thread))) {
+      mrb_value t = mrb_const_get(mrb, th, MRB_SYM(Thread));
+      if (mrb_const_defined(mrb, t, MRB_SYM(Backtrace))) {
+        mrb_value b = mrb_const_get(mrb, t, MRB_SYM(Backtrace));
+        if (mrb_const_defined(mrb, b, MRB_SYM(Location))) {
+          loc_class = mrb_class_ptr(mrb_const_get(mrb, b, MRB_SYM(Location)));
         }
       }
     }
@@ -360,7 +360,7 @@ static mrb_value exc_set_backtrace_m(mrb_state *mrb, mrb_value exc) {
     if (n > 0 && nloc == n) {
       strs = mrb_ary_new_capa(mrb, n);
       for (mrb_int i = 0; i < n; i++) {
-        mrb_ary_push(mrb, strs, mrb_funcall_id(mrb, RARRAY_PTR(bt)[i], mrb_intern_lit(mrb, "to_s"), 0));
+        mrb_ary_push(mrb, strs, mrb_funcall_id(mrb, RARRAY_PTR(bt)[i], MRB_SYM(to_s), 0));
       }
       mrb_iv_set(mrb, exc, locs, mrb_ary_new_from_values(mrb, n, RARRAY_PTR(bt)));
     }
@@ -388,12 +388,12 @@ static mrb_value respond_to_w(mrb_state *mrb, mrb_value self) {
   mrb_value r = respond_to_orig(mrb, self);
   if (mrb_test(r) && mrb_get_argc(mrb) >= 1) {
     mrb_value name = mrb_get_argv(mrb)[0];
-    mrb_sym fork = mrb_intern_lit(mrb, "fork");
+    mrb_sym fork = MRB_SYM(fork);
     if ((mrb_symbol_p(name) && mrb_symbol(name) == fork) ||
         (mrb_string_p(name) && RSTRING_LEN(name) == 4 && memcmp(RSTRING_PTR(name), "fork", 4) == 0)) {
       struct RClass *owner = mrb_class(mrb, self);
       mrb_method_t m = mrb_method_search_vm(mrb, &owner, fork);
-      struct RClass *process = mrb_class_defined_id(mrb, mrb_intern_lit(mrb, "Process")) ?
+      struct RClass *process = mrb_class_defined_id(mrb, MRB_SYM(Process)) ?
         mrb_module_get(mrb, "Process") : NULL;
       if (!MRB_METHOD_UNDEF_P(m) && (owner == mrb->kernel_module ||
           (process && owner == mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(process)))))) {
@@ -412,7 +412,7 @@ static mrb_value respond_to_w(mrb_state *mrb, mrb_value self) {
 static mrb_func_t enc_keep_orig[ENC_KEEP_MAX];
 
 static void enc_copy_tag(mrb_state *mrb, mrb_value tag, mrb_value from, mrb_value to) {
-  mrb_sym sym = mrb_intern_lit(mrb, "__encoding");
+  mrb_sym sym = MRB_SYM(__encoding);
   if (!mrb_string_p(to) || mrb_obj_eq(mrb, from, to)) return;
   if (RSTR_BINARY_P(mrb_str_ptr(to)) != RSTR_BINARY_P(mrb_str_ptr(from))) return;
   if (!mrb_nil_p(mrb_iv_get(mrb, to, sym))) return;
@@ -423,7 +423,7 @@ static void enc_copy_tag(mrb_state *mrb, mrb_value tag, mrb_value from, mrb_valu
 static mrb_value enc_keep_call(mrb_state *mrb, mrb_value self, int i) {
   mrb_value r = enc_keep_orig[i](mrb, self);
   if (!mrb_string_p(self)) return r;
-  mrb_value tag = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "__encoding"));
+  mrb_value tag = mrb_iv_get(mrb, self, MRB_SYM(__encoding));
   if (mrb_nil_p(tag)) return r;
   if (mrb_string_p(r)) {
     enc_copy_tag(mrb, tag, self, r);
@@ -460,7 +460,7 @@ static mrb_value str_init_w(mrb_state *mrb, mrb_value self) {
   if (mrb_get_argc(mrb) >= 1) {
     mrb_value src = mrb_get_argv(mrb)[0];
     if (mrb_string_p(src)) {
-      mrb_value tag = mrb_iv_get(mrb, src, mrb_intern_lit(mrb, "__encoding"));
+      mrb_value tag = mrb_iv_get(mrb, src, MRB_SYM(__encoding));
       if (!mrb_nil_p(tag)) enc_copy_tag(mrb, tag, src, self);
     }
   }
@@ -475,7 +475,7 @@ static mrb_func_t enc_cat_orig[ENC_CAT_N];
 static const char *enc_cat_names[ENC_CAT_N] = {"+", "<<", "concat", "prepend"};
 
 static mrb_bool enc_plain_same(mrb_state *mrb, mrb_value a, mrb_value b) {
-  mrb_sym sym = mrb_intern_lit(mrb, "__encoding");
+  mrb_sym sym = MRB_SYM(__encoding);
   if (!mrb_string_p(b)) return TRUE;
   if (RSTR_BINARY_P(mrb_str_ptr(a)) != RSTR_BINARY_P(mrb_str_ptr(b))) return FALSE;
   return mrb_nil_p(mrb_iv_get(mrb, a, sym)) && mrb_nil_p(mrb_iv_get(mrb, b, sym));
@@ -493,12 +493,12 @@ static mrb_value enc_cat_call(mrb_state *mrb, mrb_value self, int i) {
   mrb_value kernel = mrb_obj_value(mrb->kernel_module);
   for (mrb_int k = 0; k < argc; k++) {
     if (!mrb_string_p(argv[k])) continue;
-    enc = mrb_funcall_id(mrb, kernel, mrb_intern_lit(mrb, "__oruby_enc_concat"), 2, acc, argv[k]);
-    acc = mrb_funcall_id(mrb, mrb_str_dup(mrb, acc), mrb_intern_lit(mrb, "force_encoding"), 1, enc);
+    enc = mrb_funcall_id(mrb, kernel, MRB_SYM(__oruby_enc_concat), 2, acc, argv[k]);
+    acc = mrb_funcall_id(mrb, mrb_str_dup(mrb, acc), MRB_SYM(force_encoding), 1, enc);
   }
   mrb_value r = enc_cat_orig[i](mrb, self);
   if (!mrb_nil_p(enc) && mrb_string_p(r)) {
-    mrb_funcall_id(mrb, r, mrb_intern_lit(mrb, "force_encoding"), 1, enc);
+    mrb_funcall_id(mrb, r, MRB_SYM(force_encoding), 1, enc);
   }
   return r;
 }
@@ -549,12 +549,12 @@ void _mrb_wrap_string_encoding(mrb_state *mrb) {
     mrb_define_method_raw(mrb, owner, mid, w);
   }
   struct RClass *owner = mrb->string_class;
-  mrb_method_t m = mrb_method_search_vm(mrb, &owner, mrb_intern_lit(mrb, "initialize"));
+  mrb_method_t m = mrb_method_search_vm(mrb, &owner, MRB_SYM(initialize));
   if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_CFUNC_P(m) && MRB_METHOD_CFUNC(m) != str_init_w) {
     str_init_orig = MRB_METHOD_CFUNC(m);
     mrb_method_t w = m;
     w.as.func = str_init_w;
-    mrb_define_method_raw(mrb, owner, mrb_intern_lit(mrb, "initialize"), w);
+    mrb_define_method_raw(mrb, owner, MRB_SYM(initialize), w);
   }
 }
 
@@ -579,7 +579,7 @@ static int gv_n;
 
 static mrb_value gv_storage(mrb_state *mrb) {
   mrb_value k = mrb_obj_value(mrb->kernel_module);
-  mrb_sym sym = mrb_intern_lit(mrb, "__oruby_gv");
+  mrb_sym sym = MRB_SYM(__oruby_gv);
   mrb_value h = mrb_iv_get(mrb, k, sym);
   if (!mrb_hash_p(h)) {
     h = mrb_hash_new(mrb);
@@ -590,7 +590,7 @@ static mrb_value gv_storage(mrb_state *mrb) {
 
 static mrb_value gv_slot_get(mrb_state *mrb, int i) {
   if (gv_kinds[i] == 3) {
-    return mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), mrb_intern_lit(mrb, "__oruby_gvget"), 1,
+    return mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_gvget), 1,
                           mrb_symbol_value(mrb_intern_cstr(mrb, gv_names[i])));
   }
   return mrb_hash_get(mrb, gv_storage(mrb), mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i])));
@@ -600,14 +600,14 @@ static void gv_slot_set(mrb_state *mrb, int i, mrb_value v) {
   mrb_value kernel = mrb_obj_value(mrb->kernel_module);
   mrb_value name = mrb_symbol_value(mrb_intern_cstr(mrb, gv_names[i]));
   if (gv_kinds[i] != 2) {
-    mrb_sym check = mrb_intern_lit(mrb, "__oruby_gvcheck");
+    mrb_sym check = MRB_SYM(__oruby_gvcheck);
     /* until core_ext defines the checks, the startup values are stored as is */
     if (mrb_respond_to(mrb, kernel, check)) v = mrb_funcall_id(mrb, kernel, check, 2, name, v);
   }
   mrb_hash_set(mrb, gv_storage(mrb), mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i])), v);
-  mrb_value hooks = mrb_iv_get(mrb, kernel, mrb_intern_lit(mrb, "@__oruby_trace_var"));
+  mrb_value hooks = mrb_iv_get(mrb, kernel, MRB_IVSYM(__oruby_trace_var));
   if (mrb_hash_p(hooks) && mrb_hash_key_p(mrb, hooks, name)) {
-    mrb_funcall_id(mrb, kernel, mrb_intern_lit(mrb, "__oruby_trace_fire"), 2, name, v);
+    mrb_funcall_id(mrb, kernel, MRB_SYM(__oruby_trace_fire), 2, name, v);
   }
 }
 
@@ -816,12 +816,12 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
     mrb_func_t ws[2] = {raise_w0, raise_w1};
     for (int i = 0; i < 2; i++) {
       struct RClass *owner = targets[i];
-      mrb_method_t m = mrb_method_search_vm(mrb, &owner, mrb_intern_lit(mrb, "raise"));
+      mrb_method_t m = mrb_method_search_vm(mrb, &owner, MRB_SYM(raise));
       if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m) || MRB_METHOD_CFUNC(m) == ws[i]) continue;
       raise_orig[i] = MRB_METHOD_CFUNC(m);
       if (i == 0) mrb_define_private_method(mrb, owner, "raise", ws[i], MRB_ARGS_OPT(3) | MRB_ARGS_KEY(1, 1));
       else mrb_define_method(mrb, owner, "raise", ws[i], MRB_ARGS_OPT(3) | MRB_ARGS_KEY(1, 1));
-      mrb_alias_method(mrb, owner, mrb_intern_lit(mrb, "fail"), mrb_intern_lit(mrb, "raise"));
+      mrb_alias_method(mrb, owner, MRB_SYM(fail), MRB_SYM(raise));
     }
   }
   mrb_define_method(mrb, mrb->eException_class, "set_backtrace", exc_set_backtrace_m, MRB_ARGS_REQ(1));

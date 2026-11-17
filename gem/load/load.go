@@ -164,7 +164,7 @@ func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 // raiseCannotLoad raises LoadError for feature with LoadError#path set
 func raiseCannotLoad(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	exc := mrb.Raisef(mrb.ClassGet("LoadError"), "cannot load such file -- %v", feature)
-	_ = mrb.IVSet(exc, mrb.Intern("@path"), mrb.StrNew(feature))
+	_ = mrb.IVSet(exc, oruby.IvSym_path, mrb.StrNew(feature))
 	return exc
 }
 
@@ -213,7 +213,7 @@ func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
 		return "", fmt.Errorf("cannot load such file -- %v", feature)
 	}
 
-	paths := mrb.GVGetObj(mrb.Intern("$LOAD_PATH")).RArray()
+	paths := mrb.GVGetObj(oruby.GvSym_LOAD_PATH).RArray()
 	for i := 0; i < paths.Len(); i++ {
 		path, err := pathArg(mrb, paths.Item(i))
 		if err != nil {
@@ -257,7 +257,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	// If there is implemented Go feature
 	if loaded, err := mrb.Resolve(feature); err == nil {
 		if loaded {
-			loadedFeatures := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
+			loadedFeatures := mrb.GVGet(oruby.GvSym_LOADED_FEATURES)
 			mrb.AryPush(loadedFeatures, mrb.StrNew(feature))
 			mrb.FeatureAdd(feature)
 			return mrb.TrueValue()
@@ -300,7 +300,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	}
 
 	// Remember loaded feature
-	loadedFeatures := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
+	loadedFeatures := mrb.GVGet(oruby.GvSym_LOADED_FEATURES)
 	mrb.AryPush(loadedFeatures, nameValue)
 	mrb.FeatureAdd(name)
 	mrb.FeatureAdd(real)
@@ -322,8 +322,8 @@ func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 	if v.IsString() {
 		return v.String(), nil
 	}
-	if !v.IsNil() && mrb.RespondTo(v, mrb.Intern("to_path")) {
-		p, err := mrb.Funcall(v, mrb.Intern("to_path"))
+	if !v.IsNil() && mrb.RespondTo(v, oruby.Sym_to_path) {
+		p, err := mrb.Funcall(v, oruby.Sym_to_path)
 		if err != nil {
 			return "", err
 		}
@@ -332,7 +332,7 @@ func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 			return v.String(), nil
 		}
 	}
-	s, err := mrb.Funcall(mrb.KernelModule(), mrb.Intern("__implicit"), v, mrb.StringClass().Value())
+	s, err := mrb.Funcall(mrb.KernelModule(), oruby.Sym___implicit, v, mrb.StringClass().Value())
 	if err != nil {
 		return "", err
 	}
@@ -363,7 +363,7 @@ func realpathOf(p string) string {
 // featureLoaded reports whether $LOADED_FEATURES holds name, or a path with
 // the same real path, as MRI's loaded-features realpath index does
 func featureLoaded(mrb *oruby.MrbState, name, real string) bool {
-	lf := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
+	lf := mrb.GVGet(oruby.GvSym_LOADED_FEATURES)
 	if !lf.IsArray() {
 		return false
 	}
@@ -384,7 +384,7 @@ func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	feature := mrb.GetArgsFirst().String()
 
 	var file string
-	res, err := mrb.Funcall(mrb.TopSelf(), mrb.Intern("caller"), 0)
+	res, err := mrb.Funcall(mrb.TopSelf(), oruby.Sym_caller, 0)
 	if err == nil && res.Type() == oruby.MrbTTArray {
 		ary := mrb.EnsureArrayType(res)
 		if ary.Len() > 0 {

@@ -55,7 +55,7 @@ func ioCloseWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	proc := mrb.ConstGet(mrb.ObjectClass(), mrb.Intern("Process"))
+	proc := mrb.ConstGet(mrb.ObjectClass(), oruby.Sym_Process)
 	if proc.Type() != oruby.MrbTTModule {
 		panic("gem 'process' must be required for IO::popen to work")
 	}
@@ -101,7 +101,7 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		mrb.HashMerge(opt, extra)
 	}
 	errToOut := false
-	if e := mrb.HashFetch(opt.Value(), mrb.Intern("err"), mrb.NilValue()); e.IsArray() {
+	if e := mrb.HashFetch(opt.Value(), oruby.Sym_err, mrb.NilValue()); e.IsArray() {
 		errToOut = mrb.String(mrb.AryEntry(e, 0)) == "child" && mrb.String(mrb.AryEntry(e, 1)) == "out"
 	}
 
@@ -125,7 +125,7 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		spawnArgs = append(spawnArgs, command)
 	}
 	spawnArgs = append(spawnArgs, opt)
-	cmdV, err := mrb.FuncallWithBlock(proc, mrb.Intern("_get_cmd"), spawnArgs...)
+	cmdV, err := mrb.FuncallWithBlock(proc, oruby.Sym__get_cmd, spawnArgs...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -196,8 +196,8 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 
 	} else if mode.IsHash() {
 		// mode: popen - int only
-		mFlags := mrb.HashFetch(mode, mrb.Intern("mode"), oruby.Int(0)).Int()
-		fFlags := mrb.HashFetch(mode, mrb.Intern("flags"), oruby.Int(0)).Int()
+		mFlags := mrb.HashFetch(mode, oruby.Sym_mode, oruby.Int(0)).Int()
+		fFlags := mrb.HashFetch(mode, oruby.Sym_flags, oruby.Int(0)).Int()
 		return mFlags | fFlags, nil
 
 	} else {

@@ -75,7 +75,7 @@ func (h RHash) Merge(hash2 MrbValue) {
 
 // IfNone get ifnone value from hash
 func (h RHash) IfNone() Value {
-	return h.mrb.IVGet(h, h.mrb.Intern("ifnone"))
+	return h.mrb.IVGet(h, Sym_ifnone)
 }
 
 // ProcDefault alias for IfNone

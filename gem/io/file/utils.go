@@ -68,7 +68,7 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 	} else if mode.IsHash() {
 		// mode: 'rw+', flags: File::EXCL
 		mFlags := 0
-		optMode := mrb.HashFetch(mode, mrb.Intern("mode"), mrb.NilValue())
+		optMode := mrb.HashFetch(mode, oruby.Sym_mode, mrb.NilValue())
 		if optMode.IsInteger() {
 			mFlags = optMode.Int()
 		} else if !optMode.IsNil() {
@@ -79,7 +79,7 @@ func modeToFlags(mrb *oruby.MrbState, mode oruby.Value) (int, error) {
 			}
 		}
 
-		fFlags := mrb.HashFetch(mode, mrb.Intern("flags"), oruby.Int(0)).Int()
+		fFlags := mrb.HashFetch(mode, oruby.Sym_flags, oruby.Int(0)).Int()
 		return mFlags | fFlags, nil
 
 	} else {
