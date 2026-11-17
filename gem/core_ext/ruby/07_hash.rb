@@ -1,12 +1,4 @@
 class Hash
-  def compare_by_identity
-    self
-  end
-
-  def compare_by_identity?
-    false
-  end
-
   alias __orig_hash hash
   def hash
     Thread.current[:__hash_hash_stack] ||= []

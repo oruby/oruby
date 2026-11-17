@@ -199,6 +199,15 @@ module Kernel
       end
     end
 
+    # END { ... }: registered once per site, the first time it is reached
+    def __oruby_end__(id, &block)
+      st = (@__oruby_end ||= {})
+      return nil if st[id]
+      st[id] = true
+      at_exit(&block)
+      nil
+    end
+
     # A::B ||= v, A::B &&= v, A::B op= v
     def __oruby_cpath_or__(mod, name)
       if mod.const_defined?(name) && (v = mod.const_get(name))

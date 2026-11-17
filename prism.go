@@ -30,6 +30,9 @@ import (
 //   - A::B ||= v, A::B &&= v, A::B op= v -> Kernel.__oruby_cpath_*__
 //   - alias $new $old                    -> references to $new compile as $old
 //   - integer literals over 255 digits   -> Integer("...")
+//   - END { ... }                        -> Kernel.__oruby_end__(site) { ... }
+//   - frozen string literals             -> "...".-@ (frozen_string_literal)
+//   - __ENCODING__ in non-UTF-8 source   -> ::Encoding.find("<source encoding>")
 //
 // Rewrites never add or remove newlines, so line numbers stay as in the source.
 
@@ -58,16 +61,45 @@ type prismRec struct {
 	s, e        [C.ORB_SPANS]int
 }
 
-func prismScan(src []byte) ([]prismRec, bool) {
+// PreprocessOptions are per-source settings for the rewriter
+type PreprocessOptions struct {
+	// SourceEncoding is the encoding of source without a magic comment
+	// (the main script under -K); empty means UTF-8
+	SourceEncoding string
+}
+
+// frozenStringDefault is --enable/--disable-frozen-string-literal: -1 unset
+var frozenStringDefault int32 = -1
+
+// SetFrozenStringLiteral sets the frozen_string_literal default for all
+// source compiled afterwards, as MRI's --enable-frozen-string-literal does
+func SetFrozenStringLiteral(frozen bool) {
+	if frozen {
+		atomic.StoreInt32(&frozenStringDefault, 1)
+	} else {
+		atomic.StoreInt32(&frozenStringDefault, 0)
+	}
+}
+
+func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 	if len(src) == 0 {
-		return nil, true
+		return nil, "", true
 	}
 	prismMu.Lock()
 	defer prismMu.Unlock()
 	var n, errs C.int
-	p := C._oruby_prism_scan(nil, (*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src)), &n, &errs)
+	var so C.orb_scan_opts
+	so.frozen = C.int(atomic.LoadInt32(&frozenStringDefault))
+	if opts != nil && opts.SourceEncoding != "" {
+		cs := C.CString(opts.SourceEncoding)
+		defer C.free(unsafe.Pointer(cs))
+		so.encoding = cs
+	}
+	var encName [64]C.char
+	p := C._oruby_prism_scan(nil, (*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src)), &so, &n, &errs, &encName[0], C.size_t(len(encName)))
+	enc := C.GoString(&encName[0])
 	if p == nil {
-		return nil, errs == 0
+		return nil, enc, errs == 0
 	}
 	defer C.free(unsafe.Pointer(p))
 	raw := unsafe.Slice(p, int(n))
@@ -78,13 +110,17 @@ func prismScan(src []byte) ([]prismRec, bool) {
 			recs[i].s[j], recs[i].e[j] = int(r.s[j]), int(r.e[j])
 		}
 	}
-	return recs, errs == 0
+	return recs, enc, errs == 0
 }
 
 // mayNeedRewrite is a cheap filter before parsing: every rewrite site
 // contains one of these
-func mayNeedRewrite(src []byte) bool {
-	for _, k := range []string{"**nil", "alias", "undef", "&.", "BEGIN", "..", "||=", "&&=", "::"} {
+func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
+	if atomic.LoadInt32(&frozenStringDefault) == 1 || opts != nil && opts.SourceEncoding != "" {
+		return true
+	}
+	for _, k := range []string{"**nil", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
+		"__ENCODING__", "frozen_string_literal"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
 		}
@@ -201,10 +237,17 @@ func resolveGvar(name string) string {
 // PreprocessRubyBytes rewrites the constructs mruby can't compile; source
 // that has none, or that doesn't parse, is returned unchanged.
 func PreprocessRubyBytes(src []byte) []byte {
-	if !mayNeedRewrite(src) {
+	return PreprocessRubyWith(src, nil)
+}
+
+var endSiteCounter uint64
+
+// PreprocessRubyWith is PreprocessRubyBytes with per-source options
+func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
+	if !mayNeedRewrite(src, opts) {
 		return src
 	}
-	recs, ok := prismScan(src)
+	recs, encName, ok := prismScan(src, opts)
 	if !ok || len(recs) == 0 {
 		return src
 	}
@@ -308,6 +351,17 @@ func PreprocessRubyBytes(src []byte) []byte {
 					r.add(s[0], e[0], func(*rewriter) string { return t })
 				}
 			}
+		case C.ORB_END_BLOCK:
+			id := atomic.AddUint64(&endSiteCounter, 1)
+			r.add(s[0], e[1], func(*rewriter) string {
+				return "::Kernel.__oruby_end__(" + strconv.FormatUint(id, 10) + ") {"
+			})
+		case C.ORB_FROZEN_STRING:
+			r.add(e[0], e[0], func(*rewriter) string { return ".-@" })
+		case C.ORB_SOURCE_ENCODING:
+			if encName != "" && encName != "UTF-8" {
+				r.add(s[0], e[0], func(*rewriter) string { return `::Encoding.find("` + encName + `")` })
+			}
 		case C.ORB_BIG_INTEGER:
 			r.add(s[0], e[0], func(r *rewriter) string { return `Integer("` + r.text(s[0], e[0]) + `")` })
 		}
@@ -335,4 +389,32 @@ func (r *rewriter) add(s, e int, build func(r *rewriter) string) {
 func PreprocessRuby(source string) string {
 	b := PreprocessRubyBytes([]byte(source))
 	return string(b)
+}
+
+// SplitBeginBlocks moves the program's BEGIN { ... } blocks out of src, for
+// the -n/-p loop: begins holds them, in order; in body each is blanked out,
+// newlines kept, so line numbers stay as in src.
+func SplitBeginBlocks(src []byte) (begins, body []byte) {
+	if !bytes.Contains(src, []byte("BEGIN")) {
+		return nil, src
+	}
+	recs, _, ok := prismScan(src, nil)
+	if !ok {
+		return nil, src
+	}
+	body = append([]byte(nil), src...)
+	var b bytes.Buffer
+	for _, rc := range recs {
+		if rc.kind != C.ORB_BEGIN_BLOCK || rc.s[0] < 0 || rc.e[2] < 0 {
+			continue
+		}
+		b.Write(src[rc.s[0]:rc.e[2]])
+		b.WriteString("; ")
+		for i := rc.s[0]; i < rc.e[2]; i++ {
+			if body[i] != '\n' {
+				body[i] = ' '
+			}
+		}
+	}
+	return b.Bytes(), body
 }

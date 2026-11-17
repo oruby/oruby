@@ -111,12 +111,21 @@ func ioPopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	// Process.spawn(env, command, opt)
-	var cmdV oruby.Value
-	if env.IsNil() {
-		cmdV, err = mrb.FuncallWithBlock(proc, mrb.Intern("_get_cmd"), command, opt)
-	} else {
-		cmdV, err = mrb.FuncallWithBlock(proc, mrb.Intern("_get_cmd"), env, command, opt)
+	// popen's Array is the whole argv (spawn's first-argument Array is
+	// [command, argv0]), so its elements go to spawn one by one
+	var spawnArgs []interface{}
+	if !env.IsNil() {
+		spawnArgs = append(spawnArgs, env)
 	}
+	if command.IsArray() {
+		for i := 0; i < oruby.RArrayLen(command); i++ {
+			spawnArgs = append(spawnArgs, mrb.AryEntry(command, i))
+		}
+	} else {
+		spawnArgs = append(spawnArgs, command)
+	}
+	spawnArgs = append(spawnArgs, opt)
+	cmdV, err := mrb.FuncallWithBlock(proc, mrb.Intern("_get_cmd"), spawnArgs...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

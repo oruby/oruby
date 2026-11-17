@@ -48,3 +48,11 @@ class Mutex
     locked?
   end
 end
+
+class Thread
+  # only the current thread exists: raising in it raises here
+  def raise(*args, **kw)
+    ::Kernel.raise(*args, **kw) if equal?(Thread.current)
+    ::Kernel.raise ThreadError, "killed thread"
+  end
+end

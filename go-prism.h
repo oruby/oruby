@@ -21,7 +21,17 @@ enum {
   ORB_ALIAS_GVAR,         // s0: node, s1: new name, s2: old name
   ORB_GVAR_REF,           // s0: global variable name, s1: whole assignment (writes)
   ORB_BIG_INTEGER,        // s0: literal
+  ORB_END_BLOCK,          // s0: END, s1: {, s2: }
+  ORB_FROZEN_STRING,      // s0: literal (frozen by magic comment or option)
+  ORB_SOURCE_ENCODING,    // s0: __ENCODING__
 };
+
+// Scan options: frozen_string_literal default (-1 unset, 0, 1) and the
+// source encoding name ("" for the default UTF-8)
+typedef struct {
+  int frozen;
+  const char *encoding;
+} orb_scan_opts;
 
 #define ORB_SPANS 5
 
@@ -32,6 +42,6 @@ typedef struct {
   int32_t e[ORB_SPANS];
 } orb_rec;
 
-orb_rec *_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, int *count, int *errors);
+orb_rec *_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_opts *opts, int *count, int *errors, char *encname, size_t encname_len);
 
 #endif

@@ -104,3 +104,92 @@ class Range
     result
   end
 end
+
+# min, max, minmax, count and to_set as MRI's range.c has them: endpoints
+# are compared, not iterated, and open ends raise instead of looping
+class Range
+  def __oruby_cmp(a, b)
+    c = a <=> b
+    raise ArgumentError, "comparison of #{a.class} with #{b.inspect} failed" if c.nil?
+    c > 0 ? 1 : (c < 0 ? -1 : 0)
+  end
+  private :__oruby_cmp
+
+  def min(*args, &block)
+    b, e = self.begin, self.end
+    raise RangeError, "cannot get the minimum of beginless range" if b.nil?
+    if block
+      raise RangeError, "cannot get the minimum of endless range with custom comparison method" if e.nil?
+      return super
+    end
+    return first(*args) unless args.empty?
+    c = e.nil? ? -1 : __oruby_cmp(b, e)
+    return nil if c > 0 || (c == 0 && exclude_end?)
+    b
+  end
+
+  def max(*args, &block)
+    b, e = self.begin, self.end
+    raise RangeError, "cannot get the maximum of endless range" if e.nil?
+    numeric_end = e.is_a?(Numeric)
+    if !args.empty? && !block && e.is_a?(Integer) && (b.nil? || b.is_a?(Integer))
+      # the n largest of an Integer range, counted down from the end
+      n = Kernel.__to_int(args[0])
+      raise ArgumentError, "negative size (#{n})" if n < 0
+      top = exclude_end? ? e - 1 : e
+      res = []
+      v = top
+      while res.size < n && (b.nil? || v >= b)
+        res << v
+        v -= 1
+      end
+      return res
+    end
+    if block || (exclude_end? && !numeric_end) || !args.empty?
+      raise RangeError, "cannot get the maximum of beginless range with custom comparison method" if b.nil?
+      return super
+    end
+    c = b.nil? ? -1 : __oruby_cmp(b, e)
+    return nil if c > 0
+    if exclude_end?
+      raise TypeError, "cannot exclude non Integer end value" unless e.is_a?(Integer)
+      return nil if c == 0
+      raise TypeError, "cannot exclude end value with non Integer begin value" unless b.nil? || b.is_a?(Integer)
+      return e - 1
+    end
+    e
+  end
+
+  def minmax(&block)
+    return super if block
+    [min, max]
+  end
+
+  def count(*args, &block)
+    return super if !args.empty? || block
+    b, e = self.begin, self.end
+    return Float::INFINITY if b.nil? || e.nil?
+    if b.is_a?(Integer)
+      s = size
+      return s unless s.nil?
+    end
+    super
+  end
+
+  def to_set(&block)
+    raise RangeError, "cannot convert endless range to a set" if self.end.nil?
+    super(&block)
+  end
+end
+
+class Range
+  alias __oruby_each each
+  # MRI names the class it can't iterate from
+  def each(&block)
+    b = self.begin
+    unless b.is_a?(Integer) || b.respond_to?(:succ) || !block
+      raise TypeError, "can't iterate from #{b.class}"
+    end
+    __oruby_each(&block)
+  end
+end

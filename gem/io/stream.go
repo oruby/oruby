@@ -559,8 +559,18 @@ func ioPrint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return RaiseIOError(mrb, "IO Stream does not suport writing")
 	}
 
+	items := make([]oruby.Value, argc)
+	for i := range items {
+		items[i] = args.Item(i)
+	}
+	if argc == 0 {
+		// print with no arguments prints $_
+		if last := mrb.GetGV("$_"); !last.IsNil() {
+			items, argc = []oruby.Value{last}, 1
+		}
+	}
 	for i := 0; i < argc; i++ {
-		s, err := valueToS(mrb, args.Item(i))
+		s, err := valueToS(mrb, items[i])
 		if err != nil {
 			return mrb.RaiseError(err)
 		}

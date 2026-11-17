@@ -14,6 +14,7 @@ void mrc_ccontext_free(void *c);
 typedef struct {
   orb_rec *recs;
   int n, cap;
+  bool frozen; /* frozen_string_literal: true for this source */
 } orb_scan;
 
 static orb_rec *
@@ -67,6 +68,14 @@ cpath_write(orb_scan *sc, int kind, const pm_node_t *node, const pm_constant_pat
   lspan(r, 2, t->name_loc);
   span(r, 3, value);
   lspan(r, 4, op);
+}
+
+static pm_visit_result_t visit(const pm_node_t *node, void *data);
+
+static void
+visit_child(const pm_node_t *node, void *data)
+{
+  if (node) pm_visit_node(node, visit, data);
 }
 
 static pm_visit_result_t
@@ -203,6 +212,50 @@ visit(const pm_node_t *node, void *data)
     r = add(sc, ORB_GVAR_REF);
     span(r, 0, node);
     break;
+  case PM_POST_EXECUTION_NODE: {
+    const pm_post_execution_node_t *p = (const pm_post_execution_node_t *)node;
+    r = add(sc, ORB_END_BLOCK);
+    lspan(r, 0, p->keyword_loc);
+    lspan(r, 1, p->opening_loc);
+    lspan(r, 2, p->closing_loc);
+    break;
+  }
+  case PM_STRING_NODE: {
+    const pm_string_node_t *sn = (const pm_string_node_t *)node;
+    // %w elements have no opening; they can't take a method call
+    if (sc->frozen && PM_NODE_FLAG_P(node, PM_STRING_FLAGS_FROZEN) && sn->opening_loc.length > 0) {
+      r = add(sc, ORB_FROZEN_STRING);
+      span(r, 0, node);
+    }
+    break;
+  }
+  case PM_INTERPOLATED_STRING_NODE: {
+    // the parts of "a" "b" or "a#{x}" are not literals of their own
+    const pm_interpolated_string_node_t *is = (const pm_interpolated_string_node_t *)node;
+    if (sc->frozen && PM_NODE_FLAG_P(node, PM_INTERPOLATED_STRING_NODE_FLAGS_FROZEN) && is->opening_loc.length > 0) {
+      r = add(sc, ORB_FROZEN_STRING);
+      span(r, 0, node);
+    }
+    for (size_t i = 0; i < is->parts.size; i++) {
+      const pm_node_t *part = is->parts.nodes[i];
+      if (PM_NODE_TYPE(part) != PM_STRING_NODE) visit_child(part, data);
+    }
+    return PM_VISIT_SKIP;
+  }
+  // patterns take literals only: leave their strings alone
+  case PM_IN_NODE:
+    visit_child((const pm_node_t *)((const pm_in_node_t *)node)->statements, data);
+    return PM_VISIT_SKIP;
+  case PM_MATCH_PREDICATE_NODE:
+    visit_child(((const pm_match_predicate_node_t *)node)->value, data);
+    return PM_VISIT_SKIP;
+  case PM_MATCH_REQUIRED_NODE:
+    visit_child(((const pm_match_required_node_t *)node)->value, data);
+    return PM_VISIT_SKIP;
+  case PM_SOURCE_ENCODING_NODE:
+    r = add(sc, ORB_SOURCE_ENCODING);
+    span(r, 0, node);
+    break;
   case PM_INTEGER_NODE:
     if (node->location.length > 255) {
       r = add(sc, ORB_BIG_INTEGER);
@@ -216,7 +269,7 @@ visit(const pm_node_t *node, void *data)
 }
 
 orb_rec *
-_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, int *count, int *errors)
+_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_opts *opts, int *count, int *errors, char *encname, size_t encname_len)
 {
   static mrb_state *scan_mrb = NULL; // allocator state when no mrb is given
   orb_scan sc = {0};
@@ -226,12 +279,25 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, int *count, int *
   }
   void *cc = mrc_ccontext_new(mrb);
   pm_arena_t *arena = pm_arena_new();
-  pm_parser_t *parser = pm_parser_new(arena, (const uint8_t *)src, len, NULL);
+  pm_options_t *options = NULL;
+  if (opts && (opts->frozen >= 0 || (opts->encoding && opts->encoding[0]))) {
+    options = pm_options_new();
+    if (opts->frozen >= 0) pm_options_frozen_string_literal_set(options, opts->frozen != 0);
+    if (opts->encoding && opts->encoding[0]) pm_options_encoding_set(options, opts->encoding);
+  }
+  pm_parser_t *parser = pm_parser_new(arena, (const uint8_t *)src, len, options);
   pm_node_t *root = pm_parse(parser);
   *errors = (int)pm_parser_errors_size(parser);
+  if (encname && encname_len > 0) {
+    const char *en = pm_parser_encoding_name(parser);
+    strncpy(encname, en ? en : "", encname_len - 1);
+    encname[encname_len - 1] = 0;
+  }
+  sc.frozen = pm_parser_frozen_string_literal(parser) > 0;
   if (root && *errors == 0) pm_visit_node(root, visit, &sc);
   pm_parser_free(parser);
   pm_arena_free(arena);
+  if (options) pm_options_free(options);
   mrc_ccontext_free(cc);
   *count = sc.n;
   return sc.recs;

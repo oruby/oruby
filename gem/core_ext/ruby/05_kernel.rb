@@ -22,18 +22,6 @@ module Kernel
     nil
   end
 
-  alias __builtin_raise__ raise
-  # adds raise(exc, message, backtrace); keywords (cause:) pass through
-  def raise(*args, **kw)
-    if args.size == 3
-      exc = args[0].is_a?(Class) ? args[0].new(args[1]) : args[0]
-      exc.set_backtrace(args[2]) if exc.respond_to?(:set_backtrace)
-      __builtin_raise__(exc, **kw)
-    else
-      __builtin_raise__(*args, **kw)
-    end
-  end
-
   alias __orig_to_enum to_enum
   def to_enum(meth = :each, *args, &block)
     enum = __orig_to_enum(meth, *args)
