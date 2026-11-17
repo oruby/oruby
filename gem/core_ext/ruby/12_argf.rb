@@ -321,7 +321,7 @@ class ARGFClass
     while !@files.empty?
       @current_file = @files.shift
       @argv.shift if @argv && @argv != ARGV && !@argv.empty?
-      $FILENAME = @current_file
+      ::Kernel.__oruby_gv_raw_set(:$FILENAME, @current_file)
       if @current_file == "-"
         @current_io = $stdin
         return @current_io
@@ -337,7 +337,7 @@ class ARGFClass
 
     if @current_file.nil? && @files.empty?
       @current_file = "-"
-      $FILENAME = "-"
+      ::Kernel.__oruby_gv_raw_set(:$FILENAME, "-")
       @current_io = $stdin
       return @current_io
     end

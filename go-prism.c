@@ -15,6 +15,7 @@ typedef struct {
   orb_rec *recs;
   int n, cap;
   bool frozen; /* frozen_string_literal: true for this source */
+  bool nonutf8; /* source encoding other than UTF-8: literals are tagged */
 } orb_scan;
 
 static orb_rec *
@@ -76,6 +77,25 @@ static void
 visit_child(const pm_node_t *node, void *data)
 {
   if (node) pm_visit_node(node, visit, data);
+}
+
+// the embedded code of "a" "b#{x}": adjacent literals are parts of one
+// literal, so only the code inside them is visited
+static void
+visit_string_parts(const pm_interpolated_string_node_t *is, void *data)
+{
+  for (size_t i = 0; i < is->parts.size; i++) {
+    const pm_node_t *part = is->parts.nodes[i];
+    switch (PM_NODE_TYPE(part)) {
+    case PM_STRING_NODE:
+      break;
+    case PM_INTERPOLATED_STRING_NODE:
+      visit_string_parts((const pm_interpolated_string_node_t *)part, data);
+      break;
+    default:
+      visit_child(part, data);
+    }
+  }
 }
 
 static pm_visit_result_t
@@ -195,6 +215,7 @@ visit(const pm_node_t *node, void *data)
     r = add(sc, ORB_GVAR_REF);
     lspan(r, 0, ((const pm_global_variable_write_node_t *)node)->name_loc);
     span(r, 1, node);
+    span(r, 2, ((const pm_global_variable_write_node_t *)node)->value);
     break;
   case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE:
     r = add(sc, ORB_GVAR_REF);
@@ -223,6 +244,12 @@ visit(const pm_node_t *node, void *data)
   case PM_STRING_NODE: {
     const pm_string_node_t *sn = (const pm_string_node_t *)node;
     // %w elements have no opening; they can't take a method call
+    if (sc->nonutf8 && sn->opening_loc.length > 0) {
+      r = add(sc, ORB_LITERAL_ENCODING);
+      span(r, 0, node);
+      if (PM_NODE_FLAG_P(node, PM_STRING_FLAGS_FORCED_UTF8_ENCODING)) r->flags = 1;
+      else if (PM_NODE_FLAG_P(node, PM_STRING_FLAGS_FORCED_BINARY_ENCODING)) r->flags = 2;
+    }
     if (sc->frozen && PM_NODE_FLAG_P(node, PM_STRING_FLAGS_FROZEN) && sn->opening_loc.length > 0) {
       r = add(sc, ORB_FROZEN_STRING);
       span(r, 0, node);
@@ -232,14 +259,15 @@ visit(const pm_node_t *node, void *data)
   case PM_INTERPOLATED_STRING_NODE: {
     // the parts of "a" "b" or "a#{x}" are not literals of their own
     const pm_interpolated_string_node_t *is = (const pm_interpolated_string_node_t *)node;
+    if (sc->nonutf8 && is->opening_loc.length > 0) {
+      r = add(sc, ORB_LITERAL_ENCODING);
+      span(r, 0, node);
+    }
     if (sc->frozen && PM_NODE_FLAG_P(node, PM_INTERPOLATED_STRING_NODE_FLAGS_FROZEN) && is->opening_loc.length > 0) {
       r = add(sc, ORB_FROZEN_STRING);
       span(r, 0, node);
     }
-    for (size_t i = 0; i < is->parts.size; i++) {
-      const pm_node_t *part = is->parts.nodes[i];
-      if (PM_NODE_TYPE(part) != PM_STRING_NODE) visit_child(part, data);
-    }
+    visit_string_parts(is, data);
     return PM_VISIT_SKIP;
   }
   // patterns take literals only: leave their strings alone
@@ -252,6 +280,16 @@ visit(const pm_node_t *node, void *data)
   case PM_MATCH_REQUIRED_NODE:
     visit_child(((const pm_match_required_node_t *)node)->value, data);
     return PM_VISIT_SKIP;
+  case PM_MULTI_WRITE_NODE: {
+    // a, b = obj: MRI converts a single value with #to_ary
+    const pm_node_t *v = ((const pm_multi_write_node_t *)node)->value;
+    if (v && PM_NODE_TYPE(v) != PM_ARRAY_NODE && PM_NODE_TYPE(v) != PM_SPLAT_NODE) {
+      r = add(sc, ORB_MASGN_VALUE);
+      span(r, 0, v);
+      span(r, 1, node);
+    }
+    break;
+  }
   case PM_SOURCE_ENCODING_NODE:
     r = add(sc, ORB_SOURCE_ENCODING);
     span(r, 0, node);
@@ -294,6 +332,10 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
     encname[encname_len - 1] = 0;
   }
   sc.frozen = pm_parser_frozen_string_literal(parser) > 0;
+  {
+    const char *en = pm_parser_encoding_name(parser);
+    sc.nonutf8 = en && strcmp(en, "UTF-8") != 0;
+  }
   if (root && *errors == 0) pm_visit_node(root, visit, &sc);
   pm_parser_free(parser);
   pm_arena_free(arena);

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"os"
 	"runtime"
 	"strings"
 
@@ -100,6 +101,13 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 			mrb.Resolve(dep)
 		}
 		initFormat(mrb)
+		initPack(mrb)
+		// before the Ruby files: 21_implicit.rb wraps String#+ in Ruby and
+		// calls the original, which must be the encoding-checking one
+		mrb.WrapStringConcat()
+		initCrypt(mrb)
+		// IO::Buffer (ruby/32_io_buffer.rb) sizes its mappings by the page size
+		mrb.Eval(fmt.Sprintf("class IO; class Buffer; PAGE_SIZE = %d; end; end", os.Getpagesize()))
 		floatClass := mrb.FloatClass()
 		mrb.DefineMethod(floatClass, "prev_float", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			f := self.Float64()

@@ -42,7 +42,8 @@ class Time
         off = h * 3600 + mi * 60 + se
         return [2, m[1] == "-" ? -off : off]
       end
-      raise ArgumentError, '"+HH:MM", "-HH:MM", "UTC" or "A".."I","K".."Z" expected for utc_offset: ' + s
+      shown = s.encoding.ascii_compatible? ? s : s.inspect
+      raise ArgumentError, '"+HH:MM", "-HH:MM", "UTC" or "A".."I","K".."Z" expected for utc_offset: ' + shown
     end
 
     def __int(v, name = nil)

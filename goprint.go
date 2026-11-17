@@ -56,7 +56,8 @@ func kernelAtExit(mrb *MrbState, self Value) MrbValue {
 
 func (mrb *MrbState) RunAtExitHandlers() {
 	exitTrap := mrb.GetGV("$__exit_trap_proc__")
-	if !exitTrap.IsNil() {
+	// trap(:EXIT, "DEFAULT"/"IGNORE"/...) leaves a command, not a handler
+	if exitTrap.Type() == MrbTTProc {
 		mrb.SetGV("$__exit_trap_proc__", mrb.NilValue())
 		mrb.Yield(exitTrap, mrb.NilValue())
 	}

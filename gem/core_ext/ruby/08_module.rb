@@ -85,3 +85,35 @@ class Module
     raise NameError.new("undefined method '#{old_name}' for #{kind} '#{self}'", old_name.to_sym)
   end
 end
+
+class Module
+  # Ruby 4.1: the modules and classes that include, prepend or inherit self
+  def descendants
+    found = []
+    ObjectSpace.each_object(Module) do |m|
+      next if m.equal?(self) || m.singleton_class? || (defined?(Refinement) && Refinement === m)
+      found << m if m.ancestors.include?(self) && !m.equal?(self)
+    end
+    found
+  end
+
+  # Ruby 4.1: autoload with a path relative to the calling file
+  def autoload_relative(name, path)
+    autoload(name, Module.__oruby_relative_path(path, caller_locations(1, 1)[0]))
+  end
+
+  def self.__oruby_relative_path(path, loc)
+    path = path.respond_to?(:to_path) ? path.to_path : Kernel.__implicit(path, String)
+    file = loc && loc.path
+    if file.nil? || file.start_with?("(eval") || file == "-e"
+      raise LoadError, "autoload_relative called without file context"
+    end
+    File.expand_path(path, File.dirname(File.expand_path(file)))
+  end
+end
+
+module Kernel
+  def autoload_relative(name, path)
+    Object.autoload(name, Module.__oruby_relative_path(path, caller_locations(1, 1)[0]))
+  end
+end

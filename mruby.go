@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -199,6 +200,85 @@ module Kernel
       end
     end
 
+    # the value a special global variable stores, as MRI's setter checks and
+    # converts it (go-mrb.c's virtual globals call this on every assignment)
+    def __oruby_gvcheck(name, v)
+      # self-contained: a state without core_ext has the checks too
+      cname = ->(o) { o.nil? ? "nil" : (o == true || o == false) ? o.to_s : ::Kernel.instance_method(:class).bind_call(o).to_s }
+      case name
+      when :"$/", :"$-0", :"$\\", :"$,"
+        raise TypeError, "value of #{name} must be String" unless v.nil? || String === v
+        warn "warning: non-nil '#{name}' is deprecated", category: :deprecated if !v.nil? && defined?(Warning) && Warning[:deprecated]
+        v = v.dup.freeze if (name == :"$/" || name == :"$-0") && String === v && !v.frozen?
+      when :"$;", :"$-F"
+        raise TypeError, "value of #{name} must be String or Regexp" unless v.nil? || String === v || (defined?(Regexp) && Regexp === v)
+        warn "warning: non-nil '#{name}' is deprecated", category: :deprecated if !v.nil? && defined?(Warning) && Warning[:deprecated]
+      when :"$."
+        unless Integer === v
+          if Float === v
+            v = v.to_i
+          elsif !v.nil? && v.respond_to?(:to_int)
+            r = v.to_int
+            raise TypeError, "can't convert #{cname.(v)} to Integer (#{cname.(v)}#to_int gives #{cname.(r)})" unless Integer === r
+            v = r
+          else
+            raise TypeError, "no implicit conversion of #{cname.(v)} into Integer"
+          end
+        end
+      when :"$stdout", :"$stderr", :"$>"
+        raise TypeError, "#{name} must have write method, #{cname.(v)} given" unless v.respond_to?(:write)
+      when :"$VERBOSE", :"$-v", :"$-w"
+        v = v.nil? ? nil : (v ? true : false)
+      when :"$~"
+        unless v.nil? || (defined?(MatchData) && MatchData === v)
+          raise TypeError, "wrong argument type #{cname.(v)} (expected MatchData)"
+        end
+      when :"$0", :"$PROGRAM_NAME"
+        unless String === v
+          raise TypeError, "no implicit conversion of #{cname.(v)} into String" unless !v.nil? && v.respond_to?(:to_str)
+          v = v.to_str
+        end
+      when :"$@"
+        raise ArgumentError, "$! not set" if $!.nil?
+        $!.set_backtrace(v)
+      end
+      v
+    end
+
+    # the computed globals: $@ is the backtrace of $!
+    def __oruby_gvget(name)
+      $!&.backtrace if name == :"$@"
+    end
+
+    # $! = v and the other read-only globals (prism.go rewrites the assignment)
+    def __oruby_gv_readonly(name, _value)
+      raise NameError.new("#{name} is a read-only variable", name.to_sym)
+    end
+
+    # trace_var hooks for name, most recent first, with the assigned value
+    def __oruby_trace_fire(name, v)
+      hooks = @__oruby_trace_var && @__oruby_trace_var[name]
+      return unless hooks
+      hooks.each { |h| String === h ? ::Kernel.eval(h, ::TOPLEVEL_BINDING) : h.call(v) }
+    end
+
+    # a, b = obj: the single value as MRI's multiple assignment takes it
+    # (the value is kept per site for __oruby_masgn, the expression's value)
+    def __oruby_to_ary(site, obj)
+      (@__oruby_masgn ||= {})[site] = obj
+      return obj if Array === obj
+      return [obj] unless ::Kernel.__responds?(obj, :to_ary)
+      a = obj.__send__(:to_ary)
+      return [obj] if a.nil?
+      return a if Array === a
+      c = ::Kernel.__cname(obj)
+      raise TypeError, "can't convert #{c} to Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
+    end
+
+    def __oruby_masgn(site, _)
+      @__oruby_masgn.delete(site)
+    end
+
     # END { ... }: registered once per site, the first time it is reached
     def __oruby_end__(id, &block)
       st = (@__oruby_end ||= {})
@@ -254,6 +334,25 @@ end
 			return mrb.NilValue()
 		}
 		return mrb.StringValue(PreprocessRuby(args.Item(0).String()))
+	}, mrb.ArgsReq(1))
+	// $. reads ARGF's last line number in MRI: 0 before any line is read
+	if mrb.GetGV("$.").IsNil() {
+		mrb.SetGV("$.", 0)
+	}
+	// ARGF's store for the read-only $FILENAME
+	mrb.DefineClassMethod(mrb.KernelModule(), "__oruby_gv_raw_set", func(mrb *MrbState, self Value) MrbValue {
+		args := mrb.GetArgs()
+		mrb.GVSet(args.Item(0).Symbol(), args.Item(1))
+		return args.Item(1)
+	}, mrb.ArgsReq(2))
+	// trace_var makes the global virtual so that assignments reach its hooks
+	mrb.DefineClassMethod(mrb.KernelModule(), "__oruby_gv_hook", func(mrb *MrbState, self Value) MrbValue {
+		name := C.CString(mrb.GetArgsFirst().String())
+		defer C.free(unsafe.Pointer(name))
+		if !bool(C._mrb_gv_hook(mrb.p, name, name, 2)) {
+			return mrb.Raise(mrb.ERuntimeError(), "too many traced global variables")
+		}
+		return mrb.NilValue()
 	}, mrb.ArgsReq(1))
 
 	return mrb, nil
@@ -2419,6 +2518,12 @@ func (mrb *MrbState) RaiseError(err error) Value {
 	if errors.As(err, &ev) {
 		return mrb.Raise(mrb.ETypeError(), "unowned Ruby exception cannot be raised")
 	}
+	if errors.Is(err, os.ErrClosed) {
+		// a Go file closed underneath is MRI's closed stream
+		if mrb.ClassDefined("IOError") {
+			return mrb.Raise(mrb.ExcGet("IOError"), "closed stream")
+		}
+	}
 	msg := err.Error()
 	if strings.Contains(msg, "file exists") {
 		msg = strings.ReplaceAll(msg, "file exists", "File exists")
@@ -3036,3 +3141,7 @@ func (v MrbSym) Type() Type { return MrbTTSymbol }
 
 // IsNil implements MrbValue interface
 func (v MrbSym) IsNil() bool { return false }
+
+// WrapStringConcat makes String#+, #<<, #concat and #prepend check encoding
+// compatibility; core_ext calls it once Kernel.__oruby_enc_concat exists
+func (mrb *MrbState) WrapStringConcat() { C._mrb_wrap_string_concat(mrb.p) }

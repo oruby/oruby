@@ -24,6 +24,8 @@ enum {
   ORB_END_BLOCK,          // s0: END, s1: {, s2: }
   ORB_FROZEN_STRING,      // s0: literal (frozen by magic comment or option)
   ORB_SOURCE_ENCODING,    // s0: __ENCODING__
+  ORB_LITERAL_ENCODING,   // s0: literal in non-UTF-8 source; flags 1: \u (UTF-8), 2: binary
+  ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

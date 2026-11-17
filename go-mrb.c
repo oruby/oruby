@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "go-mrb.h"
 
 // Go-C-Go proxy callback functions
@@ -358,7 +359,432 @@ static mrb_value exc_bt_locations_m(mrb_state *mrb, mrb_value exc) {
 static mrb_value raise_w0(mrb_state *mrb, mrb_value self) { return raise_call(mrb, self, 0); }
 static mrb_value raise_w1(mrb_state *mrb, mrb_value self) { return raise_call(mrb, self, 1); }
 
+// respond_to? is false for the methods a platform does not implement
+// (Kernel#fork, Process.fork), as for MRI's rb_f_notimplement
+static mrb_func_t respond_to_orig;
+
+static mrb_value respond_to_w(mrb_state *mrb, mrb_value self) {
+  mrb_value r = respond_to_orig(mrb, self);
+  if (mrb_test(r) && mrb_get_argc(mrb) >= 1) {
+    mrb_value name = mrb_get_argv(mrb)[0];
+    mrb_sym fork = mrb_intern_lit(mrb, "fork");
+    if ((mrb_symbol_p(name) && mrb_symbol(name) == fork) ||
+        (mrb_string_p(name) && RSTRING_LEN(name) == 4 && memcmp(RSTRING_PTR(name), "fork", 4) == 0)) {
+      struct RClass *owner = mrb_class(mrb, self);
+      mrb_method_t m = mrb_method_search_vm(mrb, &owner, fork);
+      struct RClass *process = mrb_class_defined_id(mrb, mrb_intern_lit(mrb, "Process")) ?
+        mrb_module_get(mrb, "Process") : NULL;
+      if (!MRB_METHOD_UNDEF_P(m) && (owner == mrb->kernel_module ||
+          (process && owner == mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(process)))))) {
+        return mrb_false_value();
+      }
+    }
+  }
+  return r;
+}
+
+// Encodings other than UTF-8 and BINARY are a hidden tag on the string
+// (00_encoding.rb). mruby's string functions don't know it, so the String
+// methods that derive a string from the receiver are wrapped to carry the
+// receiver's tag over to the result (and to the strings in an Array result).
+#define ENC_KEEP_MAX 64
+static mrb_func_t enc_keep_orig[ENC_KEEP_MAX];
+
+static void enc_copy_tag(mrb_state *mrb, mrb_value tag, mrb_value from, mrb_value to) {
+  mrb_sym sym = mrb_intern_lit(mrb, "__encoding");
+  if (!mrb_string_p(to) || mrb_obj_eq(mrb, from, to)) return;
+  if (RSTR_BINARY_P(mrb_str_ptr(to)) != RSTR_BINARY_P(mrb_str_ptr(from))) return;
+  if (!mrb_nil_p(mrb_iv_get(mrb, to, sym))) return;
+  if (mrb_frozen_p(mrb_basic_ptr(to))) return;
+  mrb_iv_set(mrb, to, sym, tag);
+}
+
+static mrb_value enc_keep_call(mrb_state *mrb, mrb_value self, int i) {
+  mrb_value r = enc_keep_orig[i](mrb, self);
+  if (!mrb_string_p(self)) return r;
+  mrb_value tag = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "__encoding"));
+  if (mrb_nil_p(tag)) return r;
+  if (mrb_string_p(r)) {
+    enc_copy_tag(mrb, tag, self, r);
+  }
+  else if (mrb_array_p(r)) {
+    for (mrb_int k = 0; k < RARRAY_LEN(r); k++) enc_copy_tag(mrb, tag, self, RARRAY_PTR(r)[k]);
+  }
+  return r;
+}
+
+#define ENC_W(i) static mrb_value enc_keep_w##i(mrb_state *mrb, mrb_value self) { return enc_keep_call(mrb, self, i); }
+ENC_W(0) ENC_W(1) ENC_W(2) ENC_W(3) ENC_W(4) ENC_W(5) ENC_W(6) ENC_W(7) ENC_W(8) ENC_W(9)
+ENC_W(10) ENC_W(11) ENC_W(12) ENC_W(13) ENC_W(14) ENC_W(15) ENC_W(16) ENC_W(17) ENC_W(18) ENC_W(19)
+ENC_W(20) ENC_W(21) ENC_W(22) ENC_W(23) ENC_W(24) ENC_W(25) ENC_W(26) ENC_W(27) ENC_W(28) ENC_W(29)
+ENC_W(30) ENC_W(31) ENC_W(32) ENC_W(33) ENC_W(34) ENC_W(35) ENC_W(36) ENC_W(37) ENC_W(38) ENC_W(39)
+ENC_W(40) ENC_W(41) ENC_W(42) ENC_W(43) ENC_W(44) ENC_W(45) ENC_W(46) ENC_W(47) ENC_W(48) ENC_W(49)
+ENC_W(50) ENC_W(51) ENC_W(52) ENC_W(53) ENC_W(54) ENC_W(55) ENC_W(56) ENC_W(57) ENC_W(58) ENC_W(59)
+ENC_W(60) ENC_W(61) ENC_W(62) ENC_W(63)
+static mrb_func_t enc_keep_ws[ENC_KEEP_MAX] = {
+  enc_keep_w0, enc_keep_w1, enc_keep_w2, enc_keep_w3, enc_keep_w4, enc_keep_w5, enc_keep_w6, enc_keep_w7,
+  enc_keep_w8, enc_keep_w9, enc_keep_w10, enc_keep_w11, enc_keep_w12, enc_keep_w13, enc_keep_w14, enc_keep_w15,
+  enc_keep_w16, enc_keep_w17, enc_keep_w18, enc_keep_w19, enc_keep_w20, enc_keep_w21, enc_keep_w22, enc_keep_w23,
+  enc_keep_w24, enc_keep_w25, enc_keep_w26, enc_keep_w27, enc_keep_w28, enc_keep_w29, enc_keep_w30, enc_keep_w31,
+  enc_keep_w32, enc_keep_w33, enc_keep_w34, enc_keep_w35, enc_keep_w36, enc_keep_w37, enc_keep_w38, enc_keep_w39,
+  enc_keep_w40, enc_keep_w41, enc_keep_w42, enc_keep_w43, enc_keep_w44, enc_keep_w45, enc_keep_w46, enc_keep_w47,
+  enc_keep_w48, enc_keep_w49, enc_keep_w50, enc_keep_w51, enc_keep_w52, enc_keep_w53, enc_keep_w54, enc_keep_w55,
+  enc_keep_w56, enc_keep_w57, enc_keep_w58, enc_keep_w59, enc_keep_w60, enc_keep_w61, enc_keep_w62, enc_keep_w63,
+};
+
+// String.new(str): the copy has str's encoding
+static mrb_func_t str_init_orig;
+static mrb_value str_init_w(mrb_state *mrb, mrb_value self) {
+  mrb_value r = str_init_orig(mrb, self);
+  if (mrb_get_argc(mrb) >= 1) {
+    mrb_value src = mrb_get_argv(mrb)[0];
+    if (mrb_string_p(src)) {
+      mrb_value tag = mrb_iv_get(mrb, src, mrb_intern_lit(mrb, "__encoding"));
+      if (!mrb_nil_p(tag)) enc_copy_tag(mrb, tag, src, self);
+    }
+  }
+  return r;
+}
+
+// String#+, #<<, #concat, #prepend check that the encodings are
+// compatible (Kernel.__oruby_enc_concat, in Ruby) unless both strings are
+// untagged with the same binary flag, and give the result that encoding
+#define ENC_CAT_N 4
+static mrb_func_t enc_cat_orig[ENC_CAT_N];
+static const char *enc_cat_names[ENC_CAT_N] = {"+", "<<", "concat", "prepend"};
+
+static mrb_bool enc_plain_same(mrb_state *mrb, mrb_value a, mrb_value b) {
+  mrb_sym sym = mrb_intern_lit(mrb, "__encoding");
+  if (!mrb_string_p(b)) return TRUE;
+  if (RSTR_BINARY_P(mrb_str_ptr(a)) != RSTR_BINARY_P(mrb_str_ptr(b))) return FALSE;
+  return mrb_nil_p(mrb_iv_get(mrb, a, sym)) && mrb_nil_p(mrb_iv_get(mrb, b, sym));
+}
+
+static mrb_value enc_cat_call(mrb_state *mrb, mrb_value self, int i) {
+  mrb_int argc = mrb_get_argc(mrb);
+  const mrb_value *argv = mrb_get_argv(mrb);
+  mrb_bool plain = TRUE;
+  for (mrb_int k = 0; k < argc; k++) {
+    if (!enc_plain_same(mrb, self, argv[k])) { plain = FALSE; break; }
+  }
+  if (plain) return enc_cat_orig[i](mrb, self);
+  mrb_value enc = mrb_nil_value(), acc = self;
+  mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+  for (mrb_int k = 0; k < argc; k++) {
+    if (!mrb_string_p(argv[k])) continue;
+    enc = mrb_funcall_id(mrb, kernel, mrb_intern_lit(mrb, "__oruby_enc_concat"), 2, acc, argv[k]);
+    acc = mrb_funcall_id(mrb, mrb_str_dup(mrb, acc), mrb_intern_lit(mrb, "force_encoding"), 1, enc);
+  }
+  mrb_value r = enc_cat_orig[i](mrb, self);
+  if (!mrb_nil_p(enc) && mrb_string_p(r)) {
+    mrb_funcall_id(mrb, r, mrb_intern_lit(mrb, "force_encoding"), 1, enc);
+  }
+  return r;
+}
+static mrb_value enc_cat_w0(mrb_state *mrb, mrb_value self) { return enc_cat_call(mrb, self, 0); }
+static mrb_value enc_cat_w1(mrb_state *mrb, mrb_value self) { return enc_cat_call(mrb, self, 1); }
+static mrb_value enc_cat_w2(mrb_state *mrb, mrb_value self) { return enc_cat_call(mrb, self, 2); }
+static mrb_value enc_cat_w3(mrb_state *mrb, mrb_value self) { return enc_cat_call(mrb, self, 3); }
+
+void _mrb_wrap_string_concat(mrb_state *mrb) {
+  mrb_func_t ws[ENC_CAT_N] = {enc_cat_w0, enc_cat_w1, enc_cat_w2, enc_cat_w3};
+  for (int i = 0; i < ENC_CAT_N; i++) {
+    struct RClass *owner = mrb->string_class;
+    mrb_sym mid = mrb_intern_cstr(mrb, enc_cat_names[i]);
+    mrb_method_t m = mrb_method_search_vm(mrb, &owner, mid);
+    if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m) || owner != mrb->string_class || MRB_METHOD_CFUNC(m) == ws[i]) continue;
+    enc_cat_orig[i] = MRB_METHOD_CFUNC(m);
+    mrb_method_t w = m;
+    w.as.func = ws[i];
+    mrb_define_method_raw(mrb, owner, mid, w);
+  }
+}
+
+// Wrap the String methods listed in names (called from Go once the
+// encoding layer is loaded)
+void _mrb_wrap_string_encoding(mrb_state *mrb) {
+  static const char *names[] = {
+    "*", "[]", "slice", "slice!", "byteslice", "upcase", "downcase", "capitalize", "swapcase",
+    "strip", "lstrip", "rstrip", "chomp", "chop", "reverse", "center", "ljust", "rjust",
+    "succ", "next", "squeeze", "delete", "tr", "tr_s", "scrub", "partition", "rpartition",
+    "split", "lines", "chars", "delete_prefix", "delete_suffix", "chr", "each_char", "%",
+    "sub", "gsub", "insert", "replace", NULL
+  };
+  int n = 0;
+  for (int i = 0; names[i] && n < ENC_KEEP_MAX; i++) {
+    struct RClass *owner = mrb->string_class;
+    mrb_sym mid = mrb_intern_cstr(mrb, names[i]);
+    mrb_method_t m = mrb_method_search_vm(mrb, &owner, mid);
+    if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m) || owner != mrb->string_class) continue;
+    /* an alias (next/succ, slice/[]) shares its original's wrapper */
+    int j = 0;
+    while (j < n && enc_keep_orig[j] != MRB_METHOD_CFUNC(m)) j++;
+    if (j == n) {
+      enc_keep_orig[n] = MRB_METHOD_CFUNC(m);
+      n++;
+    }
+    mrb_method_t w = m;
+    w.as.func = enc_keep_ws[j];
+    mrb_define_method_raw(mrb, owner, mid, w);
+  }
+  struct RClass *owner = mrb->string_class;
+  mrb_method_t m = mrb_method_search_vm(mrb, &owner, mrb_intern_lit(mrb, "initialize"));
+  if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_CFUNC_P(m) && MRB_METHOD_CFUNC(m) != str_init_w) {
+    str_init_orig = MRB_METHOD_CFUNC(m);
+    mrb_method_t w = m;
+    w.as.func = str_init_w;
+    mrb_define_method_raw(mrb, owner, mrb_intern_lit(mrb, "initialize"), w);
+  }
+}
+
+// Global variables with MRI setter semantics, and trace_var, as mruby
+// virtual globals: mrb_gv_get/mrb_gv_set (every assignment, from Ruby, C or
+// Go) go through the slot's getter and setter. Values live in a Hash hidden
+// on Kernel, under the slot's canonical name ($-0 and $/ share one).
+//   kind 1: checked by Kernel.__oruby_gvcheck(name, value) -> stored value
+//   kind 2: plain (traced only)
+//   kind 3: computed by Kernel.__oruby_gvget(name) ($@)
+// The setter then calls Kernel.__oruby_trace_fire(name, value) when
+// trace_var hooks exist for the name.
+#define GV_SLOTS 128
+#include <pthread.h>
+/* the slot tables and the wrapped originals are process-wide; states are
+   opened concurrently (e.g. from goroutines) */
+static pthread_mutex_t oruby_core_mu = PTHREAD_MUTEX_INITIALIZER;
+static char *gv_names[GV_SLOTS];
+static char *gv_canon[GV_SLOTS];
+static int gv_kinds[GV_SLOTS];
+static int gv_n;
+
+static mrb_value gv_storage(mrb_state *mrb) {
+  mrb_value k = mrb_obj_value(mrb->kernel_module);
+  mrb_sym sym = mrb_intern_lit(mrb, "__oruby_gv");
+  mrb_value h = mrb_iv_get(mrb, k, sym);
+  if (!mrb_hash_p(h)) {
+    h = mrb_hash_new(mrb);
+    mrb_iv_set(mrb, k, sym, h);
+  }
+  return h;
+}
+
+static mrb_value gv_slot_get(mrb_state *mrb, int i) {
+  if (gv_kinds[i] == 3) {
+    return mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), mrb_intern_lit(mrb, "__oruby_gvget"), 1,
+                          mrb_symbol_value(mrb_intern_cstr(mrb, gv_names[i])));
+  }
+  return mrb_hash_get(mrb, gv_storage(mrb), mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i])));
+}
+
+static void gv_slot_set(mrb_state *mrb, int i, mrb_value v) {
+  mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+  mrb_value name = mrb_symbol_value(mrb_intern_cstr(mrb, gv_names[i]));
+  if (gv_kinds[i] != 2) {
+    mrb_sym check = mrb_intern_lit(mrb, "__oruby_gvcheck");
+    /* until core_ext defines the checks, the startup values are stored as is */
+    if (mrb_respond_to(mrb, kernel, check)) v = mrb_funcall_id(mrb, kernel, check, 2, name, v);
+  }
+  mrb_hash_set(mrb, gv_storage(mrb), mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i])), v);
+  mrb_value hooks = mrb_iv_get(mrb, kernel, mrb_intern_lit(mrb, "@__oruby_trace_var"));
+  if (mrb_hash_p(hooks) && mrb_hash_key_p(mrb, hooks, name)) {
+    mrb_funcall_id(mrb, kernel, mrb_intern_lit(mrb, "__oruby_trace_fire"), 2, name, v);
+  }
+}
+
+#define GV_SLOT(i) \
+  static mrb_value gv_get_##i(mrb_state *mrb) { return gv_slot_get(mrb, i); } \
+  static void gv_set_##i(mrb_state *mrb, mrb_value v) { gv_slot_set(mrb, i, v); }
+GV_SLOT(0) GV_SLOT(1) GV_SLOT(2) GV_SLOT(3) GV_SLOT(4) GV_SLOT(5) GV_SLOT(6) GV_SLOT(7)
+GV_SLOT(8) GV_SLOT(9) GV_SLOT(10) GV_SLOT(11) GV_SLOT(12) GV_SLOT(13) GV_SLOT(14) GV_SLOT(15)
+GV_SLOT(16) GV_SLOT(17) GV_SLOT(18) GV_SLOT(19) GV_SLOT(20) GV_SLOT(21) GV_SLOT(22) GV_SLOT(23)
+GV_SLOT(24) GV_SLOT(25) GV_SLOT(26) GV_SLOT(27) GV_SLOT(28) GV_SLOT(29) GV_SLOT(30) GV_SLOT(31)
+GV_SLOT(32) GV_SLOT(33) GV_SLOT(34) GV_SLOT(35) GV_SLOT(36) GV_SLOT(37) GV_SLOT(38) GV_SLOT(39)
+GV_SLOT(40) GV_SLOT(41) GV_SLOT(42) GV_SLOT(43) GV_SLOT(44) GV_SLOT(45) GV_SLOT(46) GV_SLOT(47)
+GV_SLOT(48) GV_SLOT(49) GV_SLOT(50) GV_SLOT(51) GV_SLOT(52) GV_SLOT(53) GV_SLOT(54) GV_SLOT(55)
+GV_SLOT(56) GV_SLOT(57) GV_SLOT(58) GV_SLOT(59) GV_SLOT(60) GV_SLOT(61) GV_SLOT(62) GV_SLOT(63)
+GV_SLOT(64) GV_SLOT(65) GV_SLOT(66) GV_SLOT(67) GV_SLOT(68) GV_SLOT(69) GV_SLOT(70) GV_SLOT(71)
+GV_SLOT(72) GV_SLOT(73) GV_SLOT(74) GV_SLOT(75) GV_SLOT(76) GV_SLOT(77) GV_SLOT(78) GV_SLOT(79)
+GV_SLOT(80) GV_SLOT(81) GV_SLOT(82) GV_SLOT(83) GV_SLOT(84) GV_SLOT(85) GV_SLOT(86) GV_SLOT(87)
+GV_SLOT(88) GV_SLOT(89) GV_SLOT(90) GV_SLOT(91) GV_SLOT(92) GV_SLOT(93) GV_SLOT(94) GV_SLOT(95)
+GV_SLOT(96) GV_SLOT(97) GV_SLOT(98) GV_SLOT(99) GV_SLOT(100) GV_SLOT(101) GV_SLOT(102) GV_SLOT(103)
+GV_SLOT(104) GV_SLOT(105) GV_SLOT(106) GV_SLOT(107) GV_SLOT(108) GV_SLOT(109) GV_SLOT(110) GV_SLOT(111)
+GV_SLOT(112) GV_SLOT(113) GV_SLOT(114) GV_SLOT(115) GV_SLOT(116) GV_SLOT(117) GV_SLOT(118) GV_SLOT(119)
+GV_SLOT(120) GV_SLOT(121) GV_SLOT(122) GV_SLOT(123) GV_SLOT(124) GV_SLOT(125) GV_SLOT(126) GV_SLOT(127)
+static const struct { mrb_value (*get)(mrb_state *); void (*set)(mrb_state *, mrb_value); } gv_fns[GV_SLOTS] = {
+  {gv_get_0, gv_set_0},
+  {gv_get_1, gv_set_1},
+  {gv_get_2, gv_set_2},
+  {gv_get_3, gv_set_3},
+  {gv_get_4, gv_set_4},
+  {gv_get_5, gv_set_5},
+  {gv_get_6, gv_set_6},
+  {gv_get_7, gv_set_7},
+  {gv_get_8, gv_set_8},
+  {gv_get_9, gv_set_9},
+  {gv_get_10, gv_set_10},
+  {gv_get_11, gv_set_11},
+  {gv_get_12, gv_set_12},
+  {gv_get_13, gv_set_13},
+  {gv_get_14, gv_set_14},
+  {gv_get_15, gv_set_15},
+  {gv_get_16, gv_set_16},
+  {gv_get_17, gv_set_17},
+  {gv_get_18, gv_set_18},
+  {gv_get_19, gv_set_19},
+  {gv_get_20, gv_set_20},
+  {gv_get_21, gv_set_21},
+  {gv_get_22, gv_set_22},
+  {gv_get_23, gv_set_23},
+  {gv_get_24, gv_set_24},
+  {gv_get_25, gv_set_25},
+  {gv_get_26, gv_set_26},
+  {gv_get_27, gv_set_27},
+  {gv_get_28, gv_set_28},
+  {gv_get_29, gv_set_29},
+  {gv_get_30, gv_set_30},
+  {gv_get_31, gv_set_31},
+  {gv_get_32, gv_set_32},
+  {gv_get_33, gv_set_33},
+  {gv_get_34, gv_set_34},
+  {gv_get_35, gv_set_35},
+  {gv_get_36, gv_set_36},
+  {gv_get_37, gv_set_37},
+  {gv_get_38, gv_set_38},
+  {gv_get_39, gv_set_39},
+  {gv_get_40, gv_set_40},
+  {gv_get_41, gv_set_41},
+  {gv_get_42, gv_set_42},
+  {gv_get_43, gv_set_43},
+  {gv_get_44, gv_set_44},
+  {gv_get_45, gv_set_45},
+  {gv_get_46, gv_set_46},
+  {gv_get_47, gv_set_47},
+  {gv_get_48, gv_set_48},
+  {gv_get_49, gv_set_49},
+  {gv_get_50, gv_set_50},
+  {gv_get_51, gv_set_51},
+  {gv_get_52, gv_set_52},
+  {gv_get_53, gv_set_53},
+  {gv_get_54, gv_set_54},
+  {gv_get_55, gv_set_55},
+  {gv_get_56, gv_set_56},
+  {gv_get_57, gv_set_57},
+  {gv_get_58, gv_set_58},
+  {gv_get_59, gv_set_59},
+  {gv_get_60, gv_set_60},
+  {gv_get_61, gv_set_61},
+  {gv_get_62, gv_set_62},
+  {gv_get_63, gv_set_63},
+  {gv_get_64, gv_set_64},
+  {gv_get_65, gv_set_65},
+  {gv_get_66, gv_set_66},
+  {gv_get_67, gv_set_67},
+  {gv_get_68, gv_set_68},
+  {gv_get_69, gv_set_69},
+  {gv_get_70, gv_set_70},
+  {gv_get_71, gv_set_71},
+  {gv_get_72, gv_set_72},
+  {gv_get_73, gv_set_73},
+  {gv_get_74, gv_set_74},
+  {gv_get_75, gv_set_75},
+  {gv_get_76, gv_set_76},
+  {gv_get_77, gv_set_77},
+  {gv_get_78, gv_set_78},
+  {gv_get_79, gv_set_79},
+  {gv_get_80, gv_set_80},
+  {gv_get_81, gv_set_81},
+  {gv_get_82, gv_set_82},
+  {gv_get_83, gv_set_83},
+  {gv_get_84, gv_set_84},
+  {gv_get_85, gv_set_85},
+  {gv_get_86, gv_set_86},
+  {gv_get_87, gv_set_87},
+  {gv_get_88, gv_set_88},
+  {gv_get_89, gv_set_89},
+  {gv_get_90, gv_set_90},
+  {gv_get_91, gv_set_91},
+  {gv_get_92, gv_set_92},
+  {gv_get_93, gv_set_93},
+  {gv_get_94, gv_set_94},
+  {gv_get_95, gv_set_95},
+  {gv_get_96, gv_set_96},
+  {gv_get_97, gv_set_97},
+  {gv_get_98, gv_set_98},
+  {gv_get_99, gv_set_99},
+  {gv_get_100, gv_set_100},
+  {gv_get_101, gv_set_101},
+  {gv_get_102, gv_set_102},
+  {gv_get_103, gv_set_103},
+  {gv_get_104, gv_set_104},
+  {gv_get_105, gv_set_105},
+  {gv_get_106, gv_set_106},
+  {gv_get_107, gv_set_107},
+  {gv_get_108, gv_set_108},
+  {gv_get_109, gv_set_109},
+  {gv_get_110, gv_set_110},
+  {gv_get_111, gv_set_111},
+  {gv_get_112, gv_set_112},
+  {gv_get_113, gv_set_113},
+  {gv_get_114, gv_set_114},
+  {gv_get_115, gv_set_115},
+  {gv_get_116, gv_set_116},
+  {gv_get_117, gv_set_117},
+  {gv_get_118, gv_set_118},
+  {gv_get_119, gv_set_119},
+  {gv_get_120, gv_set_120},
+  {gv_get_121, gv_set_121},
+  {gv_get_122, gv_set_122},
+  {gv_get_123, gv_set_123},
+  {gv_get_124, gv_set_124},
+  {gv_get_125, gv_set_125},
+  {gv_get_126, gv_set_126},
+  {gv_get_127, gv_set_127},
+};
+
+// _mrb_gv_hook makes name a virtual global of the given kind; its current
+// value is kept. Returns FALSE when the slots are used up.
+mrb_bool _mrb_gv_hook(mrb_state *mrb, const char *name, const char *canon, int kind) {
+  int i;
+  pthread_mutex_lock(&oruby_core_mu);
+  for (i = 0; i < gv_n; i++) {
+    if (strcmp(gv_names[i], name) == 0) break;
+  }
+  if (i == gv_n) {
+    if (gv_n == GV_SLOTS) {
+      pthread_mutex_unlock(&oruby_core_mu);
+      return FALSE;
+    }
+    gv_names[i] = strdup(name);
+    gv_canon[i] = strdup(canon);
+    gv_kinds[i] = kind;
+    gv_n++;
+  }
+  pthread_mutex_unlock(&oruby_core_mu);
+  mrb_sym sym = mrb_intern_cstr(mrb, name);
+  mrb_value key = mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i]));
+  mrb_value store = gv_storage(mrb);
+  mrb_value cur = mrb_gv_get(mrb, sym);   /* before it turns virtual */
+  if (!mrb_hash_key_p(mrb, store, key)) mrb_hash_set(mrb, store, key, cur);
+  mrb_gv_define_virtual(mrb, sym, gv_fns[i].get, gv_fns[i].set);
+  return TRUE;
+}
+
+static void gv_init_checked(mrb_state *mrb) {
+  static const char *pairs[][2] = {
+    {"$/", "$/"}, {"$-0", "$/"}, {"$\\", "$\\"}, {"$,", "$,"}, {"$;", "$;"}, {"$-F", "$;"},
+    {"$.", "$."}, {"$stdout", "$stdout"}, {"$>", "$stdout"}, {"$stderr", "$stderr"},
+    {"$VERBOSE", "$VERBOSE"}, {"$-v", "$VERBOSE"}, {"$-w", "$VERBOSE"},
+    {"$0", "$0"}, {"$PROGRAM_NAME", "$0"}, {"$~", "$~"}, {NULL, NULL}
+  };
+  for (int i = 0; pairs[i][0]; i++) _mrb_gv_hook(mrb, pairs[i][0], pairs[i][1], 1);
+  _mrb_gv_hook(mrb, "$@", "$@", 3);
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  pthread_mutex_lock(&oruby_core_mu);
+  _mrb_wrap_string_encoding(mrb);
+  pthread_mutex_unlock(&oruby_core_mu);
+  gv_init_checked(mrb);
+  wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
   wrap_eval_methods(mrb);
   {
     /* redefined rather than wrapped: the arity check must admit 3 */

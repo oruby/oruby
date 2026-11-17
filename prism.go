@@ -50,9 +50,9 @@ var (
 		"$LAST_READ_LINE": "$_", "$DEFAULT_OUTPUT": "$>", "$DEFAULT_INPUT": "$<", "$PID": "$$",
 		"$PROCESS_ID": "$$", "$CHILD_STATUS": "$?", "$LAST_MATCH_INFO": "$~", "$ARGV": "$*",
 		"$MATCH": "$&", "$PREMATCH": "$`", "$POSTMATCH": "$'", "$LAST_PAREN_MATCH": "$+",
-		// MRI's built-in aliases
-		"$PROGRAM_NAME": "$0", "$-v": "$VERBOSE", "$-w": "$VERBOSE", "$-d": "$DEBUG",
-		"$-0": "$/", "$-F": "$;",
+		// MRI's built-in aliases ($-0, $-F, $-v, $-w, $PROGRAM_NAME and $> are
+		// virtual globals sharing their variable's value, go-mrb.c)
+		"$-d": "$DEBUG",
 	}
 )
 
@@ -119,13 +119,16 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if atomic.LoadInt32(&frozenStringDefault) == 1 || opts != nil && opts.SourceEncoding != "" {
 		return true
 	}
+	if hasMultiAssign(src) {
+		return true
+	}
 	for _, k := range []string{"**nil", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
-		"__ENCODING__", "frozen_string_literal"} {
+		"__ENCODING__", "frozen_string_literal", "coding"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
 		}
 	}
-	if i := bytes.IndexByte(src, '$'); i >= 0 && i+1 < len(src) && hasAliasedGvar(src) {
+	if i := bytes.IndexByte(src, '$'); i >= 0 && i+1 < len(src) && (hasAliasedGvar(src) || hasReadonlyGvar(src)) {
 		return true
 	}
 	digits := 0
@@ -212,6 +215,60 @@ func hasAliasedGvar(src []byte) bool {
 	return false
 }
 
+// readonlyGvars cannot be assigned from Ruby code
+var readonlyGvars = map[string]bool{
+	"$!": true, "$:": true, "$\"": true, "$<": true, "$FILENAME": true, "$?": true,
+	"$-a": true, "$-l": true, "$-p": true, "$$": true, "$LOAD_PATH": true, "$LOADED_FEATURES": true,
+}
+
+// hasMultiAssign: a line with a comma before a lone "=" may be a, b = v
+func hasMultiAssign(src []byte) bool {
+	for _, line := range bytes.Split(src, []byte("\n")) {
+		c := bytes.IndexByte(line, ',')
+		if c < 0 {
+			continue
+		}
+		rest := line[c:]
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == '=' && (i+1 >= len(rest) || rest[i+1] != '=' && rest[i+1] != '>' && rest[i+1] != '~') &&
+				(i == 0 || bytes.IndexByte([]byte("=!<>+-*/%&|^"), rest[i-1]) < 0) {
+				// a, b = x, y or a, b = [..] needs no conversion: only a
+				// single value that is not an Array literal does
+				rhs := bytes.TrimSpace(rest[i+1:])
+				if end := bytes.IndexAny(rhs, ";)"); end >= 0 {
+					rhs = rhs[:end]
+				}
+				if len(rhs) > 0 && rhs[0] != '[' && rhs[0] != '*' && bytes.IndexByte(rhs, ',') < 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// rubyStrEscape escapes s for a double-quoted Ruby string
+func rubyStrEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`, `#`, `\#`).Replace(s)
+}
+
+// hasReadonlyGvar reports whether src mentions a read-only global variable
+func hasReadonlyGvar(src []byte) bool {
+	for i := bytes.IndexByte(src, '$'); i >= 0 && i < len(src); {
+		for name := range readonlyGvars {
+			if bytes.HasPrefix(src[i:], []byte(name)) {
+				return true
+			}
+		}
+		j := bytes.IndexByte(src[i+1:], '$')
+		if j < 0 {
+			break
+		}
+		i += j + 1
+	}
+	return false
+}
+
 // readOnlyGvar reports match-derived globals ($& $` $' $+ $1...)
 func readOnlyGvar(name string) bool {
 	switch name {
@@ -240,7 +297,7 @@ func PreprocessRubyBytes(src []byte) []byte {
 	return PreprocessRubyWith(src, nil)
 }
 
-var endSiteCounter uint64
+var endSiteCounter, masgnSiteCounter uint64
 
 // PreprocessRubyWith is PreprocessRubyBytes with per-source options
 func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
@@ -341,6 +398,15 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			})
 		case C.ORB_GVAR_REF:
 			name := r.text(s[0], e[0])
+			if s[2] >= 0 && readonlyGvars[resolveGvar(name)] {
+				// assigning a read-only global is a NameError; the value is still
+				// evaluated. (Checked globals such as $/ are virtual globals with
+				// a setter, go-mrb.c; these are written by oruby's own C and Go.)
+				r.add(s[1], e[1], func(r *rewriter) string {
+					return `::Kernel.__oruby_gv_readonly("` + rubyStrEscape(name) + `", (` + r.render(s[2], e[2]) + `))`
+				})
+				break
+			}
 			if t := resolveGvar(name); t != name {
 				if s[1] >= 0 && readOnlyGvar(t) {
 					// $alias_of_backref = v is MRI's runtime NameError, not a syntax error
@@ -358,6 +424,25 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			})
 		case C.ORB_FROZEN_STRING:
 			r.add(e[0], e[0], func(*rewriter) string { return ".-@" })
+		case C.ORB_MASGN_VALUE:
+			// a, b = v -> __oruby_masgn(id, (a, b = __oruby_to_ary(id, (v)))):
+			// the value is converted, the expression still returns v. The
+			// inserts are zero-width, so the code inside is rewritten as usual
+			id := strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+			r.add(s[1], s[1], func(*rewriter) string { return "::Kernel.__oruby_masgn(" + id + ", (" })
+			r.add(s[0], s[0], func(*rewriter) string { return "::Kernel.__oruby_to_ary(" + id + ", (" })
+			r.add(e[0], e[0], func(*rewriter) string { return "))" })
+			r.add(e[1], e[1], func(*rewriter) string { return "))" })
+		case C.ORB_LITERAL_ENCODING:
+			// MRI tags a literal with its source encoding; \u escapes make it
+			// UTF-8, which is oruby's default already
+			switch {
+			case rc.flags&1 != 0:
+			case rc.flags&2 != 0:
+				r.add(e[0], e[0], func(*rewriter) string { return ".force_encoding(::Encoding::BINARY)" })
+			default:
+				r.add(e[0], e[0], func(*rewriter) string { return `.force_encoding(::Encoding.find("` + encName + `"))` })
+			}
 		case C.ORB_SOURCE_ENCODING:
 			if encName != "" && encName != "UTF-8" {
 				r.add(s[0], e[0], func(*rewriter) string { return `::Encoding.find("` + encName + `")` })
@@ -370,10 +455,15 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		return src
 	}
 	sort.SliceStable(r.edits, func(a, b int) bool {
-		if r.edits[a].start != r.edits[b].start {
-			return r.edits[a].start < r.edits[b].start
+		ea, eb := r.edits[a], r.edits[b]
+		if ea.start != eb.start {
+			return ea.start < eb.start
 		}
-		return r.edits[a].end > r.edits[b].end
+		// at one position, insertions come before the replacement starting there
+		if (ea.start == ea.end) != (eb.start == eb.end) {
+			return ea.start == ea.end
+		}
+		return ea.end > eb.end
 	})
 	return []byte(r.render(0, len(src)))
 }

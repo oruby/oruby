@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/oruby/oruby"
 )
@@ -214,7 +215,10 @@ func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
 
 	paths := mrb.GVGetObj(mrb.Intern("$LOAD_PATH")).RArray()
 	for i := 0; i < paths.Len(); i++ {
-		path := paths.Item(i).String()
+		path, err := pathArg(mrb, paths.Item(i))
+		if err != nil {
+			continue
+		}
 		for _, filename := range filenames {
 			fName := filepath.Join(path, filename)
 			name, err := fullName(fName)
@@ -274,11 +278,9 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 		real = r
 	}
 
-	// Check if fullpath name is already loaded
-	if _, err := mrb.Resolve(name); err == nil {
-		return mrb.FalseValue()
-	}
-	if _, err := mrb.Resolve(real); err == nil {
+	// already loaded: MRI goes by $LOADED_FEATURES, which programs (and
+	// specs) edit or replace
+	if featureLoaded(mrb, name, real) {
 		return mrb.FalseValue()
 	}
 
@@ -307,8 +309,75 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 }
 
 func loadRequire(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	feature := mrb.GetArgsFirst().String()
+	feature, err := pathArg(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
 	return doRequire(mrb, feature)
+}
+
+// pathArg converts a feature or $LOAD_PATH entry: a String, #to_path, then
+// #to_str (rb_get_path)
+func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
+	if v.IsString() {
+		return v.String(), nil
+	}
+	if !v.IsNil() && mrb.RespondTo(v, mrb.Intern("to_path")) {
+		p, err := mrb.Funcall(v, mrb.Intern("to_path"))
+		if err != nil {
+			return "", err
+		}
+		v = p
+		if v.IsString() {
+			return v.String(), nil
+		}
+	}
+	s, err := mrb.Funcall(mrb.KernelModule(), mrb.Intern("__implicit"), v, mrb.StringClass().Value())
+	if err != nil {
+		return "", err
+	}
+	return s.String(), nil
+}
+
+var (
+	realpathMu    sync.Mutex
+	realpathCache = map[string]string{}
+)
+
+// realpathOf is filepath.EvalSymlinks, cached: $LOADED_FEATURES entries are
+// compared by real path on every require
+func realpathOf(p string) string {
+	realpathMu.Lock()
+	defer realpathMu.Unlock()
+	if r, ok := realpathCache[p]; ok {
+		return r
+	}
+	r := p
+	if e, err := filepath.EvalSymlinks(p); err == nil {
+		r = e
+	}
+	realpathCache[p] = r
+	return r
+}
+
+// featureLoaded reports whether $LOADED_FEATURES holds name, or a path with
+// the same real path, as MRI's loaded-features realpath index does
+func featureLoaded(mrb *oruby.MrbState, name, real string) bool {
+	lf := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
+	if !lf.IsArray() {
+		return false
+	}
+	for i := 0; i < oruby.RArrayLen(lf); i++ {
+		e := mrb.AryEntry(lf, i)
+		if !e.IsString() {
+			continue
+		}
+		s := e.String()
+		if s == name || s == real || filepath.IsAbs(s) && realpathOf(s) == real {
+			return true
+		}
+	}
+	return false
 }
 
 func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

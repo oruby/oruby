@@ -1034,9 +1034,24 @@ func ioToIo(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 // TODO: not same as MRI, which modifies internal buffer with byte
 func ioUngetbyte(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	if r, ok := mrb.Data(self).(*bufio.Reader); ok {
+	switch r := mrb.Data(self).(type) {
+	case *bufio.Reader:
 		if err := r.UnreadByte(); err != nil {
 			return mrb.RaiseError(err)
+		}
+	case io.Seeker:
+		// a seekable file is read unbuffered: pushing back the byte just
+		// read is stepping back over it
+		n := int64(1)
+		if arg := mrb.GetArgsFirst(); arg.IsString() {
+			n = int64(len(arg.Bytes()))
+		} else if arg.IsNil() {
+			n = 0
+		}
+		if n > 0 {
+			if _, err := r.Seek(-n, io.SeekCurrent); err != nil {
+				return mrb.RaiseError(err)
+			}
 		}
 	}
 	return mrb.NilValue()

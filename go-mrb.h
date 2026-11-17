@@ -885,3 +885,7 @@ enum {
 #endif
 
 #endif  /* GOMRB_H */
+
+void _mrb_wrap_string_encoding(mrb_state *mrb);
+void _mrb_wrap_string_concat(mrb_state *mrb);
+mrb_bool _mrb_gv_hook(mrb_state *mrb, const char *name, const char *canon, int kind);

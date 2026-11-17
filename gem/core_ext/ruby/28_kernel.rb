@@ -24,13 +24,15 @@ module Kernel
     proc
   end
 
-  # trace_var records the hooks; mruby has no global variable assignment
-  # hook, so they are not called
+  # trace_var: the global becomes virtual (go-mrb.c), its setter calls the
+  # hooks, most recent first
   def trace_var(name, cmd = nil, &block)
     cmd ||= block
     raise ArgumentError, "tried to create Proc object without a block" if cmd.nil?
     hooks = (::Kernel.instance_variable_get(:@__oruby_trace_var) || ::Kernel.instance_variable_set(:@__oruby_trace_var, {}))
-    (hooks[name.to_sym] ||= []).unshift(cmd)
+    name = name.to_sym
+    ::Kernel.__oruby_gv_hook(name.to_s) unless hooks.key?(name)
+    (hooks[name] ||= []).unshift(cmd)
     nil
   end
 

@@ -419,3 +419,14 @@ module Kernel
     Encoding::UTF_8
   end
 end
+
+module Kernel
+  # the encoding a + b has, or Encoding::CompatibilityError (go-mrb.c's
+  # String#+ / #<< / #concat / #prepend wrappers call this)
+  def self.__oruby_enc_concat(a, b)
+    enc = Encoding.compatible?(a, b)
+    return enc if enc
+    name = ->(e) { e.inspect.delete_prefix("#<Encoding:").delete_suffix(">") }
+    raise Encoding::CompatibilityError, "incompatible character encodings: #{name.(a.encoding)} and #{name.(b.encoding)}"
+  end
+end
