@@ -4,12 +4,32 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 
 	"github.com/oruby/oruby"
 )
+
+// Kernel#require, #require_relative and #load as MRI's load.c does them
+// (search_required, rb_feature_p, rb_find_file_ext, rb_require_relative,
+// rb_f_load):
+//
+//   - a feature is a String, #to_path or #to_str
+//   - $LOADED_FEATURES decides what is loaded: an entry matches the feature
+//     as given (with or without an extension) or as reached through a
+//     $LOAD_PATH entry; a C extension loaded under the name lets a .rb of
+//     it load, a .rb one makes the name loaded
+//   - a path starting with "/", "./", "../" or "~" is expanded; any other
+//     is searched in $LOAD_PATH (canonical: entries are real paths), the
+//     .rb (and .mrb) form before the C extension one
+//   - the stored feature is the expanded path; a file reached through
+//     another path to the same real file is not loaded again
+//   - C extensions are found but not loaded (LoadError)
+//   - MRI's built-in features are in $LOADED_FEATURES from the start
 
 func init() {
 	oruby.Gem("load", func(mrb *oruby.MrbState) interface{} {
@@ -28,19 +48,56 @@ func init() {
 
 		mrb.DefineMethod(loadPath.Class(), "resolve_feature_path", resolveFeaturePath, mrb.ArgsReq(1))
 
+		// MRI 4.1's features loaded before the program (provided here by
+		// core_ext or by Go gems, initialized when required)
 		loadedFeatures := mrb.AryNew()
+		for _, f := range []string{"enumerator.so", "monitor.so", "thread.rb", "fiber.so", "rational.so",
+			"complex.so", "pathname.so", "ruby2_keywords.rb", "set.rb", "io/wait.rb", "io/wait.so"} {
+			loadedFeatures.Push(mrb.StrNew(f))
+		}
 		mrb.SetGV("$LOADED_FEATURES", loadedFeatures)
 		mrb.SetGV(`$"`, loadedFeatures)
 
 		loadError := mrb.DefineClass("LoadError", mrb.EScriptError())
 		mrb.DefineGlobalConst("ELoadError", loadError)
 
-		mrb.DefineGlobalFunction("load", loadLoad, mrb.ArgsReq(1))
+		mrb.DefineGlobalFunction("load", loadLoad, mrb.ArgsArg(1, 1))
 		mrb.DefineGlobalFunction("require", loadRequire, mrb.ArgsReq(1))
 		mrb.DefineGlobalFunction("require_relative", loadRequireRelative, mrb.ArgsReq(1))
 		// Module#autoload is mruby's own; it loads files with the require above
 		return nil
 	})
+}
+
+// dlexts are the C extension suffixes searched for (MRI's DLEXT)
+var dlexts = func() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{".bundle"}
+	case "windows":
+		return []string{".so", ".dll"}
+	}
+	return []string{".so"}
+}()
+
+func isSoExt(e string) bool {
+	switch e {
+	case ".so", ".o", ".bundle", ".dylib", ".dll":
+		return true
+	}
+	return false
+}
+
+// extKind: the feature's kind by its extension: 'r' (Ruby), 's' (C
+// extension), 0 (none, or one require does not know)
+func extKind(f string) byte {
+	switch e := filepath.Ext(f); {
+	case e == ".rb" || e == ".mrb":
+		return 'r'
+	case isSoExt(e):
+		return 's'
+	}
+	return 0
 }
 
 func loadScript(mrb *oruby.MrbState, fileName string) (oruby.RProc, error) {
@@ -79,12 +136,11 @@ func loadIrep(mrb *oruby.MrbState, fileName string) (oruby.RProc, error) {
 
 	proc := mrb.ProcNew(irep)
 	proc.SetTargetClass(mrb.ObjectClass())
-	//mrb.IrepDecref(irep)
 
 	return proc, nil
 }
 
-func doLoad(mrb *oruby.MrbState, fullName string, wrap bool) error {
+func doLoad(mrb *oruby.MrbState, fullName string) error {
 	var err error
 
 	cxt := mrb.MrbCcontextNew()
@@ -101,6 +157,48 @@ func doLoad(mrb *oruby.MrbState, fullName string, wrap bool) error {
 	return err
 }
 
+// doLoadWrapped is load(file, wrap): the file's code runs with a copy of
+// main extended with mod as self and mod as where its definitions go; its
+// top-level methods are private, as MRI's
+func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error {
+	data, err := os.ReadFile(fullName)
+	if err != nil {
+		return err
+	}
+	main := mrb.TopSelf()
+	self, err := mrb.Funcall(main, mrb.Intern("clone"))
+	if err != nil {
+		return err
+	}
+	if _, err := mrb.Funcall(self, oruby.Sym_extend, mod); err != nil {
+		return err
+	}
+	before := map[string]bool{}
+	if ms, err := mrb.Funcall(mod, oruby.Sym_instance_methods, false); err == nil && ms.IsArray() {
+		for i := 0; i < oruby.RArrayLen(ms); i++ {
+			before[mrb.String(mrb.AryEntry(ms, i))] = true
+		}
+	}
+
+	cxt := mrb.MrbCcontextNew()
+	defer cxt.Free()
+	cxt.Filename(fullName)
+	if _, err := mrb.LoadBytesWrapped(data, cxt, mrb.ClassPtr(mod), self); err != nil {
+		return err
+	}
+
+	if ms, err := mrb.Funcall(mod, oruby.Sym_instance_methods, false); err == nil && ms.IsArray() {
+		for i := 0; i < oruby.RArrayLen(ms); i++ {
+			m := mrb.AryEntry(ms, i)
+			if !before[mrb.String(m)] {
+				_, _ = mrb.Funcall(mod, mrb.Intern("private"), m)
+			}
+		}
+	}
+	return nil
+}
+
+// the files being required, by real path (a circular require), per state
 func loadingFilesFind(mrb *oruby.MrbState, filepath oruby.Value) bool {
 	loadingFiles := mrb.GetGV(`$"_`)
 	if loadingFiles.IsNil() {
@@ -130,34 +228,62 @@ func loadingFilesAdd(mrb *oruby.MrbState, filepath oruby.Value) {
 }
 
 func resolveFeaturePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	feature := mrb.GetArgsFirst().String()
-	name, err := resolveName(mrb, feature)
+	feature, err := pathArg(mrb, mrb.GetArgsFirst())
 	if err != nil {
-		return mrb.Raise(mrb.ClassGet("ELoadError"), err.Error())
+		return mrb.RaiseError(err)
+	}
+	lp := expandedLoadPath(mrb)
+	exts := []string{""}
+	if extKind(feature) == 0 {
+		exts = append([]string{".rb", ".mrb"}, dlexts...)
+	}
+	name, _ := findFile(feature, exts, lp)
+	if name == "" {
+		return raiseCannotLoad(mrb, feature)
 	}
 	return mrb.StrNew(name)
 }
 
+// load(file, wrap = false): file is looked up as require does (without
+// extensions), then as given; it is run every time, not recorded
 func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	nameValue, wrap := mrb.GetArgs2(nil, false)
-	if nameValue.Type() != oruby.MrbTTString {
-		return mrb.Raise(mrb.ETypeError(), "string path param expected")
-	}
-
-	name, err := fullName(nameValue.String())
+	args := mrb.GetArgs()
+	feature, err := pathArg(mrb, args.Item(0))
 	if err != nil {
-		return raiseCannotLoad(mrb, nameValue.String())
+		return mrb.RaiseError(err)
+	}
+	wrap := args.Item(1)
+
+	path, _ := findFile(feature, []string{""}, expandedLoadPath(mrb))
+	if path == "" && fileLoadOK(feature) {
+		path = feature
+	}
+	if path == "" {
+		return raiseCannotLoad(mrb, feature)
 	}
 
-	nv := mrb.StrNew(name)
-	loadingFilesAdd(mrb, nv)
-	defer loadingFilesDelete(mrb, nv)
+	// the file being run (require_relative's fallback base); load does not
+	// count as requiring it, so a require of it inside loads it once
+	prev := mrb.GetGV(`$"__`)
+	mrb.SetGV(`$"__`, mrb.StrNew(path))
+	defer mrb.SetGV(`$"__`, prev)
 
-	err = doLoad(mrb, name, wrap.Bool())
+	if wrap.Bool() {
+		mod := wrap
+		if mod.Type() != oruby.MrbTTModule {
+			m, err := mrb.Funcall(mrb.ModuleClass().Value(), oruby.Sym_new)
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+			mod = m.Value()
+		}
+		err = doLoadWrapped(mrb, path, mod)
+	} else {
+		err = doLoad(mrb, path)
+	}
 	if err != nil {
 		return loadFailure(mrb, err)
 	}
-
 	return mrb.TrueValue()
 }
 
@@ -168,13 +294,19 @@ func raiseCannotLoad(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	return exc
 }
 
+// raiseCExtension: a C extension was found; oruby does not load them (MRI
+// fails in dlopen here when the file is no library: path stays nil)
+func raiseCExtension(mrb *oruby.MrbState, path string) oruby.MrbValue {
+	return mrb.Raisef(mrb.ClassGet("LoadError"), "dlopen(%v): oruby does not load C extensions", path)
+}
+
 // loadFailure re-raises exception raised by loaded code (SyntaxError,
 // SystemExit, NameError...) instead of hiding it in a LoadError
 func loadFailure(mrb *oruby.MrbState, err error) oruby.MrbValue {
 	if exc := mrb.Exc(); exc != nil {
 		return exc.Value()
 	}
-	return mrb.Raise(mrb.ClassGet("LoadError"), err.Error())
+	return mrb.RaiseError(err)
 }
 
 func fullName(filename string) (string, error) {
@@ -188,155 +320,50 @@ func fullName(filename string) (string, error) {
 	return filepath.Abs(filename)
 }
 
-func resolveName(mrb *oruby.MrbState, feature string) (string, error) {
-	if len(feature) == 0 {
-		return "", errors.New("cannot load such file -- ")
+// fileLoadOK: p is a file that can be read
+func fileLoadOK(p string) bool {
+	fi, err := os.Stat(p)
+	if err != nil || fi.IsDir() {
+		return false
 	}
-
-	var filenames []string
-	if filepath.Ext(feature) == "" {
-		filenames = []string{feature + ".rb", feature + ".mrb"}
-	} else {
-		filenames = []string{feature}
-	}
-
-	if feature[0] == '.' || feature[0] == '/' || feature[0] == filepath.Separator ||
-		(len(feature) > 1 && feature[1] == ':') {
-		for _, fn := range filenames {
-			if name, err := fullName(fn); err == nil {
-				return name, nil
-			}
-		}
-		if name, err := fullName(feature); err == nil {
-			return name, nil
-		}
-		return "", fmt.Errorf("cannot load such file -- %v", feature)
-	}
-
-	paths := mrb.GVGetObj(oruby.GvSym_LOAD_PATH).RArray()
-	for i := 0; i < paths.Len(); i++ {
-		path, err := pathArg(mrb, paths.Item(i))
-		if err != nil {
-			continue
-		}
-		for _, filename := range filenames {
-			fName := filepath.Join(path, filename)
-			name, err := fullName(fName)
-			if err == nil {
-				return name, nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("cannot load such file -- %v", feature)
-}
-
-// upstreamLib returns the shipped upstream copy of library feature in the
-// install layout's rubylibdir (lib/oruby/<ruby_version>), or "". An upstream
-// copy is preferred over ORuby's embedded rewrite of the same library; the
-// rewrite stays the fallback for embedded use without the install layout.
-func upstreamLib(feature string) string {
-	if feature == "" || filepath.IsAbs(feature) || strings.HasPrefix(feature, ".") {
-		return ""
-	}
-	name := feature
-	if !strings.HasSuffix(name, ".rb") {
-		name += ".rb"
-	}
-	p := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion, name)
-	if st, err := os.Stat(p); err == nil && !st.IsDir() {
-		return p
-	}
-	return ""
-}
-
-func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
-	if p := upstreamLib(feature); p != "" {
-		feature = p
-	}
-	// If there is implemented Go feature
-	if loaded, err := mrb.Resolve(feature); err == nil {
-		if loaded {
-			loadedFeatures := mrb.GVGet(oruby.GvSym_LOADED_FEATURES)
-			mrb.AryPush(loadedFeatures, mrb.StrNew(feature))
-			mrb.FeatureAdd(feature)
-			return mrb.TrueValue()
-		}
-		return mrb.FalseValue()
-	}
-
-	name, err := resolveName(mrb, feature)
+	f, err := os.Open(p)
 	if err != nil {
-		return raiseCannotLoad(mrb, feature)
+		return false
 	}
-
-	// A file reached through a symlink is the same feature as its real path,
-	// as in MRI: $LOADED_FEATURES keeps the expanded path, but the checks
-	// below also go by the realpath
-	real := name
-	if r, err := filepath.EvalSymlinks(name); err == nil {
-		real = r
-	}
-
-	// already loaded: MRI goes by $LOADED_FEATURES, which programs (and
-	// specs) edit or replace
-	if featureLoaded(mrb, name, real) {
-		return mrb.FalseValue()
-	}
-
-	nameValue := mrb.StrNew(name)
-	realValue := mrb.StrNew(real)
-
-	// Check if file is set to be loaded
-	if loadingFilesFind(mrb, realValue) {
-		return mrb.FalseValue()
-	}
-
-	// Load feature
-	loadingFilesAdd(mrb, realValue)
-	defer loadingFilesDelete(mrb, realValue)
-	if err := doLoad(mrb, name, false); err != nil {
-		return loadFailure(mrb, err)
-	}
-
-	// Remember loaded feature
-	loadedFeatures := mrb.GVGet(oruby.GvSym_LOADED_FEATURES)
-	mrb.AryPush(loadedFeatures, nameValue)
-	mrb.FeatureAdd(name)
-	mrb.FeatureAdd(real)
-
-	return mrb.TrueValue()
+	_ = f.Close()
+	return true
 }
 
-func loadRequire(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	feature, err := pathArg(mrb, mrb.GetArgsFirst())
-	if err != nil {
-		return mrb.RaiseError(err)
-	}
-	return doRequire(mrb, feature)
+// isExplicit: a path require does not search $LOAD_PATH for
+func isExplicit(f string) bool {
+	return filepath.IsAbs(f) || f == "~" || strings.HasPrefix(f, "~") ||
+		strings.HasPrefix(f, "./") || strings.HasPrefix(f, "../") || f == "." || f == ".."
 }
 
-// pathArg converts a feature or $LOAD_PATH entry: a String, #to_path, then
-// #to_str (rb_get_path)
-func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
-	if v.IsString() {
-		return v.String(), nil
-	}
-	if !v.IsNil() && mrb.RespondTo(v, oruby.Sym_to_path) {
-		p, err := mrb.Funcall(v, oruby.Sym_to_path)
-		if err != nil {
-			return "", err
+// expandPath is File.expand_path: "~" and "~user" too
+func expandPath(f string) string {
+	if strings.HasPrefix(f, "~") {
+		rest := f[1:]
+		name := rest
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			name, rest = rest[:i], rest[i:]
+		} else {
+			rest = ""
 		}
-		v = p
-		if v.IsString() {
-			return v.String(), nil
+		home := ""
+		if name == "" {
+			home = os.Getenv("HOME")
+		} else if u, err := user.Lookup(name); err == nil {
+			home = u.HomeDir
+		}
+		if home != "" {
+			f = home + rest
 		}
 	}
-	s, err := mrb.Funcall(mrb.KernelModule(), oruby.Sym___implicit, v, mrb.StringClass().Value())
-	if err != nil {
-		return "", err
+	if a, err := filepath.Abs(f); err == nil {
+		return a
 	}
-	return s.String(), nil
+	return f
 }
 
 var (
@@ -344,8 +371,8 @@ var (
 	realpathCache = map[string]string{}
 )
 
-// realpathOf is filepath.EvalSymlinks, cached: $LOADED_FEATURES entries are
-// compared by real path on every require
+// realpathOf is filepath.EvalSymlinks, cached: $LOADED_FEATURES entries and
+// $LOAD_PATH entries are compared by real path on every require
 func realpathOf(p string) string {
 	realpathMu.Lock()
 	defer realpathMu.Unlock()
@@ -360,19 +387,116 @@ func realpathOf(p string) string {
 	return r
 }
 
-// featureLoaded reports whether $LOADED_FEATURES holds name, or a path with
-// the same real path, as MRI's loaded-features realpath index does
-func featureLoaded(mrb *oruby.MrbState, name, real string) bool {
+// expandedLoadPath: $LOAD_PATH entries (String or #to_path), expanded and
+// canonical (MRI's expanded load path, realpath'd)
+func expandedLoadPath(mrb *oruby.MrbState) []string {
+	lpv := mrb.GVGet(oruby.GvSym_LOAD_PATH)
+	if !lpv.IsArray() {
+		return nil
+	}
+	a := mrb.GVGetObj(oruby.GvSym_LOAD_PATH).RArray()
+	out := make([]string, 0, a.Len())
+	for i := 0; i < a.Len(); i++ {
+		p, err := pathArg(mrb, a.Item(i))
+		if err != nil {
+			continue
+		}
+		out = append(out, realpathOf(expandPath(p)))
+	}
+	return out
+}
+
+// findFile: the first file feature+ext names: an explicit path expanded,
+// any other in a $LOAD_PATH entry
+func findFile(feature string, exts, lp []string) (string, string) {
+	if isExplicit(feature) {
+		base := expandPath(feature)
+		for _, e := range exts {
+			if fileLoadOK(base + e) {
+				return base + e, e
+			}
+		}
+		return "", ""
+	}
+	// every directory for one extension before the next: a .rb later on
+	// the path wins over a C extension earlier
+	for _, e := range exts {
+		for _, dir := range lp {
+			p := filepath.Join(dir, feature+e)
+			if fileLoadOK(p) {
+				return p, e
+			}
+		}
+	}
+	return "", ""
+}
+
+// featureP is MRI's rb_feature_p: how $LOADED_FEATURES has feature: 'r' as
+// Ruby, 's' as a C extension, 'u' by the name alone, 0 not. kind is the
+// feature's own extension kind (0: none); lp (nil for an expanded path)
+// also matches entries reached through a $LOAD_PATH directory.
+func featureP(mrb *oruby.MrbState, feature string, kind byte, lp []string) byte {
+	lf := mrb.GVGet(oruby.GvSym_LOADED_FEATURES)
+	if !lf.IsArray() {
+		return 0
+	}
+	match := func(e, base string) byte {
+		if kind != 0 {
+			if e == base {
+				return kind
+			}
+			return 0
+		}
+		if e == base {
+			return 'u'
+		}
+		if strings.HasPrefix(e, base) {
+			rest := e[len(base):]
+			switch {
+			case rest == ".rb" || rest == ".mrb":
+				return 'r'
+			case isSoExt(rest):
+				return 's'
+			}
+		}
+		return 0
+	}
+	viaLoadPath := lp != nil && !isExplicit(feature)
+	for i := 0; i < oruby.RArrayLen(lf); i++ {
+		ev := mrb.AryEntry(lf, i)
+		if !ev.IsString() {
+			continue
+		}
+		e := mrb.String(ev)
+		if !strings.Contains(e, feature) {
+			continue
+		}
+		if k := match(e, feature); k != 0 {
+			return k
+		}
+		if viaLoadPath {
+			for _, dir := range lp {
+				if k := match(e, dir+"/"+feature); k != 0 {
+					return k
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// loadedByRealpath: $LOADED_FEATURES has a path to the same real file
+func loadedByRealpath(mrb *oruby.MrbState, name, real string) bool {
 	lf := mrb.GVGet(oruby.GvSym_LOADED_FEATURES)
 	if !lf.IsArray() {
 		return false
 	}
 	for i := 0; i < oruby.RArrayLen(lf); i++ {
-		e := mrb.AryEntry(lf, i)
-		if !e.IsString() {
+		ev := mrb.AryEntry(lf, i)
+		if !ev.IsString() {
 			continue
 		}
-		s := e.String()
+		s := mrb.String(ev)
 		if s == name || s == real || filepath.IsAbs(s) && realpathOf(s) == real {
 			return true
 		}
@@ -380,32 +504,229 @@ func featureLoaded(mrb *oruby.MrbState, name, real string) bool {
 	return false
 }
 
-func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	feature := mrb.GetArgsFirst().String()
+// upstreamLib returns the shipped upstream copy of library feature in the
+// install layout's rubylibdir (lib/oruby/<ruby_version>), or "". An upstream
+// copy is preferred over ORuby's embedded rewrite of the same library; the
+// rewrite stays the fallback for embedded use without the install layout.
+func upstreamLib(feature string) string {
+	if feature == "" || isExplicit(feature) {
+		return ""
+	}
+	name := feature
+	if !strings.HasSuffix(name, ".rb") {
+		name += ".rb"
+	}
+	p := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion, name)
+	if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		return p
+	}
+	return ""
+}
 
-	var file string
-	res, err := mrb.Funcall(mrb.TopSelf(), oruby.Sym_caller, 0)
-	if err == nil && res.Type() == oruby.MrbTTArray {
-		ary, _ := mrb.EnsureArrayType(res) // res is an Array: checked above
-		if ary.Len() > 0 {
-			loc := ary.Item(0).String()
-			if idx := strings.Index(loc, ":"); idx != -1 {
-				file = loc[:idx]
-			}
+func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
+	if feature == "" {
+		return raiseCannotLoad(mrb, feature)
+	}
+	if p := upstreamLib(feature); p != "" {
+		feature = p
+	}
+	lp := expandedLoadPath(mrb)
+
+	// a Go gem: initialized once; MRI's built-in features stay "loaded"
+	if !isExplicit(feature) && mrb.GemAvailable(feature) {
+		provided := featureP(mrb, feature, 0, lp) != 0
+		loaded, err := mrb.Resolve(feature)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		if provided || !loaded {
+			return mrb.FalseValue()
+		}
+		mrb.AryPush(mrb.GVGet(oruby.GvSym_LOADED_FEATURES), mrb.StrNew(feature))
+		return mrb.TrueValue()
+	}
+
+	switch extKind(feature) {
+	case 'r':
+		if featureP(mrb, feature, 'r', lp) != 0 {
+			return mrb.FalseValue()
+		}
+		path, _ := findFile(feature, []string{""}, lp)
+		if path == "" {
+			return raiseCannotLoad(mrb, feature)
+		}
+		return requireFile(mrb, path)
+	case 's':
+		if featureP(mrb, feature, 's', lp) != 0 {
+			return mrb.FalseValue()
+		}
+		// .so and .o name the platform's library suffix
+		base, exts := feature, []string{""}
+		if e := filepath.Ext(feature); e == ".so" || e == ".o" {
+			base, exts = strings.TrimSuffix(feature, e), dlexts
+		}
+		path, _ := findFile(base, exts, lp)
+		if path == "" {
+			return raiseCannotLoad(mrb, feature)
+		}
+		if featureP(mrb, path, 's', nil) != 0 {
+			return mrb.FalseValue()
+		}
+		return raiseCExtension(mrb, path)
+	}
+
+	ft := featureP(mrb, feature, 0, lp)
+	if ft == 'r' {
+		return mrb.FalseValue()
+	}
+	exts := []string{".rb", ".mrb"}
+	if ft != 's' {
+		exts = append(exts, dlexts...)
+	}
+	path, e := findFile(feature, exts, lp)
+	if path == "" {
+		if ft != 0 {
+			return mrb.FalseValue() // provided under the name
+		}
+		return raiseCannotLoad(mrb, feature)
+	}
+	if isSoExt(e) {
+		if featureP(mrb, path, 's', nil) != 0 {
+			return mrb.FalseValue()
+		}
+		return raiseCExtension(mrb, path)
+	}
+	return requireFile(mrb, path)
+}
+
+// requireFile loads the Ruby file at (expanded) path unless it is loaded or
+// being loaded, and records it in $LOADED_FEATURES
+func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
+	if featureP(mrb, path, 'r', nil) != 0 {
+		return mrb.FalseValue()
+	}
+	// a file reached through a symlink is the same feature as its real
+	// path, as in MRI
+	real := path
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		real = r
+	}
+	if loadedByRealpath(mrb, path, real) {
+		return mrb.FalseValue()
+	}
+	realValue := mrb.StrNew(real)
+	if loadingFilesFind(mrb, realValue) {
+		warnCircular(mrb, path)
+		return mrb.FalseValue()
+	}
+
+	loadingFilesAdd(mrb, realValue)
+	defer loadingFilesDelete(mrb, realValue)
+	if err := doLoad(mrb, path); err != nil {
+		return loadFailure(mrb, err)
+	}
+	mrb.AryPush(mrb.GVGet(oruby.GvSym_LOADED_FEATURES), mrb.StrNew(path))
+	return mrb.TrueValue()
+}
+
+// warnCircular is MRI's verbose-only warning for a require of a file that
+// is being required
+func warnCircular(mrb *oruby.MrbState, path string) {
+	if v := mrb.GetGV("$VERBOSE"); v.Type() != oruby.MrbTTTrue {
+		return
+	}
+	if mrb.RespondTo(mrb.KernelModule().Value(), oruby.Sym_warn) {
+		_, _ = mrb.Funcall(mrb.KernelModule().Value(), oruby.Sym_warn,
+			"warning: loading in progress, circular require considered harmful - "+path)
+	}
+}
+
+func loadRequire(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	feature, err := pathArg(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return doRequire(mrb, feature)
+}
+
+// pathArg converts a feature or $LOAD_PATH entry as rb_get_path does: a
+// String, else #to_path, then #to_str of what that gives
+func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
+	if v.IsString() {
+		return mrb.String(v), nil
+	}
+	if !v.IsNil() && mrb.RespondTo(v, oruby.Sym_to_path) {
+		p, err := mrb.Funcall(v, oruby.Sym_to_path)
+		if err != nil {
+			return "", err
+		}
+		v = p.Value()
+		if v.IsString() {
+			return mrb.String(v), nil
 		}
 	}
-
-	if file == "" || file == "-e" {
-		file = mrb.GVGet(mrb.Intern("$\"__")).String()
+	cname := func(x oruby.Value) string {
+		switch {
+		case x.IsNil():
+			return "nil"
+		case x.Type() == oruby.MrbTTTrue:
+			return "true"
+		case x.Type() == oruby.MrbTTFalse:
+			return "false"
+		}
+		return mrb.ClassName(mrb.ObjClass(x))
 	}
-	if file == "" {
-		file = os.Args[0]
+	if v.IsNil() || !mrb.RespondTo(v, oruby.Sym_to_str) {
+		return "", oruby.ETypeError("no implicit conversion of %s into String", cname(v))
 	}
-
-	name, err := filepath.Abs(filepath.Join(filepath.Dir(file), feature))
+	s, err := mrb.Funcall(v, oruby.Sym_to_str)
 	if err != nil {
-		return mrb.Raise(mrb.ClassGet("LoadError"), err.Error())
+		return "", err
 	}
+	if !s.IsString() {
+		return "", oruby.ETypeError("can't convert %s to String (%s#to_str gives %s)", cname(v), cname(v), cname(s.Value()))
+	}
+	return mrb.String(s), nil
+}
 
-	return doRequire(mrb, name)
+var callerLine = regexp.MustCompile(`^(.*?):\d+(?::in |$)`)
+
+// callerFile is the file of the code calling require_relative (an eval's
+// given file name too)
+func callerFile(mrb *oruby.MrbState) string {
+	res, err := mrb.Funcall(mrb.TopSelf(), oruby.Sym_caller, 0)
+	if err != nil || !res.IsArray() || oruby.RArrayLen(res) == 0 {
+		return ""
+	}
+	loc := mrb.String(mrb.AryEntry(res, 0))
+	if m := callerLine.FindStringSubmatch(loc); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// require_relative(path): path relative to the directory of the real path
+// of the calling file (MRI's rb_current_realfilepath)
+func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	feature, err := pathArg(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	if !filepath.IsAbs(feature) {
+		file := callerFile(mrb)
+		if file == "" {
+			if v := mrb.GVGet(mrb.Intern(`$"__`)); v.IsString() {
+				file = mrb.String(v)
+			}
+		}
+		if file == "" {
+			return mrb.Raise(mrb.ClassGet("LoadError"), "cannot infer basepath")
+		}
+		base := expandPath(file)
+		if r, err := filepath.EvalSymlinks(base); err == nil {
+			base = r
+		}
+		feature = filepath.Join(filepath.Dir(base), feature)
+	}
+	return doRequire(mrb, feature)
 }

@@ -126,6 +126,9 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 			return mrb.NilValue()
 		}, oruby.ArgsNone())
 
+		initMathGamma(mrb)
+		initNumconv(mrb)
+
 		entries, err := fs.ReadDir(rubyFiles, "ruby")
 		if err != nil {
 			panic("core_ext read error: " + err.Error())
@@ -162,4 +165,82 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		}
 		return nil
 	})
+}
+
+// Math.gamma and Math.lgamma as MRI's math.c (mruby's math gem has
+// neither): an integer argument up to 23 gives the exact factorial, a
+// negative integer and -Infinity are out of the domain
+func initMathGamma(mrb *oruby.MrbState) {
+	mathMod := mrb.ModuleGet("Math")
+	if mathMod.IsNil() {
+		return
+	}
+	toF := func(mrb *oruby.MrbState, v oruby.Value) (float64, error) {
+		switch {
+		case v.Type() == oruby.MrbTTFloat:
+			return v.Float64(), nil
+		case v.IsInteger():
+			return float64(v.Int64()), nil
+		case v.IsNil():
+			return 0, oruby.ETypeError("can't convert nil into Float")
+		case v.IsString():
+			return 0, oruby.ETypeError("can't convert String into Float")
+		}
+		if numeric := mrb.ClassGet("Numeric"); !numeric.IsNil() && mrb.ObjIsKindOf(v, numeric) && mrb.RespondTo(v, mrb.Intern("to_f")) {
+			f, err := mrb.Funcall(v, mrb.Intern("to_f"))
+			if err != nil {
+				return 0, err
+			}
+			if f.Type() == oruby.MrbTTFloat {
+				return f.Float64(), nil
+			}
+		}
+		return 0, oruby.ETypeError("can't convert %s into Float", mrb.ClassName(mrb.ObjClass(v)))
+	}
+	domain := func(mrb *oruby.MrbState, name string) oruby.MrbValue {
+		return mrb.Raise(mrb.ClassGetUnder(mathMod, "DomainError"), `Numerical argument is out of domain - "`+name+`"`)
+	}
+	mrb.DefineModuleFunction(mathMod, "gamma", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		d, err := toF(mrb, mrb.GetArgsFirst())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		if math.IsInf(d, -1) {
+			return domain(mrb, "gamma")
+		}
+		if d == math.Floor(d) && !math.IsInf(d, 0) {
+			if d < 0 {
+				return domain(mrb, "gamma")
+			}
+			if d >= 1 && d <= 23 {
+				fact := 1.0
+				for k := 2.0; k < d; k++ {
+					fact *= k
+				}
+				return mrb.FloatValue(fact)
+			}
+		}
+		return mrb.FloatValue(math.Gamma(d))
+	}, oruby.ArgsReq(1))
+	mrb.DefineModuleFunction(mathMod, "lgamma", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		d, err := toF(mrb, mrb.GetArgsFirst())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		if math.IsInf(d, 0) {
+			if d < 0 {
+				return domain(mrb, "lgamma")
+			}
+			return mrb.AryNewFromValues(mrb.FloatValue(math.Inf(1)), oruby.Int(1).Value())
+		}
+		if d == 0 {
+			sign := 1
+			if math.Signbit(d) {
+				sign = -1
+			}
+			return mrb.AryNewFromValues(mrb.FloatValue(math.Inf(1)), oruby.Int(sign).Value())
+		}
+		v, sign := math.Lgamma(d)
+		return mrb.AryNewFromValues(mrb.FloatValue(v), oruby.Int(sign).Value())
+	}, oruby.ArgsReq(1))
 }

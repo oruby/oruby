@@ -28,6 +28,7 @@ enum {
   ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment
   ORB_KWSPLAT,            // s0: the value of **value in a call or Hash literal
   ORB_ARRAY_KWHASH,       // s0: a brace-less Hash at the end of an Array literal
+  ORB_REGEXP_ENC,         // s0: /..#{x}../n with only an encoding flag (flags: its letter); parts follow as ORB_LIST_ITEM (flags 1: literal text)
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

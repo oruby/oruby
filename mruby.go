@@ -338,17 +338,32 @@ end
 	// Standard Ruby constants
 	platform := runtime.GOARCH + "-" + runtime.GOOS
 	// the MRI version ORuby targets, not the bundled mruby's MRUBY_RUBY_VERSION
-	mrb.DefineGlobalConst("RUBY_VERSION", mrb.StrNew(RubyVersion))
-	mrb.DefineGlobalConst("RUBY_PLATFORM", mrb.StrNew(platform))
-	mrb.DefineGlobalConst("RUBY_ENGINE", mrb.StrNew("oruby"))
-	mrb.DefineGlobalConst("RUBY_ENGINE_VERSION", mrb.StrNew("0.1.0"))
-	mrb.DefineGlobalConst("RUBY_DESCRIPTION", mrb.StrNew(fmt.Sprintf("oruby 0.1.0 [%s]", platform)))
-	mrb.DefineGlobalConst("RUBY_PATCHLEVEL", MrbFixnumValue(0))
-	mrb.DefineGlobalConst("RUBY_RELEASE_DATE", mrb.StrNew("2026-11-01"))
-	mrb.DefineGlobalConst("RUBY_REVISION", mrb.StrNew("oruby"))
-	mrb.DefineGlobalConst("RUBY_COPYRIGHT", mrb.StrNew("oruby - Copyright (C) Dušan D. Majkić; mruby - Copyright (C) mruby developers"))
+	// each frozen, the same object as RUBY_X and Ruby::X (Ruby 4.0's module)
+	rubyMod := mrb.DefineModule("Ruby")
+	for _, c := range []struct {
+		name string
+		v    interface{}
+	}{
+		{"VERSION", RubyVersion}, {"PLATFORM", platform}, {"ENGINE", "oruby"}, {"ENGINE_VERSION", "0.1.0"},
+		{"DESCRIPTION", fmt.Sprintf("oruby 0.1.0 [%s]", platform)}, {"PATCHLEVEL", 0},
+		{"RELEASE_DATE", "2026-11-01"}, {"REVISION", "oruby"},
+		{"COPYRIGHT", "oruby - Copyright (C) Dušan D. Majkić; mruby - Copyright (C) mruby developers"},
+	} {
+		v := mrb.Value(c.v)
+		if v.IsString() {
+			C.mrb_obj_freeze(mrb.p, v.v)
+		}
+		mrb.DefineGlobalConst("RUBY_"+c.name, v)
+		rubyMod.Const(c.name, v)
+	}
 	mrb.SetGV("$VERBOSE", mrb.FalseValue())
 	mrb.DefineModuleFunction(mrb.KernelModule(), "debug", kernelDebug, mrb.ArgsAny())
+	// Kernel#clone(freeze: false) (11_finalizer.rb): the fresh copy of a
+	// frozen object made mutable
+	mrb.DefineMethod(mrb.KernelModule(), "__oruby_clone_unfreeze", func(mrb *MrbState, self Value) MrbValue {
+		C._mrb_clone_unfreeze(self.v)
+		return self
+	}, mrb.ArgsNone())
 	mrb.DefineModuleFunction(mrb.KernelModule(), "__preprocess_ruby", func(mrb *MrbState, self Value) MrbValue {
 		args := mrb.GetArgs()
 		if args.Len() == 0 {

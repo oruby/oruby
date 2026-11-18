@@ -21,6 +21,8 @@ class Enumerator
         o
       end
 
+      # MRI's ruby_float_step_size, in doubles: an infinite or NaN count
+      # stays one (floor of Infinity is Infinity in C)
       def __float_step_size(beg, en, unit, excl)
         return Float::INFINITY if unit == 0
         if unit.infinite?
@@ -31,18 +33,22 @@ class Enumerator
         err = 0.5 if err > 0.5
         if excl
           return 0 if n <= 0
-          n = n < 1 ? 0 : (n - err).floor
+          n = n < 1 ? 0.0 : __ffloor(n - err)
           d = (n + 1) * unit + beg
           if beg < en
             n += 1 if d < en
           elsif beg > en
             n += 1 if d > en
           end
-          n
         else
           return 0 if n < 0
-          (n + err).floor + 1
+          n = __ffloor(n + err)
         end
+        n + 1
+      end
+
+      def __ffloor(x)
+        x.finite? ? x.floor.to_f : x
       end
 
       # ruby_float_step: iterates when any of from/to/step is a Float
@@ -147,7 +153,7 @@ class Enumerator
       if Float === b || Float === e || Float === s
         ee = e.nil? ? (s < 0 ? -Float::INFINITY : Float::INFINITY) : e.to_f
         n = ArithmeticSequence.__float_step_size(b.to_f, ee, s.to_f, @__x)
-        return n if Float === n && n.infinite?
+        return n if Float === n && (n.infinite? || n.nan?)
         return n.to_i
       end
       return Float::INFINITY if e.nil?
@@ -233,8 +239,10 @@ class Numeric
       if (limit.nil? || Numeric === limit) && Numeric === st
         return Enumerator::ArithmeticSequence.__new(self, :step, args, kw, self, limit, st, false)
       end
-      Enumerator::ArithmeticSequence.__negative?(st)
-      return to_enum(:step, *args)
+      # MRI: a plain Enumerator; a bad step fails when it is iterated or
+      # sized (num_step_size checks the step's sign)
+      sz = -> { Enumerator::ArithmeticSequence.__negative?(st); nil }
+      return kw.empty? ? to_enum(:step, *args, &sz) : to_enum(:step, *args, **kw, &sz)
     end
     raise TypeError, "no implicit conversion from nil to integer" if no_by && args.size > 1 && st.nil?
     raise ArgumentError, "step can't be 0" if st == 0

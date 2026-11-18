@@ -442,3 +442,61 @@ class String
     raise IndexError, "offset #{pos} does not land on character boundary"
   end
 end
+
+# String#[]= as MRI's rb_str_aset_m around mruby's own: indexes and counts
+# by #to_int, the replacement by #to_str, a Range by rb_range_beg_len
+# (RangeError out of it), a regexp capture by number (negative from the
+# end) or name; the result has the encoding compatible with both strings
+# (Encoding::CompatibilityError when there is none)
+class String
+  alias __oruby_mrb_aset []=
+  private :__oruby_mrb_aset
+
+  def []=(*args)
+    n = args.size
+    raise ArgumentError, "wrong number of arguments (given #{n}, expected 2..3)" unless n == 2 || n == 3
+    val = args[-1]
+    idx = args[0]
+    # a regexp's match and group are checked before the replacement's
+    # #to_str, as MRI
+    val = Kernel.__implicit(val, String) unless String === val || Regexp === idx
+    if Regexp === idx
+      ref = n == 3 ? args[1] : 0
+      ref = Kernel.__to_int(ref) unless Integer === ref || String === ref || Symbol === ref
+      m = idx.match(self)
+      raise IndexError, "regexp not matched" unless m
+      if Integer === ref
+        nregs = m.size
+        raise IndexError, "index #{ref} out of regexp" if ref >= nregs || -ref >= nregs
+        ref += nregs if ref < 0
+      end
+      b = m.begin(ref)
+      raise IndexError, "regexp group #{ref} not matched" if b.nil?
+      beg, len = b, m.end(ref) - b
+      val = Kernel.__implicit(val, String) unless String === val
+    elsif n == 3
+      beg = Kernel.__to_int(idx)
+      len = Kernel.__to_int(args[1])
+    elsif String === idx
+      i = index(idx)
+      raise IndexError, "string not matched" if i.nil?
+      beg, len = i, idx.size
+    elsif Range === idx
+      beg, len = String.__oruby_range_beg_len(idx, self.size)
+    else
+      beg, len = Kernel.__to_int(idx), 1
+    end
+    enc = encoding
+    unless enc == val.encoding
+      c = Encoding.compatible?(self, val)
+      raise Encoding::CompatibilityError, "incompatible character encodings: #{enc} and #{val.encoding}" unless c
+      enc = c
+    end
+    raise IndexError, "negative length #{len}" if len < 0
+    sz = self.size
+    raise IndexError, "index #{beg} out of string" if beg > sz || (beg < 0 && beg + sz < 0)
+    __oruby_mrb_aset(beg, len, val)
+    force_encoding(enc) unless encoding == enc
+    args[-1]
+  end
+end

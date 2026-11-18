@@ -51,7 +51,7 @@ func timeDump(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	var err error
 	// the Time's own instance variables come first
 	mrb.IVForEach(self, func(name oruby.MrbSym, v oruby.Value) bool {
-		if !strings.HasPrefix(mrb.SymName(name), "__") {
+		if n := mrb.SymName(name); !strings.HasPrefix(n, "__") && !strings.HasPrefix(n, "@__") {
 			err = mrb.IVSet(str, name, v)
 		}
 		return err == nil
@@ -83,7 +83,19 @@ func timeDump(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.RaiseError(err)
 		}
 	}
-	if timeKind(t) != 2 && zone != "" {
+	// a timezone object is dumped by its #name (MRI: none, NoMethodError)
+	if tz := mrb.IVGet(self, mrb.Intern("@__tz")); !tz.IsNil() {
+		name, err := mrb.Funcall(tz, mrb.Intern("name"))
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		zone = mrb.String(name)
+		z := mrb.StrNew(zone)
+		mrb.Funcall(z, oruby.Sym_force_encoding, "US-ASCII")
+		if err := mrb.IVSet(str, mrb.Intern("zone"), z); err != nil {
+			return mrb.RaiseError(err)
+		}
+	} else if timeKind(t) != 2 && zone != "" {
 		z := mrb.StrNew(zone)
 		mrb.Funcall(z, oruby.Sym_force_encoding, "US-ASCII")
 		if err := mrb.IVSet(str, mrb.Intern("zone"), z); err != nil {
@@ -159,6 +171,16 @@ func timeLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 	mrb.DataSetInterface(v, t)
+	// a zone name the class knows (find_timezone) becomes its timezone
+	if z := iv("zone"); z.Type() == oruby.MrbTTString && !utc && mrb.RespondTo(self, mrb.Intern("find_timezone")) {
+		tz, err := mrb.Funcall(self, mrb.Intern("find_timezone"), z)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		if !tz.IsNil() {
+			_ = mrb.IVSet(v, mrb.Intern("@__tz"), tz)
+		}
+	}
 	// the other instance variables are the Time's own
 	mrb.IVForEach(str, func(name oruby.MrbSym, val oruby.Value) bool {
 		switch mrb.SymName(name) {

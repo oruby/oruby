@@ -121,7 +121,7 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if atomic.LoadInt32(&frozenStringDefault) == 1 || opts != nil && opts.SourceEncoding != "" {
 		return true
 	}
-	if hasMultiAssign(src) {
+	if hasMultiAssign(src) || hasRegexpEncFlag(src) {
 		return true
 	}
 	for _, k := range []string{"**nil", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
@@ -224,6 +224,28 @@ var readonlyGvars = map[string]bool{
 }
 
 // hasMultiAssign: a line with a comma before a lone "=" may be a, b = v
+// hasRegexpEncFlag: an interpolation and what may close a regexp with an
+// encoding flag (/n, }u, ...)
+func hasRegexpEncFlag(src []byte) bool {
+	if !bytes.Contains(src, []byte("#")) {
+		return false
+	}
+	for i := 1; i < len(src); i++ {
+		if strings.IndexByte("/})]>!|", src[i-1]) < 0 {
+			continue
+		}
+		j, enc := i, false
+		for j < len(src) && strings.IndexByte("mixounse", src[j]) >= 0 {
+			enc = enc || strings.IndexByte("nues", src[j]) >= 0
+			j++
+		}
+		if enc && (j == len(src) || !(src[j] >= 'a' && src[j] <= 'z' || src[j] >= 'A' && src[j] <= 'Z' || src[j] >= '0' && src[j] <= '9' || src[j] == '_')) {
+			return true
+		}
+	}
+	return false
+}
+
 func hasMultiAssign(src []byte) bool {
 	for _, line := range bytes.Split(src, []byte("\n")) {
 		c := bytes.IndexByte(line, ',')
@@ -457,6 +479,37 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			}
 		case C.ORB_BIG_INTEGER:
 			r.add(s[0], e[0], func(r *rewriter) string { return `Integer("` + r.text(s[0], e[0]) + `")` })
+		case C.ORB_REGEXP_ENC:
+			// /a#{x}/n -> ::Regexp.compile("a#{x}", nil, "n"): the literal
+			// text verbatim (a regexp source), the embedded code rewritten
+			letter := string(rune(rc.flags))
+			type part struct {
+				s, e int
+				text bool
+			}
+			var parts []part
+			for i+1 < len(recs) && recs[i+1].kind == C.ORB_LIST_ITEM {
+				i++
+				parts = append(parts, part{recs[i].s[0], recs[i].e[0], recs[i].flags == 1})
+			}
+			r.add(s[0], e[0], func(r *rewriter) string {
+				var b strings.Builder
+				b.WriteString(`::Regexp.compile("`)
+				for _, p := range parts {
+					if !p.text {
+						b.WriteString(r.render(p.s, p.e))
+						continue
+					}
+					for _, c := range []byte(r.text(p.s, p.e)) {
+						if c == '\\' || c == '"' || c == '#' {
+							b.WriteByte('\\')
+						}
+						b.WriteByte(c)
+					}
+				}
+				b.WriteString(`", nil, "` + letter + `")`)
+				return b.String()
+			})
 		}
 	}
 	if len(r.edits) == 0 {

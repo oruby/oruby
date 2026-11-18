@@ -73,9 +73,26 @@ class Object
     copy
   end
 
+  # MRI's rb_obj_clone2: freeze: nil keeps the frozen state, true freezes
+  # the copy, false leaves it mutable; with true or false a custom
+  # initialize_clone gets freeze: as a keyword. Numerics and immediates are
+  # their own clones.
   alias __orig_clone__ clone
-  def clone(*args)
-    copy = __orig_clone__(*args)
+  def clone(freeze: nil)
+    unless freeze.nil? || true.equal?(freeze) || false.equal?(freeze)
+      raise ArgumentError, "unexpected value for freeze: #{Kernel.__cname(freeze)}"
+    end
+    if Numeric === self || nil.equal?(self) || true.equal?(self) || false.equal?(self) || Symbol === self
+      raise ArgumentError, "can't unfreeze #{Kernel.__cname(self)}" if false.equal?(freeze)
+      return self
+    end
+    copy = __orig_clone__
+    unless freeze.nil?
+      copy.__oruby_clone_unfreeze if copy.frozen?
+      m = copy.method(:initialize_clone) rescue nil
+      copy.__send__(:initialize_clone, self, freeze: freeze) if m && m.owner != Kernel && m.owner != BasicObject
+      copy.freeze if freeze
+    end
     fins = ObjectSpace._finalizers[object_id]
     if fins
       fins.each { |f| ObjectSpace.define_finalizer(copy, f) }

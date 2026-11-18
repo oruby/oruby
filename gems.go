@@ -103,6 +103,16 @@ func (mrb *MrbState) Resolve(name string) (bool, error) {
 	return true, nil
 }
 
+// GemAvailable reports whether name is a registered Go gem (initialized or
+// not); it initializes nothing
+func (mrb *MrbState) GemAvailable(name string) bool {
+	if _, ok := gems[name]; ok {
+		return true
+	}
+	_, ok := lazyGems[name]
+	return ok
+}
+
 // Require inits gem from available Go gems if not already initialized
 // returns:
 //

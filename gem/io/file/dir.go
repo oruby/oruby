@@ -48,6 +48,8 @@ func initDir(mrb *oruby.MrbState) {
 	dirClass.DefineClassMethod("home", dirHome, mrb.ArgsOpt(1))
 
 	dirClass.DefineClassMethod("__oruby_glob", dirGlob, mrb.ArgsReq(4))
+	dirClass.DefineClassMethod("scan", dirSScan, mrb.ArgsReq(1)|mrb.ArgsKey(1, 0)|mrb.ArgsBlock())
+	dirClass.DefineMethod("scan", dirScan, mrb.ArgsNone()|mrb.ArgsBlock())
 	dirClass.DefineClassMethod("exist?", dirExist, mrb.ArgsReq(1))
 	dirClass.DefineClassMethod("empty?", dirIsEmpty, mrb.ArgsReq(1))
 	if _, err := mrb.Eval(dirGlobRb); err != nil {
@@ -81,6 +83,16 @@ func dirInitialize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	mrb.SetIV(self, "@path", dir)
 	mrb.SetIV(self, "@pos", 0)
+	// Dir.new(path, encoding:): the entries' encoding
+	opts := mrb.KeywordArgs().Value()
+	if !opts.IsHash() {
+		opts = mrb.GetArgs().Item(1)
+	}
+	if opts.IsHash() {
+		if enc := mrb.HashFetch(opts, mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue()); !enc.IsNil() {
+			mrb.SetIV(self, "@encoding", enc)
+		}
+	}
 	mrb.DataSetInterface(self, f)
 
 	return self
@@ -171,6 +183,13 @@ func dirChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
+	enc := mrb.NilValue()
+	if kw := mrb.KeywordArgs(); !kw.IsNil() {
+		enc = mrb.HashFetch(kw.Value(), mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue())
+	} else if h := mrb.GetArgs().Item(1); h.IsHash() {
+		enc = mrb.HashFetch(h, mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue())
+	}
+	entryEncoding(mrb, ret.Value(), enc)
 	return ret
 }
 
@@ -338,6 +357,88 @@ class Dir
 end
 `
 
+// Dir.scan(path, encoding: nil) / Dir#scan (Ruby 4.1): [name, type] of
+// each entry but "." and "..", type from the directory listing (:file,
+// :directory, :link, :fifo, :socket, :characterSpecial, :blockSpecial,
+// :unknown); names in the given encoding, Encoding.default_internal, or the
+// filesystem one. With a block each pair is yielded and nil returned.
+func dirSScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args, block := mrb.GetArgsWithBlock()
+	path, err := pathString(mrb, args.Item(0))
+	if err != nil {
+		return raisePathError(mrb, err)
+	}
+	enc := mrb.NilValue()
+	if kw := mrb.KeywordArgs(); !kw.IsNil() {
+		enc = mrb.HashFetch(kw.Value(), mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue())
+	}
+	return scanDir(mrb, path, enc, block)
+}
+
+func dirScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	block := mrb.GetArgsBlock()
+	return scanDir(mrb, mrb.String(mrb.GetIV(self, "@path")), mrb.GetIV(self, "@encoding"), block)
+}
+
+func scanType(m os.FileMode) string {
+	switch {
+	case m.IsDir():
+		return "directory"
+	case m&os.ModeSymlink != 0:
+		return "link"
+	case m&os.ModeNamedPipe != 0:
+		return "fifo"
+	case m&os.ModeSocket != 0:
+		return "socket"
+	case m&os.ModeCharDevice != 0:
+		return "characterSpecial"
+	case m&os.ModeDevice != 0:
+		return "blockSpecial"
+	case m.IsRegular():
+		return "file"
+	}
+	return "unknown"
+}
+
+func scanDir(mrb *oruby.MrbState, path string, enc oruby.Value, block oruby.RProc) oruby.MrbValue {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return mrb.SysFail(err)
+	}
+	// the names' encoding: the option, the default internal one, or none
+	// to set (UTF-8: the filesystem encoding)
+	if enc.IsNil() {
+		if mrb.RespondTo(mrb.EncodingClass(), oruby.Sym_default_internal) {
+			if e, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_default_internal); err == nil {
+				enc = e.Value()
+			}
+		}
+	} else if !enc.IsData() {
+		e, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_find, enc)
+		if err != nil {
+			return mrb.RaiseError(err) // an unknown encoding name, as MRI
+		}
+		enc = e.Value()
+	}
+	ret := mrb.AryNew()
+	for _, e := range entries {
+		name := mrb.StrNew(e.Name())
+		if !enc.IsNil() {
+			_, _ = mrb.Funcall(name, oruby.Sym_force_encoding, enc)
+		}
+		pair := mrb.AryNewFromValues(name.Value(), mrb.SymbolValue(mrb.Intern(scanType(e.Type()))))
+		if block.IsNil() {
+			ret.Push(pair.Value())
+		} else {
+			mrb.Yield(block, pair.Value())
+		}
+	}
+	if !block.IsNil() {
+		return mrb.NilValue()
+	}
+	return ret
+}
+
 func dirExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	dir := mrb.FSPath(mrb.GetArgsFirst())
 	stat, err := os.Stat(dir)
@@ -373,7 +474,34 @@ func dirClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func dirCollectChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ret, _ := mrb.FuncallWithBlock(mrb.ClassOf(self), oruby.Sym_children, mrb.GetIV(self, "@path"))
+	if enc := mrb.GetIV(self, "@encoding"); !enc.IsNil() && ret.Value().IsArray() {
+		entryEncoding(mrb, ret.Value(), enc)
+	}
 	return ret
+}
+
+// entryEncoding gives the names in ary encoding enc (an Encoding or a
+// name), or Encoding.default_internal when enc is nil
+func entryEncoding(mrb *oruby.MrbState, ary, enc oruby.Value) {
+	if enc.IsNil() {
+		if mrb.RespondTo(mrb.EncodingClass(), oruby.Sym_default_internal) {
+			if e, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_default_internal); err == nil {
+				enc = e.Value()
+			}
+		}
+		if enc.IsNil() {
+			return
+		}
+	} else if !enc.IsData() {
+		e, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_find, enc)
+		if err != nil {
+			return
+		}
+		enc = e.Value()
+	}
+	for i := 0; i < oruby.RArrayLen(ary); i++ {
+		_, _ = mrb.Funcall(mrb.AryEntry(ary, i), oruby.Sym_force_encoding, enc)
+	}
 }
 
 func dirPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

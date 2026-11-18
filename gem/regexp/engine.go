@@ -66,6 +66,7 @@ func getFallback() FallbackFunc {
 type Regexp struct {
 	source  string // Ruby source as written
 	options int    // Ruby options (IgnoreCase, Extended, Multiline)
+	enc     string // Encoding name given by Regexp#initialize ("": from source)
 	engine  Engine
 	re2     *goregexp.Regexp // set when engine is RE2
 

@@ -454,6 +454,20 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	return mrb.protectedResult(v, status)
 }
 
+// LoadBytesWrapped runs buf as Kernel#load(file, wrap) does: compiled with
+// klass as its target class (where its methods, constants and classes go)
+// and run with self
+func (mrb *MrbState) LoadBytesWrapped(buf []byte, context *MrbCcontext, klass RClass, self MrbValue) (Value, error) {
+	if len(buf) == 0 {
+		return nilValue, nil
+	}
+	buf = PreprocessRubyBytes(buf)
+	var result C.mrb_value
+	status := C._mrb_load_nstring_wrapped(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p, klass.p, self.Value().v, &result)
+	runtime.KeepAlive(buf)
+	return mrb.protectedResult(Value{result}, status)
+}
+
 // CodedumpAll helper for oruby cmd
 func (mrb *MrbState) CodedumpAll(proc RProc) {
 	C.mrb_codedump_all(mrb.p, proc.p)

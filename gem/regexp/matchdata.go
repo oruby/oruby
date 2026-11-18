@@ -250,3 +250,8 @@ func (m *MatchData) PreMatch() string {
 func (m *MatchData) Regexp() *Regexp {
 	return m.r
 }
+
+// hasNames: the regexp has named groups (its numbered ones do not capture)
+func (m *MatchData) hasNames() bool {
+	return len(m.names) > 1 && m.names[1] != ""
+}

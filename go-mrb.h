@@ -616,6 +616,40 @@ _mrb_load_nstring_cxt(mrb_state *mrb, const char *source, size_t length, mrb_cco
   return _go_mrb_protect(mrb, _go_mrb_load_nstring_body, &load, result);
 }
 
+// Kernel#clone(freeze: false): the copy of a frozen object is not frozen
+static void _mrb_clone_unfreeze(mrb_value v) {
+  if (!mrb_immediate_p(v)) mrb_basic_ptr(v)->frozen = 0;
+}
+
+// Kernel#load(file, wrap): the code compiles with the wrap module as its
+// target class (methods, constants, class bodies) and runs with self (a
+// copy of main extended with it)
+typedef struct { const char *source; size_t length; mrb_ccontext *context; struct RClass *klass; mrb_value self; } _go_mrb_load_wrap_data;
+
+static mrb_value
+_go_mrb_load_wrap_body(mrb_state *mrb, void *data) {
+  _go_mrb_load_wrap_data *w = (_go_mrb_load_wrap_data *)data;
+  w->context->no_exec = TRUE;
+  w->context->target_class = w->klass;
+  mrb_value pv = mrb_load_nstring_cxt(mrb, w->source, w->length, w->context);
+  if (!mrb_proc_p(pv)) return pv; /* a syntax error: mrb->exc */
+  struct RProc *proc = mrb_proc_ptr(pv);
+  struct RProc *root = mrb_proc_new(mrb, NULL);
+  root->upper = NULL;
+  MRB_PROC_SET_TARGET_CLASS(root, mrb->object_class);
+  proc->upper = root;
+  mrb_field_write_barrier(mrb, (struct RBasic*)proc, (struct RBasic*)root);
+  MRB_PROC_SET_TARGET_CLASS(proc, w->klass);
+  proc->flags |= MRB_PROC_SCOPE | MRB_PROC_CREF;
+  return mrb_top_run(mrb, proc, w->self, 0);
+}
+
+static int
+_mrb_load_nstring_wrapped(mrb_state *mrb, const char *source, size_t length, mrb_ccontext *context, struct RClass *klass, mrb_value self, mrb_value *result) {
+  _go_mrb_load_wrap_data w = { source, length, context, klass, self };
+  return _go_mrb_protect(mrb, _go_mrb_load_wrap_body, &w, result);
+}
+
 static mrb_value
 _go_mrb_load_string_body(mrb_state *mrb, void *data) {
   _go_mrb_load_string_data *load = (_go_mrb_load_string_data *)data;

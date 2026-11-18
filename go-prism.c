@@ -308,6 +308,28 @@ visit(const pm_node_t *node, void *data)
     }
     break;
   }
+  case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
+    // /a#{x}/n: with an encoding flag but no i, m or x, mruby's code
+    // generator passes the letter as Regexp.compile's options
+    const pm_interpolated_regular_expression_node_t *re = (const pm_interpolated_regular_expression_node_t *)node;
+    pm_node_flags_t f = node->flags;
+    char letter = 0;
+    if (f & PM_REGULAR_EXPRESSION_FLAGS_EUC_JP) letter = 'e';
+    else if (f & PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT) letter = 'n';
+    else if (f & PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J) letter = 's';
+    else if (f & PM_REGULAR_EXPRESSION_FLAGS_UTF_8) letter = 'u';
+    if (letter && !(f & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE | PM_REGULAR_EXPRESSION_FLAGS_EXTENDED | PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE))) {
+      r = add(sc, ORB_REGEXP_ENC);
+      span(r, 0, node);
+      r->flags = letter;
+      for (size_t i = 0; i < re->parts.size; i++) {
+        orb_rec *pr = add(sc, ORB_LIST_ITEM);
+        span(pr, 0, re->parts.nodes[i]);
+        pr->flags = PM_NODE_TYPE(re->parts.nodes[i]) == PM_STRING_NODE;
+      }
+    }
+    break;
+  }
   case PM_SOURCE_ENCODING_NODE:
     r = add(sc, ORB_SOURCE_ENCODING);
     span(r, 0, node);

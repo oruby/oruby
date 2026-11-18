@@ -56,7 +56,8 @@ func init() {
 		cls.Const("FIXEDENCODING", FixedEncoding)
 		cls.Const("NOENCODING", NoEncoding)
 
-		cls.AttrReader("source")
+		cls.DefineMethod("source", regexSource, mrb.ArgsNone())
+		cls.DefineMethod("~", regexTilde, mrb.ArgsNone())
 		cls.UndefMethod("initialize")
 		cls.DefineMethod("initialize", regexInit, mrb.ArgsArg(1, 3)+mrb.ArgsBlock())
 		cls.DefineMethod("encoding", regexEncoding, mrb.ArgsNone())
@@ -78,9 +79,9 @@ func init() {
 		cls.DefineMethod("named_captures", regexNamedCaptures, mrb.ArgsNone())
 		cls.DefineMethod("names", regexNames, mrb.ArgsNone())
 
-		cls.DefineClassFunc("quote", QuoteMeta)
-		cls.DefineClassFunc("escape", QuoteMeta)
-		cls.DefineClassMethod("compile", regexCompile, mrb.ArgsArg(1, 2)+mrb.ArgsBlock())
+		cls.DefineClassMethod("quote", regexQuote, mrb.ArgsReq(1))
+		cls.DefineClassMethod("escape", regexQuote, mrb.ArgsReq(1))
+		cls.DefineClassMethod("compile", regexCompile, mrb.ArgsAny()+mrb.ArgsBlock())
 		cls.DefineClassMethod("last_match", regexLastMatch, mrb.ArgsOpt(1))
 		cls.DefineClassMethod("try_convert", regexTryConvert, mrb.ArgsReq(1))
 		cls.DefineClassMethod("union", regexUnion, mrb.ArgsAny())
@@ -138,11 +139,43 @@ func rubyOptions(mrb *oruby.MrbState, v oruby.Value) int {
 	return IgnoreCase
 }
 
+// regexCompile is Regexp.compile: Regexp.new, with a literal's encoding
+// letter as the third argument
 func regexCompile(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, block := mrb.GetArgsWithBlock()
-	source := args.Item(0)
-	options := args.ItemDef(1, mrb.NilValue())
-	ret, _ := mrb.FuncallWithBlock(self, oruby.Sym_new, source, options, block)
+	call := make([]interface{}, 0, args.Len()+1)
+	for _, a := range args.Slice() {
+		call = append(call, a)
+	}
+	if !block.IsNil() {
+		call = append(call, block.Value())
+	}
+	ret, err := mrb.FuncallWithBlock(self, oruby.Sym_new, call...)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return ret
+}
+
+// regexSource is Regexp#source, in the regexp's encoding
+func regexSource(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if regexpOf(mrb, self) == nil {
+		return mrb.Raise(mrb.ETypeError(), "uninitialized Regexp")
+	}
+	return mrb.IVGet(self, oruby.IvSym_source)
+}
+
+// regexTilde is Regexp#~: self =~ $_
+func regexTilde(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	line := mrb.GVGet(mrb.Intern("$_"))
+	if line.Type() != oruby.MrbTTString {
+		setLastMatch(mrb, mrb.NilValue())
+		return mrb.NilValue()
+	}
+	ret, err := mrb.Funcall(self, mrb.Intern("=~"), line)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
 	return ret
 }
 
@@ -186,42 +219,65 @@ func regexAfterInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
+// regexInit is Regexp#initialize, as MRI's rb_reg_initialize_m: a Regexp
+// copies source, options and encoding ("flags ignored"); a String (by
+// #to_str) is compiled with the options (Integer, "imx" or truthy) and the
+// encoding letter of a literal (Regexp.compile's third argument). A Regexp
+// is frozen (an instance of a subclass is not).
 func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if regexpOf(mrb, self) != nil {
+		if err := mrb.CheckFrozen(self); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.Raise(mrb.ETypeError(), "already initialized regexp")
+	}
 	args := mrb.GetArgs()
 	source := args.Item(0)
-	var src string
+	var src, enc string
 	var opts int
 
-	if other, ok := mrb.Data(source).(*Regexp); ok {
-		// Regexp.new(regexp) copies source and options
-		src, opts = other.source, other.options
+	if other, ok := mrb.Data(source).(*Regexp); ok && source.Type() == oruby.MrbTTCData {
+		if args.Len() > 1 && !args.Item(1).IsNil() {
+			warn(mrb, "flags ignored")
+		}
+		src, opts, enc = ivString(mrb, source, "@source"), ivOptions(mrb, source), regexpEncName(mrb, source)
+		if other == nil {
+			return mrb.Raise(mrb.ETypeError(), "uninitialized Regexp")
+		}
 	} else {
-		if source.Type() != oruby.MrbTTString {
-			if !mrb.RespondTo(source, oruby.Sym_to_str) {
-				return mrb.Raise(mrb.ETypeError(), "no implicit conversion into String")
-			}
-			source = mrb.Call(source, "to_str")
+		sv, exc := implicitStr(mrb, source)
+		if exc != nil {
+			return exc
 		}
-		src = mrb.String(source)
-		opts = rubyOptions(mrb, args.ItemDef(1, mrb.NilValue()))
-		// third argument of Regexp.compile from literals: "n" (/re/n) or "u"
-		if enc := args.ItemDef(2, mrb.NilValue()).Value(); enc.Type() == oruby.MrbTTString {
-			switch rstr(enc) {
-			case "n", "N":
-				opts |= NoEncoding
-			case "u", "U":
-				opts |= FixedEncoding
+		src = mrb.String(sv)
+		if args.Len() > 1 {
+			o, exc := regexpOptArg(mrb, args.Item(1))
+			if exc != nil {
+				return exc
 			}
+			opts = o
 		}
+		var lit byte
+		if l := args.ItemDef(2, mrb.NilValue()).Value(); l.Type() == oruby.MrbTTString && len(rstr(l)) > 0 {
+			lit = rstr(l)[0] | 0x20
+		}
+		if _, msg := unicodeEscapes(src); msg != "" {
+			return mrb.Raise(mrb.ERegexpError(), msg+": /"+src+"/")
+		}
+		enc, opts = regexpEncoding(mrb, src, strEnc(mrb, sv), opts, lit)
 	}
 
 	r, err := compileRuby(src, opts)
 	if err != nil {
 		return raiseRegexpError(mrb, err)
 	}
+	r.enc = enc
 	mrb.DataSetInterface(self, r)
-	_ = mrb.IVSet(self, oruby.IvSym_source, mrb.StrNew(src))
+	_ = mrb.IVSet(self, oruby.IvSym_source, sourceValue(mrb, src, enc))
 	_ = mrb.IVSet(self, oruby.IvSym_options, mrb.FixnumValue(opts))
+	if mrb.ObjClass(self).Name() == "Regexp" {
+		self.Freeze()
+	}
 	return self
 }
 
@@ -354,12 +410,13 @@ func ivOptions(mrb *oruby.MrbState, self oruby.Value) int {
 
 // regexToS returns (?flags-flags:source), as Regexp#to_s
 func regexToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	on, off := optionFlags(ivOptions(mrb, self))
+	src, opts := regexToSOptions(ivString(mrb, self, "@source"), ivOptions(mrb, self))
+	on, off := optionFlags(opts)
 	s := "(?" + on
 	if off != "" {
 		s += "-" + off
 	}
-	return mrb.StringValue(s + ":" + ivString(mrb, self, "@source") + ")")
+	return mrb.StringValue(s + ":" + src + ")")
 }
 
 // escapeSlashes escapes unescaped "/" for Regexp#inspect
@@ -394,6 +451,9 @@ func regexInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexOptions(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if regexpOf(mrb, self) == nil {
+		return mrb.Raise(mrb.ETypeError(), "uninitialized Regexp")
+	}
 	return mrb.FixnumValue(ivOptions(mrb, self))
 }
 
@@ -402,7 +462,8 @@ func regexHash(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	for _, c := range ivString(mrb, self, "@source") {
 		h = h*31 + int(c)
 	}
-	return mrb.FixnumValue(h ^ ivOptions(mrb, self))
+	// the matching options only, as MRI's rb_reg_hash (//n hashes as //)
+	return mrb.FixnumValue(h ^ ivOptions(mrb, self)&(IgnoreCase|Extended|Multiline))
 }
 
 func regexMatchOperator(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -533,6 +594,9 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	regx := regexpOf(mrb, self)
+	if regx == nil {
+		return mrb.Raise(mrb.ETypeError(), "uninitialized Regexp")
+	}
 	matchData := doMatch(mrb, regx, s, pos)
 	if !matchData.Value().IsNil() && matchData.Value().Type() == oruby.MrbTTCData {
 		_ = mrb.IVSet(matchData.Value(), oruby.IvSym_regexp, self)
@@ -549,8 +613,12 @@ func regexEqual(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if _, ok := mrb.Data(dest).(*Regexp); !ok {
 		return mrb.FalseValue()
 	}
+	// as MRI's rb_reg_equal: source, the matching options, the encoding
+	// and whether it is fixed (not NOENCODING)
+	const mask = IgnoreCase | Extended | Multiline | FixedEncoding
 	return mrb.BoolValue(ivString(mrb, self, "@source") == ivString(mrb, dest, "@source") &&
-		ivOptions(mrb, self) == ivOptions(mrb, dest))
+		ivOptions(mrb, self)&mask == ivOptions(mrb, dest)&mask &&
+		regexpEncName(mrb, self) == regexpEncName(mrb, dest))
 }
 
 func regexCasefold(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -653,50 +721,17 @@ func regexTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	ret, err := mrb.Funcall(arg, toRegexp)
-	if (err != nil) || (ret.Type() != oruby.MrbTTCData) {
-		return mrb.NilValue()
-	}
-	if _, ok := mrb.Data(ret).(*Regexp); !ok {
-		return mrb.NilValue()
-	}
-	return ret
-}
-
-// regexUnion is Regexp.union: strings are escaped, regexps keep their
-// options via to_s
-func regexUnion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs().Slice()
-	if len(args) == 1 && args[0].Type() == oruby.MrbTTArray {
-		args = oruby.RArraySlice(args[0])
-	}
-	if len(args) == 1 {
-		if _, ok := mrb.Data(args[0]).(*Regexp); ok {
-			return args[0]
-		}
-	}
-	parts := make([]string, 0, len(args))
-	for _, a := range args {
-		if _, ok := mrb.Data(a).(*Regexp); ok {
-			parts = append(parts, mrb.String(regexToS(mrb, a).Value()))
-			continue
-		}
-		if a.Type() != oruby.MrbTTString {
-			if !mrb.RespondTo(a, oruby.Sym_to_str) {
-				return mrb.Raise(mrb.ETypeError(), "no implicit conversion of "+mrb.ClassOf(a).Name()+" into String")
-			}
-			a = mrb.Call(a, "to_str")
-		}
-		parts = append(parts, QuoteMeta(mrb.String(a)))
-	}
-	src := "(?!)"
-	if len(parts) > 0 {
-		src = strings.Join(parts, "|")
-	}
-	r, err := mrb.ObjNew(mrb.ClassPtr(self), mrb.StrNew(src))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	return r
+	if ret.IsNil() {
+		return ret
+	}
+	if _, ok := mrb.Data(ret).(*Regexp); !ok || ret.Type() != oruby.MrbTTCData {
+		cname := mrb.ClassName(mrb.ObjClass(arg))
+		return mrb.ETypeError().Raisef("can't convert %s into Regexp (%s#to_regexp gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(ret.Value())))
+	}
+	return ret
 }
 
 func regexLastMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -801,21 +836,15 @@ func encodingConst(mrb *oruby.MrbState, name string) oruby.MrbValue {
 	return enc.ConstGet(name)
 }
 
-// regexEncoding is Regexp#encoding: US-ASCII for ASCII-only sources without
-// a fixed encoding, ASCII-8BIT for /n with non-ASCII bytes, otherwise UTF-8
+// regexEncoding is Regexp#encoding
 func regexEncoding(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	src := ivString(mrb, self, "@source")
-	opts := ivOptions(mrb, self)
-	switch {
-	case opts&NoEncoding != 0 && !isASCII(src):
-		return encodingConst(mrb, "ASCII_8BIT")
-	case isASCII(src) && opts&FixedEncoding == 0:
-		return encodingConst(mrb, "US_ASCII")
-	}
-	return encodingConst(mrb, "UTF_8")
+	return findEncoding(mrb, regexpEncName(mrb, self))
 }
 
 func regexFixedEncoding(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if r := regexpOf(mrb, self); r != nil && r.enc != "" {
+		return oruby.Bool(ivOptions(mrb, self)&FixedEncoding != 0)
+	}
 	opts := ivOptions(mrb, self)
 	if opts&NoEncoding != 0 {
 		return oruby.False

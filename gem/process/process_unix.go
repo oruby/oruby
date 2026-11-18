@@ -43,8 +43,7 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	mProc.Const("PRIO_PGRP", syscall.PRIO_PGRP)
 	mProc.Const("PRIO_USER", syscall.PRIO_USER)
 
-	mrb.DefineModuleFunc(mProc, "getrlimit", syscall.Getrlimit)
-	mrb.DefineModuleFunc(mProc, "setrlimit", syscall.Setrlimit)
+	initRlimit(mrb, mProc)
 
 	mrb.DefineModuleFunc(mProc, "uid=", syscall.Setuid)
 	mrb.DefineModuleFunc(mProc, "gid=", syscall.Setgid)

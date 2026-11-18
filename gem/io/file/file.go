@@ -498,6 +498,12 @@ func pathString(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		// rb_get_path: StringValue of what #to_path gives (its #to_str)
+		if !oruby.MrbStringP(ret) && mrb.RespondTo(ret, oruby.Sym_to_str) {
+			if ret, err = mrb.Funcall(ret, oruby.Sym_to_str); err != nil {
+				return "", err
+			}
+		}
 		if !oruby.MrbStringP(ret) {
 			return "", &typeError{msg: "no implicit conversion into String"}
 		}

@@ -436,23 +436,15 @@ func expandReplacement(replace string, m *MatchData) string {
 		n := replace[i+1]
 		switch {
 		case n >= '0' && n <= '9':
-			j := i + 1
-			for j < len(replace) && replace[j] >= '0' && replace[j] <= '9' {
-				j++
-			}
-			// use the longest group number that exists, as Ruby does
-			digits := replace[i+1 : j]
-			for len(digits) > 1 {
-				if k, _ := strconv.Atoi(digits); k < m.Size() {
-					break
+			// one digit, as MRI's rb_reg_regsub (\10 is \1 then "0"); with
+			// named groups the numbered ones are not captures
+			k := int(n - '0')
+			if k == 0 || !m.hasNames() {
+				if v, isNil := m.toString(k); !isNil {
+					b.WriteString(v)
 				}
-				digits = digits[:len(digits)-1]
 			}
-			k, _ := strconv.Atoi(digits)
-			if v, isNil := m.toString(k); !isNil {
-				b.WriteString(v)
-			}
-			i += len(digits)
+			i++
 		case n == '&':
 			v, _ := m.toString(0)
 			b.WriteString(v)
@@ -496,82 +488,190 @@ func expandReplacement(replace string, m *MatchData) string {
 	return b.String()
 }
 
-// replacer produces the replacement for one match, or an exception value
-type replacer func(md oruby.Value, m *MatchData) (string, oruby.MrbValue)
+// replacer produces the replacement for one match and its encoding (Nil
+// for UTF-8), or an exception value
+type replacer func(md oruby.Value, m *MatchData) (string, oruby.Value, oruby.MrbValue)
 
-func makeReplacer(mrb *oruby.MrbState, replace, block oruby.Value) replacer {
+// strEnc is v's Encoding, Nil for UTF-8 (the common case, without a call)
+func strEnc(mrb *oruby.MrbState, v oruby.Value) oruby.Value {
+	if bin, err := mrb.Funcall(v, oruby.SymQ___encoding_binary); err == nil && bin.Bool() {
+		if e, err := mrb.Funcall(v, oruby.Sym_encoding); err == nil {
+			return e.Value()
+		}
+	}
+	return oruby.Nil
+}
+
+// encBuf assembles a substitution as MRI's rb_enc_cr_str_buf_cat: an
+// ASCII-only piece keeps the encoding, a piece in another encoding turns an
+// ASCII-only result into that one and is an Encoding::CompatibilityError
+// otherwise
+type encBuf struct {
+	b     strings.Builder
+	enc   oruby.Value // Nil: UTF-8
+	ascii bool
+}
+
+func sameEnc(a, b oruby.Value) bool {
+	if a.IsNil() || b.IsNil() {
+		return a.IsNil() == b.IsNil()
+	}
+	return a.Pointer() == b.Pointer()
+}
+
+func encName(mrb *oruby.MrbState, e oruby.Value) string {
+	if e.IsNil() {
+		return "UTF-8"
+	}
+	return mrb.String(mrb.Call(e, "to_s"))
+}
+
+func (e *encBuf) add(mrb *oruby.MrbState, s string, enc oruby.Value) oruby.MrbValue {
+	if len(s) == 0 {
+		return nil
+	}
+	sa := isASCII(s)
+	if !sa && !sameEnc(e.enc, enc) {
+		if !e.ascii {
+			return mrb.Raisef(mrb.ClassGetUnder(mrb.EncodingClass(), "CompatibilityError"),
+				"incompatible character encodings: %s and %s", encName(mrb, e.enc), encName(mrb, enc))
+		}
+		e.enc = enc
+	}
+	e.ascii = e.ascii && sa
+	e.b.WriteString(s)
+	return nil
+}
+
+// implicitStr is MRI's rb_str_to_str: a String, or #to_str's String
+func implicitStr(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, oruby.MrbValue) {
+	if v.Type() == oruby.MrbTTString {
+		return v, nil
+	}
+	cname := mrb.ClassName(mrb.ObjClass(v))
+	if v.IsNil() {
+		cname = "nil"
+	}
+	if !mrb.RespondTo(v, oruby.Sym_to_str) {
+		return oruby.Nil, mrb.ETypeError().Raisef("no implicit conversion of %s into String", cname)
+	}
+	r, err := mrb.Funcall(v, oruby.Sym_to_str)
+	if err != nil {
+		return oruby.Nil, mrb.RaiseError(err)
+	}
+	if r.Type() != oruby.MrbTTString {
+		return oruby.Nil, mrb.ETypeError().Raisef("can't convert %s into String (%s#to_str gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(r.Value())))
+	}
+	return r.Value(), nil
+}
+
+// valueEnc: a non-ASCII replacement's encoding
+func valueEnc(mrb *oruby.MrbState, v oruby.Value, s string) oruby.Value {
+	if isASCII(s) {
+		return oruby.Nil
+	}
+	return strEnc(mrb, v)
+}
+
+func makeReplacer(mrb *oruby.MrbState, self, replace, block, selfEnc oruby.Value) (replacer, oruby.MrbValue) {
 	switch {
 	case !block.IsNil():
-		return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
+		size := mrb.Call(self, "bytesize").Int()
+		return func(md oruby.Value, m *MatchData) (string, oruby.Value, oruby.MrbValue) {
 			setLastMatch(mrb, md)
 			ret := mrb.Yield(block, mrb.StrNew(m.ToS()))
 			if mrb.HasExc() {
-				return "", ret
+				return "", oruby.Nil, ret
+			}
+			// MRI's str_mod_check: the block may not resize self
+			if mrb.Call(self, "bytesize").Int() != size {
+				return "", oruby.Nil, mrb.ERuntimeError().Raisef("string modified")
 			}
 			if ret.Type() != oruby.MrbTTString {
 				ret = mrb.Call(ret, "to_s")
 			}
-			return mrb.String(ret), nil
-		}
+			str := mrb.String(ret)
+			return str, valueEnc(mrb, ret, str), nil
+		}, nil
 	case replace.Type() == oruby.MrbTTHash:
-		return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
+		return func(md oruby.Value, m *MatchData) (string, oruby.Value, oruby.MrbValue) {
 			v := mrb.Call(replace, "[]", mrb.StrNew(m.ToS()))
 			if v.IsNil() {
-				return "", nil
+				return "", oruby.Nil, nil
 			}
 			if v.Type() != oruby.MrbTTString {
 				v = mrb.Call(v, "to_s")
 			}
-			return mrb.String(v), nil
-		}
+			str := mrb.String(v)
+			return str, valueEnc(mrb, v, str), nil
+		}, nil
 	default:
-		rs, err := mrb.EnsureStringType(replace)
-		if err != nil {
-			return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
-				return "", mrb.RaiseError(err)
-			}
+		rs, exc := implicitStr(mrb, replace)
+		if exc != nil {
+			return nil, exc
 		}
-		str := mrb.String(rs.Value())
-		return func(md oruby.Value, m *MatchData) (string, oruby.MrbValue) {
-			return expandReplacement(str, m), nil
+		str := mrb.String(rs)
+		// an ASCII-only template's non-ASCII comes from self's captures
+		enc := selfEnc
+		if !isASCII(str) {
+			enc = strEnc(mrb, rs)
 		}
+		return func(md oruby.Value, m *MatchData) (string, oruby.Value, oruby.MrbValue) {
+			return expandReplacement(str, m), enc, nil
+		}, nil
 	}
 }
 
 // substitute replaces the first (all=false) or every match of re in s
-func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replacer) (string, bool, oruby.MrbValue) {
+func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replacer, selfEnc oruby.Value) (oruby.MrbValue, bool, oruby.MrbValue) {
 	var matches [][]int
 	if all {
 		var err error
 		if matches, err = re.findAll(s); err != nil {
-			return s, false, raiseTimeout(mrb, err)
+			return nil, false, raiseTimeout(mrb, err)
 		}
 	} else if m, err := re.findErr(s, 0); err != nil {
-		return s, false, raiseTimeout(mrb, err)
+		return nil, false, raiseTimeout(mrb, err)
 	} else if m != nil {
 		matches = [][]int{m}
 	}
+	b := encBuf{enc: selfEnc, ascii: true}
 	if len(matches) == 0 {
 		setLastMatch(mrb, mrb.NilValue())
-		return s, false, nil
+		b.add(mrb, s, selfEnc)
+		return b.result(mrb), false, nil
 	}
-	var b strings.Builder
 	last := 0
 	var md oruby.Value
 	for _, m := range matches {
 		data := NewMatchData(re, s, m, 0)
 		md = mrb.NewInstance("MatchData", data).Value()
-		repl, exc := rep(md, data)
+		repl, enc, exc := rep(md, data)
 		if exc != nil {
-			return s, false, exc
+			return nil, false, exc
 		}
-		b.WriteString(s[last:m[0]])
-		b.WriteString(repl)
+		if exc := b.add(mrb, s[last:m[0]], selfEnc); exc != nil {
+			return nil, false, exc
+		}
+		if exc := b.add(mrb, repl, enc); exc != nil {
+			return nil, false, exc
+		}
 		last = m[1]
 	}
-	b.WriteString(s[last:])
+	if exc := b.add(mrb, s[last:], selfEnc); exc != nil {
+		return nil, false, exc
+	}
 	setLastMatch(mrb, md)
-	return b.String(), true, nil
+	return b.result(mrb), true, nil
+}
+
+// result is the String, in the encoding reached
+func (e *encBuf) result(mrb *oruby.MrbState) oruby.MrbValue {
+	v := mrb.StrNew(e.b.String())
+	if !e.enc.IsNil() {
+		_, _ = mrb.Funcall(v, oruby.Sym_force_encoding, e.enc)
+	}
+	return v
 }
 
 func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (oruby.MrbValue, bool) {
@@ -586,6 +686,22 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 		}
 	}
 	r := getRegexp(mrb, pattern)
+	if r == nil && !pattern.IsString() {
+		// MRI's get_pat_quoted: a pattern other than a Regexp is a String
+		// by #to_str
+		if !mrb.RespondTo(pattern, oruby.Sym_to_str) {
+			return mrb.ETypeError().Raisef("wrong argument type %s (expected Regexp)", mrb.ClassName(mrb.ObjClass(pattern))), false
+		}
+		p, err := mrb.Funcall(pattern, oruby.Sym_to_str)
+		if err != nil {
+			return mrb.RaiseError(err), false
+		}
+		if p.Type() != oruby.MrbTTString {
+			return mrb.ETypeError().Raisef("wrong argument type %s (expected Regexp)", mrb.ClassName(mrb.ObjClass(pattern))), false
+		}
+		pattern = p.Value()
+		r = getRegexp(mrb, pattern)
+	}
 	if r == nil {
 		old := "old_sub"
 		if all {
@@ -610,7 +726,10 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 	}
 	if block.IsNil() && nargs < 2 {
 		if all {
-			return mrb.Call(self, "to_enum", mrb.Intern(name), pattern), false
+			// an enumerator without a size, as MRI
+			e := mrb.Call(self, "to_enum", mrb.Intern(name), pattern)
+			_ = mrb.IVSet(e, mrb.Intern("@size_block"), oruby.Nil)
+			return e, false
 		}
 		return mrb.Raise(mrb.EArgumentError(), "wrong number of arguments (given 1, expected 2)"), false
 	}
@@ -618,11 +737,16 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 	if !block.IsNil() && nargs >= 2 {
 		blk = mrb.NilValue()
 	}
-	s, matched, exc := substitute(mrb, r, mrb.String(self), all, makeReplacer(mrb, replace, blk))
+	selfEnc := strEnc(mrb, self)
+	rep, exc := makeReplacer(mrb, self, replace, blk, selfEnc)
 	if exc != nil {
 		return exc, false
 	}
-	return mrb.StringValue(s), matched
+	res, matched, exc := substitute(mrb, r, mrb.String(self), all, rep, selfEnc)
+	if exc != nil {
+		return exc, false
+	}
+	return res, matched
 }
 
 func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -631,6 +755,9 @@ func stringSub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringSubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if err := mrb.CheckFrozen(self); err != nil {
+		return mrb.RaiseError(err)
+	}
 	res, modified := doSubst(mrb, self, false, "sub!")
 	if mrb.HasExc() {
 		return res
@@ -639,6 +766,13 @@ func stringSubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 	mrb.Call(self, "replace", res)
+	// replace keeps mruby's binary flag, not the encoding
+	if enc := strEnc(mrb, res.Value()); !sameEnc(enc, strEnc(mrb, self)) || !enc.IsNil() {
+		if enc.IsNil() {
+			enc = mrb.Call(mrb.EncodingClass().Value(), "find", mrb.StrNew("UTF-8")).Value()
+		}
+		_, _ = mrb.Funcall(self, oruby.Sym_force_encoding, enc)
+	}
 	return self
 }
 
@@ -648,6 +782,9 @@ func stringGsub(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func stringGsubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if err := mrb.CheckFrozen(self); err != nil {
+		return mrb.RaiseError(err)
+	}
 	res, modified := doSubst(mrb, self, true, "gsub!")
 	if mrb.HasExc() {
 		return res
@@ -659,6 +796,13 @@ func stringGsubBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 	mrb.Call(self, "replace", res)
+	// replace keeps mruby's binary flag, not the encoding
+	if enc := strEnc(mrb, res.Value()); !sameEnc(enc, strEnc(mrb, self)) || !enc.IsNil() {
+		if enc.IsNil() {
+			enc = mrb.Call(mrb.EncodingClass().Value(), "find", mrb.StrNew("UTF-8")).Value()
+		}
+		_, _ = mrb.Funcall(self, oruby.Sym_force_encoding, enc)
+	}
 	return self
 }
 

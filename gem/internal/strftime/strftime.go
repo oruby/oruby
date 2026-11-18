@@ -3,6 +3,7 @@
 package strftime
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -43,13 +44,17 @@ func Format(format string, f *Fields) string {
 		i++
 		// flags
 		var padding byte // 0 default, '-' none, '_' space, '0' zero
+		var fill byte    // the '_' or '0' given (with '-' too: %-_10z)
+		left := false    // '-' sticks: no padding, whatever follows
 		upcase, chcase := false, false
 		colons := 0
 	flags:
 		for ; i < len(format); i++ {
 			switch format[i] {
-			case '-', '_', '0':
-				padding = format[i]
+			case '-':
+				left = true
+			case '_', '0':
+				fill = format[i]
 			case '^':
 				upcase = true
 			case '#':
@@ -78,7 +83,17 @@ func Format(format string, f *Fields) string {
 			break
 		}
 		d := format[i]
-		s, ok := directive(d, f, padding, width, colons, &upcase, &chcase)
+		padding = fill
+		if left {
+			padding = '-'
+		}
+		var s string
+		ok := true
+		if d == 'z' {
+			s, ok = offsetZ(f.Offset, f.UTC, left, fill, width, colons)
+		} else {
+			s, ok = directive(d, f, padding, width, colons, &upcase, &chcase)
+		}
 		if !ok {
 			out.WriteString(format[start : i+1])
 			continue
@@ -349,4 +364,76 @@ func mod(a, b int64) int64 {
 		m += b
 	}
 	return m
+}
+
+// offsetZ is %z as MRI's strftime.c: +hhmm, %:z +hh:mm, %::z +hh:mm:ss,
+// %:::z only the parts needed; a width pads the hours (zeros, or spaces
+// before the sign with _); the - flag gives a UTC time -0000 (RFC 3339's
+// unknown offset)
+func offsetZ(off int, utc, left bool, fill byte, width, colons int) (string, bool) {
+	sign := 1
+	if off < 0 || (utc && left) {
+		sign = -1
+		if off < 0 {
+			off = -off
+		}
+	}
+	precision := width
+	hw := 2
+	switch colons {
+	case 0:
+		precision = pick(precision, 3, hw)
+	case 1:
+		precision = pick(precision, 4, hw)
+	case 2:
+		precision = pick(precision, 7, hw)
+	case 3:
+		switch {
+		case off%3600 == 0:
+			precision = pick(precision, 1, hw)
+		case off%60 == 0:
+			precision = pick(precision, 4, hw)
+		default:
+			precision = pick(precision, 7, hw)
+		}
+	default:
+		return "", false
+	}
+	var b strings.Builder
+	hours := sign * (off / 3600)
+	var hs string
+	if fill == '_' {
+		hs = fmt.Sprintf("%+*d", precision+1, hours)
+	} else {
+		hs = fmt.Sprintf("%+.*d", precision, hours)
+	}
+	if sign < 0 && off < 3600 {
+		hs = strings.Replace(hs, "+", "-", 1)
+	}
+	b.WriteString(hs)
+	off %= 3600
+	if colons == 3 && off == 0 {
+		return b.String(), true
+	}
+	if colons >= 1 {
+		b.WriteByte(':')
+	}
+	b.WriteString(pad2(off / 60))
+	off %= 60
+	if colons == 3 && off == 0 {
+		return b.String(), true
+	}
+	if colons >= 2 {
+		b.WriteByte(':')
+		b.WriteString(pad2(off))
+	}
+	return b.String(), true
+}
+
+// pick: the hours' digits a width leaves after the rest (MRI's precision)
+func pick(width, rest, hw int) int {
+	if width <= rest+hw {
+		return hw
+	}
+	return width - rest
 }
