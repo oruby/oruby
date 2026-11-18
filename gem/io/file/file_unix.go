@@ -6,6 +6,7 @@ import (
 	"golang.org/x/sys/unix"
 	"os"
 	"syscall"
+	"time"
 )
 
 func fileUmask(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -41,14 +42,29 @@ func fileUmask(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func fileFlock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	f := mrb.Data(self).(*os.File)
 	lockType := mrb.GetArgsFirst().Int()
+	fd := int(f.Fd())
 
-	if err := syscall.Flock(int(f.Fd()), lockType); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return oruby.False
+	if lockType&syscall.LOCK_NB != 0 {
+		if err := syscall.Flock(fd, lockType); err != nil {
+			if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+				return oruby.False
+			}
+			return mrb.SysFail(err)
 		}
-		return mrb.SysFail(err)
+		return oruby.Integer(0)
 	}
-	return oruby.Integer(0)
+	for {
+		err := syscall.Flock(fd, lockType|syscall.LOCK_NB)
+		if err == nil {
+			return oruby.Integer(0)
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) && !errors.Is(err, syscall.EINTR) {
+			return mrb.SysFail(err)
+		}
+		if _, werr := mrb.ThreadWait(nil, 10*time.Millisecond, false); werr != nil {
+			return mrb.RaiseError(werr)
+		}
+	}
 }
 
 func fileMkfifio(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

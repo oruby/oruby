@@ -1666,7 +1666,11 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 		}
 	}
 
-	return os.OpenFile(name, flags, os.FileMode(perm))
+	var f *os.File
+	mrb.Blocking(func() {
+		f, err = os.OpenFile(name, flags, os.FileMode(perm))
+	})
+	return f, err
 }
 
 // :mode Same as mode parameter

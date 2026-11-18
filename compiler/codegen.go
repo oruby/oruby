@@ -554,8 +554,8 @@ func (g *CodeGen) emitHelpers(b *bytes.Buffer) {
 var _ = unsafe.Pointer(nil)
 
 // recursion budget of integer specialized functions; when exhausted the
-// generic code runs (aotIntDisabled > 0) until the outermost call returns
-var aotIntDepth, aotIntDisabled int
+// generic code runs (mrb.AotIntDisable) until the outermost call returns
+var aotIntDepth int
 
 const aotIntMaxDepth = 10000
 
@@ -1060,7 +1060,7 @@ func (g *CodeGen) emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName
 	if nregs < 2 {
 		nregs = 2
 	}
-	var params []string
+	params := []string{"mrb *oruby.MrbState"}
 	for i := 0; i < arity; i++ {
 		params = append(params, fmt.Sprintf("_a%d int64", i+1))
 	}
@@ -1119,13 +1119,20 @@ func (g *CodeGen) emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName
 		case OpEQ, OpLT, OpLE, OpGT, OpGE:
 			nextIns := unit.Instructions[idx+1]
 			opStr := cmpOpStr(ins.Op)
+			backPoll := ""
+			if nextIns.Target <= nextIns.Offset {
+				backPoll = "if mrb.AotHasHook() { aotIntDepth--; return 0, false }; "
+			}
 			if nextIns.Op == OpJMPNOT {
-				b.WriteString(fmt.Sprintf("\tif !(r[%d] %s r[%d]) { goto L_%04d }\n", ins.A, opStr, ins.A+1, nextIns.Target))
+				b.WriteString(fmt.Sprintf("\tif !(r[%d] %s r[%d]) { %sgoto L_%04d }\n", ins.A, opStr, ins.A+1, backPoll, nextIns.Target))
 			} else {
-				b.WriteString(fmt.Sprintf("\tif r[%d] %s r[%d] { goto L_%04d }\n", ins.A, opStr, ins.A+1, nextIns.Target))
+				b.WriteString(fmt.Sprintf("\tif r[%d] %s r[%d] { %sgoto L_%04d }\n", ins.A, opStr, ins.A+1, backPoll, nextIns.Target))
 			}
 			idx++
 		case OpJMP:
+			if ins.Target <= ins.Offset {
+				b.WriteString("\tif mrb.AotHasHook() { aotIntDepth--; return 0, false }\n")
+			}
 			b.WriteString(fmt.Sprintf("\tgoto L_%04d\n", ins.Target))
 		case OpSSEND:
 			sym := unit.Syms[ins.B]
@@ -1134,7 +1141,7 @@ func (g *CodeGen) emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName
 			if !ok {
 				targetFn = fnName
 			}
-			var args []string
+			args := []string{"mrb"}
 			for i := 1; i <= numArgs; i++ {
 				args = append(args, fmt.Sprintf("r[%d]", ins.A+uint32(i)))
 			}
@@ -1298,16 +1305,16 @@ func (e *unitEmitter) errChk(idx int) string {
 	return fmt.Sprintf("if err != nil { goto %s }", e.exc(idx))
 }
 
-func (e *unitEmitter) backEdge() string {
+func (e *unitEmitter) backEdge(idx int) string {
 	if e.inf.needEnv {
-		return "if mrb.GCArenaSave() > _ai+64 { mrb.AotBackEdge(_ai, env) }; "
+		return fmt.Sprintf("if mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { goto %s } }; ", e.exc(idx))
 	}
-	return "if mrb.GCArenaSave() > _ai+64 { mrb.AotProtectRegs(_ai, r[:]) }; "
+	return fmt.Sprintf("if mrb.AotNeedBackEdge(_ai) { if mrb.AotProtectRegs(_ai, r[:]) { goto %s } }; ", e.exc(idx))
 }
 
-func (e *unitEmitter) jump(from, to int) string {
+func (e *unitEmitter) jump(idx, from, to int) string {
 	if to <= from {
-		return e.backEdge() + "goto " + e.lbl(to)
+		return e.backEdge(idx) + "goto " + e.lbl(to)
 	}
 	return "goto " + e.lbl(to)
 }
@@ -1416,12 +1423,13 @@ func (g *CodeGen) emitUnit(out *bytes.Buffer, unit *IRepUnit) error {
 		out.WriteString(fmt.Sprintf("func %s_f%d(mrb *oruby.MrbState, self oruby.Value, blk oruby.Value, cx *oruby.AotCtx%s) (oruby.Value, error) {\n", fn, e.fixed, prefixComma(params)))
 		out.WriteString("\tvar args []oruby.Value\n\t_ = args\n\tvar up *oruby.AotEnv\n\t_ = up\n")
 		if g.intSpecialized[fn] {
-			var conds, intArgs []string
+			var conds []string
+			intArgs := []string{"mrb"}
 			for i := 0; i < e.fixed; i++ {
 				conds = append(conds, fmt.Sprintf("_a%d.Type() == oruby.MrbTTInteger", i+1))
 				intArgs = append(intArgs, fmt.Sprintf("aotInt(_a%d)", i+1))
 			}
-			out.WriteString(fmt.Sprintf("\tif aotIntDisabled == 0 && !mrb.AotIntOpsRedefined() && %s {\n\t\tif _v, _ok := %s_int(%s); _ok {\n\t\t\treturn mrb.FixnumValue(int(_v)), nil\n\t\t}\n\t\taotIntDisabled++\n\t\tdefer func() { aotIntDisabled-- }()\n\t}\n",
+			out.WriteString(fmt.Sprintf("\tif mrb.AotIntCanRun() && %s {\n\t\tif _v, _ok := %s_int(%s); _ok {\n\t\t\treturn mrb.FixnumValue(int(_v)), nil\n\t\t}\n\t\tmrb.AotIntDisable()\n\t\tdefer mrb.AotIntEnable()\n\t}\n",
 				strings.Join(conds, " && "), fn, strings.Join(intArgs, ", ")))
 		}
 	} else {
@@ -1589,7 +1597,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 			if !e.targets[nx.Offset] && (nx.Op == OpJMPNOT || nx.Op == OpJMPIF) && nx.A == ins.A {
 				a := ins.A
 				op := cmpOpStr(ins.Op)
-				jmp := e.jump(nx.Offset, nx.Target)
+				jmp := e.jump(idx+1, nx.Offset, nx.Target)
 				cond := "!_c"
 				vcond := "!_v.Bool()"
 				if nx.Op == OpJMPIF {
@@ -1615,6 +1623,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 				e.w("\tif mrb.AotIsPlainArray(r[%d]) {\n", nx.A)
 				e.w("\t\t_recv := r[%d]\n", nx.A)
 				e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+				e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
 				e.w("\t\t\tif _, err = %s(mrb, self, []oruby.Value{mrb.AotAryRef(_recv, _i)}, mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
 				e.w("\t\t}\n")
 				e.w("\t} else {\n")
@@ -1741,13 +1750,13 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 			a, a+1, a, cmpOpStr(ins.Op), a, cmpHelper(ins.Op), a, a+1, e.chk(idx))
 
 	case OpJMP:
-		e.w("\t%s\n", e.jump(ins.Offset, ins.Target))
+		e.w("\t%s\n", e.jump(idx, ins.Offset, ins.Target))
 	case OpJMPIF:
-		e.w("\tif r[%d].Bool() { %s }\n", a, e.jump(ins.Offset, ins.Target))
+		e.w("\tif r[%d].Bool() { %s }\n", a, e.jump(idx, ins.Offset, ins.Target))
 	case OpJMPNOT:
-		e.w("\tif !r[%d].Bool() { %s }\n", a, e.jump(ins.Offset, ins.Target))
+		e.w("\tif !r[%d].Bool() { %s }\n", a, e.jump(idx, ins.Offset, ins.Target))
 	case OpJMPNIL:
-		e.w("\tif r[%d].AotIsNil() { %s }\n", a, e.jump(ins.Offset, ins.Target))
+		e.w("\tif r[%d].AotIsNil() { %s }\n", a, e.jump(idx, ins.Offset, ins.Target))
 
 	case OpJMPUW:
 		ens := e.ensures(idx)
@@ -1758,7 +1767,7 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 				break
 			}
 		}
-		e.w("\t%s\n", e.jump(ins.Offset, ins.Target))
+		e.w("\t%s\n", e.jump(idx, ins.Offset, ins.Target))
 
 	case OpRETURN:
 		e.ret(idx, e.reg(a))

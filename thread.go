@@ -56,9 +56,10 @@ type Thread struct {
 	done chan struct{} // closed when the thread finished
 
 	// Go-side scratch of the state, the running thread's
-	fastArgs    []Value
-	hasFastArgs bool
-	aotDepth    int
+	fastArgs       []Value
+	hasFastArgs    bool
+	aotDepth       int
+	aotIntDisabled int
 
 	started atomic.Bool // its body runs: interrupts may be delivered
 	intr    atomic.Bool // an interrupt was posted (Thread#raise, #kill)
@@ -307,6 +308,7 @@ func (mrb *MrbState) threadOut(t *Thread) {
 	t.fastArgs, t.hasFastArgs = mrb.fastArgs, mrb.hasFastArgs
 	if mrb.aot != nil {
 		t.aotDepth = mrb.aot.depth
+		t.aotIntDisabled = mrb.aot.intDisabled
 	}
 	C._orb_tstate_save(mrb.p, t.st, t.keep.v)
 }
@@ -317,6 +319,7 @@ func (mrb *MrbState) threadIn(t *Thread) {
 	mrb.fastArgs, mrb.hasFastArgs = t.fastArgs, t.hasFastArgs
 	if mrb.aot != nil {
 		mrb.aot.depth = t.aotDepth
+		mrb.aot.intDisabled = t.aotIntDisabled
 	}
 	s.mu.Lock()
 	free := s.freeList

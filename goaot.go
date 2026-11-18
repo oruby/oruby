@@ -44,8 +44,9 @@ type AotEnv struct {
 	R      []Value
 	Ary    Value
 	Up     *AotEnv
-	Active uint64 // block literal call sites (by child index) currently running
-	Done   bool   // frame has returned
+	Root   unsafe.Pointer // *C.struct_mrb_context of the thread this frame belongs to
+	Active uint64         // block literal call sites (by child index) currently running
+	Done   bool           // frame has returned
 }
 
 // AotError is a Ruby exception propagated through compiled Go frames.
@@ -134,6 +135,7 @@ type aotState struct {
 	trampIdx    int
 	methods     map[int]*aotMethod
 	depth       int
+	intDisabled int
 }
 
 type aotMethod struct {
@@ -505,13 +507,53 @@ func (mrb *MrbState) AotNewEnv(n int, up *AotEnv) *AotEnv {
 	}
 	ary := Value{C._aot_frame_new(mrb.p, C.mrb_int(n), parent.v)}
 	ptr := C._aot_frame_ptr(ary.v)
-	return &AotEnv{R: unsafe.Slice((*Value)(unsafe.Pointer(ptr)), n), Ary: ary, Up: up}
+	return &AotEnv{R: unsafe.Slice((*Value)(unsafe.Pointer(ptr)), n), Ary: ary, Up: up, Root: unsafe.Pointer(mrb.p.root_c)}
 }
 
-// AotBackEdge is called on loop back edges: frees GC arena and makes frame
-// registers visible to the incremental GC again.
-func (mrb *MrbState) AotBackEdge(ai int32, env *AotEnv) {
-	C._aot_arena_reset(mrb.p, C.int(ai), env.Ary.v)
+// AotHasHook reports whether an asynchronous VM hook (thread preemption,
+// Thread#raise, Thread#kill, Timeout, or OS signal) is armed.
+func (mrb *MrbState) AotHasHook() bool {
+	return mrb.p.code_fetch_hook != nil
+}
+
+// AotNeedBackEdge reports whether a loop back-edge needs to trim the GC
+// arena or service an armed VM hook.
+func (mrb *MrbState) AotNeedBackEdge(ai int32) bool {
+	return int32(mrb.p.gc.arena_idx) > ai+64 || mrb.p.code_fetch_hook != nil
+}
+
+// AotIntCanRun reports whether integer-specialized code may run on the
+// current thread.
+func (mrb *MrbState) AotIntCanRun() bool {
+	return (mrb.aot == nil || mrb.aot.intDisabled == 0) && !mrb.AotIntOpsRedefined()
+}
+
+// AotIntDisable disables integer-specialized entry on the current thread
+// while a fallback call is in progress.
+func (mrb *MrbState) AotIntDisable() {
+	mrb.AotInit()
+	mrb.aot.intDisabled++
+}
+
+// AotIntEnable re-enables integer-specialized entry on the current thread.
+func (mrb *MrbState) AotIntEnable() {
+	if mrb.aot != nil {
+		mrb.aot.intDisabled--
+	}
+}
+
+// AotBackEdge is called on loop back edges: frees GC arena, makes frame
+// registers visible to the incremental GC again, and services any armed VM
+// hook. Returns true when an exception or unwind is pending.
+func (mrb *MrbState) AotBackEdge(ai int32, env *AotEnv) bool {
+	if int32(mrb.p.gc.arena_idx) > ai+64 {
+		C._aot_arena_reset(mrb.p, C.int(ai), env.Ary.v)
+	}
+	if mrb.p.code_fetch_hook != nil {
+		C._aot_poll(mrb.p)
+		return mrb.p.exc != nil
+	}
+	return false
 }
 
 // AotWB runs GC write barrier for env register file
@@ -522,14 +564,20 @@ func (mrb *MrbState) AotWB(env *AotEnv) {
 }
 
 // AotProtectRegs re-protects heap values held in Go register file after
-// arena restore
-func (mrb *MrbState) AotProtectRegs(ai int32, r []Value) {
+// arena restore and services any armed VM hook. Returns true when an
+// exception or unwind is pending.
+func (mrb *MrbState) AotProtectRegs(ai int32, r []Value) bool {
 	C._aot_arena_restore(mrb.p, C.int(ai))
 	for i := range r {
 		if r[i].v.tt > C.MRB_TT_CPTR {
 			C.mrb_gc_protect(mrb.p, r[i].v)
 		}
 	}
+	if mrb.p.code_fetch_hook != nil {
+		C._aot_poll(mrb.p)
+		return mrb.p.exc != nil
+	}
+	return false
 }
 
 type aotBlockData struct {
@@ -643,6 +691,12 @@ func (mrb *MrbState) aotDirect(recv Value, mid MrbSym, args []Value, blk Value, 
 	if mi == nil {
 		return nilValue, nil, false
 	}
+	if mrb.p.code_fetch_hook != nil {
+		C._aot_poll(mrb.p)
+		if mrb.p.exc != nil {
+			return nilValue, mrb.aotExc(), true
+		}
+	}
 	mcx := mi.cx
 	if mi.needCtx {
 		mcx = &AotCtx{Cref: mi.cx.Cref, Mid: mid, Super: unsafe.Pointer(owner)}
@@ -671,6 +725,12 @@ func (mrb *MrbState) aotYieldDirect(blk Value, args []Value) (res Value, err err
 	bd := st.blocks[id]
 	if bd == nil {
 		return nilValue, nil, false
+	}
+	if mrb.p.code_fetch_hook != nil {
+		C._aot_poll(mrb.p)
+		if mrb.p.exc != nil {
+			return nilValue, mrb.aotExc(), true
+		}
 	}
 	st.depth++
 	res, err = bd.fn(mrb, bd.outerSelf, args, nilValue, bd.cx, bd.env)
@@ -1004,7 +1064,7 @@ func (mrb *MrbState) aotCatchUnwind(cls RClass, tag uintptr, idx int) (Value, bo
 // which received the block is no longer running, LocalJumpError is raised.
 func (mrb *MrbState) AotBreak(val Value, env *AotEnv, idx int) error {
 	mrb.AotInit()
-	if env != nil && idx < 64 && env.Active&(1<<uint(idx)) == 0 {
+	if env != nil && (env.Root != unsafe.Pointer(mrb.p.root_c) || (idx < 64 && env.Active&(1<<uint(idx)) == 0)) {
 		return mrb.AotSetExc(mrb.ExcNew(mrb.ELocalJumpError(), "break from proc-closure"))
 	}
 	return mrb.aotUnwind(mrb.aot.breakClass, val, uintptr(unsafe.Pointer(env)), idx)
@@ -1036,7 +1096,7 @@ func (mrb *MrbState) AotCatchBreak(env *AotEnv, idx int) (Value, bool) {
 // AotReturn raises non-local return to method frame home
 func (mrb *MrbState) AotReturn(val Value, home *AotEnv) error {
 	mrb.AotInit()
-	if home == nil || home.Done {
+	if home == nil || home.Done || home.Root != unsafe.Pointer(mrb.p.root_c) {
 		return mrb.AotSetExc(mrb.ExcNew(mrb.ELocalJumpError(), "unexpected return"))
 	}
 	return mrb.aotUnwind(mrb.aot.returnClass, val, uintptr(unsafe.Pointer(home)), 0)

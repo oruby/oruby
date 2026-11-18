@@ -29,6 +29,25 @@ _aot_protect(mrb_state *mrb, mrb_protect_error_func *body, void *ud)
   return r;
 }
 
+int _orb_vm_hooked(mrb_state *mrb);
+void _orb_vm_poll(mrb_state *mrb);
+
+static mrb_value
+_aot_poll_body(mrb_state *mrb, void *ud)
+{
+  (void)ud;
+  if (_orb_vm_hooked(mrb)) mrb->code_fetch_hook = NULL;
+  _orb_vm_poll(mrb);
+  return mrb_nil_value();
+}
+
+/* Poll pending signals, timeouts, thread interrupts and preemption ticks */
+static void
+_aot_poll(mrb_state *mrb)
+{
+  _aot_protect(mrb, _aot_poll_body, NULL);
+}
+
 enum {
   AOT_OP_CONST_GET = 1,   /* a::sym (with ancestors, const_missing) */
   AOT_OP_CONST_SET,       /* a::sym = b */

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/core_ext"
+	_ "github.com/oruby/oruby/gem/thread"
 )
 
 func generatedBundleOutput(t *testing.T, files map[string]string, mainBody string, extraFiles ...string) string {
@@ -361,6 +363,8 @@ import (
 	"os"
 
 	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/core_ext"
+	_ "github.com/oruby/oruby/gem/thread"
 )
 
 func main() {
@@ -1360,5 +1364,128 @@ x + y
 	}
 	if !strings.Contains(srcDbg, "mrb.TriggerDebug(\"step\"") || !strings.Contains(srcDbg, "mrb.TriggerDebug(\"debug\"") {
 		t.Errorf("Expected step and debug TriggerDebug calls in generated debug code:\n%s", srcDbg)
+	}
+}
+
+func TestCompiler_Threads(t *testing.T) {
+	rubyCode := `
+results = []
+
+# 1. Thread.new + Mutex + Queue
+m = Mutex.new
+q = Queue.new
+sum = 0
+threads = (1..4).map do |i|
+  Thread.new(i) do |x|
+    m.synchronize { sum += x }
+    q << (x * 10)
+  end
+end
+threads.each(&:join)
+popped = []
+4.times { popped << q.pop }
+results << "sum=#{sum}:q=#{popped.sort.join(",")}"
+
+# 2. Preemption of a compiled tight loop (and _int-specialized loop)
+def int_spin(limit)
+  i = 0
+  while i < limit
+    i += 1
+  end
+  i
+end
+
+$ready = false
+$stop = false
+spinner = Thread.new do
+  $ready = true
+  i = 0
+  while !$stop
+    i += 1
+  end
+  i
+end
+Thread.pass until $ready
+# Main thread gets scheduled via time-slice preemption while spinner is in a compiled tight loop
+$stop = true
+results << "preempt=#{spinner.value > 0}"
+
+# 3. Thread#raise and Thread#kill run ensure in compiled code
+$in_loop = false
+$ensured_raise = false
+t_raise = Thread.new do
+  begin
+    $in_loop = true
+    i = 0
+    while true
+      i += 1
+    end
+  rescue RuntimeError => e
+    "caught:#{e.message}"
+  ensure
+    $ensured_raise = true
+  end
+end
+Thread.pass until $in_loop
+t_raise.raise(RuntimeError, "boom")
+results << "raise=#{t_raise.value}:ens=#{$ensured_raise}"
+
+$in_kill = false
+$ensured_kill = false
+t_kill = Thread.new do
+  begin
+    $in_kill = true
+    int_spin(1_000_000_000_000)
+  ensure
+    $ensured_kill = true
+  end
+end
+Thread.pass until $in_kill
+t_kill.kill
+t_kill.join
+results << "kill_ens=#{$ensured_kill}"
+
+# 4. Cross-thread non-local return/break in compiled method raises LocalJumpError
+def cross_thread_return
+  t = Thread.new do
+    Thread.current.report_on_exception = false
+    return 42
+  end
+  t.join
+end
+begin
+  cross_thread_return
+  results << "return=no_error"
+rescue LocalJumpError
+  results << "return=LocalJumpError"
+end
+
+def cross_thread_break
+  t = Thread.new do
+    Thread.current.report_on_exception = false
+    break 42
+  end
+  t.join
+end
+begin
+  cross_thread_break
+  results << "break=no_error"
+rescue LocalJumpError
+  results << "break=LocalJumpError"
+end
+
+results.join("|")
+`
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	comp := New(Options{PackageName: "main"})
+	source, err := comp.CompileRuby(mrb, rubyCode)
+	if err != nil {
+		t.Fatalf("CompileRuby: %v", err)
+	}
+	got := compiledExceptionOutcome(t, source)
+	want := "sum=10:q=10,20,30,40|preempt=true|raise=caught:boom:ens=true|kill_ens=true|return=LocalJumpError|break=LocalJumpError"
+	if got.Kind != "return" || got.Message != want {
+		t.Fatalf("compiled outcome = %+v, want %q", got, want)
 	}
 }
