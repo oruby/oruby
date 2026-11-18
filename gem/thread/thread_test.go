@@ -76,30 +76,26 @@ func TestIsolatedWorkerJoinTimeoutDuringSleep(t *testing.T) {
 	}
 }
 
-func TestThreadCreationUnsupported(t *testing.T) {
-	for _, method := range []string{"new", "start", "go"} {
+// Without core_ext (the Ruby side of Thread) a thread cannot start
+func TestThreadCreationNeedsCoreExt(t *testing.T) {
+	for _, method := range []string{"new", "start", "fork"} {
 		t.Run(method, func(t *testing.T) {
-			for _, args := range []string{"", "(1, 2)", "(1, 2) { ran = true }"} {
-				t.Run(args, func(t *testing.T) {
-					mrb := oruby.MrbOpen()
-					defer mrb.Close()
-
-					v, err := mrb.Eval(`
-						ran = false
-						begin
-						  Thread.` + method + args + `
-						  false
-						rescue NotImplementedError
-						  !ran
-						end
-					`)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !v.Bool() {
-						t.Fatalf("Thread.%s%s must raise NotImplementedError without running its block", method, args)
-					}
-				})
+			mrb := oruby.MrbOpen()
+			defer mrb.Close()
+			v, err := mrb.Eval(`
+				ran = false
+				begin
+				  Thread.` + method + ` { ran = true }
+				  false
+				rescue NotImplementedError => e
+				  !ran && e.message.include?("core_ext")
+				end
+			`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !v.Bool() {
+				t.Fatalf("Thread.%s without core_ext must raise NotImplementedError", method)
 			}
 		})
 	}

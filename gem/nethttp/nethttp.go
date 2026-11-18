@@ -122,13 +122,17 @@ func tlsConnect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !a[5].IsNil() {
 		tc.SetDeadline(time.Now().Add(time.Duration(a[5].Float64() * float64(time.Second))))
 	}
-	if err := tc.Handshake(); err != nil {
+	var herr error
+	mrb.Blocking(func() {
+		herr = tc.Handshake()
+	})
+	if herr != nil {
 		tc.Close()
 		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
+		if errors.As(herr, &ne) && ne.Timeout() {
 			return rb.Raise(mrb, "Net::OpenTimeout", "SSL handshake timed out")
 		}
-		return sslError(mrb, err)
+		return sslError(mrb, herr)
 	}
 	tc.SetDeadline(time.Time{})
 	obj := mrb.ObjAlloc(oruby.MrbTTCData, mrb.ClassPtr(self)).Value()
@@ -157,7 +161,11 @@ func tlsRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		s.conn.SetReadDeadline(time.Now().Add(time.Duration(a[1].Float64() * float64(time.Second))))
 	}
 	buf := make([]byte, a[0].Int64())
-	n, err := s.conn.Read(buf)
+	var n int
+	var err error
+	mrb.Blocking(func() {
+		n, err = s.conn.Read(buf)
+	})
 	if n > 0 {
 		return mrb.BytesValue(buf[:n])
 	}
@@ -183,7 +191,10 @@ func tlsWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
-	n, err := s.conn.Write(data)
+	var n int
+	mrb.Blocking(func() {
+		n, err = s.conn.Write(data)
+	})
 	if err != nil {
 		return sslError(mrb, err)
 	}

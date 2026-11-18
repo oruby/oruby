@@ -80,7 +80,11 @@ func ioPoll(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 				wait = left
 			}
 		}
-		n, err := waitReady(fds, wait)
+		var n int
+		var err error
+		mrb.Blocking(func() {
+			n, err = waitReady(fds, wait)
+		})
 		if errors.Is(err, syscall.EBADF) {
 			return mrb.Raise(mrb.ClassGet("IOError"), "closed stream")
 		}

@@ -329,7 +329,9 @@ void _orb_bt_forget(mrb_state *mrb, mrb_value exc) {
    its $! to itself. The root fiber's is kept on Kernel, another fiber's on
    its Fiber object (both under a name instance_variables does not list). */
 static mrb_value errinfo_holder(mrb_state *mrb) {
-  if (mrb->c != mrb->root_c && mrb->c->fib) return mrb_obj_value(mrb->c->fib);
+  /* a Ruby thread's root fiber (go-thread.c) owns its context: not borrowed */
+  if (mrb->c->fib && (mrb->c != mrb->root_c || !MRB_FLAG_TEST(mrb->c->fib, MRB_FL_FIBER_BORROWED)))
+    return mrb_obj_value(mrb->c->fib);
   return mrb_obj_value(mrb->kernel_module);
 }
 
@@ -546,7 +548,9 @@ static mrb_bool caller_range(mrb_state *mrb, mrb_int bt_len, mrb_int *levp, mrb_
   case 1:
     if (mrb_range_p(v)) {
       mrb_int beg, rlen;
-      if (mrb_range_beg_len(mrb, v, &beg, &rlen, bt_len, TRUE) != MRB_RANGE_OK) return FALSE;
+      /* a range counts from the end of the frames shown: bt_len has one
+         more (see the clipping below) */
+      if (mrb_range_beg_len(mrb, v, &beg, &rlen, bt_len - 1, TRUE) != MRB_RANGE_OK) return FALSE;
       lev = beg;
       n = rlen;
     }

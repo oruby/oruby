@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"os/exec"
 	"os/user"
@@ -13,7 +12,6 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/internal/rb"
@@ -59,7 +57,7 @@ func init() {
 		mrb.DefineGlobalFunction("`", procBacktick, mrb.ArgsAny())
 		mrb.DefineModuleFunction(mrb.KernelModule(), "`", procBacktick, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
-		mrb.DefineGlobalFunction("sleep", procSleep, mrb.ArgsOpt(1))
+		mrb.DefineGlobalFunction("sleep", oruby.KernelSleep, mrb.ArgsAny())
 		mrb.DefineGlobalFunction("exit", procExit, mrb.ArgsOpt(1))
 		mrb.DefineGlobalFunction("abort", procAbort, mrb.ArgsOpt(1))
 
@@ -406,14 +404,32 @@ func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	// Pid not in runners
 	lastState := &status{Pid: pid}
-	ret, err := platformWait(pid, flags, lastState)
+	ret, err := blockingWait(mrb, pid, flags, lastState)
 	mrb.SetGV("$?", mrb.Value(lastState))
 
 	if err != nil {
-		return mrb.ERuntimeError().RaiseError(err)
+		return waitError(mrb, err)
 	}
 
 	return mrb.FixnumValue(ret)
+}
+
+// blockingWait waits for a child without the GVL: other Ruby threads run
+func blockingWait(mrb *oruby.MrbState, pid, flags int, state *status) (ret int, err error) {
+	mrb.Blocking(func() { ret, err = platformWait(pid, flags, state) })
+	return ret, err
+}
+
+// waitError raises a failed wait as MRI does: Errno::ECHILD and the like
+func waitError(mrb *oruby.MrbState, err error) oruby.MrbValue {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		exc, ferr := mrb.Funcall(mrb.ESystemCallError().Value(), oruby.Sym_new, nil, int(errno))
+		if ferr == nil {
+			return mrb.RaiseObj(exc)
+		}
+	}
+	return mrb.ERuntimeError().RaiseError(err)
 }
 
 func procLastStatus(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -434,10 +450,10 @@ func procWait2(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	if ret.IsNil() {
 		state = &status{Pid: pid}
-		result, err := platformWait(pid, flags.Int(), state)
+		result, err := blockingWait(mrb, pid, flags.Int(), state)
 		mrb.SetGV("$?", mrb.Value(state))
 		if err != nil {
-			return mrb.ERuntimeError().RaiseError(err)
+			return waitError(mrb, err)
 		}
 
 		ret = mrb.FixnumValue(result)
@@ -482,7 +498,7 @@ func procWaitall(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 
 		lastState := &status{}
-		pid, err = platformWait(pid, 0, lastState)
+		pid, err = blockingWait(mrb, pid, 0, lastState)
 		setStatus(mrb, lastState)
 
 		if pid == -1 {
@@ -626,52 +642,6 @@ func procExitBang(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 // Kernel#sleep: signals that arrive meanwhile run their handlers, then the
 // sleep goes on, as in MRI; one that raises ends it. Returns the seconds
 // slept, rounded.
-func procSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	t := mrb.GetArgsFirst()
-	forever := t.IsNil()
-	var duration time.Duration
-	if !forever {
-		duration = time.Duration(int64(t.Float64() * 1000000000))
-	}
-
-	procData := getProcData(mrb, self)
-	start := time.Now()
-	var timer <-chan time.Time
-	if !forever {
-		tm := time.NewTimer(duration)
-		defer tm.Stop()
-		timer = tm.C
-	}
-	if err := mrb.CheckSignals(); err != nil {
-		return mrb.RaiseError(err)
-	}
-	// a Timeout.timeout deadline or an EvalContext cancel ends the sleep
-	ctx := mrb.GoContext()
-	done := ctx.Done()
-wait:
-	for {
-		select {
-		case <-mrb.ExitChan():
-			break wait
-		case <-procData.wakeupChan:
-			break wait
-		case <-timer:
-			break wait
-		case <-mrb.SignalWake():
-			if err := mrb.CheckSignals(); err != nil {
-				return mrb.RaiseError(err)
-			}
-		case <-done:
-			if err := mrb.ContextErr(ctx); err != nil {
-				return mrb.RaiseError(err)
-			}
-			break wait // EvalContext: the VM stops at its next instruction
-		}
-	}
-
-	return mrb.FixnumValue(int(math.Round(time.Since(start).Seconds())))
-}
-
 // raiseErrno raises Errno::EXXX "<message> - path", as MRI's exec does
 func raiseErrno(mrb *oruby.MrbState, errno syscall.Errno, path string) oruby.MrbValue {
 	exc, err := mrb.Funcall(mrb.ESystemCallError().Value(), oruby.Sym_new, path, int(errno))

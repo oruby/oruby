@@ -58,31 +58,33 @@ type MrbState struct {
 	p *C.mrb_state
 
 	sync.Mutex
-	stack          int32
-	WaitGroup      sync.WaitGroup
-	mrbProcs       map[unsafe.Pointer]MrbFuncT
-	classmap       map[reflect.Type]unsafe.Pointer
-	hooks          map[unsafe.Pointer]interface{}
-	funcs          []interface{}
-	cfuncs         []MrbFuncT
-	matrix         [][]interface{}
-	exitChan       chan struct{}
-	injectVMChan   chan RProc
-	InjectChan     chan RProc
-	features       map[string]interface{} // features stash
-	callSym        MrbSym                 // cached mrb.Intern("call")
-	afterInitSym   MrbSym                 // cached mrb.Intern("after_init")
-	symCache       map[string]MrbSym
-	fastArgs       []Value
-	hasFastArgs    bool
-	goMethods      map[uintptr]map[MrbSym]MrbFuncT
-	goClassMethods map[uintptr]map[MrbSym]MrbFuncT
-	debugHook      DebugHookFunc
-	lineDebug      bool
-	lastDebugIrep  uintptr
-	lastDebugLine  int
-	aot            *aotState // AOT compiled code runtime state (goaot.go)
-	rubyErrors     map[*RubyError]struct{}
+	stack             int32
+	WaitGroup         sync.WaitGroup
+	mrbProcs          map[unsafe.Pointer]MrbFuncT
+	classmap          map[reflect.Type]unsafe.Pointer
+	hooks             map[unsafe.Pointer]interface{}
+	funcs             []interface{}
+	cfuncs            []MrbFuncT
+	matrix            [][]interface{}
+	exitChan          chan struct{}
+	injectVMChan      chan RProc
+	InjectChan        chan RProc
+	features          map[string]interface{} // features stash
+	callSym           MrbSym                 // cached mrb.Intern("call")
+	afterInitSym      MrbSym                 // cached mrb.Intern("after_init")
+	symCache          map[string]MrbSym
+	fastArgs          []Value
+	hasFastArgs       bool
+	goMethods         map[uintptr]map[MrbSym]MrbFuncT
+	goClassMethods    map[uintptr]map[MrbSym]MrbFuncT
+	debugHook         DebugHookFunc
+	lineDebug         bool
+	lastDebugIrep     uintptr
+	lastDebugLine     int
+	aot               *aotState // AOT compiled code runtime state (goaot.go)
+	rubyErrors        map[*RubyError]struct{}
+	sched             *threadSched // Ruby threads (thread.go); nil until the first Thread.new
+	threadFinishHooks []func(t *Thread)
 }
 
 // coreMu serializes writes to go-mrb.c's process-wide tables (virtual
@@ -126,6 +128,8 @@ func NewCore() (*MrbState, error) {
 		-1,
 		nil,
 		make(map[*RubyError]struct{}),
+		nil,
+		nil,
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
@@ -623,6 +627,8 @@ func (mrb *MrbState) WaitGroupDone() RProc {
 // C MRuby state is closed
 func (mrb *MrbState) Close() {
 	if mrb.p != nil {
+		// the other Ruby threads end first, as when MRI's main thread does
+		mrb.threadsTerminate()
 		// Signal all mrb goroutines that we are closing
 		// and Wait all well-behaved goroutines to finish
 		close(mrb.exitChan)

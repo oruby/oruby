@@ -198,6 +198,16 @@ func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error 
 	return nil
 }
 
+// loadLock is MRI's per-feature load lock: the thread requiring a file
+// (by real path) and the threads waiting for it to finish
+type loadLock struct {
+	owner   *oruby.Thread
+	waiters []*oruby.Waiter
+}
+
+// loadLocks: per state, the files being required (changed under the GVL)
+var loadLocks = map[*oruby.MrbState]map[string]*loadLock{}
+
 // the files being required, by real path (a circular require), per state
 func loadingFilesFind(mrb *oruby.MrbState, filepath oruby.Value) bool {
 	loadingFiles := mrb.GetGV(`$"_`)
@@ -602,23 +612,46 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 // requireFile loads the Ruby file at (expanded) path unless it is loaded or
 // being loaded, and records it in $LOADED_FEATURES
 func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
-	if featureP(mrb, path, 'r', nil) != 0 {
-		return mrb.FalseValue()
-	}
 	// a file reached through a symlink is the same feature as its real
 	// path, as in MRI
 	real := path
 	if r, err := filepath.EvalSymlinks(path); err == nil {
 		real = r
 	}
-	if loadedByRealpath(mrb, path, real) {
-		return mrb.FalseValue()
+	locks := loadLocks[mrb]
+	if locks == nil {
+		locks = map[string]*loadLock{}
+		loadLocks[mrb] = locks
+	}
+	for {
+		if featureP(mrb, path, 'r', nil) != 0 || loadedByRealpath(mrb, path, real) {
+			return mrb.FalseValue()
+		}
+		lk := locks[real]
+		if lk == nil {
+			break
+		}
+		if lk.owner == mrb.CurrentThread() {
+			warnCircular(mrb, path)
+			return mrb.FalseValue()
+		}
+		// another thread loads it: wait for it, then look again (it is
+		// loaded, or that require failed and this one loads it)
+		w := mrb.NewWaiter()
+		lk.waiters = append(lk.waiters, w)
+		if _, err := mrb.ThreadWait(w.C(), -1, true); err != nil {
+			return mrb.RaiseError(err)
+		}
 	}
 	realValue := mrb.StrNew(real)
-	if loadingFilesFind(mrb, realValue) {
-		warnCircular(mrb, path)
-		return mrb.FalseValue()
-	}
+	lk := &loadLock{owner: mrb.CurrentThread()}
+	locks[real] = lk
+	defer func() {
+		delete(locks, real)
+		for _, w := range lk.waiters {
+			w.Wake()
+		}
+	}()
 
 	loadingFilesAdd(mrb, realValue)
 	defer loadingFilesDelete(mrb, realValue)

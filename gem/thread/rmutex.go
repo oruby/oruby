@@ -2,22 +2,38 @@ package thread
 
 import (
 	"math"
-	"sync"
 	"time"
 
 	"github.com/oruby/oruby"
 )
 
-// rmutex is Thread::Mutex as MRI 4.1 has it, for oruby's one Ruby thread:
-// the lock belongs to the Fiber that took it. Locking a mutex that is
-// already held can never succeed (no other thread could release it), so it
-// raises ThreadError as MRI's deadlock check does instead of blocking. mu
-// guards the state: Ruby runs on one goroutine at a time, but a Go host may
-// hand the object to others.
+// rmutex is Thread::Mutex as MRI 4.1 has it: the lock belongs to the Fiber
+// that took it. A thread locking a mutex another thread holds waits (without
+// the GVL) until it is unlocked; one held by another fiber of the same
+// thread, or by itself, is MRI's ThreadError. Its state changes only under
+// the GVL, so it needs no lock of its own.
 type rmutex struct {
-	mu     sync.Mutex
-	locked bool
-	owner  oruby.Value // the Fiber holding the lock; also kept in ivarOwner for the GC
+	locked  bool
+	owner   oruby.Value   // the Fiber holding the lock; also kept in ivarOwner for the GC
+	thread  *oruby.Thread // the thread of that Fiber (nil before the first Thread.new)
+	waiters []*oruby.Waiter
+	self    oruby.Value // the Mutex object, while it is held by a thread
+}
+
+// heldSet is the locked mutexes of mrb's threads (stored as the "thread"
+// gem's per-state data on mrb), for releaseHeld when a thread finishes
+func heldSet(mrb *oruby.MrbState) map[*rmutex]struct{} {
+	h, _ := mrb.GemData("thread").(map[*rmutex]struct{})
+	return h
+}
+
+// releaseHeld unlocks what the finished thread t holds
+func releaseHeld(mrb *oruby.MrbState, t *oruby.Thread) {
+	for rm := range heldSet(mrb) {
+		if rm.locked && rm.thread == t {
+			rm.release(mrb, rm.self)
+		}
+	}
 }
 
 func newMutex() *rmutex { return &rmutex{} }
@@ -31,6 +47,7 @@ func currentFiber(mrb *oruby.MrbState) oruby.Value {
 	}
 	f, err := mrb.Funcall(mrb.ClassGet("Fiber"), mrb.Intern("current"))
 	if err != nil {
+		mrb.ExcClear()
 		return mrb.NilValue()
 	}
 	return f
@@ -38,52 +55,120 @@ func currentFiber(mrb *oruby.MrbState) oruby.Value {
 
 func mutexData(mrb *oruby.MrbState, self oruby.Value) *rmutex {
 	rm, _ := mrb.Data(self).(*rmutex)
+	if rm == nil {
+		rm = newMutex()
+		mrb.DataSetInterface(self, rm)
+	}
 	return rm
 }
 
-func (rm *rmutex) setOwner(mrb *oruby.MrbState, self, owner oruby.Value, locked bool) {
-	rm.locked, rm.owner = locked, owner
+func (rm *rmutex) take(mrb *oruby.MrbState, self, owner oruby.Value) {
+	rm.locked, rm.owner, rm.thread = true, owner, mrb.CurrentThread()
 	mrb.IVSet(self, mrb.Intern(ivarOwner), owner)
+	if rm.thread != nil {
+		if h := heldSet(mrb); h != nil {
+			rm.self = self
+			h[rm] = struct{}{}
+		}
+	}
+}
+
+// tryLock takes the lock when it is free; err for MRI's deadlocks
+func (rm *rmutex) tryLock(mrb *oruby.MrbState, self, cur oruby.Value) (bool, error) {
+	if !rm.locked {
+		rm.take(mrb, self, cur)
+		return true, nil
+	}
+	if rm.owner.Pointer() == cur.Pointer() {
+		return false, oruby.EThreadError("deadlock; recursive locking")
+	}
+	if rm.thread == mrb.CurrentThread() {
+		return false, oruby.EThreadError("deadlock; lock already owned by another fiber belonging to the same thread")
+	}
+	return false, nil
 }
 
 func (rm *rmutex) lock(mrb *oruby.MrbState, self oruby.Value) error {
 	cur := currentFiber(mrb)
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	if rm.locked {
-		if rm.owner == cur {
-			return oruby.EThreadError("deadlock; recursive locking")
+	for {
+		ok, err := rm.tryLock(mrb, self, cur)
+		if ok || err != nil {
+			return err
 		}
-		return oruby.EThreadError("deadlock; lock already owned by another fiber belonging to the same thread")
+		w := mrb.NewWaiter()
+		rm.waiters = append(rm.waiters, w)
+		_, err = mrb.ThreadWait(w.C(), -1, true)
+		rm.dropWaiter(w)
+		if err != nil {
+			return err
+		}
 	}
-	rm.setOwner(mrb, self, cur, true)
-	return nil
+}
+
+func (rm *rmutex) dropWaiter(ch *oruby.Waiter) {
+	for i, w := range rm.waiters {
+		if w == ch {
+			rm.waiters = append(rm.waiters[:i], rm.waiters[i+1:]...)
+			return
+		}
+	}
+}
+
+// release frees the lock and wakes the first waiter
+func (rm *rmutex) release(mrb *oruby.MrbState, self oruby.Value) {
+	rm.locked, rm.owner, rm.thread = false, oruby.Nil, nil
+	mrb.IVSet(self, mrb.Intern(ivarOwner), oruby.Nil)
+	if h := heldSet(mrb); h != nil {
+		delete(h, rm)
+	}
+	rm.self = oruby.Nil
+	if len(rm.waiters) > 0 {
+		w := rm.waiters[0]
+		rm.waiters = rm.waiters[1:]
+		w.Wake()
+	}
+}
+
+// relock reacquires the mutex at the end of Mutex#sleep before any pending
+// interrupt (kill/raise) unwinds the thread, so ensure clauses see the
+// mutex locked by cur, as in MRI
+func (rm *rmutex) relock(mrb *oruby.MrbState, self, cur oruby.Value) error {
+	var pending error
+	var pendingExc *oruby.RException
+	for {
+		ok, err := rm.tryLock(mrb, self, cur)
+		if ok || err != nil {
+			if err != nil {
+				return err
+			}
+			if pendingExc != nil {
+				mrb.RaiseObj(pendingExc.Value())
+			}
+			return pending
+		}
+		w := mrb.NewWaiter()
+		rm.waiters = append(rm.waiters, w)
+		_, err = mrb.ThreadWait(w.C(), -1, true)
+		rm.dropWaiter(w)
+		if err != nil {
+			if pending == nil {
+				pending = err
+				pendingExc = mrb.Exc()
+			}
+			mrb.ExcClear()
+		}
+	}
 }
 
 func (rm *rmutex) unlock(mrb *oruby.MrbState, self oruby.Value) error {
-	cur := currentFiber(mrb)
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
 	if !rm.locked {
 		return oruby.EThreadError("Attempt to unlock a mutex which is not locked")
 	}
-	if rm.owner != cur {
+	if rm.owner.Pointer() != currentFiber(mrb).Pointer() {
 		return oruby.EThreadError("Attempt to unlock a mutex which is locked by another thread/fiber")
 	}
-	rm.setOwner(mrb, self, mrb.NilValue(), false)
+	rm.release(mrb, self)
 	return nil
-}
-
-func (rm *rmutex) isLocked() bool {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	return rm.locked
-}
-
-func (rm *rmutex) ownedBy(cur oruby.Value) bool {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	return rm.locked && rm.owner == cur
 }
 
 // Mutex#lock -> self
@@ -104,17 +189,20 @@ func mutexUnlock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 // Mutex#try_lock -> true or false
 func mutexTryLock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return oruby.Bool(mutexData(mrb, self).lock(mrb, self) == nil)
+	rm := mutexData(mrb, self)
+	ok, _ := rm.tryLock(mrb, self, currentFiber(mrb))
+	return oruby.Bool(ok)
 }
 
 // Mutex#locked?
 func mutexLocked(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return oruby.Bool(mutexData(mrb, self).isLocked())
+	return oruby.Bool(mutexData(mrb, self).locked)
 }
 
 // Mutex#owned?: locked by the current Fiber
 func mutexOwned(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return oruby.Bool(mutexData(mrb, self).ownedBy(currentFiber(mrb)))
+	rm := mutexData(mrb, self)
+	return oruby.Bool(rm.locked && rm.owner.Pointer() == currentFiber(mrb).Pointer())
 }
 
 // Mutex#synchronize { } -> the block's value; the lock is released however
@@ -129,106 +217,56 @@ func mutexSynchronize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err := rm.lock(mrb, self); err != nil {
 		return mrb.RaiseError(err)
 	}
-
-	ret := mrb.YieldArgv(proc)
-	pending := mrb.Exc() != nil
-	var blockErr error
-	if pending {
-		blockErr = mrb.Err()
-	}
+	ret, blockErr := mrb.YieldArgvE(proc)
 	if err := rm.unlock(mrb, self); err != nil {
-		mrb.ExcClear()
-		return mrb.RaiseError(err)
+		if blockErr == nil {
+			return mrb.RaiseError(err)
+		}
 	}
-	if pending {
+	if blockErr != nil {
 		return mrb.RaiseError(blockErr)
 	}
 	return ret
 }
 
-// Mutex#sleep(timeout = nil) -> Integer or nil: releases the lock, sleeps,
-// and takes the lock back. Returns the seconds slept, rounded, when woken (a
-// signal handler ran), nil when the timeout ran out. Without a timeout
-// nothing could wake the one Ruby thread, which is MRI's fatal deadlock.
+// Mutex#sleep(timeout = nil) -> Integer or nil: releases the lock, sleeps
+// until woken (Thread#wakeup, ConditionVariable#signal) or the timeout, and
+// takes the lock back. Returns the seconds slept, rounded, when woken, nil
+// when the timeout ran out.
 func mutexSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	rm := mutexData(mrb, self)
-	t := mrb.GetArgsFirst()
-	forever := t.IsNil()
-	var duration time.Duration
-	if !forever {
-		if !mrb.ObjIsKindOf(t, mrb.ClassGet("Numeric")) {
-			return mrb.Raise(mrb.ETypeError(), "can't convert "+mrb.ClassName(mrb.ClassOf(t))+" into time interval")
-		}
-		f, err := mrb.EnsureFloatType(t)
-		if err != nil {
+	d := time.Duration(-1)
+	if t := mrb.GetArgsFirst(); !t.IsNil() {
+		var err error
+		if d, err = seconds(mrb, t); err != nil {
 			return mrb.RaiseError(err)
 		}
-		secs := f.Float64()
-		if secs < 0 {
-			return mrb.Raise(mrb.EArgumentError(), "time interval must not be negative")
-		}
-		duration = time.Duration(secs * float64(time.Second))
 	}
-
+	cur := currentFiber(mrb)
 	if err := rm.unlock(mrb, self); err != nil {
 		return mrb.RaiseError(err)
 	}
-	// take the lock back however the sleep ends; nothing else could have
-	// taken it meanwhile but this Fiber's own signal handlers
-	cur := currentFiber(mrb)
-	relock := func() {
-		rm.mu.Lock()
-		rm.setOwner(mrb, self, cur, true)
-		rm.mu.Unlock()
-	}
-
-	if forever {
-		relock()
-		return mrb.Raise(fatalClass(mrb), "No live threads left. Deadlock?")
-	}
-
 	start := time.Now()
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	woken := false
-wait:
-	for {
-		select {
-		case <-timer.C:
-			break wait
-		case <-mrb.ExitChan():
-			break wait
-		case <-mrb.SignalWake():
-			if err := mrb.CheckSignals(); err != nil {
-				relock()
-				return mrb.RaiseError(err)
-			}
-			woken = true
-			break wait
-		}
+	r, werr := mrb.ThreadWait(nil, d, d < 0)
+	var savedExc *oruby.RException
+	if werr != nil {
+		savedExc = mrb.Exc()
+		mrb.ExcClear()
+	} else if r == oruby.WaitWoken {
+		mrb.TakeWakeup()
 	}
-	relock()
-	if !woken {
+	// take the lock back however the sleep ended
+	if err := rm.relock(mrb, self, cur); err != nil && werr == nil {
+		werr = err
+	}
+	if werr != nil {
+		if savedExc != nil {
+			mrb.RaiseObj(savedExc.Value())
+		}
+		return mrb.RaiseError(werr)
+	}
+	if r == oruby.WaitTimeout {
 		return mrb.NilValue()
 	}
 	return mrb.FixnumValue(int(math.Round(time.Since(start).Seconds())))
-}
-
-// fatalClass is MRI's fatal: an Exception subclass with no constant, which
-// a deadlock raises
-func fatalClass(mrb *oruby.MrbState) oruby.RClass {
-	key := mrb.Intern("__oruby_fatal__")
-	if v := mrb.IVGet(mrb.KernelModule(), key); v.Type() == oruby.MrbTTClass {
-		return mrb.ClassPtr(v)
-	}
-	c, err := mrb.ClassNew(mrb.EExceptionClass())
-	if err != nil {
-		return mrb.EExceptionClass()
-	}
-	name := func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue { return mrb.StrNew("fatal") }
-	for _, m := range []string{"name", "to_s", "inspect"} {
-		c.DefineClassMethod(m, name, mrb.ArgsNone())
-	}
-	mrb.IVSet(mrb.KernelModule(), key, c.Value())
-	return c
 }

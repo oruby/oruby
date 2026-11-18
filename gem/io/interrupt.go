@@ -41,11 +41,16 @@ func interruptible(mrb *oruby.MrbState, r io.Reader) io.Reader {
 func (ir *interruptReader) Read(p []byte) (int, error) {
 	ctx := ir.mrb.GoContext()
 	for {
-		if err := ir.f.SetReadDeadline(time.Now().Add(readSlice)); err != nil {
-			return ir.f.Read(p) // no deadline: a regular file
-		}
-		n, err := ir.f.Read(p)
-		_ = ir.f.SetReadDeadline(time.Time{})
+		var n int
+		var err error
+		ir.mrb.Blocking(func() {
+			if err = ir.f.SetReadDeadline(time.Now().Add(readSlice)); err != nil {
+				n, err = ir.f.Read(p) // no deadline: a regular file
+				return
+			}
+			n, err = ir.f.Read(p)
+			_ = ir.f.SetReadDeadline(time.Time{})
+		})
 		if n > 0 || err == nil || !errors.Is(err, os.ErrDeadlineExceeded) {
 			return n, err
 		}
@@ -81,6 +86,11 @@ func interruptibleWriter(mrb *oruby.MrbState, w io.Writer) io.Writer {
 	if f, ok := w.(*os.File); ok {
 		return &interruptWriter{mrb, f}
 	}
+	if wf, ok := w.(interface{ WriteFile() *os.File }); ok {
+		if f := wf.WriteFile(); f != nil {
+			return &interruptWriter{mrb, f}
+		}
+	}
 	return w
 }
 
@@ -88,12 +98,16 @@ func (iw *interruptWriter) Write(p []byte) (int, error) {
 	ctx := iw.mrb.GoContext()
 	total := 0
 	for {
-		if err := iw.f.SetWriteDeadline(time.Now().Add(readSlice)); err != nil {
-			n, err := iw.f.Write(p[total:]) // a regular file
-			return total + n, err
-		}
-		n, err := iw.f.Write(p[total:])
-		_ = iw.f.SetWriteDeadline(time.Time{})
+		var n int
+		var err error
+		iw.mrb.Blocking(func() {
+			if err = iw.f.SetWriteDeadline(time.Now().Add(readSlice)); err != nil {
+				n, err = iw.f.Write(p[total:]) // a regular file
+				return
+			}
+			n, err = iw.f.Write(p[total:])
+			_ = iw.f.SetWriteDeadline(time.Time{})
+		})
 		total += n
 		if err == nil || !errors.Is(err, os.ErrDeadlineExceeded) {
 			return total, err
@@ -113,16 +127,18 @@ func writeOnce(mrb *oruby.MrbState, f *os.File, p []byte) (int, error) {
 	}
 	ctx := mrb.GoContext()
 	for {
-		sliced := f.SetWriteDeadline(time.Now().Add(readSlice)) == nil
 		var n int
-		var werr error
-		err := sc.Write(func(fd uintptr) bool {
-			n, werr = rawWrite(fd, p)
-			return !errors.Is(werr, syscall.EAGAIN) && !errors.Is(werr, syscall.EINTR)
+		var werr, err error
+		mrb.Blocking(func() {
+			sliced := f.SetWriteDeadline(time.Now().Add(readSlice)) == nil
+			err = sc.Write(func(fd uintptr) bool {
+				n, werr = rawWrite(fd, p)
+				return !errors.Is(werr, syscall.EAGAIN) && !errors.Is(werr, syscall.EINTR)
+			})
+			if sliced {
+				_ = f.SetWriteDeadline(time.Time{})
+			}
 		})
-		if sliced {
-			_ = f.SetWriteDeadline(time.Time{})
-		}
 		if err != nil && errors.Is(err, os.ErrDeadlineExceeded) {
 			if err := interrupted(mrb, ctx); err != nil {
 				return 0, err

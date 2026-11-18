@@ -700,11 +700,11 @@ func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {
 
 	lastState := &status{Pid: pid}
 	if (runner.cmd == nil) || (runner.cmd.Process == nil) || (runner.cmd.Process.Pid != pid) {
-		ret, err = platformWait(pid, flags, lastState)
+		ret, err = blockingWait(mrb, pid, flags, lastState)
 	} else {
 		// Error ignoead as it can be only "Wait already called", in which case
 		// ProcessState exists
-		err = runner.cmd.Wait()
+		mrb.Blocking(func() { err = runner.cmd.Wait() })
 		if err != nil && runner.cmd.ProcessState == nil {
 			mrb.SetGV("$?", nil)
 			return mrb.ERuntimeError().RaiseError(err), lastState

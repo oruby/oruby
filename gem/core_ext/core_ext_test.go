@@ -118,30 +118,25 @@ func TestThreadLocalsAndIdentity(t *testing.T) {
 	check(first, `Thread.current[:isolated_test_key] == "first"`)
 }
 
-func TestUnsupportedThreadAndDetach(t *testing.T) {
-	for _, expression := range []string{
-		`Thread.new { raise "block ran" }`,
-		`Thread.start { raise "block ran" }`,
-		`Thread.go { raise "block ran" }`,
-		`Process.detach(2147483647)`,
+func TestThreadAndDetach(t *testing.T) {
+	for expression, want := range map[string]string{
+		`Thread.new { 1 + 1 }.value`:          "2",
+		`Thread.start(3) { |x| x * 2 }.value`: "6",
+		`t = Thread.new { Thread.current.report_on_exception = false; raise "x" }; begin; t.join; rescue => e; e.message; end`: `"x"`,
+		`q = Queue.new; t = Thread.new { q.pop + 1 }; q << 41; t.value`:                                                        "42",
+		`m = Mutex.new; n = 0; 4.times.map { Thread.new { 100.times { m.synchronize { n += 1 } } } }.each(&:join); n`:          "400",
+		`t = Thread.new { sleep }; Thread.pass until t.stop?; t.kill; t.join; t.alive?`:                                        "false",
+		`Process.detach(2147483647).value`: "nil",
 	} {
 		t.Run(expression, func(t *testing.T) {
 			mrb := oruby.MrbOpen()
 			defer mrb.Close()
-
-			v, err := mrb.Eval(`
-				begin
-				  ` + expression + `
-				  false
-				rescue NotImplementedError
-				  true
-				end
-			`)
+			v, err := mrb.Eval(expression + `.inspect`)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !v.Bool() {
-				t.Fatalf("%s must raise NotImplementedError", expression)
+			if got := mrb.String(v); got != want {
+				t.Fatalf("%s = %s, want %s", expression, got, want)
 			}
 		})
 	}

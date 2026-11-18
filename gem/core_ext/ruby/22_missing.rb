@@ -333,30 +333,6 @@ class IO
   BINARY = File::Constants::BINARY unless const_defined?(:BINARY, false)
 end
 
-# ConditionVariable for ORuby's single thread: a wait can only time out
-# (without a timeout nothing could ever signal it, so it is MRI's deadlock)
-class Thread
-  class ConditionVariable
-    def wait(mutex, timeout = nil)
-      if timeout.nil?
-        # MRI's fatal, as Mutex#sleep raises it
-        Thread.__oruby_deadlock if Thread.respond_to?(:__oruby_deadlock)
-        raise ThreadError, "No live threads left. Deadlock?"
-      end
-      mutex.unlock
-      begin
-        sleep(timeout)
-      ensure
-        mutex.lock
-      end
-      self
-    end
-
-    def signal = self
-    def broadcast = self
-  end
-end
-ConditionVariable = Thread::ConditionVariable unless Object.const_defined?(:ConditionVariable)
 
 
 # mruby's bind_call passes keywords as a positional Hash; bind(...).call

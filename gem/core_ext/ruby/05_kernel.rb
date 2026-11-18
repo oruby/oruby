@@ -58,15 +58,24 @@ class Thread::Backtrace
 end
 
 class Thread
-  # the current thread's stack; this method's own frame is the first, as in MRI
+  # the current thread's stack (this method's own frame is the first, as in
+  # MRI); another thread's from where it waits; nil for a dead one
   def backtrace(*args)
-    return nil unless equal?(Thread.current)
-    args.empty? ? caller(0) : caller(*args)
+    if equal?(Thread.current)
+      return args.empty? ? caller(0) : caller(*args)
+    end
+    return nil unless alive?
+    fib = __oruby_fiber
+    fib ? fib.__send__(:__oruby_backtrace, *args) : []
   end
 
   def backtrace_locations(*args)
-    return nil unless equal?(Thread.current)
-    args.empty? ? caller_locations(0) : caller_locations(*args)
+    if equal?(Thread.current)
+      return args.empty? ? caller_locations(0) : caller_locations(*args)
+    end
+    return nil unless alive?
+    fib = __oruby_fiber
+    fib ? fib.__send__(:__oruby_backtrace_locations, *args) : []
   end
 end
 

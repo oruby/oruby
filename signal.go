@@ -48,12 +48,39 @@ type ctxEntry struct {
 
 var vmStates sync.Map // *MrbState -> *vmState
 
+// vm is the running thread's: each Ruby thread has its own deadlines and
+// wake channel (thread.go); the main thread's is the state's
 func (mrb *MrbState) vm() *vmState {
+	if s := mrb.sched; s != nil {
+		if t := s.cur; t != nil && !t.main {
+			return t.vs
+		}
+	}
+	return mrb.mainVM()
+}
+
+// mainVM is the main thread's: signals wake it
+func (mrb *MrbState) mainVM() *vmState {
 	if v, ok := vmStates.Load(mrb); ok {
 		return v.(*vmState)
 	}
 	v, _ := vmStates.LoadOrStore(mrb, &vmState{wake: make(chan struct{}, 1), timers: map[int64]context.CancelFunc{}})
 	return v.(*vmState)
+}
+
+// release stops the deadlines of a thread that finished
+func (vs *vmState) release() {
+	vs.Lock()
+	vs.closed = true
+	for _, cancel := range vs.timers {
+		cancel()
+	}
+	vs.timers = map[int64]context.CancelFunc{}
+	for range vs.fired {
+		C._orb_timeout_taken()
+	}
+	vs.fired = nil
+	vs.Unlock()
 }
 
 func (vs *vmState) notify() {
@@ -293,6 +320,8 @@ func (mrb *MrbState) CheckSignals() error {
 	sigState.Lock()
 	owner := sigState.owner == mrb
 	sigState.Unlock()
+	// signal handlers run in the main thread, as in MRI
+	owner = owner && mrb.onMainThread()
 	for owner {
 		signo := int(C._orb_sig_take())
 		if signo == 0 {
@@ -309,7 +338,7 @@ func (mrb *MrbState) CheckSignals() error {
 	for {
 		token := mrb.takeTimeout()
 		if token == 0 {
-			return nil
+			return mrb.checkThreadInterrupts()
 		}
 		if !mrb.ClassDefinedID(Sym_Timeout) {
 			continue
@@ -347,7 +376,7 @@ func sigLoop(ch chan os.Signal) {
 		}
 		C._orb_sig_post(mrb.p, C.int(sig))
 		sigState.Unlock()
-		mrb.vm().notify()
+		mrb.mainVM().notify()
 	}
 }
 
@@ -379,4 +408,20 @@ func (mrb *MrbState) signalRelease() {
 	sigState.caught = make(map[syscall.Signal]bool)
 	sigState.raising = make(map[syscall.Signal]bool)
 	C._orb_sig_clear(mrb.p)
+}
+
+// checkThreadInterrupts takes what Thread#raise and #kill posted to the
+// running thread: the exception (or the kill's throw) as an error
+func (mrb *MrbState) checkThreadInterrupts() error {
+	s := mrb.sched
+	if s == nil || s.cur == nil {
+		return nil
+	}
+	t := s.cur
+	if !t.started.Load() || !t.intr.Load() || !mrb.ClassDefinedID(Sym_Thread) {
+		return nil
+	}
+	// a blocking wait: :on_blocking interrupts are taken too
+	_, err := mrb.Funcall(mrb.ClassGetID(Sym_Thread).Value(), Sym___oruby_interrupt, True)
+	return err
 }

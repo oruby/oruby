@@ -28,7 +28,11 @@ func (p *superPipe) wait() {
 		return
 	}
 	p.waited = true
-	_ = p.cmd.Wait()
+	if p.mrb != nil {
+		p.mrb.Blocking(func() { _ = p.cmd.Wait() })
+	} else {
+		_ = p.cmd.Wait()
+	}
 	if ps := p.cmd.ProcessState; ps != nil && p.mrb != nil {
 		process.SetLastStatusFrom(p.mrb, p.pid, ps)
 	}
@@ -70,6 +74,12 @@ func (p *superPipe) Close() error {
 // interruptibly), nil for a write-only stream
 func (p *superPipe) ReadFile() *os.File {
 	f, _ := p.ReadCloser.(*os.File)
+	return f
+}
+
+// WriteFile is the pipe to the child's stdin
+func (p *superPipe) WriteFile() *os.File {
+	f, _ := p.WriteCloser.(*os.File)
 	return f
 }
 

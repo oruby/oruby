@@ -66,8 +66,16 @@ end
 module Process
   # Process.detach returns a Thread whose value is the Process::Status
   def self.detach(pid)
-    pid = Integer(pid)
-    t = Thread.new { Process.wait2(pid)[1] }
+    pid = Kernel.__to_int(pid)
+    # a pid that is not a child (ECHILD) gives nil, as MRI's detach thread
+    t = Thread.new do
+      begin
+        Process.wait2(pid)[1]
+      rescue Errno::ECHILD
+        nil
+      end
+    end
+    t[:pid] = pid
     t.define_singleton_method(:pid) { pid }
     t
   end

@@ -99,6 +99,9 @@ module Signal
       when :none
         return unless __func(signo) == :ruby
         exc = signo == 2 ? Interrupt.new("") : SignalException.new(signo)
+        if defined?(Thread) && Thread.respond_to?(:__oruby_timing) && Thread.__oruby_timing(Thread.current, exc.class) != :immediate
+          return Thread.current.__send__(:__oruby_post, exc)
+        end
         # raised where the signal arrived, without the delivery frames
         raise exc, exc.message, caller(1).reject { |l| l.include?("'Signal.__oruby_") }
       when :exit

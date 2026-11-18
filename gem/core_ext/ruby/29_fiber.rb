@@ -40,6 +40,7 @@ class Fiber
     ::Kernel.raise FrozenError, "storage must not be frozen" if storage.is_a?(Hash) && storage.frozen?
     instance_variable_set(:@__oruby_location, block.source_location&.join(":"))
     instance_variable_set(:@__oruby_blocking, blocking ? true : false) # also marks a Fiber.new fiber
+    instance_variable_set(:@__oruby_thread, Thread.current)
     body = proc do |*args|
       catch(kill_tag) do
         throw kill_tag if kill_request.equal?(args[0]) # killed before it started
@@ -71,6 +72,13 @@ class Fiber
   define_singleton_method(:[]=) { |k, v| __oruby_aset(key.call(k), v) }
 
   alias_method :__oruby_storage_set, :storage=
+
+  # what a new thread's root fiber starts with (MRI copies it)
+  define_method(:__oruby_storage_copy) do
+    st = storage
+    Hash === st ? st.dup : nil
+  end
+  private :__oruby_storage_copy
   define_method(:storage=) do |h|
     if Warning[:experimental]
       warn "Fiber#storage= is experimental and may be removed in the future!", uplevel: 1, category: :experimental
@@ -93,13 +101,28 @@ class Fiber
       end
       ::Kernel.raise FiberError, "attempt to resume a resumed fiber (double resume)"
     end
+    ::Kernel.raise FiberError, "fiber called across threads" unless __oruby_same_thread?
     r = __oruby_resume(*args)
     Fiber.current.__send__(:__oruby_kill_pending)
+    # a Thread#kill that ended this fiber goes on in its resumer
+    t = Thread.current
+    if t.instance_variable_get(:@__oruby_killing)
+      t.remove_instance_variable(:@__oruby_killing)
+      Thread.__oruby_interrupt
+    end
     r
   end
 
+  # a fiber belongs to the thread that made it
+  define_method(:__oruby_same_thread?) do
+    owner = instance_variable_get(:@__oruby_thread)
+    owner.nil? || owner.equal?(Thread.current)
+  end
+  private :__oruby_same_thread?
+
   alias_method :__oruby_transfer, :transfer
   define_method(:transfer) do |*args|
+    ::Kernel.raise FiberError, "fiber called across threads" unless __oruby_same_thread?
     ::Kernel.raise FiberError, "attempt to transfer to a terminated fiber" if __oruby_status == "terminated"
     r = check.call(__oruby_transfer(*args))
     Fiber.current.__send__(:__oruby_kill_pending)
@@ -117,6 +140,7 @@ class Fiber
   define_method(:raise) do |*args, **kw|
     # raising on the current fiber or on one it was resumed from (MRI: the
     # same as Kernel#raise here) raises here
+    ::Kernel.raise FiberError, "fiber called across threads" unless __oruby_same_thread?
     status = __oruby_status
     ::Kernel.raise(*args, **kw) if equal?(Fiber.current) || status == "suspended by resuming"
     ::Kernel.raise FiberError, "cannot raise exception on unborn fiber" if status == "created"

@@ -34,6 +34,13 @@ static _Atomic int orb_timeouts_fired;
 
 extern mrb_int go_take_timeout(mrb_int idx);
 
+// threads (go-thread.c, thread.go): the safepoint may hand the GVL to
+// another thread; it answers 1 when the current thread has an interrupt
+// (Thread#raise, #kill) to take, 2 when it is not the main thread, which
+// alone runs signal handlers
+extern _Atomic int orb_threads_active;
+extern int go_thread_safepoint(mrb_int idx);
+
 static void orb_vm_hook(mrb_state *mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
 
 // _orb_vm_arm makes mrb poll at its next instruction
@@ -100,12 +107,28 @@ static void orb_timeout_dispatch(mrb_state *mrb, mrb_int token) {
   mrb_funcall_id(mrb, t, MRB_SYM(__oruby_expire), 1, mrb_fixnum_value(token));
 }
 
+static void orb_thread_interrupt(mrb_state *mrb) {
+  if (!mrb_class_defined_id(mrb, MRB_SYM(Thread))) return;
+  mrb_value t = mrb_obj_value(mrb_class_get_id(mrb, MRB_SYM(Thread)));
+  if (!mrb_respond_to(mrb, t, MRB_SYM(__oruby_interrupt))) return;
+  mrb_funcall_id(mrb, t, MRB_SYM(__oruby_interrupt), 0);
+}
+
 // _orb_vm_poll runs one pending request of mrb's, at an instruction
 // boundary (the hook, the injector); the rest are polled at the next
 // instruction, so one that raises does not drop them
 void _orb_vm_poll(mrb_state *mrb) {
-  if (!atomic_load(&orb_sig_pending) && !atomic_load(&orb_timeouts_fired)) return;
-  int signo = _orb_sig_take();
+  int main_thread = 1;
+  if (atomic_load(&orb_threads_active)) {
+    int r = go_thread_safepoint(_mrb_get_idx(mrb));
+    main_thread = !(r & 2);
+    if (r & 1) {
+      if (atomic_load(&orb_sig_pending) || atomic_load(&orb_timeouts_fired)) _orb_vm_arm(mrb);
+      orb_thread_interrupt(mrb);
+    }
+  }
+  if (!atomic_load(&orb_timeouts_fired) && (!main_thread || !atomic_load(&orb_sig_pending))) return;
+  int signo = main_thread ? _orb_sig_take() : 0;
   if (signo) {
     if (atomic_load(&orb_sig_pending) || atomic_load(&orb_timeouts_fired)) _orb_vm_arm(mrb);
     orb_sig_dispatch(mrb, signo);

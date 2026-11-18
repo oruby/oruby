@@ -1,6 +1,6 @@
-# Thread::Queue and Thread::SizedQueue for ORuby's single thread: no other
-# thread can push or pop, so where MRI would block, a timeout runs out (nil)
-# and an unbounded wait is MRI's deadlock error instead of a hang.
+# Thread::Queue and Thread::SizedQueue: argument checks as MRI makes them,
+# over the Go queue (gem/thread/queue.go), whose waits let other threads
+# run. A wait no other thread could end is MRI's deadlock.
 class Thread
   Queue = ::Queue unless const_defined?(:Queue, false)
   SizedQueue = ::SizedQueue unless const_defined?(:SizedQueue, false)
@@ -8,8 +8,6 @@ end
 
 class Queue
   def initialize(items = (no_items = true; nil))
-    @__q = []
-    @__closed = false
     unless no_items
       a = if items.respond_to?(:to_a)
             items.to_a
@@ -17,32 +15,23 @@ class Queue
             raise TypeError, "can't convert #{Kernel.__cname(items)} into Array"
           end
       raise TypeError, "can't convert #{Kernel.__cname(items)} into Array (#{Kernel.__cname(items)}#to_a gives #{Kernel.__cname(a)})" unless Array === a
-      @__q.concat(a)
+      __oruby_items.concat(a)
     end
   end
   private :initialize
 
   def push(obj)
-    raise ClosedQueueError, "queue closed" if @__closed
-    @__q.push(obj)
-    self
+    __oruby_push(obj, false, nil)
   end
   alias << push
   alias enq push
 
   def pop(non_block = false, timeout: nil)
-    if timeout
+    unless timeout.nil?
       raise ArgumentError, "can't set a timeout if non_block is enabled" if non_block
       timeout = Queue.__timeout(timeout)
     end
-    return @__q.shift unless @__q.empty?
-    return nil if @__closed
-    raise ThreadError, "queue empty" if non_block
-    if timeout
-      sleep(timeout) if timeout > 0
-      return nil
-    end
-    raise ThreadError, "No live threads left. Deadlock?"
+    __oruby_pop(non_block, timeout)
   end
   alias shift pop
   alias deq pop
@@ -52,19 +41,13 @@ class Queue
     t.to_f
   end
 
-  def close
-    @__closed = true
-    self
-  end
-
-  def closed? = @__closed
-  def empty? = @__q.empty?
-  def size = @__q.size
+  def empty? = __oruby_items.empty?
+  def size = __oruby_items.size
   alias length size
-  def num_waiting = 0
 
   def clear
-    @__q.clear
+    __oruby_items.clear
+    __oruby_space
     self
   end
 
@@ -78,11 +61,11 @@ class Queue
 end
 
 class SizedQueue
-
   def initialize(max)
     max = Kernel.__to_int(max)
     raise ArgumentError, "queue size must be positive" if max <= 0
     @__max = max
+    __oruby_max(max)
     super()
   end
   private :initialize
@@ -93,23 +76,15 @@ class SizedQueue
     n = Kernel.__to_int(n)
     raise ArgumentError, "queue size must be positive" if n <= 0
     @__max = n
+    __oruby_max(n)
   end
 
   def push(obj, non_block = false, timeout: nil)
-    if timeout
+    unless timeout.nil?
       raise ArgumentError, "can't set a timeout if non_block is enabled" if non_block
       timeout = Queue.__timeout(timeout)
     end
-    raise ClosedQueueError, "queue closed" if closed?
-    if size >= @__max
-      raise ThreadError, "queue full" if non_block
-      if timeout
-        sleep(timeout) if timeout > 0
-        return nil
-      end
-      raise ThreadError, "No live threads left. Deadlock?"
-    end
-    super(obj)
+    __oruby_push(obj, non_block, timeout)
   end
   alias << push
   alias enq push

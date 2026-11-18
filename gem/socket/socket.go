@@ -6,7 +6,6 @@
 package socket
 
 import (
-	"context"
 	_ "embed"
 	"encoding/binary"
 	"errors"
@@ -88,16 +87,36 @@ func fdArg(v oruby.Value) int { return int(v.Int64()) }
 
 // waitFd blocks until fd is ready for reading (write=false) or writing.
 // Sockets are non-blocking (as in Ruby 3+), blocking calls wait here.
-func waitFd(fd int, write bool) error {
+func waitFd(mrb *oruby.MrbState, fd int, write bool) error {
 	ev := int16(unix.POLLIN)
 	if write {
 		ev = unix.POLLOUT
 	}
+	ctx := mrb.GoContext()
 	fds := []unix.PollFd{{Fd: int32(fd), Events: ev}}
 	for {
-		_, err := unix.Poll(fds, -1)
-		if err == nil || !errors.Is(err, syscall.EINTR) {
+		var n int
+		var err error
+		mrb.Blocking(func() {
+			n, err = unix.Poll(fds, 100)
+		})
+		if err != nil && !errors.Is(err, syscall.EINTR) {
 			return err
+		}
+		if err == nil && n > 0 {
+			if fds[0].Revents&unix.POLLNVAL != 0 {
+				return syscall.EBADF
+			}
+			return nil
+		}
+		if err := mrb.CheckSignals(); err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			if err := mrb.ContextErr(ctx); err != nil {
+				return err
+			}
+			return oruby.ERuntimeError("interrupted")
 		}
 	}
 }
@@ -362,7 +381,7 @@ func sysConnect(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		return sysErr(mrb, err, "w")
 	}
 	if errors.Is(err, syscall.EINPROGRESS) || errors.Is(err, syscall.EALREADY) {
-		if err := waitFd(fd, true); err != nil {
+		if err := waitFd(mrb, fd, true); err != nil {
 			return sysErr(mrb, err, "")
 		}
 		n, gerr := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_ERROR)
@@ -395,7 +414,7 @@ func sysAccept(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 				continue
 			}
 			if isAgain(err) && !a[1].Bool() {
-				if werr := waitFd(fd, false); werr != nil {
+				if werr := waitFd(mrb, fd, false); werr != nil {
 					return sysErr(mrb, werr, "")
 				}
 				continue
@@ -500,7 +519,7 @@ func sysSend(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 				continue
 			}
 			if isAgain(err) && flags&syscall.MSG_DONTWAIT == 0 {
-				if werr := waitFd(fdArg(a[0]), true); werr != nil {
+				if werr := waitFd(mrb, fdArg(a[0]), true); werr != nil {
 					return sysErr(mrb, werr, "")
 				}
 				continue
@@ -527,7 +546,7 @@ func sysRecv(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 				continue
 			}
 			if isAgain(err) && !a[3].Bool() {
-				if werr := waitFd(fd, false); werr != nil {
+				if werr := waitFd(mrb, fd, false); werr != nil {
 					return sysErr(mrb, werr, "")
 				}
 				continue
@@ -655,7 +674,16 @@ func sysGetaddrinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		} else if flags&aiNumericHost != 0 {
 			return resErr(mrb, "getaddrinfo: nodename nor servname provided, or not known", eaiNoname)
 		} else {
-			addrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+			ctx := mrb.GoContext()
+			var addrs []net.IPAddr
+			var err error
+			var cn string
+			mrb.Blocking(func() {
+				addrs, err = net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err == nil && len(addrs) > 0 {
+					cn, _ = net.LookupCNAME(host)
+				}
+			})
 			if err != nil || len(addrs) == 0 {
 				return resErr(mrb, "getaddrinfo: nodename nor servname provided, or not known", eaiNoname)
 			}
@@ -663,7 +691,7 @@ func sysGetaddrinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 				ips = append(ips, ad.IP)
 			}
 			canon = host
-			if cn, err := net.LookupCNAME(host); err == nil && cn != "" {
+			if cn != "" {
 				canon = strings.TrimSuffix(cn, ".")
 			}
 		}
@@ -750,7 +778,12 @@ func sysGetnameinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	}
 	host := ip.String()
 	if flags&niNumericHost == 0 {
-		if names, err := net.LookupAddr(host); err == nil && len(names) > 0 {
+		var names []string
+		var err error
+		mrb.Blocking(func() {
+			names, err = net.LookupAddr(host)
+		})
+		if err == nil && len(names) > 0 {
 			host = strings.TrimSuffix(names[0], ".")
 		}
 	}
@@ -882,7 +915,7 @@ func sysRecvIO(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	fd := fdArg(mrb.GetArgsFirst())
 	_, oobn, _, _, err := syscall.Recvmsg(fd, buf, oob, 0)
 	for err != nil && (isAgain(err) || errors.Is(err, syscall.EINTR)) {
-		if werr := waitFd(fd, false); werr != nil {
+		if werr := waitFd(mrb, fd, false); werr != nil {
 			return sysErr(mrb, werr, "")
 		}
 		_, oobn, _, _, err = syscall.Recvmsg(fd, buf, oob, 0)
