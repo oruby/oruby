@@ -69,9 +69,12 @@ class Time
       v = Integer(v, 10) if String === v
       return [v, 0] if Integer === v
       v = Kernel.__implicit(v, Integer) unless Numeric === v
-      r = v.is_a?(Float) ? v.to_r : v.to_r
+      r = v.to_r
       s = r.floor
-      [s, ((r - s) * 1_000_000_000).floor]
+      # integer arithmetic: mruby's Rational overflows past 64 bits (a Float
+      # has a 2**52 denominator) where its Integer becomes a Bignum
+      f = r - s
+      [s, f.numerator * 1_000_000_000 / f.denominator]
     end
 
     # builds a Time from civil fields with MRI's range checks and carries
@@ -260,10 +263,11 @@ class Time
     p[0] + p[1] / 1e9
   end
 
+  # a Time of self's class at another instant, in self's own zone (not the
+  # local zone of now)
   def __with(sec, ns)
-    p = __parts
     t = self.class.allocate
-    t.__set(Time.__make(sec, ns, p[2], p[3]))
+    t.__set(__at(sec, ns))
     t
   end
   private :__with
@@ -334,7 +338,8 @@ class Time
           r = ns % unit
           r * 2 >= unit ? ns - r + unit : ns - r
         end
-    __with(p[0] + q / 1_000_000_000, q % 1_000_000_000)
+    # a Time, whatever subclass self is (MRI)
+    __at(p[0] + q / 1_000_000_000, q % 1_000_000_000)
   end
   private :__round
 

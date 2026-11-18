@@ -78,11 +78,18 @@ func (mrb *MrbState) HasIV(obj MrbValue) bool {
 		MrbTTHash,
 		MrbTTCData,
 		MrbTTException:
-		return true
+		return true // an iv slot in the struct (obj_iv_p)
+	case MrbTTString,
+		MrbTTArray,
+		MrbTTStruct,
+		MrbTTSet,
+		MrbTTFiber,
+		MrbTTIStruct,
+		MrbTTProc:
+		return true // mruby's side table for slotless objects (giv_obj_p)
 	default:
 		return false
 	}
-	// C.obj_iv_p() ported
 }
 
 // IVSet set instance variable

@@ -331,3 +331,22 @@ class String
     end
   end
 end
+
+# String.new(str = "", encoding: nil, capacity: nil) as MRI has it: without
+# a string the new one is binary
+class String
+  alias_method :__oruby_initialize, :initialize
+  private :__oruby_initialize
+
+  def initialize(*args, encoding: nil, capacity: nil)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1
+    __oruby_initialize(*args)
+    if encoding
+      force_encoding(encoding)
+    elsif args.empty?
+      force_encoding(Encoding::BINARY)
+    end
+    self
+  end
+  private :initialize
+end

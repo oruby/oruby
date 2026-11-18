@@ -2,7 +2,6 @@ package marshal_test
 
 import (
 	"encoding/hex"
-	"strings"
 	"testing"
 	"unsafe"
 
@@ -341,10 +340,12 @@ func TestMarshalIOAndHashDefault(t *testing.T) {
 	}
 }
 
-func TestMarshalRejectsUnsupportedStringInstanceVariables(t *testing.T) {
+// mruby keeps instance variables of Strings in a side table: they round trip
+func TestMarshalStringInstanceVariables(t *testing.T) {
 	mrb := openMarshal(t)
-	if _, err := mrb.Eval(`Marshal.load("\x04\x08I\"\x07hi\x07:\x06EF:\x07@xi\x06")`); err == nil || !strings.Contains(err.Error(), "String instance variables cannot be restored") {
-		t.Fatalf("Marshal.load error = %v; want explicit String-ivar runtime limitation", err)
+	got, err := mrb.Eval(`s = Marshal.load("\x04\x08I\"\x07hi\x07:\x06EF:\x07@xi\x06"); [s, s.encoding.to_s, s.instance_variable_get(:@x)]`)
+	if err != nil || mrb.String(mrb.Inspect(got)) != `["hi", "US-ASCII", 1]` {
+		t.Fatalf("Marshal.load(String with @x) = %v, %v", mrb.String(mrb.Inspect(got)), err)
 	}
 }
 

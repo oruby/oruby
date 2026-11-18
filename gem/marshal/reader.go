@@ -1,6 +1,7 @@
 package marshal
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -16,6 +17,7 @@ type byteSource interface {
 	Read([]byte) (int, error)
 }
 
+// rubyReader reads from a Ruby IO (or anything with read)
 type rubyReader struct {
 	mrb    *oruby.MrbState
 	object oruby.Value
@@ -38,62 +40,85 @@ func (r *rubyReader) Read(p []byte) (int, error) {
 	if rubyByteLen(value) > len(p) {
 		return 0, oruby.EArgumentError("IO#read returned more bytes than requested")
 	}
-	data, err := rubyBytesLimited(value)
-	if err != nil {
-		return 0, err
-	}
+	data := rubyBytes(value)
 	if len(data) == 0 {
 		return 0, io.EOF
 	}
-	n := copy(p, data)
-	return n, nil
+	return copy(p, data), nil
 }
 
+// reader follows MRI's marshal.c (r_object0 & co.). An object is "partial"
+// while its contents are read: a link to it then gets it as it is, and the
+// load proc and freeze: run once it is complete (r_leave).
 type reader struct {
 	mrb     *oruby.MrbState
 	source  byteSource
+	fromIO  bool
 	objects []oruby.Value
+	partial map[uintptr]bool
 	symbols []oruby.MrbSym
 	nodes   int
+	depth   int
 	read    int64
-	proc    oruby.Value // Marshal.load(src, proc): called with each loaded object
+	proc    oruby.Value // Marshal.load(src, proc)
 	freeze  bool        // Marshal.load(src, freeze: true)
 }
 
 func loadValue(mrb *oruby.MrbState, source byteSource) (oruby.Value, error) {
-	return loadValueWith(mrb, source, oruby.Nil, false)
+	return loadValueWith(mrb, source, oruby.Nil, false, false)
 }
 
-func loadValueWith(mrb *oruby.MrbState, source byteSource, proc oruby.Value, freeze bool) (oruby.Value, error) {
-	wasDisabled := mrb.GCDisabled()
-	if !wasDisabled {
+func loadValueWith(mrb *oruby.MrbState, source byteSource, proc oruby.Value, freeze, fromIO bool) (oruby.Value, error) {
+	if !mrb.GCDisabled() {
 		mrb.GCDisable()
 		defer mrb.GCEnable()
 	}
-	r := &reader{mrb: mrb, source: source, proc: proc, freeze: freeze}
+	r := &reader{mrb: mrb, source: source, fromIO: fromIO, proc: proc, freeze: freeze,
+		partial: make(map[uintptr]bool)}
 	var header [2]byte
-	if err := r.readFull(header[:]); err != nil {
-		return oruby.Nil, oruby.EArgumentError("marshal data too short")
+	if err := r.full(header[:]); err != nil {
+		return oruby.Nil, err
 	}
-	if header[0] != 4 || header[1] != 8 {
-		return oruby.Nil, oruby.ETypeError("incompatible marshal file format (version %d.%d)", header[0], header[1])
+	if header[0] != 4 || header[1] > 8 {
+		return oruby.Nil, oruby.ETypeError("incompatible marshal file format (can't be read)\n\tformat version 4.8 required; %d.%d given", header[0], header[1])
 	}
-	return r.readValue(0)
+	return r.object()
 }
 
-func (r *reader) readByte() (byte, error) {
-	var b [1]byte
-	if err := r.readFull(b[:]); err != nil {
+func (r *reader) short() error {
+	if r.fromIO {
+		return oruby.EError("EOFError", "end of file reached")
+	}
+	return oruby.EArgumentError("marshal data too short")
+}
+
+func (r *reader) full(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if int64(len(data)) > int64(maxInputBytes)-r.read {
+		return oruby.ERangeError("Marshal input exceeds size limit")
+	}
+	n, err := io.ReadFull(r.source, data)
+	r.read += int64(n)
+	if err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return 0, oruby.EArgumentError("marshal data too short")
+			return r.short()
 		}
-		return 0, err
+		return err
 	}
-	return b[0], nil
+	return nil
 }
 
-func (r *reader) readLong() (int64, error) {
-	b, err := r.readByte()
+func (r *reader) byte1() (byte, error) {
+	var b [1]byte
+	err := r.full(b[:])
+	return b[0], err
+}
+
+// long is MRI's r_long
+func (r *reader) long() (int64, error) {
+	b, err := r.byte1()
 	if err != nil {
 		return 0, err
 	}
@@ -111,41 +136,20 @@ func (r *reader) readLong() (int64, error) {
 	if negative {
 		length = -length
 	}
-	if length < 1 || length > 8 {
-		return 0, oruby.EArgumentError("invalid long integer in Marshal data")
-	}
 	var data [8]byte
-	if err := r.readFull(data[:length]); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return 0, oruby.EArgumentError("marshal data too short")
-		}
-		return 0, err
-	}
-	if negative && length < len(data) {
-		for i := length; i < len(data); i++ {
+	if negative {
+		for i := range data {
 			data[i] = 0xff
 		}
 	}
-	value := int64(binary.LittleEndian.Uint64(data[:]))
-	if negative && value >= 0 {
-		return 0, oruby.EArgumentError("invalid negative long integer in Marshal data")
-	}
-	return value, nil
-}
-
-func (r *reader) readLength() (int, error) {
-	n, err := r.readLong()
-	if err != nil {
+	if err := r.full(data[:length]); err != nil {
 		return 0, err
 	}
-	if n < 0 || n > maxInputBytes {
-		return 0, oruby.ERangeError("Marshal length exceeds size limit")
-	}
-	return int(n), nil
+	return int64(binary.LittleEndian.Uint64(data[:])), nil
 }
 
-func (r *reader) readCount() (int, error) {
-	n, err := r.readLong()
+func (r *reader) count() (int, error) {
+	n, err := r.long()
 	if err != nil {
 		return 0, err
 	}
@@ -155,689 +159,932 @@ func (r *reader) readCount() (int, error) {
 	return int(n), nil
 }
 
-func (r *reader) readFull(data []byte) error {
-	if err := r.checkReadBudget(len(data)); err != nil {
-		return err
-	}
-	n, err := io.ReadFull(r.source, data)
-	r.read += int64(n)
-	return err
-}
-
-func (r *reader) checkReadBudget(n int) error {
-	if n < 0 || int64(n) > int64(maxInputBytes)-r.read {
-		return oruby.ERangeError("Marshal input exceeds size limit")
-	}
-	return nil
-}
-
-func (r *reader) readBytes() ([]byte, error) {
-	n, err := r.readLength()
+// bytes is MRI's r_bytes
+func (r *reader) bytes() ([]byte, error) {
+	n, err := r.long()
 	if err != nil {
 		return nil, err
 	}
-	if err := r.checkReadBudget(n); err != nil {
-		return nil, err
+	if n < 0 || n > maxInputBytes {
+		return nil, oruby.ERangeError("Marshal length exceeds size limit")
 	}
 	data := make([]byte, n)
-	if err := r.readFull(data); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, oruby.EArgumentError("marshal data too short")
-		}
+	if err := r.full(data); err != nil {
 		return nil, err
 	}
 	return data, nil
 }
 
-// readValue reads one value and applies the load proc and freeze: option
-func (r *reader) readValue(depth int) (oruby.Value, error) {
-	v, err := r.readValue0(depth)
-	if err != nil || (r.proc.IsNil() && !r.freeze) || v.Type() == oruby.MrbTTSymbol {
-		return v, err
+// symbol is MRI's r_symbol: a Symbol or a link to one
+func (r *reader) symbol() (oruby.MrbSym, error) {
+	tag, err := r.byte1()
+	if err != nil {
+		return 0, err
 	}
-	if r.freeze && v.Type() != oruby.MrbTTClass && v.Type() != oruby.MrbTTModule {
-		if _, err := r.mrb.Funcall(v, oruby.Sym_freeze); err != nil {
-			return oruby.Nil, err
+	ivar := false
+	if tag == 'I' {
+		ivar = true
+		if tag, err = r.byte1(); err != nil {
+			return 0, err
 		}
 	}
-	if !r.proc.IsNil() {
-		return r.mrb.Funcall(r.proc, oruby.Sym_call, v)
+	switch tag {
+	case ':':
+		return r.symreal(ivar)
+	case ';':
+		if ivar {
+			return 0, oruby.EArgumentError("dump format error (symlink with encoding)")
+		}
+		return r.symlink()
 	}
-	return v, nil
+	return 0, oruby.EArgumentError("dump format error for symbol(0x%x)", tag)
 }
 
-func (r *reader) readValue0(depth int) (oruby.Value, error) {
+func (r *reader) symlink() (oruby.MrbSym, error) {
+	id, err := r.long()
+	if err != nil {
+		return 0, err
+	}
+	if id < 0 || id >= int64(len(r.symbols)) {
+		return 0, oruby.EArgumentError("bad symbol")
+	}
+	return r.symbols[id], nil
+}
+
+// symreal reads a Symbol's name, and its encoding when ivar (mruby keeps no
+// encoding in a Symbol: the name's bytes are its identity)
+func (r *reader) symreal(ivar bool) (oruby.MrbSym, error) {
+	name, err := r.bytes()
+	if err != nil {
+		return 0, err
+	}
+	sym := r.mrb.Intern(string(name))
+	r.symbols = append(r.symbols, sym)
+	if ivar {
+		n, err := r.count()
+		if err != nil {
+			return 0, err
+		}
+		for i := 0; i < n; i++ {
+			key, err := r.symbol()
+			if err != nil {
+				return 0, err
+			}
+			if _, err := r.object(); err != nil {
+				return 0, err
+			}
+			if k := r.mrb.SymName(key); k != "E" && k != "encoding" {
+				return 0, oruby.EArgumentError("invalid symbol ivar")
+			}
+		}
+	}
+	return sym, nil
+}
+
+func (r *reader) entry(v oruby.Value) oruby.Value {
+	r.objects = append(r.objects, v)
+	if v.HasBasic() {
+		r.partial[v.Pointer()] = true
+	}
+	return v
+}
+
+// prepare reserves an object-table slot for an object made later (r_prepare)
+func (r *reader) prepare() int {
+	r.objects = append(r.objects, oruby.Nil)
+	return len(r.objects) - 1
+}
+
+func (r *reader) entry0(v oruby.Value, idx int) oruby.Value {
+	r.objects[idx] = v
+	if v.HasBasic() {
+		r.partial[v.Pointer()] = true
+	}
+	return v
+}
+
+// leave is MRI's r_leave: a complete object is frozen for freeze: (Strings
+// deduplicated, modules left alone, no freeze method called) and given to
+// the load proc
+func (r *reader) leave(v oruby.Value, partial bool) (oruby.Value, error) {
+	if partial {
+		return v, nil
+	}
+	if v.HasBasic() {
+		delete(r.partial, v.Pointer())
+	}
+	if r.freeze {
+		switch v.Type() {
+		case oruby.MrbTTClass, oruby.MrbTTModule:
+		case oruby.MrbTTString:
+			// a plain String is deduplicated; one with instance variables
+			// or of a subclass is the object itself, frozen
+			if r.mrb.ClassName(r.mrb.ObjClass(v)) != "String" || r.hasIvars(v) {
+				v.Freeze()
+				break
+			}
+			d, err := r.mrb.Funcall(v, r.mrb.Intern("-@"))
+			if err != nil {
+				return v, err
+			}
+			v = d
+		default:
+			v.Freeze()
+		}
+	}
+	return r.postProc(v)
+}
+
+func (r *reader) hasIvars(v oruby.Value) bool {
+	found := false
+	r.mrb.IVForEach(v, func(name oruby.MrbSym, _ oruby.Value) bool {
+		found = !strings.HasPrefix(r.mrb.SymName(name), "__")
+		return !found
+	})
+	return found
+}
+
+func (r *reader) postProc(v oruby.Value) (oruby.Value, error) {
+	if r.proc.IsNil() {
+		return v, nil
+	}
+	return r.mrb.Funcall(r.proc, oruby.Sym_call, v)
+}
+
+// object is MRI's r_object: a complete value
+func (r *reader) object() (oruby.Value, error) {
+	return r.object0(false, nil, nil)
+}
+
+// object0 is MRI's r_object0: ivp, when given, is set false by a value that
+// takes the 'I' instance variables itself (a _dump String's, a Regexp's);
+// extmod are the modules of an 'e' prefix still to be applied
+func (r *reader) object0(partial bool, ivp *bool, extmod *[]oruby.Value) (oruby.Value, error) {
 	r.nodes++
 	if r.nodes > maxNodes {
 		return oruby.Nil, oruby.ERangeError("Marshal object graph exceeds size limit")
 	}
-	if depth > maxDepth {
-		return oruby.Nil, oruby.ERangeError("Marshal nesting exceeds depth limit")
+	r.depth++
+	defer func() { r.depth-- }()
+	if r.depth > maxDepth {
+		return oruby.Nil, oruby.EArgumentError("Marshal data nests too deep")
 	}
-	tag, err := r.readByte()
+	tag, err := r.byte1()
 	if err != nil {
 		return oruby.Nil, err
 	}
+	return r.objectFor(partial, ivp, extmod, tag)
+}
+
+func (r *reader) objectFor(partial bool, ivp *bool, extmod *[]oruby.Value, tag byte) (oruby.Value, error) {
+	mrb := r.mrb
 	switch tag {
-	case '0':
-		return oruby.Nil, nil
-	case 'T':
-		return oruby.True, nil
-	case 'F':
-		return oruby.False, nil
-	case 'i':
-		n, err := r.readLong()
-		if err != nil {
-			return oruby.Nil, err
-		}
-		return r.mrb.Value(n), nil
-	case ':':
-		name, err := r.readBytes()
-		if err != nil {
-			return oruby.Nil, err
-		}
-		sym := r.mrb.Intern(string(name))
-		r.symbols = append(r.symbols, sym)
-		return r.mrb.SymbolValue(sym), nil
-	case ';':
-		id, err := r.readLong()
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if id < 0 || id >= int64(len(r.symbols)) {
-			return oruby.Nil, oruby.EArgumentError("symbol link out of range")
-		}
-		return r.mrb.SymbolValue(r.symbols[id]), nil
 	case '@':
-		id, err := r.readLong()
+		id, err := r.long()
 		if err != nil {
 			return oruby.Nil, err
 		}
 		if id < 0 || id >= int64(len(r.objects)) {
-			return oruby.Nil, oruby.EArgumentError("object link out of range")
+			return oruby.Nil, oruby.EArgumentError("dump format error (unlinked)")
 		}
-		return r.objects[id], nil
-	case '"':
-		return r.readStringObject()
-	case '[':
-		return r.readArray(depth)
-	case '{', '}':
-		return r.readHash(tag == '}', depth)
-	case 'f':
-		return r.readFloat()
+		// a complete object goes to the proc again; one still being read, or
+		// one _load / marshal_load made (MRI never takes those off the
+		// partial list), does not
+		v := r.objects[id]
+		if v.HasBasic() && r.partial[v.Pointer()] {
+			return v, nil
+		}
+		return r.postProc(v)
+
 	case 'I':
-		return r.readIvars(depth)
-	case 'o':
-		return r.readObject(depth)
-	case 'S':
-		return r.readStruct(depth)
-	case 'U':
-		return r.readMarshalLoad(depth)
-	case 'u':
-		return r.readUserLoad()
-	case 'c', 'm':
-		name, err := r.readBytes()
+		ivar := true
+		v, err := r.object0(true, &ivar, extmod)
 		if err != nil {
 			return oruby.Nil, err
 		}
-		value, err := r.lookupConstant(string(name))
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if (tag == 'c' && value.Type() != oruby.MrbTTClass) || (tag == 'm' && value.Type() != oruby.MrbTTModule) {
-			return oruby.Nil, oruby.ETypeError("class/module type mismatch in Marshal data")
-		}
-		r.addObject(value)
-		return value, nil
-	case '/':
-		return r.readRegexp()
-	case 'l':
-		return r.readBignum()
-	case 'e':
-		// object extended with a module: 'e' module-name object
-		name, err := r.readClassSymbol(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		mod, err := r.lookupConstant(name)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		v, err := r.readValue0(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if _, err := r.mrb.Funcall(v, oruby.Sym_extend, mod); err != nil {
-			return oruby.Nil, err
-		}
-		return v, nil
-	case 'C':
-		// instance of a user subclass of String, Array, Hash or Regexp
-		name, err := r.readClassSymbol(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		klass, err := r.lookupConstant(name)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		at := len(r.objects)
-		v, err := r.readValue0(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		obj, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if _, err := r.mrb.Funcall(obj, oruby.Sym_replace, v); err != nil {
-			return oruby.Nil, err
-		}
-		if at < len(r.objects) {
-			r.objects[at] = obj
-		}
-		return obj, nil
-	default:
-		return oruby.Nil, oruby.EArgumentError("invalid/unknown Marshal format (0x%02x)", tag)
-	}
-}
-
-func (r *reader) readBignum() (oruby.Value, error) {
-	sign, err := r.readByte()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if sign != '+' && sign != '-' {
-		return oruby.Nil, oruby.EArgumentError("invalid bignum sign in Marshal data")
-	}
-	words, err := r.readLong()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if words < 0 || words > maxInputBytes/2 {
-		return oruby.Nil, oruby.ERangeError("Marshal bignum exceeds size limit")
-	}
-	byteCount := int(words) * 2
-	if err := r.checkReadBudget(byteCount); err != nil {
-		return oruby.Nil, err
-	}
-	littleEndian := make([]byte, byteCount)
-	if err := r.readFull(littleEndian); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return oruby.Nil, oruby.EArgumentError("marshal data too short")
-		}
-		return oruby.Nil, err
-	}
-	for left, right := 0, len(littleEndian)-1; left < right; left, right = left+1, right-1 {
-		littleEndian[left], littleEndian[right] = littleEndian[right], littleEndian[left]
-	}
-	value := new(big.Int).SetBytes(littleEndian)
-	if sign == '-' {
-		value.Neg(value)
-	}
-	result := r.mrb.BigIntValue(value)
-	r.addObject(result)
-	return result, nil
-}
-
-func (r *reader) readStringObject() (oruby.Value, error) {
-	data, err := r.readBytes()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	value := r.mrb.BytesValue(data)
-	r.addObject(value)
-	return value, nil
-}
-
-func (r *reader) readArray(depth int) (oruby.Value, error) {
-	n, err := r.readCount()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	array := r.mrb.AryNewCapa(n)
-	r.addObject(array.Value())
-	for i := 0; i < n; i++ {
-		value, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		array.Push(value)
-	}
-	return array.Value(), nil
-}
-
-func (r *reader) readHash(hasDefault bool, depth int) (oruby.Value, error) {
-	n, err := r.readCount()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	hash := r.mrb.HashNewCapa(n)
-	r.addObject(hash.Value())
-	for i := 0; i < n; i++ {
-		key, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		value, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		hash.Set(key, value)
-	}
-	if hasDefault {
-		value, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if _, err := r.mrb.Funcall(hash, oruby.SymE_default, value); err != nil {
-			return oruby.Nil, err
-		}
-	}
-	return hash.Value(), nil
-}
-
-func (r *reader) readFloat() (oruby.Value, error) {
-	data, err := r.readBytes()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	var value float64
-	switch string(data) {
-	case "nan":
-		value = math.NaN()
-	case "inf":
-		value = math.Inf(1)
-	case "-inf":
-		value = math.Inf(-1)
-	default:
-		value, err = strconv.ParseFloat(string(data), 64)
-		if err != nil {
-			return oruby.Nil, oruby.EArgumentError("invalid value for Float(): %q", data)
-		}
-	}
-	result := r.mrb.FloatValue(value)
-	r.addObject(result)
-	return result, nil
-}
-
-func (r *reader) readIvars(depth int) (oruby.Value, error) {
-	value, err := r.readValue(depth)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	n, err := r.readCount()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	for i := 0; i < n; i++ {
-		key, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if key.Type() != oruby.MrbTTSymbol {
-			return oruby.Nil, oruby.EArgumentError("instance variable name is not a Symbol")
-		}
-		item, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		name := r.mrb.SymName(key.Symbol())
-		if value.Type() == oruby.MrbTTCData && r.mrb.ClassOf(value).Name() == "Regexp" && name == "E" {
-			if item.Type() != oruby.MrbTTFalse {
-				return oruby.Nil, oruby.ETypeError("Regexp encoding metadata is not supported")
-			}
-			continue
-		}
-		if value.Type() == oruby.MrbTTString && (name == "E" || name == "encoding") {
-			encoding := "US-ASCII"
-			if name == "encoding" {
-				if item.Type() != oruby.MrbTTString {
-					return oruby.Nil, oruby.EArgumentError("String encoding metadata is not a String")
-				}
-				encoding = r.mrb.String(item)
-			} else {
-				switch item.Type() {
-				case oruby.MrbTTTrue:
-					encoding = "UTF-8"
-				case oruby.MrbTTFalse:
-				default:
-					return oruby.Nil, oruby.EArgumentError("String encoding flag is not boolean")
-				}
-			}
-			if !r.mrb.RespondTo(value, oruby.Sym_force_encoding) {
-				return oruby.Nil, oruby.ETypeError("String encoding metadata cannot be restored")
-			}
-			if _, err := r.mrb.Funcall(value, oruby.Sym_force_encoding, encoding); err != nil {
+		if ivar {
+			if err := r.ivars(v); err != nil {
 				return oruby.Nil, err
 			}
-			continue
 		}
-		if value.Type() == oruby.MrbTTString {
-			return oruby.Nil, oruby.ETypeError("String instance variables cannot be restored by this mruby runtime")
-		}
-		if err := r.mrb.IVSet(value, key.Symbol(), item); err != nil {
+		return r.leave(v, partial)
+
+	case 'e':
+		path, err := r.symbol()
+		if err != nil {
 			return oruby.Nil, err
 		}
+		m, err := r.pathToClass(mrb.SymName(path))
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if m.Type() != oruby.MrbTTModule {
+			return oruby.Nil, oruby.EArgumentError("%s does not refer to module", mrb.SymName(path))
+		}
+		mods := []oruby.Value{m}
+		if extmod != nil {
+			mods = append(*extmod, m)
+		}
+		v, err := r.object0(true, nil, &mods)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		for i := len(mods) - 1; i >= 0; i-- {
+			if _, err := mrb.Funcall(v, oruby.Sym_extend, mods[i]); err != nil {
+				return oruby.Nil, err
+			}
+		}
+		if extmod != nil {
+			*extmod = (*extmod)[:0]
+		}
+		return r.leave(v, partial)
+
+	case 'C':
+		return r.uclass(partial, extmod)
+
+	case '0':
+		return r.leave(oruby.Nil, false)
+	case 'T':
+		return r.leave(oruby.True, false)
+	case 'F':
+		return r.leave(oruby.False, false)
+	case 'i':
+		n, err := r.long()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		return r.leave(mrb.Value(n), false)
+
+	case 'f':
+		data, err := r.bytes()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		f, err := parseFloat(data)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		return r.leave(r.entry(mrb.FloatValue(f)), false)
+
+	case 'l':
+		z, err := r.bignum()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		return r.leave(r.entry(mrb.BigIntValue(z)), false)
+
+	case '"':
+		data, err := r.bytes()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		s := mrb.BytesValue(data)
+		if _, err := mrb.Funcall(s, oruby.Sym_force_encoding, "ASCII-8BIT"); err != nil {
+			return oruby.Nil, err
+		}
+		return r.leave(r.entry(s), partial)
+
+	case '/':
+		return r.regexp(partial, ivp, oruby.Nil)
+
+	case '[':
+		n, err := r.count()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		a := mrb.AryNewCapa(n)
+		r.entry(a.Value())
+		for i := 0; i < n; i++ {
+			item, err := r.object()
+			if err != nil {
+				return oruby.Nil, err
+			}
+			a.Push(item)
+		}
+		return r.leave(a.Value(), partial)
+
+	case '{', '}':
+		return r.hash(partial, tag == '}', false)
+
+	case ':':
+		var sym oruby.MrbSym
+		var err error
+		if ivp != nil {
+			sym, err = r.symreal(*ivp)
+			*ivp = false
+		} else {
+			sym, err = r.symreal(false)
+		}
+		if err != nil {
+			return oruby.Nil, err
+		}
+		return r.leave(mrb.SymbolValue(sym), partial)
+	case ';':
+		sym, err := r.symlink()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		return mrb.SymbolValue(sym), nil
+
+	case 'S':
+		return r.structure(partial)
+	case 'u':
+		return r.userLoad(partial, ivp)
+	case 'U':
+		return r.marshalLoad(extmod)
+	case 'o':
+		return r.objectRecord(partial)
+	case 'd':
+		return r.dataRecord(partial, extmod)
+
+	case 'c', 'm', 'M':
+		data, err := r.bytes()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		name := string(data)
+		v, err := r.pathToClass(name)
+		if err != nil {
+			return oruby.Nil, err
+		}
+		switch {
+		case tag == 'c' && v.Type() != oruby.MrbTTClass:
+			return oruby.Nil, oruby.EArgumentError("%s does not refer to class", name)
+		case tag == 'm' && v.Type() != oruby.MrbTTModule:
+			return oruby.Nil, oruby.EArgumentError("%s does not refer to module", name)
+		}
+		return r.leave(r.entry(v), partial)
 	}
-	return value, nil
+	return oruby.Nil, oruby.EArgumentError("dump format error(0x%x)", tag)
 }
 
-func (r *reader) readObject(depth int) (oruby.Value, error) {
-	name, err := r.readClassSymbol(depth)
+// ivars is MRI's r_ivar: E and encoding set the encoding, the others are
+// instance variables
+func (r *reader) ivars(v oruby.Value) error {
+	n, err := r.count()
 	if err != nil {
-		return oruby.Nil, err
-	}
-	klass, err := r.lookupConstant(name)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if klass.Type() != oruby.MrbTTClass {
-		return oruby.Nil, oruby.ETypeError("%s is not a class", name)
-	}
-	if name == "Range" {
-		return r.readRange(klass, depth)
-	}
-	value, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	r.addObject(value)
-	n, err := r.readCount()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if value.Type() == oruby.MrbTTException {
-		return r.readException(value, n, depth)
+		return err
 	}
 	for i := 0; i < n; i++ {
-		key, err := r.readValue(depth + 1)
+		key, err := r.symbol()
 		if err != nil {
-			return oruby.Nil, err
+			return err
 		}
-		if key.Type() != oruby.MrbTTSymbol {
-			return oruby.Nil, oruby.EArgumentError("instance variable name is not a Symbol")
-		}
-		item, err := r.readValue(depth + 1)
+		val, err := r.object()
 		if err != nil {
-			return oruby.Nil, err
+			return err
 		}
-		if err := r.mrb.IVSet(value, key.Symbol(), item); err != nil {
-			return oruby.Nil, err
+		if enc, ok := r.encodingOf(key, val); ok {
+			if v.Type() == oruby.MrbTTString || r.mrb.RespondTo(v, oruby.Sym_force_encoding) {
+				if _, err := r.mrb.Funcall(v, oruby.Sym_force_encoding, enc); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := r.setIvar(v, key, val); err != nil {
+			return err
 		}
 	}
-	return value, nil
+	return nil
 }
 
-func (r *reader) readRange(klass oruby.Value, depth int) (oruby.Value, error) {
-	value, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
+func (r *reader) setIvar(v oruby.Value, key oruby.MrbSym, val oruby.Value) error {
+	if v.Type() == oruby.MrbTTModule {
+		return oruby.EArgumentError("module %s can't have instance variables", r.mrb.String(r.mrb.Inspect(v)))
+	}
+	if v.Frozen() {
+		return oruby.EFrozenError("can't modify frozen %s: %s", r.mrb.ClassName(r.mrb.ObjClass(v)), r.mrb.String(r.mrb.Inspect(v)))
+	}
+	return r.mrb.IVSet(v, key, val)
+}
+
+// encodingOf: the encoding an E / encoding instance variable names
+func (r *reader) encodingOf(key oruby.MrbSym, val oruby.Value) (string, bool) {
+	switch r.mrb.SymName(key) {
+	case "E":
+		if val.Type() == oruby.MrbTTTrue {
+			return "UTF-8", true
+		}
+		return "US-ASCII", true
+	case "encoding":
+		return r.mrb.String(val), true
+	}
+	return "", false
+}
+
+func (r *reader) bignum() (*big.Int, error) {
+	sign, err := r.byte1()
+	if err != nil {
+		return nil, err
+	}
+	if sign != '+' && sign != '-' {
+		return nil, oruby.EArgumentError("dump format error (bignum sign)")
+	}
+	words, err := r.long()
+	if err != nil {
+		return nil, err
+	}
+	if words < 0 || words > maxInputBytes/2 {
+		return nil, oruby.ERangeError("Marshal bignum exceeds size limit")
+	}
+	data := make([]byte, words*2)
+	if err := r.full(data); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
+		data[i], data[j] = data[j], data[i]
+	}
+	z := new(big.Int).SetBytes(data)
+	if sign == '-' {
+		z.Neg(z)
+	}
+	return z, nil
+}
+
+// parseFloat: MRI's r_object TYPE_FLOAT; old dumps add the mantissa bytes
+// after a NUL, which are ignored
+func parseFloat(data []byte) (float64, error) {
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		data = data[:i]
+	}
+	switch string(data) {
+	case "nan":
+		return math.NaN(), nil
+	case "inf":
+		return math.Inf(1), nil
+	case "-inf":
+		return math.Inf(-1), nil
+	}
+	f, err := strconv.ParseFloat(string(data), 64)
+	if err != nil {
+		var ne *strconv.NumError
+		if errors.As(err, &ne) && ne.Err == strconv.ErrRange {
+			return f, nil
+		}
+		return 0, oruby.EArgumentError("invalid value for Float(): %q", data)
+	}
+	return f, nil
+}
+
+func (r *reader) hash(partial, hasDefault, identity bool) (oruby.Value, error) {
+	n, err := r.count()
 	if err != nil {
 		return oruby.Nil, err
 	}
-	if value.Type() != oruby.MrbTTRange {
-		return oruby.Nil, oruby.ETypeError("Range.allocate did not return a Range")
+	h := r.mrb.HashNewCapa(n)
+	if identity {
+		if _, err := r.mrb.Funcall(h, r.mrb.Intern("compare_by_identity")); err != nil {
+			return oruby.Nil, err
+		}
 	}
-	r.addObject(value)
-	n, err := r.readCount()
+	r.entry(h.Value())
+	for i := 0; i < n; i++ {
+		key, err := r.object()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		val, err := r.object()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if _, err := r.mrb.Funcall(h, oruby.OpSym_aset, key, val); err != nil {
+			return oruby.Nil, err
+		}
+	}
+	if hasDefault {
+		def, err := r.object()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if _, err := r.mrb.Funcall(h, oruby.SymE_default, def); err != nil {
+			return oruby.Nil, err
+		}
+	}
+	return r.leave(h.Value(), partial)
+}
+
+// uclass is MRI's TYPE_UCLASS: a core object (String, Array, Hash, Regexp)
+// made an instance of a user subclass in place
+func (r *reader) uclass(partial bool, extmod *[]oruby.Value) (oruby.Value, error) {
+	mrb := r.mrb
+	path, err := r.symbol()
 	if err != nil {
 		return oruby.Nil, err
 	}
-	if n != 3 {
-		return oruby.Nil, oruby.EArgumentError("invalid Range field count in Marshal data")
+	c, err := r.pathToClass(mrb.SymName(path))
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if c.Type() != oruby.MrbTTClass {
+		return oruby.Nil, oruby.EArgumentError("%s does not refer to class", mrb.SymName(path))
+	}
+	tag, err := r.byte1()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if mrb.ClassName(mrb.ClassPtr(c)) == "Hash" && (tag == '{' || tag == '}') {
+		return r.hash(partial, tag == '}', true)
+	}
+	if tag == '/' {
+		// a Regexp subclass: made as one, not frozen like a Regexp is
+		return r.regexp(partial, nil, c)
+	}
+	v, err := r.objectFor(partial, nil, extmod, tag)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	switch v.Type() {
+	case oruby.MrbTTString, oruby.MrbTTArray, oruby.MrbTTHash, oruby.MrbTTCData:
+	default:
+		return oruby.Nil, oruby.EArgumentError("dump format error (user class)")
+	}
+	klass := mrb.ClassPtr(c)
+	inherits, err := mrb.Funcall(c, oruby.OpSym_le, mrb.ObjClass(v))
+	if err != nil || !inherits.Bool() {
+		return oruby.Nil, oruby.EArgumentError("dump format error (user class)")
+	}
+	mrb.ObjSetClass(v, klass)
+	return v, nil
+}
+
+// regexp: '/' source options; the encoding instance variables go to the
+// source. A Regexp is frozen (MRI 4.1), so other instance variables raise
+func (r *reader) regexp(partial bool, ivp *bool, subclass oruby.Value) (oruby.Value, error) {
+	mrb := r.mrb
+	src, err := r.bytes()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	options, err := r.byte1()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	idx := r.prepare()
+	source := mrb.BytesValue(src)
+	var extra []ivar
+	if ivp != nil && *ivp {
+		*ivp = false
+		n, err := r.count()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		for i := 0; i < n; i++ {
+			key, err := r.symbol()
+			if err != nil {
+				return oruby.Nil, err
+			}
+			val, err := r.object()
+			if err != nil {
+				return oruby.Nil, err
+			}
+			if enc, ok := r.encodingOf(key, val); ok {
+				if _, err := mrb.Funcall(source, oruby.Sym_force_encoding, enc); err != nil {
+					return oruby.Nil, err
+				}
+				continue
+			}
+			extra = append(extra, ivar{key, val})
+		}
+	}
+	opts := int(options) & 0x0f
+	var v oruby.Value
+	if subclass.IsNil() {
+		v, err = mrb.Funcall(mrb.ClassGet("Regexp"), oruby.Sym_new, source, opts)
+		if err == nil {
+			v.Freeze()
+		}
+	} else {
+		v, err = mrb.Funcall(mrb.ModuleGet("Marshal"), mrb.Intern("__oruby_new_regexp"), subclass, source, opts)
+	}
+	if err != nil {
+		return oruby.Nil, err
+	}
+	r.entry0(v, idx)
+	for _, iv := range extra {
+		if err := r.setIvar(v, iv.name, iv.val); err != nil {
+			return oruby.Nil, err
+		}
+	}
+	return r.leave(v, partial)
+}
+
+// classOf reads a class name and finds the class
+func (r *reader) classOf() (oruby.Value, string, error) {
+	path, err := r.symbol()
+	if err != nil {
+		return oruby.Nil, "", err
+	}
+	name := r.mrb.SymName(path)
+	c, err := r.pathToClass(name)
+	if err != nil {
+		return oruby.Nil, name, err
+	}
+	if c.Type() != oruby.MrbTTClass {
+		return oruby.Nil, name, oruby.EArgumentError("%s does not refer to class", name)
+	}
+	return c, name, nil
+}
+
+// structure: 'S', a Struct or a Data, filled without its initialize (MRI's
+// rb_struct_initialize)
+func (r *reader) structure(partial bool) (oruby.Value, error) {
+	mrb := r.mrb
+	idx := r.prepare()
+	c, name, err := r.classOf()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	n, err := r.count()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	v, err := mrb.Funcall(c, oruby.Sym_allocate)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if v.Type() != oruby.MrbTTStruct {
+		return oruby.Nil, oruby.ETypeError("class %s not a struct", name)
+	}
+	members, err := mrb.Funcall(c, oruby.Sym_members)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	names := append([]oruby.Value(nil), oruby.RArraySlice(members)...)
+	if len(names) != n {
+		return oruby.Nil, oruby.ETypeError("struct %s not compatible (struct size differs)", name)
+	}
+	r.entry0(v, idx)
+	values := mrb.AryNewCapa(n)
+	for i := 0; i < n; i++ {
+		slot, err := r.symbol()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if slot != names[i].Symbol() {
+			return oruby.Nil, oruby.ETypeError("struct %s not compatible (:%s for :%s)", name, mrb.SymName(slot), mrb.SymName(names[i].Symbol()))
+		}
+		val, err := r.object()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		values.Push(val)
+	}
+	if _, err := mrb.Funcall(mrb.ModuleGet("Marshal"), mrb.Intern("__oruby_init_struct"), v, values); err != nil {
+		return oruby.Nil, err
+	}
+	return r.leave(v, partial)
+}
+
+// userLoad: 'u' class bytes, given to class._load; the 'I' instance
+// variables belong to the bytes
+func (r *reader) userLoad(partial bool, ivp *bool) (oruby.Value, error) {
+	mrb := r.mrb
+	path, err := r.symbol()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	name := mrb.SymName(path)
+	c, err := r.pathToClass(name)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if !mrb.RespondTo(c, oruby.Sym__load) {
+		return oruby.Nil, oruby.ETypeError("class %s needs to have method '_load'", name)
+	}
+	raw, err := r.bytes()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	data := mrb.BytesValue(raw)
+	if _, err := mrb.Funcall(data, oruby.Sym_force_encoding, "ASCII-8BIT"); err != nil {
+		return oruby.Nil, err
+	}
+	if ivp != nil && *ivp {
+		if err := r.ivars(data); err != nil {
+			return oruby.Nil, err
+		}
+		*ivp = false
+	}
+	v, err := mrb.Funcall(c, oruby.Sym__load, data)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	r.entry(v) // stays partial, as in MRI: links to it skip the proc
+	if partial {
+		return v, nil
+	}
+	if r.freeze {
+		v.Freeze()
+	}
+	return r.postProc(v)
+}
+
+// marshalLoad: 'U' class payload: allocate, extend, marshal_load(payload)
+func (r *reader) marshalLoad(extmod *[]oruby.Value) (oruby.Value, error) {
+	mrb := r.mrb
+	c, name, err := r.classOf()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if name == "Rational" || name == "Complex" {
+		return r.numeric(name)
+	}
+	v, err := mrb.Funcall(c, oruby.Sym_allocate)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if extmod != nil {
+		for i := len(*extmod) - 1; i >= 0; i-- {
+			if _, err := mrb.Funcall(v, oruby.Sym_extend, (*extmod)[i]); err != nil {
+				return oruby.Nil, err
+			}
+		}
+		*extmod = (*extmod)[:0]
+	}
+	if !mrb.RespondTo(v, oruby.Sym_marshal_load) {
+		return oruby.Nil, oruby.ETypeError("instance of %s needs to have method 'marshal_load'", name)
+	}
+	r.entry(v)
+	data, err := r.object()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if _, err := mrb.Funcall(v, oruby.Sym_marshal_load, data); err != nil {
+		return oruby.Nil, err
+	}
+	if r.freeze {
+		v.Freeze()
+	}
+	return r.postProc(v)
+}
+
+// numeric: a Rational or Complex from its [a, b] marshal_dump
+func (r *reader) numeric(name string) (oruby.Value, error) {
+	idx := r.prepare()
+	data, err := r.object()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if data.Type() != oruby.MrbTTArray || oruby.RArrayLen(data) != 2 {
+		return oruby.Nil, oruby.EArgumentError("marshaled %s must have an array whose length is 2 but %s",
+			strings.ToLower(name), r.mrb.String(r.mrb.Inspect(data)))
+	}
+	pair := oruby.RArraySlice(data)
+	v, err := r.mrb.Funcall(r.mrb.KernelModule(), r.mrb.Intern(name), pair[0], pair[1])
+	if err != nil {
+		return oruby.Nil, err
+	}
+	r.objects[idx] = v
+	return r.postProc(v)
+}
+
+// objectRecord: 'o' class ivars; Exception and Range are records too
+func (r *reader) objectRecord(partial bool) (oruby.Value, error) {
+	mrb := r.mrb
+	idx := r.prepare()
+	c, _, err := r.classOf()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if isSubclass(mrb, c, "Range") {
+		return r.rangeRecord(c, idx, partial)
+	}
+	v, err := mrb.Funcall(c, oruby.Sym_allocate)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	switch v.Type() {
+	case oruby.MrbTTObject, oruby.MrbTTException:
+	default:
+		return oruby.Nil, oruby.EArgumentError("dump format error")
+	}
+	r.entry0(v, idx)
+	n, err := r.count()
+	if err != nil {
+		return oruby.Nil, err
+	}
+	for i := 0; i < n; i++ {
+		key, err := r.symbol()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		val, err := r.object()
+		if err != nil {
+			return oruby.Nil, err
+		}
+		if v.Type() == oruby.MrbTTException {
+			switch mrb.SymName(key) {
+			case "mesg":
+				if err := mrb.SetExcMessage(v, val); err != nil {
+					return oruby.Nil, err
+				}
+				continue
+			case "bt":
+				if err := mrb.SetExcBacktrace(v, val); err != nil {
+					return oruby.Nil, err
+				}
+				continue
+			}
+		}
+		if err := r.setIvar(v, key, val); err != nil {
+			return oruby.Nil, err
+		}
+	}
+	return r.leave(v, partial)
+}
+
+func isSubclass(mrb *oruby.MrbState, c oruby.Value, base string) bool {
+	if !mrb.ClassDefined(base) {
+		return false
+	}
+	le, err := mrb.Funcall(c, oruby.OpSym_le, mrb.ClassGet(base))
+	return err == nil && le.Bool()
+}
+
+func (r *reader) rangeRecord(c oruby.Value, idx int, partial bool) (oruby.Value, error) {
+	mrb := r.mrb
+	// made first, so an endpoint that refers to the Range links to it
+	v, err := mrb.Funcall(c, oruby.Sym_allocate)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	r.entry0(v, idx)
+	n, err := r.count()
+	if err != nil {
+		return oruby.Nil, err
 	}
 	var begin, end oruby.Value
-	var exclusive bool
-	seen := make(map[string]bool, 3)
+	excl := false
 	for i := 0; i < n; i++ {
-		key, err := r.readValue(depth + 1)
+		key, err := r.symbol()
 		if err != nil {
 			return oruby.Nil, err
 		}
-		if key.Type() != oruby.MrbTTSymbol {
-			return oruby.Nil, oruby.EArgumentError("Range field name is not a Symbol")
-		}
-		name := r.mrb.SymName(key.Symbol())
-		if seen[name] {
-			return oruby.Nil, oruby.EArgumentError("duplicate Range field %s in Marshal data", name)
-		}
-		seen[name] = true
-		field, err := r.readValue(depth + 1)
+		val, err := r.object()
 		if err != nil {
 			return oruby.Nil, err
 		}
-		switch name {
+		switch mrb.SymName(key) {
 		case "begin":
-			begin = field
+			begin = val
 		case "end":
-			end = field
+			end = val
 		case "excl":
-			if field.Type() != oruby.MrbTTTrue && field.Type() != oruby.MrbTTFalse {
-				return oruby.Nil, oruby.EArgumentError("Range exclusivity flag is not boolean")
-			}
-			exclusive = field.Bool()
-		default:
-			return oruby.Nil, oruby.EArgumentError("unknown Range field %s in Marshal data", name)
+			excl = val.Bool()
 		}
 	}
-	for _, name := range []string{"begin", "end", "excl"} {
-		if !seen[name] {
-			return oruby.Nil, oruby.EArgumentError("missing Range field %s in Marshal data", name)
-		}
-	}
-	if _, err := r.mrb.Funcall(value, oruby.Sym_initialize, begin, end, exclusive); err != nil {
+	if _, err := mrb.Funcall(v, oruby.Sym_initialize, begin, end, excl); err != nil {
 		return oruby.Nil, err
 	}
-	return value, nil
+	return r.leave(v, partial)
 }
 
-func (r *reader) readException(value oruby.Value, n, depth int) (oruby.Value, error) {
-	var message, backtrace oruby.Value
-	hasMessage, hasBacktrace := false, false
-	var variables []struct {
-		name  oruby.MrbSym
-		value oruby.Value
-	}
-	for i := 0; i < n; i++ {
-		key, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if key.Type() != oruby.MrbTTSymbol {
-			return oruby.Nil, oruby.EArgumentError("instance variable name is not a Symbol")
-		}
-		item, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		switch r.mrb.SymName(key.Symbol()) {
-		case "mesg":
-			if hasMessage {
-				return oruby.Nil, oruby.EArgumentError("duplicate Exception message in Marshal data")
-			}
-			message, hasMessage = item, true
-		case "bt":
-			if hasBacktrace {
-				return oruby.Nil, oruby.EArgumentError("duplicate Exception backtrace in Marshal data")
-			}
-			backtrace, hasBacktrace = item, true
-		default:
-			variables = append(variables, struct {
-				name  oruby.MrbSym
-				value oruby.Value
-			}{key.Symbol(), item})
-		}
-	}
-	if !hasMessage {
-		return oruby.Nil, oruby.EArgumentError("missing Exception fields in Marshal data")
-	}
-	if err := r.mrb.SetExcMessage(value, message); err != nil {
+// dataRecord: 'd' class data, given to _load_data
+func (r *reader) dataRecord(partial bool, extmod *[]oruby.Value) (oruby.Value, error) {
+	mrb := r.mrb
+	c, name, err := r.classOf()
+	if err != nil {
 		return oruby.Nil, err
 	}
-	if err := r.mrb.SetExcBacktrace(value, backtrace); err != nil {
+	v, err := mrb.Funcall(c, oruby.Sym_allocate)
+	if err != nil {
 		return oruby.Nil, err
 	}
-	for _, variable := range variables {
-		if err := r.mrb.IVSet(value, variable.name, variable.value); err != nil {
-			return oruby.Nil, err
-		}
+	if v.Type() != oruby.MrbTTCData {
+		return oruby.Nil, oruby.EArgumentError("dump format error")
 	}
-	return value, nil
+	r.entry(v)
+	if !mrb.RespondTo(v, mrb.Intern("_load_data")) {
+		return oruby.Nil, oruby.ETypeError("class %s needs to have instance method '_load_data'", name)
+	}
+	data, err := r.object0(partial, nil, extmod)
+	if err != nil {
+		return oruby.Nil, err
+	}
+	if _, err := mrb.Funcall(v, mrb.Intern("_load_data"), data); err != nil {
+		return oruby.Nil, err
+	}
+	return r.leave(v, partial)
 }
 
-func (r *reader) readStruct(depth int) (oruby.Value, error) {
-	name, err := r.readClassSymbol(depth)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	klass, err := r.lookupConstant(name)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if klass.Type() != oruby.MrbTTClass {
-		return oruby.Nil, oruby.ETypeError("%s is not a Struct class", name)
-	}
-	n, err := r.readCount()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	args := make([]interface{}, n)
-	for i := range args {
-		args[i] = oruby.Nil
-	}
-	value, err := r.mrb.Funcall(klass, oruby.Sym_new, args...)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	r.addObject(value)
-	for i := 0; i < n; i++ {
-		member, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if member.Type() != oruby.MrbTTSymbol {
-			return oruby.Nil, oruby.EArgumentError("Struct member name is not a Symbol")
-		}
-		item, err := r.readValue(depth + 1)
-		if err != nil {
-			return oruby.Nil, err
-		}
-		if _, err := r.mrb.Funcall(value, oruby.OpSym_aset, member, item); err != nil {
-			return oruby.Nil, err
-		}
-	}
-	return value, nil
-}
-
-func (r *reader) readMarshalLoad(depth int) (oruby.Value, error) {
-	name, err := r.readClassSymbol(depth)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	klass, err := r.lookupConstant(name)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	value, err := r.mrb.Funcall(klass, oruby.Sym_allocate)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	link := r.addObject(value)
-	payload, err := r.readValue(depth + 1)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if _, err := r.mrb.Funcall(value, oruby.Sym_marshal_load, payload); err != nil {
-		return oruby.Nil, err
-	}
-	r.objects[link] = value
-	return value, nil
-}
-
-func (r *reader) readUserLoad() (oruby.Value, error) {
-	name, err := r.readClassSymbol(0)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	klass, err := r.lookupConstant(name)
-	if err != nil {
-		return oruby.Nil, err
-	}
-	n, err := r.readLength()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if err := r.checkReadBudget(n); err != nil {
-		return oruby.Nil, err
-	}
-	data := make([]byte, n)
-	if err := r.readFull(data); err != nil {
-		return oruby.Nil, oruby.EArgumentError("marshal data too short")
-	}
-	value, err := r.mrb.Funcall(klass, oruby.Sym__load, r.mrb.BytesValue(data))
-	if err != nil {
-		return oruby.Nil, err
-	}
-	r.addObject(value)
-	return value, nil
-}
-
-func (r *reader) readRegexp() (oruby.Value, error) {
-	pattern, err := r.readBytes()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	optionByte, err := r.readByte()
-	if err != nil {
-		return oruby.Nil, err
-	}
-	if !r.mrb.ClassDefined("Regexp") {
-		return oruby.Nil, oruby.ETypeError("Regexp class is not available")
-	}
-	klass := r.mrb.ClassGet("Regexp")
-	value, err := r.mrb.Funcall(klass, oruby.Sym_new, r.mrb.BytesValue(pattern), int(optionByte))
-	if err != nil {
-		return oruby.Nil, err
-	}
-	r.addObject(value)
-	return value, nil
-}
-
-func (r *reader) readClassSymbol(depth int) (string, error) {
-	value, err := r.readValue(depth)
-	if err != nil {
-		return "", err
-	}
-	if value.Type() != oruby.MrbTTSymbol {
-		return "", oruby.EArgumentError("class name is not a Symbol")
-	}
-	return r.mrb.SymName(value.Symbol()), nil
-}
-
-func (r *reader) lookupConstant(name string) (oruby.Value, error) {
-	parts := strings.Split(name, "::")
+// pathToClass is MRI's rb_path_to_class
+func (r *reader) pathToClass(name string) (oruby.Value, error) {
 	current := r.mrb.ObjectClass()
-	var value oruby.Value
-	for _, part := range parts {
+	var v oruby.Value
+	for _, part := range strings.Split(name, "::") {
 		if part == "" {
-			continue
+			return oruby.Nil, oruby.EArgumentError("undefined class/module %s", name)
 		}
 		sym := r.mrb.Intern(part)
 		if !r.mrb.ConstDefined(current, sym) {
 			return oruby.Nil, oruby.EArgumentError("undefined class/module %s", name)
 		}
-		value = r.mrb.ConstGet(current, sym)
-		if value.Type() != oruby.MrbTTClass && value.Type() != oruby.MrbTTModule {
-			return oruby.Nil, oruby.ETypeError("%s is not a class/module", name)
+		v = r.mrb.ConstGet(current, sym)
+		if v.Type() != oruby.MrbTTClass && v.Type() != oruby.MrbTTModule {
+			return oruby.Nil, oruby.ETypeError("%s does not refer to class/module", name)
 		}
-		current = r.mrb.ClassPtr(value)
+		current = r.mrb.ClassPtr(v)
 	}
-	if value.IsNil() {
-		return oruby.Nil, oruby.EArgumentError("undefined class/module %s", name)
-	}
-	return value, nil
-}
-
-func (r *reader) addObject(value oruby.Value) int {
-	r.objects = append(r.objects, value)
-	return len(r.objects) - 1
+	return v, nil
 }

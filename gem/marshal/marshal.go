@@ -13,10 +13,8 @@ func init() {
 func initMarshal(mrb *oruby.MrbState) interface{} {
 	mod := mrb.DefineModule("Marshal")
 	mod.DefineClassMethod("dump", marshalDump, mrb.ArgsArg(1, 2))
-	mod.DefineClassMethod("load", marshalLoad, mrb.ArgsArg(1, 2)+mrb.ArgsBlock())
-	mod.DefineClassMethod("restore", marshalLoad, mrb.ArgsArg(1, 2)+mrb.ArgsBlock())
-	// freeze: keyword (the Go loader takes positional arguments only)
-	if _, err := mrb.Eval(loadFreezeRuby); err != nil {
+	mod.DefineClassMethod("__oruby_load", marshalLoad, mrb.ArgsArg(1, 2))
+	if _, err := mrb.Eval(marshalRuby); err != nil {
 		panic(err)
 	}
 	mod.Const("MAJOR_VERSION", 4)
@@ -24,21 +22,33 @@ func initMarshal(mrb *oruby.MrbState) interface{} {
 	return nil
 }
 
+// Marshal.dump(obj[, io][, limit]): a negative limit (the default) is none
 func marshalDump(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs().Slice()
 	var output oruby.Value
-	depth := defaultDepth
-	if len(args) >= 2 {
+	limit := -1
+	switch len(args) {
+	case 2:
 		if args[1].Type() == oruby.MrbTTInteger {
-			depth = int(args[1].Int())
+			limit = int(args[1].Int())
 		} else {
 			output = args[1]
 		}
+	case 3:
+		output = args[1]
+		limit = int(args[2].Int())
 	}
-	if len(args) == 3 {
-		depth = int(args[2].Int())
+	if !output.IsNil() {
+		if !mrb.RespondTo(output, oruby.Sym_write) {
+			return mrb.Raise(mrb.ETypeError(), "instance of IO needed")
+		}
+		if mrb.RespondTo(output, oruby.Sym_binmode) {
+			if _, err := mrb.Funcall(output, oruby.Sym_binmode); err != nil {
+				return mrb.RaiseError(err)
+			}
+		}
 	}
-	data, err := dumpValue(mrb, args[0], depth)
+	data, err := dumpValue(mrb, args[0], limit)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -55,55 +65,74 @@ func marshalDump(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return output
 }
 
+// Marshal.__oruby_load(source, proc, freeze): a String (or #to_str), or an
+// IO that has getbyte and read
 func marshalLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arguments, _ := mrb.GetArgsWithBlock()
-	args := arguments.Slice()
-	proc, freeze := oruby.Nil, false
-	for _, a := range args[1:] {
-		if a.IsHash() {
-			freeze = mrb.HashFetch(a, oruby.Sym_freeze, mrb.FalseValue()).Bool()
-		} else if !a.IsNil() {
-			proc = a
+	args := mrb.GetArgs().Slice()
+	src, proc, freeze := args[0], oruby.Nil, false
+	if len(args) > 1 {
+		proc = args[1]
+	}
+	if len(args) > 2 {
+		freeze = args[2].Bool()
+	}
+	if src.Type() != oruby.MrbTTString && mrb.RespondTo(src, oruby.Sym_to_str) {
+		s, err := mrb.Funcall(src, oruby.Sym_to_str)
+		if err != nil {
+			return mrb.RaiseError(err)
 		}
+		src = s
 	}
 	var source byteSource
-	if args[0].Type() == oruby.MrbTTString {
-		if rubyByteLen(args[0]) > maxInputBytes {
+	fromIO := false
+	switch {
+	case src.Type() == oruby.MrbTTString:
+		if rubyByteLen(src) > maxInputBytes {
 			return mrb.Raise(mrb.ERangeError(), "Marshal input exceeds size limit")
 		}
-		data := rubyBytes(args[0])
-		source = bytes.NewReader(data)
-	} else if mrb.RespondTo(args[0], oruby.Sym_read) {
-		source = &rubyReader{mrb: mrb, object: args[0]}
-	} else {
+		source = bytes.NewReader(rubyBytes(src))
+	case mrb.RespondTo(src, oruby.Sym_getbyte) && mrb.RespondTo(src, oruby.Sym_read):
+		if mrb.RespondTo(src, oruby.Sym_binmode) {
+			if _, err := mrb.Funcall(src, oruby.Sym_binmode); err != nil {
+				return mrb.RaiseError(err)
+			}
+		}
+		source, fromIO = &rubyReader{mrb: mrb, object: src}, true
+	default:
 		return mrb.Raise(mrb.ETypeError(), "instance of IO needed")
 	}
-	value, err := loadValueWith(mrb, source, proc, freeze)
+	value, err := loadValueWith(mrb, source, proc, freeze, fromIO)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
 	return value
 }
 
-const loadFreezeRuby = `
+const marshalRuby = `
   module Marshal
     class << self
-      alias __oruby_load load
       def load(source, proc = nil, freeze: false)
-        v = __oruby_load(source, proc)
-        freeze ? Marshal.__deep_freeze(v, {}) : v
+        __oruby_load(source, proc, freeze)
       end
       alias restore load
 
-      def __deep_freeze(v, seen)
-        return v if Module === v || seen.key?(v.__id__)
-        seen[v.__id__] = true
-        case v
-        when Array then v.each { |e| __deep_freeze(e, seen) }
-        when Hash then v.each { |k, e| __deep_freeze(k, seen); __deep_freeze(e, seen) }
+      # a Struct or Data filled as MRI's rb_struct_initialize does: with its
+      # base initialize, not one the class defines
+      def __oruby_init_struct(obj, values)
+        if defined?(::Data) && ::Data === obj
+          ::Data.instance_method(:initialize).bind_call(obj, **obj.class.members.zip(values).to_h)
+        elsif obj.class.respond_to?(:keyword_init?) && obj.class.keyword_init?
+          ::Struct.instance_method(:initialize).bind_call(obj, **obj.class.members.zip(values).to_h)
+        else
+          ::Struct.instance_method(:initialize).bind_call(obj, *values)
         end
-        v.instance_variables.each { |iv| __deep_freeze(v.instance_variable_get(iv), seen) } unless String === v
-        v.freeze
+        obj
+      end
+
+      def __oruby_new_regexp(klass, source, options)
+        obj = klass.allocate
+        ::Regexp.instance_method(:initialize).bind_call(obj, source, options)
+        obj
       end
     end
   end

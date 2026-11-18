@@ -179,6 +179,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "GID");
   (void)mrb_intern_lit(mrb, "HTTP");
   (void)mrb_intern_lit(mrb, "HTTPError");
+  (void)mrb_intern_lit(mrb, "Hash");
   (void)mrb_intern_lit(mrb, "IGNORECASE");
   (void)mrb_intern_lit(mrb, "IO");
   (void)mrb_intern_lit(mrb, "IOError");
@@ -250,7 +251,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "RUBY_RELEASE_DATE");
   (void)mrb_intern_lit(mrb, "RUBY_REVISION");
   (void)mrb_intern_lit(mrb, "RUBY_VERSION");
-  (void)mrb_intern_lit(mrb, "Range");
   (void)mrb_intern_lit(mrb, "RangeError");
   (void)mrb_intern_lit(mrb, "Rational");
   (void)mrb_intern_lit(mrb, "Regexp");
@@ -315,6 +315,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__adler32");
   (void)mrb_intern_lit(mrb, "__alias_from_object");
   (void)mrb_intern_lit(mrb, "__aot_dispatch__");
+  (void)mrb_intern_lit(mrb, "__at");
   (void)mrb_intern_lit(mrb, "__attached__");
   (void)mrb_intern_lit(mrb, "__backtrace__");
   (void)mrb_intern_lit(mrb, "__base_label__");
@@ -371,10 +372,13 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_gv_raw_set");
   (void)mrb_intern_lit(mrb, "__oruby_gvcheck");
   (void)mrb_intern_lit(mrb, "__oruby_gvget");
+  (void)mrb_intern_lit(mrb, "__oruby_init_struct");
   (void)mrb_intern_lit(mrb, "__oruby_install_defaults__");
   (void)mrb_intern_lit(mrb, "__oruby_kill__");
   (void)mrb_intern_lit(mrb, "__oruby_list__");
+  (void)mrb_intern_lit(mrb, "__oruby_load");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
+  (void)mrb_intern_lit(mrb, "__oruby_new_regexp");
   (void)mrb_intern_lit(mrb, "__oruby_nsig__");
   (void)mrb_intern_lit(mrb, "__oruby_os__");
   (void)mrb_intern_lit(mrb, "__oruby_pack");
@@ -421,6 +425,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "_dump");
   (void)mrb_intern_lit(mrb, "_get_cmd");
   (void)mrb_intern_lit(mrb, "_load");
+  (void)mrb_intern_lit(mrb, "_load_data");
   (void)mrb_intern_lit(mrb, "_mrb_original_Float");
   (void)mrb_intern_lit(mrb, "_mrb_original_Integer");
   (void)mrb_intern_lit(mrb, "_mrb_original_exit");
@@ -439,6 +444,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "after_init");
   (void)mrb_intern_lit(mrb, "aliases");
   (void)mrb_intern_lit(mrb, "allocate");
+  (void)mrb_intern_lit(mrb, "ancestors");
   (void)mrb_intern_lit(mrb, "args");
   (void)mrb_intern_lit(mrb, "ascii_compatible?");
   (void)mrb_intern_lit(mrb, "asctime");
@@ -466,6 +472,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "blockdev?");
   (void)mrb_intern_lit(mrb, "blocks");
   (void)mrb_intern_lit(mrb, "body");
+  (void)mrb_intern_lit(mrb, "bt");
   (void)mrb_intern_lit(mrb, "bytebegin");
   (void)mrb_intern_lit(mrb, "byteend");
   (void)mrb_intern_lit(mrb, "byteoffset");
@@ -488,7 +495,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "chown");
   (void)mrb_intern_lit(mrb, "chr");
   (void)mrb_intern_lit(mrb, "chroot");
-  (void)mrb_intern_lit(mrb, "class");
   (void)mrb_intern_lit(mrb, "class_eval");
   (void)mrb_intern_lit(mrb, "clear");
   (void)mrb_intern_lit(mrb, "clock_getres");
@@ -503,6 +509,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "cmp");
   (void)mrb_intern_lit(mrb, "codepoints");
   (void)mrb_intern_lit(mrb, "coerce");
+  (void)mrb_intern_lit(mrb, "compare_by_identity");
+  (void)mrb_intern_lit(mrb, "compare_by_identity?");
   (void)mrb_intern_lit(mrb, "compile");
   (void)mrb_intern_lit(mrb, "concat");
   (void)mrb_intern_lit(mrb, "const_get");
@@ -528,6 +536,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "delete");
   (void)mrb_intern_lit(mrb, "delete_prefix");
   (void)mrb_intern_lit(mrb, "delete_suffix");
+  (void)mrb_intern_lit(mrb, "denominator");
   (void)mrb_intern_lit(mrb, "deq");
   (void)mrb_intern_lit(mrb, "detach");
   (void)mrb_intern_lit(mrb, "dev");
@@ -601,7 +610,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "force_encoding");
   (void)mrb_intern_lit(mrb, "foreach");
   (void)mrb_intern_lit(mrb, "fork");
-  (void)mrb_intern_lit(mrb, "freeze");
   (void)mrb_intern_lit(mrb, "friday?");
   (void)mrb_intern_lit(mrb, "from_name");
   (void)mrb_intern_lit(mrb, "fsync");
@@ -665,6 +673,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "insert");
   (void)mrb_intern_lit(mrb, "inspect");
   (void)mrb_intern_lit(mrb, "instance_eval");
+  (void)mrb_intern_lit(mrb, "instance_method");
   (void)mrb_intern_lit(mrb, "instance_variables");
   (void)mrb_intern_lit(mrb, "internal_encoding");
   (void)mrb_intern_lit(mrb, "invert_operator");
@@ -746,6 +755,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "nlink");
   (void)mrb_intern_lit(mrb, "now");
   (void)mrb_intern_lit(mrb, "nsec");
+  (void)mrb_intern_lit(mrb, "numerator");
   (void)mrb_intern_lit(mrb, "odd?");
   (void)mrb_intern_lit(mrb, "offset");
   (void)mrb_intern_lit(mrb, "old_aref");
@@ -759,6 +769,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "options");
   (void)mrb_intern_lit(mrb, "out");
   (void)mrb_intern_lit(mrb, "owned?");
+  (void)mrb_intern_lit(mrb, "owner");
   (void)mrb_intern_lit(mrb, "p");
   (void)mrb_intern_lit(mrb, "padding");
   (void)mrb_intern_lit(mrb, "parse");
@@ -826,7 +837,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "reset");
   (void)mrb_intern_lit(mrb, "resolve_feature_path");
   (void)mrb_intern_lit(mrb, "respond_to?");
-  (void)mrb_intern_lit(mrb, "restore");
   (void)mrb_intern_lit(mrb, "result");
   (void)mrb_intern_lit(mrb, "reverse");
   (void)mrb_intern_lit(mrb, "rewind");
@@ -896,6 +906,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "strip");
   (void)mrb_intern_lit(mrb, "sub");
   (void)mrb_intern_lit(mrb, "sub!");
+  (void)mrb_intern_lit(mrb, "submicro");
   (void)mrb_intern_lit(mrb, "succ");
   (void)mrb_intern_lit(mrb, "success?");
   (void)mrb_intern_lit(mrb, "sunday?");

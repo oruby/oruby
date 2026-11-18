@@ -2,6 +2,8 @@ package time
 
 import (
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,11 +28,48 @@ func localLocation() *time.Location {
 		return l
 	}
 	l, err := time.LoadLocation(tz)
-	if err != nil || tz == "" {
+	if err != nil {
+		l = posixZone(tz)
+	}
+	if l == nil || tz == "" {
 		l = time.UTC
 	}
 	tzCache[tz] = l
 	return l
+}
+
+// posixZone reads a POSIX TZ value of the plain form NAME[+-]hh[:mm[:ss]]
+// (no daylight saving rule), which the zoneinfo files Go loads do not
+// cover: "AST-3" is UTC+3, the sign being backwards
+func posixZone(tz string) *time.Location {
+	i := 0
+	for i < len(tz) && (tz[i] >= 'A' && tz[i] <= 'Z' || tz[i] >= 'a' && tz[i] <= 'z') {
+		i++
+	}
+	name, rest := tz[:i], tz[i:]
+	if len(name) < 3 || rest == "" {
+		return nil
+	}
+	sign := 1
+	switch rest[0] {
+	case '+':
+		rest = rest[1:]
+	case '-':
+		sign, rest = -1, rest[1:]
+	}
+	parts := strings.Split(rest, ":")
+	if len(parts) > 3 {
+		return nil
+	}
+	secs := 0
+	for k, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil
+		}
+		secs += n * []int{3600, 60, 1}[k]
+	}
+	return time.FixedZone(name, -sign*secs)
 }
 
 // zone for mode 0: UTC, 1: local, 2: fixed offset off
@@ -81,6 +120,12 @@ func initTZ(mrb *oruby.MrbState, t oruby.RClass) {
 		ary.Push(mrb.StrNew(name))
 		return ary
 	}, mrb.ArgsNone())
+	// time.__at(sec, nsec): a Time at that instant in self's own zone
+	t.DefineMethod("__at", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		a := mrb.GetArgs()
+		loc := getTime(mrb, self).Location()
+		return mrb.DataValue(time.Unix(int64(a.Item(0).Int()), int64(a.Item(1).Int())).In(loc))
+	}, mrb.ArgsReq(2))
 	// time.__set(other): replace self's instant and zone
 	t.DefineMethod("__set", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		setTime(mrb, self, getTime(mrb, mrb.GetArgsFirst()))

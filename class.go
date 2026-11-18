@@ -202,3 +202,15 @@ func (mrb *MrbState) ClassOuter(c RClass) (RClass, bool) {
 	}
 	return RClass{(*C.struct_RClass)(C._mrb_ptr(v.v)), mrb}, true
 }
+
+// ObjSetClass makes obj an instance of c in place, as MRI's
+// RBASIC_SET_CLASS does: Marshal's 'C' (an instance of a user subclass of
+// String, Array, Hash or Regexp) needs it, so links to obj stay valid. c
+// must make objects of obj's type; the caller checks that.
+func (mrb *MrbState) ObjSetClass(obj MrbValue, c RClass) {
+	v := obj.Value()
+	if !v.HasBasic() || c.p == nil {
+		return
+	}
+	v.RBasic().p.c = c.p
+}
