@@ -309,6 +309,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "WRONLY");
   (void)mrb_intern_lit(mrb, "WUNTRACED");
   (void)mrb_intern_lit(mrb, "Waiter");
+  (void)mrb_intern_lit(mrb, "Warning");
   (void)mrb_intern_lit(mrb, "YAML");
   (void)mrb_intern_lit(mrb, "ZStream");
   (void)mrb_intern_lit(mrb, "Zlib");
@@ -558,6 +559,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "delete_prefix");
   (void)mrb_intern_lit(mrb, "delete_suffix");
   (void)mrb_intern_lit(mrb, "denominator");
+  (void)mrb_intern_lit(mrb, "deprecated");
   (void)mrb_intern_lit(mrb, "deq");
   (void)mrb_intern_lit(mrb, "detach");
   (void)mrb_intern_lit(mrb, "dev");

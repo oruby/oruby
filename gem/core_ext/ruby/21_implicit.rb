@@ -18,7 +18,6 @@ class String
   __implicit_args :chomp, String
   __implicit_args :getbyte, Integer
   __implicit_args :setbyte, Integer, Integer
-  __implicit_args :split, String, Integer
   __implicit_args :tr, String, String
   __implicit_args :tr_s, String, String
   __implicit_args :count, String

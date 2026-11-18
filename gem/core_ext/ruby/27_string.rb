@@ -350,3 +350,95 @@ class String
   end
   private :initialize
 end
+
+# String#bytesplice as MRI's rb_str_bytesplice: (index, length, str
+# [, str_index, str_length]) or (range, str [, str_range]); the offsets
+# must be in range and on character boundaries, of self and of str
+class String
+  # mruby's, bytes in place whatever the characters (StringIO splices at
+  # byte offsets, as MRI's C StringIO does)
+  alias __oruby_raw_bytesplice bytesplice
+  private :__oruby_raw_bytesplice
+
+  def bytesplice(*args)
+    n = args.size
+    raise ArgumentError, "wrong number of arguments (given #{n}, expected 2..5)" if n < 2 || n > 5
+    raise ArgumentError, "wrong number of arguments (given #{n}, expected 2, 3, or 5)" if n == 4
+    if n == 2 || (n == 3 && !(Integer === args[0]))
+      beg, len = String.__oruby_range_beg_len(args[0], bytesize)
+      raise TypeError, "wrong argument type #{Kernel.__cname(args[0])} (expected Range)" if beg.nil?
+      val = Kernel.__implicit(args[1], String)
+      if n == 2
+        vbeg, vlen = 0, val.bytesize
+      else
+        vbeg, vlen = String.__oruby_range_beg_len(args[2], val.bytesize)
+        raise TypeError, "wrong argument type #{Kernel.__cname(args[2])} (expected Range)" if vbeg.nil?
+      end
+    else
+      beg = Kernel.__to_int(args[0])
+      len = Kernel.__to_int(args[1])
+      val = Kernel.__implicit(args[2], String)
+      if n == 3
+        vbeg, vlen = 0, val.bytesize
+      else
+        vbeg = Kernel.__to_int(args[3])
+        vlen = Kernel.__to_int(args[4])
+      end
+    end
+    beg, len = __oruby_check_beg_len(beg, len)
+    vbeg, vlen = val.__send__(:__oruby_check_beg_len, vbeg, vlen)
+    raise FrozenError.new("can't modify frozen String: #{inspect}", receiver: self) if frozen?
+    enc = encoding
+    unless enc == val.encoding
+      enc = Encoding.compatible?(self, val)
+      raise Encoding::CompatibilityError, "incompatible character encodings: #{encoding} and #{val.encoding}" unless enc
+    end
+    out = byteslice(0, beg).b << val.byteslice(vbeg, vlen).b << byteslice(beg + len, bytesize - beg - len).b
+    replace(out.force_encoding(enc))
+  end
+
+  # MRI's rb_range_beg_len(range, len, err = 2): [beg, len], nil for a
+  # non-Range, RangeError when it starts outside
+  def self.__oruby_range_beg_len(r, len)
+    return nil unless Range === r
+    b = r.begin.nil? ? 0 : Kernel.__to_int(r.begin)
+    excl = r.end.nil? ? false : r.exclude_end?
+    e = r.end.nil? ? -1 : Kernel.__to_int(r.end)
+    if b < 0
+      b += len
+      raise RangeError, "#{r.inspect} out of range" if b < 0
+    end
+    e += len if e < 0
+    e += 1 unless excl
+    raise RangeError, "#{r.inspect} out of range" if b > len
+    e = len if e > len
+    l = e - b
+    [b, l < 0 ? 0 : l]
+  end
+
+  private
+
+  # MRI's str_check_beg_len
+  def __oruby_check_beg_len(beg, len)
+    slen = bytesize
+    raise IndexError, "negative length #{len}" if len < 0
+    raise IndexError, "index #{beg} out of string" if slen < beg || (beg < 0 && beg + slen < 0)
+    beg += slen if beg < 0
+    len = slen - beg if len > slen - beg
+    __oruby_char_boundary!(beg)
+    __oruby_char_boundary!(beg + len)
+    [beg, len]
+  end
+
+  def __oruby_char_boundary!(pos)
+    return if pos == 0 || pos == bytesize || ascii_only?
+    at = 0
+    each_char do |c|
+      return if at == pos
+      at += c.bytesize
+      break if at > pos
+    end
+    return if at == pos
+    raise IndexError, "offset #{pos} does not land on character boundary"
+  end
+end

@@ -572,7 +572,7 @@ class StringIO
     if @pos == size
       @string << str
     else
-      @string.bytesplice(@pos, [len, size - @pos].min, str.b.force_encoding(@string.encoding))
+      __splice_bytes(@pos, [len, size - @pos].min, str.b.force_encoding(@string.encoding))
     end
     @pos += len
     len
@@ -585,11 +585,11 @@ class StringIO
     size = @string.bytesize
     @pos = size if @pos > size
     if len > @pos
-      @string.bytesplice(0, @pos, str)
+      __splice_bytes(0, @pos, str)
       @pos = 0
     else
       @pos -= len
-      @string.bytesplice(@pos, len, str)
+      __splice_bytes(@pos, len, str)
     end
     nil
   end
@@ -699,5 +699,15 @@ class StringIO
       end
     end
     line
+  end
+
+  # the bytes of str replace len bytes at pos, wherever the characters are
+  # (MRI's StringIO copies bytes; String#bytesplice checks boundaries)
+  def __splice_bytes(pos, len, str)
+    if @string.respond_to?(:__oruby_raw_bytesplice, true)
+      @string.__send__(:__oruby_raw_bytesplice, pos, len, str)
+    else
+      @string.bytesplice(pos, len, str)
+    end
   end
 end

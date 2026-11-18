@@ -45,7 +45,7 @@ func initString(mrb *oruby.MrbState) {
 	str.DefineAlias("old_aref", "[]")
 	str.DefineMethod("[]", stringAref, mrb.ArgsArg(1, 1))
 	str.DefineAlias("old_split", "split")
-	str.DefineMethod("split", stringSplit, mrb.ArgsOpt(2))
+	str.DefineMethod("split", stringSplit, mrb.ArgsOpt(2)+mrb.ArgsBlock())
 }
 
 // literalCache keeps compiled patterns for String arguments of sub/gsub/scan,
@@ -82,57 +82,311 @@ func strOrNil(mrb *oruby.MrbState, s *string) oruby.MrbValue {
 	return mrb.StrNew(*s)
 }
 
+// stringSplit is String#split, a port of MRI's rb_str_split_m: awk mode
+// (nil or " ": runs of ASCII whitespace, leading ones skipped), chars mode
+// (""), a String or a Regexp; limit > 0 caps the pieces, limit 0 drops
+// trailing empty strings, a negative one keeps them; with a block each
+// piece is yielded and self returned. The pieces are Strings (not of a
+// subclass) in self's encoding.
 func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
-	pattern := args.ItemDefFunc(0, func() oruby.MrbValue { return mrb.GetGV("$;") })
-	limit := args.ItemDefInt(1, 0)
-
-	re, ok := mrb.Data(pattern.Value()).(*Regexp)
-	if !ok {
-		return mrb.Call(self, "old_split", pattern, limit)
+	args, block := mrb.GetArgsWithBlock()
+	if args.Len() > 2 {
+		return mrb.ArgnumError(args.Len(), 0, 2)
 	}
-	result := mrb.AryNew()
+	pattern := args.Item(0)
+
+	lim := 0
+	hasLimit := false
+	if args.Len() == 2 {
+		n, err := splitLimit(mrb, args.Item(1))
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		lim = n
+		hasLimit = lim > 0
+	}
+
+	// self's encoding, for the pieces (UTF-8 strings need nothing)
+	var enc oruby.MrbValue
+	isUTF8 := true
+	if bin, err := mrb.Funcall(self, mrb.Intern("__encoding_binary?")); err == nil && bin.Bool() {
+		if e, err := mrb.Funcall(self, oruby.Sym_encoding); err == nil {
+			enc, isUTF8 = e, false
+		}
+	}
 	s := mrb.String(self)
-	if len(s) == 0 {
-		return result
+	withBlock := !block.IsNil()
+	result := mrb.AryNew()
+
+	emit := func(piece string) {
+		v := mrb.StrNew(piece)
+		if !isUTF8 {
+			_, _ = mrb.Funcall(v, oruby.Sym_force_encoding, enc)
+		}
+		if withBlock {
+			mrb.Yield(block, v)
+		} else {
+			result.Push(v)
+		}
 	}
-	if limit == 1 {
-		result.PushString(s)
+	done := func() oruby.MrbValue {
+		if withBlock {
+			return self
+		}
 		return result
-	}
-	matches, err := re.findAll(s)
-	if err != nil {
-		return raiseTimeout(mrb, err)
 	}
 
-	last := 0
-	for _, m := range matches {
-		if limit > 0 && result.Len() >= limit-1 {
-			break
+	if hasLimit && lim == 1 {
+		if len(s) > 0 {
+			emit(s)
 		}
-		// an empty match splits between characters, but never at either end
-		// or directly after the previous separator
-		if m[0] == m[1] && (m[0] == 0 || m[0] >= len(s) || m[0] == last) {
-			continue
+		return done()
+	}
+
+	// MRI's split_string: with limit 0 empty pieces wait for a non-empty
+	// one (trailing ones are dropped)
+	emptyCount := -1
+	if !hasLimit && lim == 0 {
+		emptyCount = 0
+	}
+	push := func(beg, n int) {
+		if emptyCount >= 0 && n == 0 {
+			emptyCount++
+			return
 		}
-		result.PushString(s[last:m[0]])
-		for i := 2; i < len(m); i += 2 {
-			if m[i] >= 0 {
-				result.PushString(s[m[i]:m[i+1]])
-			} else {
-				result.Push(mrb.NilValue())
+		for ; emptyCount > 0; emptyCount-- {
+			emit("")
+		}
+		emit(s[beg : beg+n])
+	}
+	brokenErr := func() oruby.MrbValue {
+		name := "UTF-8"
+		if !isUTF8 {
+			name = mrb.String(enc)
+		}
+		return mrb.EArgumentError().Raise("invalid byte sequence in " + name)
+	}
+	valid := func(str oruby.Value, utf8Str bool) bool {
+		if utf8Str {
+			return utf8.ValidString(mrb.String(str))
+		}
+		v, err := mrb.Funcall(str, oruby.SymQ_valid_encoding)
+		return err != nil || v.Bool()
+	}
+	charLen := func(i int) int {
+		if !isUTF8 {
+			return 1
+		}
+		_, n := utf8.DecodeRuneInString(s[i:])
+		return n
+	}
+
+	// the pattern: $; when none is given
+	if pattern.IsNil() {
+		if fs := mrb.GetGV("$;"); !fs.IsNil() {
+			// MRI: a deprecation warning, through Kernel#warn
+			if mrb.ObjectClass().ConstDefinedAt("Warning") {
+				w := mrb.ObjectClass().ConstGet("Warning")
+				if on, err := mrb.Funcall(w, oruby.OpSym_aref, mrb.SymbolValue(mrb.Intern("deprecated"))); err == nil && on.Bool() {
+					_, _ = mrb.Funcall(mrb.KernelModule().Value(), mrb.Intern("warn"), "warning: $; is set to non-nil value")
+				}
+			}
+			pattern = fs
+		}
+	}
+	var re *Regexp
+	mode := "awk"
+	spat := ""
+	if !pattern.IsNil() {
+		if r, ok := mrb.Data(pattern).(*Regexp); ok && pattern.Type() == oruby.MrbTTCData {
+			re, mode = r, "regexp"
+		} else {
+			if !pattern.IsString() {
+				if !mrb.RespondTo(pattern, oruby.Sym_to_str) {
+					return mrb.ETypeError().Raisef("wrong argument type %s (expected Regexp)", mrb.ClassName(mrb.ObjClass(pattern)))
+				}
+				p, err := mrb.Funcall(pattern, oruby.Sym_to_str)
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+				pattern = p.Value()
+			}
+			spat = mrb.String(pattern)
+			switch spat {
+			case " ":
+				mode = "awk"
+			case "":
+				mode = "chars"
+			default:
+				mode = "string"
 			}
 		}
-		last = m[1]
 	}
-	result.PushString(s[last:])
+	if mode != "awk" && !valid(self, isUTF8) {
+		return brokenErr()
+	}
 
-	if limit == 0 {
-		for result.Len() > 0 && result.Item(-1).Len() == 0 {
-			result.Pop()
+	beg, i := 0, 1
+	switch mode {
+	case "awk":
+		if !valid(self, isUTF8) {
+			return brokenErr()
+		}
+		skip := true
+		end := 0
+		for p := 0; p < len(s); {
+			c := s[p]
+			n := 1
+			if c >= 0x80 {
+				n = charLen(p)
+			}
+			p += n
+			space := n == 1 && (c == ' ' || (c >= '\t' && c <= '\r'))
+			if skip {
+				if space {
+					beg = p
+				} else {
+					end = p
+					skip = false
+					if hasLimit && lim <= i {
+						break
+					}
+				}
+			} else if space {
+				push(beg, end-beg)
+				skip = true
+				beg = p
+				if hasLimit {
+					i++
+				}
+			} else {
+				end = p
+			}
+		}
+	case "chars":
+		for beg < len(s) {
+			n := charLen(beg)
+			push(beg, n)
+			beg += n
+			if hasLimit {
+				i++
+				if lim <= i {
+					break
+				}
+			}
+		}
+	case "string":
+		if pv := pattern; !valid(pv, isUTF8) || (isUTF8 && !utf8.ValidString(spat)) {
+			return brokenErr()
+		}
+		p := 0
+		for p < len(s) {
+			k := strings.Index(s[p:], spat)
+			if k < 0 {
+				break
+			}
+			at := p + k
+			// a match inside a character does not count
+			if isUTF8 && at < len(s) && !utf8.RuneStart(s[at]) {
+				p = at + 1
+				continue
+			}
+			push(beg, at-beg)
+			p = at + len(spat)
+			beg = p
+			if hasLimit {
+				i++
+				if lim <= i {
+					break
+				}
+			}
+		}
+	case "regexp":
+		start := 0
+		lastNull := false
+		for {
+			m, err := re.findErr(s, start)
+			if err != nil {
+				return raiseTimeout(mrb, err)
+			}
+			if m == nil {
+				break
+			}
+			end := m[0]
+			if start == end && m[0] == m[1] {
+				if len(s) == 0 {
+					emit("")
+					break
+				} else if lastNull {
+					push(beg, start-beg)
+					beg = start
+				} else {
+					if start == len(s) {
+						start++
+					} else {
+						start += charLen(start)
+					}
+					lastNull = true
+					continue
+				}
+			} else {
+				push(beg, end-beg)
+				beg = m[1]
+				start = m[1]
+			}
+			lastNull = false
+			for g := 2; g+1 < len(m); g += 2 {
+				if m[g] < 0 {
+					continue // a group that did not take part
+				}
+				push(m[g], m[g+1]-m[g])
+			}
+			if hasLimit {
+				i++
+				if lim <= i {
+					break
+				}
+			}
+			if start > len(s) {
+				break
+			}
 		}
 	}
-	return result
+	if len(s) > 0 && (hasLimit || len(s) > beg || lim < 0) {
+		if beg > len(s) {
+			beg = len(s)
+		}
+		push(beg, len(s)-beg)
+	}
+	return done()
+}
+
+// splitLimit is NUM2INT of the limit
+func splitLimit(mrb *oruby.MrbState, v oruby.Value) (int, error) {
+	var n int64
+	switch {
+	case v.IsInteger():
+		n = v.Int64()
+	case v.Type() == oruby.MrbTTFloat:
+		n = int64(v.Float64())
+	case v.IsNil():
+		return 0, oruby.ETypeError("no implicit conversion from nil to integer")
+	case mrb.RespondTo(v, oruby.Sym_to_int):
+		r, err := mrb.Funcall(v, oruby.Sym_to_int)
+		if err != nil {
+			return 0, err
+		}
+		if !r.IsInteger() {
+			return 0, oruby.ETypeError("can't convert %s to Integer", mrb.ClassName(mrb.ObjClass(v)))
+		}
+		n = r.Int64()
+	default:
+		return 0, oruby.ETypeError("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ObjClass(v)))
+	}
+	if v.Type() == oruby.MrbTTBigInt || n > 2147483647 || n < -2147483648 {
+		return 0, oruby.ERangeError("integer %d too big to convert to 'int'", n)
+	}
+	return int(n), nil
 }
 
 func stringSlice(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

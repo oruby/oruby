@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "9e90ce0abf600910"
+const presymTable = "b87c6a72ac5ea08f"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -396,6 +396,7 @@ const (
 	Sym_WRONLY                        MrbSym = C.MRB_SYM__WRONLY                        // "WRONLY"
 	Sym_WUNTRACED                     MrbSym = C.MRB_SYM__WUNTRACED                     // "WUNTRACED"
 	Sym_Waiter                        MrbSym = C.MRB_SYM__Waiter                        // "Waiter"
+	Sym_Warning                       MrbSym = C.MRB_SYM__Warning                       // "Warning"
 	Sym_YAML                          MrbSym = C.MRB_SYM__YAML                          // "YAML"
 	Sym_ZStream                       MrbSym = C.MRB_SYM__ZStream                       // "ZStream"
 	Sym_Zlib                          MrbSym = C.MRB_SYM__Zlib                          // "Zlib"
@@ -618,6 +619,7 @@ const (
 	Sym_delete_prefix                 MrbSym = C.MRB_SYM__delete_prefix                 // "delete_prefix"
 	Sym_delete_suffix                 MrbSym = C.MRB_SYM__delete_suffix                 // "delete_suffix"
 	Sym_denominator                   MrbSym = C.MRB_SYM__denominator                   // "denominator"
+	Sym_deprecated                    MrbSym = C.MRB_SYM__deprecated                    // "deprecated"
 	Sym_deq                           MrbSym = C.MRB_SYM__deq                           // "deq"
 	Sym_detach                        MrbSym = C.MRB_SYM__detach                        // "detach"
 	Sym_dev                           MrbSym = C.MRB_SYM__dev                           // "dev"
