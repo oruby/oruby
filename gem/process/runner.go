@@ -54,6 +54,8 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 		}
 
 		switch k {
+		case "in", "out", "err":
+			runner.parseFd(key, val)
 		case "umask":
 			v := val.Int()
 			runner.umask = &v
@@ -238,25 +240,99 @@ func (runner *cmdRunner) parseFd(key, val oruby.Value) {
 }
 
 func (runner *cmdRunner) getReader(val oruby.Value) io.Reader {
-	mrb := runner.mrb
-	if val.IsData() {
-		if reader, ok := mrb.Data(val).(io.Reader); ok {
-			return reader
-		}
+	if r, ok := runner.redirect(val, false).(io.Reader); ok {
+		return r
 	}
-
 	return nil
 }
 
 func (runner *cmdRunner) getWriter(val oruby.Value) io.Writer {
+	if w, ok := runner.redirect(val, true).(io.Writer); ok {
+		return w
+	}
+	return nil
+}
+
+// redirect resolves the target of a redirection option as MRI's spawn
+// takes it: an IO, a descriptor number, :in/:out/:err (the parent's
+// stream), a path (String or #to_path; out/err open it WRONLY|CREAT|TRUNC,
+// in RDONLY) or [path, mode, perm]. nil for anything else.
+func (runner *cmdRunner) redirect(val oruby.Value, write bool) interface{} {
 	mrb := runner.mrb
-	if val.IsData() {
-		if writer, ok := mrb.Data(val).(io.Writer); ok {
-			return writer
+	switch {
+	case val.IsData():
+		return mrb.Data(val)
+	case val.IsInteger():
+		switch val.Int() {
+		case 0:
+			return os.Stdin
+		case 1:
+			return os.Stdout
+		case 2:
+			return os.Stderr
+		}
+		return os.NewFile(uintptr(val.Int()), "fd")
+	case val.IsSymbol():
+		switch val.Symbol() {
+		case oruby.Sym_in:
+			return os.Stdin
+		case oruby.Sym_out:
+			return os.Stdout
+		case oruby.Sym_err:
+			return os.Stderr
+		}
+		return nil
+	}
+	flags := os.O_RDONLY
+	if write {
+		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	}
+	perm := os.FileMode(0644)
+	pathV := val
+	if val.IsArray() {
+		if oruby.RArrayLen(val) == 0 || mrb.AryEntry(val, 0).IsSymbol() {
+			return nil // [:child, :out]: the caller's business
+		}
+		pathV = mrb.AryEntry(val, 0)
+		if m := mrb.AryEntry(val, 1); m.IsInteger() {
+			flags = m.Int()
+		} else if m.IsString() {
+			flags = modeFlags(m.String())
+		}
+		if p := mrb.AryEntry(val, 2); p.IsInteger() {
+			perm = os.FileMode(p.Int())
 		}
 	}
+	if !pathV.IsString() && mrb.RespondTo(pathV, oruby.Sym_to_path) {
+		if p, err := mrb.Funcall(pathV, oruby.Sym_to_path); err == nil {
+			pathV = p
+		}
+	}
+	if !pathV.IsString() {
+		return nil
+	}
+	f, err := os.OpenFile(mrb.String(pathV), flags, perm)
+	if err != nil {
+		runner.err = err
+		return nil
+	}
+	return f
+}
 
-	return nil
+// modeFlags: the open flags of an fopen-style mode ("r", "w", "a", "r+" ...)
+func modeFlags(m string) int {
+	m, _, _ = strings.Cut(m, ":")
+	flags := os.O_RDONLY
+	switch {
+	case strings.HasPrefix(m, "w"):
+		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	case strings.HasPrefix(m, "a"):
+		flags = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	}
+	if strings.Contains(m, "+") {
+		flags = flags&^(os.O_WRONLY|os.O_RDONLY) | os.O_RDWR
+	}
+	return flags
 }
 
 func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {

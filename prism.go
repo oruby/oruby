@@ -33,6 +33,8 @@ import (
 //   - END { ... }                        -> Kernel.__oruby_end__(site) { ... }
 //   - frozen string literals             -> "...".-@ (frozen_string_literal)
 //   - __ENCODING__ in non-UTF-8 source   -> ::Encoding.find("<source encoding>")
+//   - **obj in a call or Hash literal    -> **::Kernel.__oruby_kwsplat((obj)) (#to_hash)
+//   - [a, k: v]                          -> [a, {k: v}] (mruby drops the brace-less Hash)
 //
 // Rewrites never add or remove newlines, so line numbers stay as in the source.
 
@@ -433,6 +435,12 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			r.add(s[0], s[0], func(*rewriter) string { return "::Kernel.__oruby_to_ary(" + id + ", (" })
 			r.add(e[0], e[0], func(*rewriter) string { return "))" })
 			r.add(e[1], e[1], func(*rewriter) string { return "))" })
+		case C.ORB_ARRAY_KWHASH:
+			r.add(s[0], s[0], func(*rewriter) string { return "{" })
+			r.add(e[0], e[0], func(*rewriter) string { return "}" })
+		case C.ORB_KWSPLAT:
+			r.add(s[0], s[0], func(*rewriter) string { return "::Kernel.__oruby_kwsplat((" })
+			r.add(e[0], e[0], func(*rewriter) string { return "))" })
 		case C.ORB_LITERAL_ENCODING:
 			// MRI tags a literal with its source encoding; \u escapes make it
 			// UTF-8, which is oruby's default already

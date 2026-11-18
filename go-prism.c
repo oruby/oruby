@@ -290,6 +290,24 @@ visit(const pm_node_t *node, void *data)
     }
     break;
   }
+  case PM_ARRAY_NODE: {
+    // [a, k: v]: mruby's code generator drops a brace-less trailing Hash
+    const pm_node_list_t *el = &((const pm_array_node_t *)node)->elements;
+    if (el->size > 0 && PM_NODE_TYPE(el->nodes[el->size - 1]) == PM_KEYWORD_HASH_NODE) {
+      r = add(sc, ORB_ARRAY_KWHASH);
+      span(r, 0, el->nodes[el->size - 1]);
+    }
+    break;
+  }
+  case PM_ASSOC_SPLAT_NODE: {
+    // f(**obj), {**obj}: MRI converts obj with #to_hash (mruby wants a Hash)
+    const pm_node_t *v = ((const pm_assoc_splat_node_t *)node)->value;
+    if (v && PM_NODE_TYPE(v) != PM_HASH_NODE) {
+      r = add(sc, ORB_KWSPLAT);
+      span(r, 0, v);
+    }
+    break;
+  }
   case PM_SOURCE_ENCODING_NODE:
     r = add(sc, ORB_SOURCE_ENCODING);
     span(r, 0, node);

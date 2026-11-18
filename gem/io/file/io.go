@@ -19,7 +19,8 @@ func initIOMethods(mrb *oruby.MrbState) oruby.RClass {
 	cIO.DefineClassMethod("_read", ioReadInternal, mrb.ArgsArg(1, 3))
 	cIO.DefineClassMethod("_binwrite", ioBinwriteInternal, mrb.ArgsArg(2, 2))
 	cIO.DefineClassMethod("_write", ioBinwriteInternal, mrb.ArgsArg(2, 2))
-	cIO.DefineMethod("reopen", ioReopen, mrb.ArgsArg(1, 2))
+	cIO.DefineMethod("__oruby_reopen_io", ioReopenIO, mrb.ArgsReq(1))
+	cIO.DefineMethod("__oruby_reopen_path", ioReopenPath, mrb.ArgsReq(3))
 
 	_, err := mrb.Eval(`
 class IO
@@ -443,6 +444,9 @@ func fileOpenIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, er
 		}
 		return ioObject, nil
 	case oruby.MrbTTFixnum:
+		if f := gemIO.ClaimPipeFD(fd.Int()); f != nil {
+			return f, nil // an end of IO.pipe
+		}
 		f := os.NewFile(uintptr(fd.Int()), "fd")
 		if f == nil {
 			return nil, oruby.EArgumentError("invalid file descriptor")
@@ -475,66 +479,73 @@ func fileOpenIO(mrb *oruby.MrbState, fd, mode, opt oruby.Value) (interface{}, er
 	return nil, oruby.EArgumentError("First argument must be fd or IO object")
 }
 
-func ioReopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+// io.__oruby_reopen_io(other): self takes other's stream (MRI's io_reopen):
+// other's descriptor is duplicated onto self's, at other's position
+func ioReopenIO(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	other := mrb.GetArgsFirst()
 	f, ok := mrb.Data(self).(*os.File)
-	if !ok {
+	of, ok2 := mrb.Data(other).(*os.File)
+	if !ok || !ok2 {
 		return mrb.EArgumentError().Raise("reopen supported only for files")
 	}
-
-	rawArgs := mrb.GetArgs().Slice()
-	if len(rawArgs) == 0 {
-		stat, err := f.Stat()
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
-		if err := f.Close(); err != nil {
-			return mrb.RaiseError(err)
-		}
-		flags, _ := parseFlags(mrb, mrb.GetIV(self, "@mode"), mrb.GetIV(self, "@opt"))
-		reopened, err := os.OpenFile(f.Name(), flags, stat.Mode().Perm())
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
-		mrb.SetIV(self, "@lineno", 0)
-		mrb.DataSetInterface(self, reopened)
-		return self
-	}
-
-	target := rawArgs[0]
-	if mrb.RespondTo(target, oruby.Sym_to_io) {
-		otherVal, err := mrb.Funcall(target, oruby.Sym_to_io)
-		if err == nil {
-			if otherFile, ok := mrb.Data(otherVal).(*os.File); ok {
-				_ = syscall.Dup2(int(otherFile.Fd()), int(f.Fd()))
-				mrb.SetIV(self, "@path", mrb.GetIV(otherVal, "@path"))
-				return self
-			}
+	gemIO.ResetReadBuffer(mrb, self)
+	gemIO.DropReadBuffer(mrb, other)
+	fd, ofd := gemIO.RawFd(f), gemIO.RawFd(of)
+	if fd != ofd {
+		if err := syscall.Dup2(ofd, fd); err != nil {
+			return mrb.SysFail(err)
 		}
 	}
+	if fd > 2 {
+		_ = gemIO.SetCloseOnExec(f, true)
+	}
+	mrb.SetIV(self, "@lineno", 0)
+	return self
+}
 
-	newPath, err := pathString(mrb, target)
+// io.__oruby_reopen_path(path, mode, opt): self reads/writes the file at
+// path (MRI's rb_io_reopen). An open IO keeps its descriptor number (the
+// file is duplicated onto it, so exec'd children see it); a closed one gets
+// the new descriptor. mode nil: the IO's own open mode.
+func ioReopenPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	pathV, modeV, optV := mrb.GetArgs3()
+	newPath, err := pathString(mrb, pathV)
 	if err != nil {
 		return raisePathError(mrb, err)
 	}
-
-	flags := os.O_RDONLY
-	if len(rawArgs) >= 2 && !rawArgs[1].IsNil() {
-		flags, err = modeToFlags(mrb, rawArgs[1])
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
+	if modeV.IsNil() && (optV.IsNil() || mrb.HashFetch(optV, oruby.Sym_mode, mrb.NilValue()).IsNil()) {
+		modeV, optV = mrb.GetIV(self, "@mode"), mrb.GetIV(self, "@opt")
+	} else {
+		mrb.SetIV(self, "@mode", modeV)
+		mrb.SetIV(self, "@opt", optV)
 	}
-
-	_ = f.Close()
-
-	reopened, err := os.OpenFile(newPath, flags, 0666)
+	flags, err := parseFlags(mrb, modeV, optV)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	nf, err := os.OpenFile(newPath, flags, 0666)
 	if err != nil {
 		return mrb.SysFail(err)
 	}
-
-	mrb.SetIV(self, "@path", target)
+	gemIO.ResetReadBuffer(mrb, self)
 	mrb.SetIV(self, "@lineno", 0)
-	mrb.DataSetInterface(self, reopened)
+	mrb.SetIV(self, "@path", pathV)
+
+	f, ok := mrb.Data(self).(*os.File)
+	if ok && f != nil && !mrb.GetIV(self, "@closed").Bool() && gemIO.RawFd(f) >= 0 {
+		fd := gemIO.RawFd(f)
+		err := syscall.Dup2(gemIO.RawFd(nf), fd)
+		_ = nf.Close()
+		if err != nil {
+			return mrb.SysFail(err)
+		}
+		if fd > 2 {
+			_ = gemIO.SetCloseOnExec(f, true)
+		}
+		return self
+	}
+	mrb.DataSetInterface(self, nf)
+	mrb.SetIV(self, "@closed", mrb.FalseValue())
 	return self
 }
 

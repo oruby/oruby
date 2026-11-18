@@ -38,8 +38,10 @@ class IO
   def self.select(reads, writes = nil, errs = nil, timeout = nil)
     if timeout
       raise TypeError, "can't convert #{timeout.class} into time interval" unless timeout.is_a?(Numeric)
+      raise RangeError, "NaN out of Time range" if timeout.is_a?(Float) && timeout.nan?
       raise ArgumentError, "time interval must not be negative" if timeout < 0
-      ms = (timeout * 1000).ceil
+      timeout = nil if timeout == Float::INFINITY
+      ms = timeout.nil? ? -1 : (timeout * 1000).ceil
     else
       ms = -1
     end
@@ -51,17 +53,29 @@ class IO
       sleep if timeout.nil?
       return nil
     end
+    # bytes already read ahead (or pushed back) make an IO readable now
+    if r && (ready = r.each_index.select { |i| r[i].__oruby_buffered? }).any?
+      return [ready.map { |i| reads[i] }, [], []]
+    end
     res = __poll(rfd, wfd, efd, ms)
     return nil if res.nil?
     [res[0].map { |i| reads[i] }, res[1].map { |i| writes[i] }, res[2].map { |i| errs[i] }]
   end
 
+  def self.__oruby_exception_kw(v)
+    return v if true.equal?(v) || false.equal?(v)
+    raise ArgumentError, "expected true or false as exception: #{v.inspect}"
+  end
+
   def read_nonblock(maxlen, buffer = nil, exception: true)
+    IO.__oruby_exception_kw(exception)
+    maxlen = ::Kernel.__implicit(maxlen, Integer)
     raise ArgumentError, "negative length #{maxlen} given" if maxlen < 0
+    buffer = ::Kernel.__implicit(buffer, String) unless buffer.nil?
     raise IOError, "closed stream" if closed?
     if maxlen == 0
       buffer&.replace("")
-      return buffer || ""
+      return buffer || "".b
     end
     res = __read_nonblock(maxlen)
     case res
@@ -69,19 +83,24 @@ class IO
       return :wait_readable unless exception
       raise IO::EAGAINWaitReadable, "read would block"
     when nil
+      buffer&.replace("")
       return nil unless exception
       raise EOFError, "end of file reached"
     end
     if buffer
+      # the bytes, in the buffer's own encoding
+      enc = buffer.encoding
       buffer.replace(res)
-      buffer
+      buffer.force_encoding(enc)
     else
       res
     end
   end
 
   def write_nonblock(obj, exception: true)
+    IO.__oruby_exception_kw(exception)
     raise IOError, "closed stream" if closed?
+    raise IOError, "not opened for writing" unless __oruby_writable?
     str = obj.to_s
     return 0 if str.empty?
     res = __write_nonblock(str)

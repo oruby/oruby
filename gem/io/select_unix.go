@@ -34,10 +34,15 @@ func fdOf(mrb *oruby.MrbState, self oruby.Value) (int, bool) {
 }
 
 // __poll(read_fds, write_fds, err_fds, timeout_ms) -> [ready_r_idx, ready_w_idx, ready_e_idx] or nil
+//
+// A descriptor in more than one list is one poll entry (Darwin's poll
+// misses events of a descriptor listed twice). The wait goes in slices so a
+// signal or the deadline of a Timeout.timeout raises meanwhile.
 func ioPoll(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs().Slice()
 	var fds []unix.PollFd
-	type ref struct{ kind, idx int }
+	slot := map[int32]int{}
+	type ref struct{ kind, idx, slot int }
 	var refs []ref
 	for kind := 0; kind < 3; kind++ {
 		if a[kind].IsNil() {
@@ -50,38 +55,61 @@ func ioPoll(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 			} else if kind == 2 {
 				ev = unix.POLLPRI
 			}
-			fds = append(fds, unix.PollFd{Fd: int32(v.Int64()), Events: ev})
-			refs = append(refs, ref{kind, i})
+			fd := int32(v.Int64())
+			j, ok := slot[fd]
+			if !ok {
+				j = len(fds)
+				slot[fd] = j
+				fds = append(fds, unix.PollFd{Fd: fd})
+			}
+			fds[j].Events |= ev
+			refs = append(refs, ref{kind, i, j})
 		}
 	}
 	timeout := int(a[3].Int64())
 	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
+	ctx := mrb.GoContext()
 	for {
-		n, err := unix.Poll(fds, timeout)
-		if err != nil {
-			if errors.Is(err, syscall.EINTR) {
-				if timeout >= 0 {
-					timeout = int(time.Until(deadline).Milliseconds())
-					if timeout < 0 {
-						timeout = 0
-					}
-				}
-				continue
+		wait := int(readSlice / time.Millisecond)
+		if timeout >= 0 {
+			left := int(time.Until(deadline).Milliseconds())
+			if left < 0 {
+				left = 0
 			}
+			if left < wait {
+				wait = left
+			}
+		}
+		n, err := waitReady(fds, wait)
+		if errors.Is(err, syscall.EBADF) {
+			return mrb.Raise(mrb.ClassGet("IOError"), "closed stream")
+		}
+		if err != nil && !errors.Is(err, syscall.EINTR) {
 			return mrb.RaiseError(err)
 		}
-		if n == 0 {
+		if err == nil && n > 0 {
+			break
+		}
+		if err := interrupted(mrb, ctx); err != nil {
+			return mrb.RaiseError(err)
+		}
+		if err == nil && timeout >= 0 && !time.Now().Before(deadline) {
 			return mrb.NilValue()
 		}
-		break
 	}
 	res := [3][]int{{}, {}, {}}
-	for i, fd := range fds {
+	for _, r := range refs {
+		fd := fds[r.slot]
 		if fd.Revents&unix.POLLNVAL != 0 {
 			return mrb.Raise(mrb.ClassGet("IOError"), "closed stream")
 		}
-		r := refs[i]
-		hit := fd.Revents&fd.Events != 0
+		want := int16(unix.POLLIN)
+		if r.kind == 1 {
+			want = unix.POLLOUT
+		} else if r.kind == 2 {
+			want = unix.POLLPRI
+		}
+		hit := fd.Revents&want != 0
 		if r.kind != 2 && fd.Revents&(unix.POLLHUP|unix.POLLERR) != 0 {
 			hit = true
 		}
@@ -90,6 +118,57 @@ func ioPoll(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		}
 	}
 	return mrb.Value([]interface{}{res[0], res[1], res[2]})
+}
+
+// waitReady waits up to ms for the events of fds, setting their Revents:
+// select(2) as MRI's IO.select uses it, so the error set means exceptional
+// conditions only (Darwin's poll reports POLLPRI for any readable pipe);
+// poll when a descriptor is past FD_SETSIZE
+func waitReady(fds []unix.PollFd, ms int) (int, error) {
+	maxfd := -1
+	for _, f := range fds {
+		if int(f.Fd) > maxfd {
+			maxfd = int(f.Fd)
+		}
+	}
+	if maxfd >= unix.FD_SETSIZE {
+		return unix.Poll(fds, ms)
+	}
+	var rs, ws, es unix.FdSet
+	for _, f := range fds {
+		if f.Events&unix.POLLIN != 0 {
+			rs.Set(int(f.Fd))
+		}
+		if f.Events&unix.POLLOUT != 0 {
+			ws.Set(int(f.Fd))
+		}
+		if f.Events&unix.POLLPRI != 0 {
+			es.Set(int(f.Fd))
+		}
+	}
+	tv := unix.NsecToTimeval(int64(ms) * int64(time.Millisecond))
+	n, err := unix.Select(maxfd+1, &rs, &ws, &es, &tv)
+	if err != nil || n == 0 {
+		return 0, err
+	}
+	n = 0
+	for i := range fds {
+		fd := int(fds[i].Fd)
+		fds[i].Revents = 0
+		if fds[i].Events&unix.POLLIN != 0 && rs.IsSet(fd) {
+			fds[i].Revents |= unix.POLLIN
+		}
+		if fds[i].Events&unix.POLLOUT != 0 && ws.IsSet(fd) {
+			fds[i].Revents |= unix.POLLOUT
+		}
+		if fds[i].Events&unix.POLLPRI != 0 && es.IsSet(fd) {
+			fds[i].Revents |= unix.POLLPRI
+		}
+		if fds[i].Revents != 0 {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func ioNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -144,7 +223,17 @@ func ioReadNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok {
 		return RaiseIOError(mrb, "closed stream")
 	}
-	buf := make([]byte, mrb.GetArgsFirst().Int64())
+	maxlen := int(mrb.GetArgsFirst().Int64())
+	// what ungetc pushed back or a read took ahead comes first (MRI)
+	if view := rbufView(mrb, self); len(view) > 0 {
+		if maxlen > len(view) {
+			maxlen = len(view)
+		}
+		out := append([]byte(nil), view[:maxlen]...)
+		rbufTake(mrb, self, maxlen)
+		return binaryStringValue(mrb, out)
+	}
+	buf := make([]byte, maxlen)
 	n, err := withNonblock(fd, func() (int, error) { return syscall.Read(fd, buf) })
 	if err != nil {
 		if errors.Is(err, syscall.EAGAIN) {
@@ -155,7 +244,7 @@ func ioReadNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if n == 0 && len(buf) > 0 {
 		return mrb.NilValue()
 	}
-	return mrb.BytesValue(buf[:n])
+	return binaryStringValue(mrb, buf[:n])
 }
 
 // __write_nonblock(str) -> Integer or :wait_writable
@@ -165,6 +254,7 @@ func ioWriteNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return RaiseIOError(mrb, "closed stream")
 	}
 	data := mrb.GetArgsFirst().Bytes()
+	rbufDrop(mrb, self)
 	n, err := withNonblock(fd, func() (int, error) { return syscall.Write(fd, data) })
 	if err != nil {
 		if errors.Is(err, syscall.EAGAIN) {

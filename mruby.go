@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -282,6 +283,17 @@ module Kernel
       return a if Array === a
       c = ::Kernel.__cname(obj)
       raise TypeError, "can't convert #{c} to Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
+    end
+
+    # **obj: a Hash as is, nil as no keywords, anything else by #to_hash
+    def __oruby_kwsplat(obj)
+      return obj if Hash === obj
+      return {} if obj.nil?
+      c = ::Kernel.__cname(obj)
+      raise TypeError, "no implicit conversion of #{c} into Hash" unless ::Kernel.__responds?(obj, :to_hash)
+      h = obj.__send__(:to_hash)
+      return h if Hash === h
+      raise TypeError, "can't convert #{c} to Hash (#{c}#to_hash gives #{::Kernel.__cname(h)})"
     end
 
     def __oruby_masgn(site, _)
@@ -2655,6 +2667,19 @@ func (mrb *MrbState) RaiseError(err error) Value {
 		// a Go file closed underneath is MRI's closed stream
 		if mrb.ClassDefined("IOError") {
 			return mrb.Raise(mrb.ExcGet("IOError"), "closed stream")
+		}
+	}
+	// a system call on an open stream (read, write, seek, close) or a bare
+	// errno: Errno::EXXX with its own message, "Broken pipe" as MRI says
+	// it, not Go's "write |1: broken pipe"
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno != 0 {
+		var pe *os.PathError
+		if !errors.As(err, &pe) || pe.Op == "read" || pe.Op == "write" || pe.Op == "seek" || pe.Op == "close" {
+			if exc, e := mrb.Funcall(mrb.ESystemCallError().Value(), Sym_new, nil, int(errno)); e == nil {
+				return mrb.RaiseObj(exc)
+			}
+			mrb.ExcClear()
 		}
 	}
 	msg := err.Error()

@@ -3,6 +3,7 @@ package io
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"os"
 
@@ -92,64 +93,84 @@ func readLine(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, kwargs orub
 		limit = arg2.Int()
 	}
 
+	// an IO reads through its buffer (rbuf.go)
+	if fd.IsData() {
+		if _, isFile := mrb.Data(fd).(io.Reader); isFile {
+			sr, err := ioReader(mrb, fd)
+			if err != nil {
+				return nil, err
+			}
+			return readLineFrom(sr, sep, limit, chomp)
+		}
+	}
+
 	f, err := openIO(mrb, fd, mrb.NilValue(), kwargs.Value())
 	if err != nil {
 		return nil, err
 	}
-
 	reader, ok := f.(io.Reader)
 	if !ok {
 		return nil, oruby.EError("IOError", "IO object does not support reading")
 	}
+	return readLineFrom(&plainReader{reader}, sep, limit, chomp)
+}
 
+// lineSource is what readLineFrom reads: an IO's streamReader, or a plain
+// reader for a stream that is no IO object
+type lineSource interface {
+	ReadUntil(sep []byte, limit int) ([]byte, error)
+	ReadN(n int) ([]byte, error)
+	ReadAll() ([]byte, error)
+}
+
+func readLineFrom(src lineSource, sep *string, limit int, chomp bool) ([]byte, error) {
 	if sep == nil {
 		if limit > 0 {
-			buf := make([]byte, limit)
-			n, rErr := io.ReadFull(reader, buf)
-			if n > 0 {
-				return buf[:n], nil
-			}
-			if rErr == nil {
-				return nil, io.EOF
-			}
-			return nil, rErr
+			return src.ReadN(limit)
 		}
-		buf, rErr := io.ReadAll(reader)
-		if len(buf) > 0 {
-			return buf, nil
+		buf, err := src.ReadAll()
+		if err != nil {
+			return nil, err
 		}
-		if rErr == nil {
+		if len(buf) == 0 {
 			return nil, io.EOF
 		}
-		return nil, rErr
+		return buf, nil
 	}
-
 	separator := []byte(*sep)
 	if *sep == "" {
 		separator = []byte("\n\n")
 	}
+	line, err := src.ReadUntil(separator, limit)
+	if err != nil {
+		return nil, err
+	}
+	if chomp && bytes.HasSuffix(line, separator) {
+		line = line[:len(line)-len(separator)]
+	}
+	return line, nil
+}
 
+// plainReader is a lineSource over an io.Reader, a byte at a time (what
+// it reads ahead would be lost)
+type plainReader struct{ r io.Reader }
+
+func (p *plainReader) ReadUntil(sep []byte, limit int) ([]byte, error) {
 	var line []byte
-	oneByte := make([]byte, 1)
-	for {
-		if limit > 0 && len(line) >= limit {
-			break
-		}
-		n, rErr := reader.Read(oneByte)
+	one := make([]byte, 1)
+	for limit <= 0 || len(line) < limit {
+		n, err := p.r.Read(one)
 		if n > 0 {
-			line = append(line, oneByte[0])
-			if len(separator) > 0 && bytes.HasSuffix(line, separator) {
-				if chomp {
-					line = line[:len(line)-len(separator)]
-				}
+			line = append(line, one[0])
+			if len(sep) > 0 && bytes.HasSuffix(line, sep) {
 				return line, nil
 			}
 		}
-		if rErr != nil {
+		if err != nil {
 			if len(line) > 0 {
 				return line, nil
 			}
-			return nil, rErr
+			return nil, err
 		}
 	}
 	if len(line) == 0 {
@@ -157,6 +178,20 @@ func readLine(mrb *oruby.MrbState, fd oruby.Value, args oruby.RArgs, kwargs orub
 	}
 	return line, nil
 }
+
+func (p *plainReader) ReadN(n int) ([]byte, error) {
+	buf := make([]byte, n)
+	m, err := io.ReadFull(p.r, buf)
+	if m > 0 {
+		return buf[:m], nil
+	}
+	if err == nil || errors.Is(err, io.ErrUnexpectedEOF) {
+		err = io.EOF
+	}
+	return nil, err
+}
+
+func (p *plainReader) ReadAll() ([]byte, error) { return io.ReadAll(p.r) }
 
 func getSpliter(sep *string, chomp bool, limit int) bufio.SplitFunc {
 	if sep == nil {

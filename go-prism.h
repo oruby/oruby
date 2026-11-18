@@ -26,6 +26,8 @@ enum {
   ORB_SOURCE_ENCODING,    // s0: __ENCODING__
   ORB_LITERAL_ENCODING,   // s0: literal in non-UTF-8 source; flags 1: \u (UTF-8), 2: binary
   ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment
+  ORB_KWSPLAT,            // s0: the value of **value in a call or Hash literal
+  ORB_ARRAY_KWHASH,       // s0: a brace-less Hash at the end of an Array literal
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

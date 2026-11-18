@@ -509,12 +509,8 @@ class IO
         end
         readonly = flags & READONLY != 0
         priv = flags & PRIVATE != 0
-        unless readonly || priv
-          begin
-            file.write("")
-          rescue IOError
-            raise Errno::EACCES, "mmap"
-          end
+        if !(readonly || priv) && file.respond_to?(:__oruby_writable?, true) && !file.__oruby_writable?
+          raise Errno::EACCES, "mmap"
         end
         data = file.pread(size, offset).b
         path = file.respond_to?(:path) ? file.path : nil

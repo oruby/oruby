@@ -1,6 +1,7 @@
 package popen
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,14 +49,28 @@ func (e pipeError) Error() string {
 }
 
 func (p *superPipe) Close() error {
+	// close_read / close_write may have closed a side already
 	errW := p.WriteCloser.Close()
+	if errors.Is(errW, os.ErrClosed) {
+		errW = nil
+	}
 	errR := p.ReadCloser.Close()
+	if errors.Is(errR, os.ErrClosed) {
+		errR = nil
+	}
 	p.wait()
 	if errW != nil || errR != nil {
 		return &pipeError{errW, errR}
 	}
 
 	return nil
+}
+
+// ReadFile is the pipe from the child's stdout (the io gem waits on it
+// interruptibly), nil for a write-only stream
+func (p *superPipe) ReadFile() *os.File {
+	f, _ := p.ReadCloser.(*os.File)
+	return f
 }
 
 // Read and Write honor the popen mode: "w" streams can't be read, "r"

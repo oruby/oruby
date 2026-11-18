@@ -1653,6 +1653,12 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 	if flags == 0 {
 		flags = os.O_RDONLY
 	}
+	// perm: as a keyword (File.open(path, "w", perm: 0o700))
+	if !optHash.IsNil() {
+		if p := mrb.HashFetch(optHash, oruby.Sym_perm, mrb.NilValue()); p.IsInteger() {
+			perm = p.Int()
+		}
+	}
 
 	return os.OpenFile(name, flags, os.FileMode(perm))
 }
@@ -1776,7 +1782,8 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	isBinary := false
-	if strings.Contains(modeStr, "b") {
+	// the access part only: "w:ascii-8bit" is no binmode
+	if access, _, _ := strings.Cut(modeStr, ":"); strings.Contains(access, "b") {
 		isBinary = true
 	}
 	if args.Len() > 1 && args.Item(1).IsInteger() {

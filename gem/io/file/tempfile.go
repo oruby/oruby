@@ -63,7 +63,9 @@ func openTmpFile(mrb *oruby.MrbState, args oruby.RArgs) (string, string, int, in
 	name = prefix + "*" + suffix
 
 	if !opt.IsNil() {
-		flags = mrb.HashFetch(opt, oruby.Sym_mode, oruby.Int(flags)).Int()
+		// MRI's Tempfile: mode: adds to RDWR|CREAT|EXCL, a tempfile is
+		// always open both ways
+		flags |= mrb.HashFetch(opt, oruby.Sym_mode, oruby.Int(0)).Int()
 		if dirV := mrb.HashFetch(opt, oruby.Sym_tmpdir, oruby.Nil); dirV.IsString() {
 			dir = dirV.String()
 		}
@@ -156,7 +158,8 @@ func tmpReopen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	f, err = os.OpenFile(f.Name(), mode, os.FileMode(perm))
+	// the file is there: reopening it creates nothing
+	f, err = os.OpenFile(f.Name(), mode&^(os.O_CREATE|os.O_EXCL), os.FileMode(perm))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

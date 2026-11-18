@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/oruby/oruby"
@@ -20,6 +21,9 @@ type IoData struct {
 
 //go:embed io_nonblock.rb
 var ioNonblockRb []byte
+
+//go:embed io_methods.rb
+var ioMethodsRb []byte
 
 // platformInit adds IO.select and non-blocking IO where supported
 var platformInit func(mrb *oruby.MrbState, cIO oruby.RClass)
@@ -36,7 +40,7 @@ func init() {
 		initConsts(mrb, cIO)
 
 		// Not implemented: select and popen with fork command '-')
-		cIO.DefineClassMethod("copy_stream", ioCopyStream, mrb.ArgsArg(2, 2))
+		cIO.DefineClassMethod("__oruby_copy_stream", ioCopyStream, mrb.ArgsArg(2, 2))
 		cIO.DefineClassMethod("foreach", ioForeach, mrb.ArgsArg(2, 3)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("_pipe", ioPipe, mrb.ArgsOpt(3))
 		mrb.Eval(`
@@ -57,14 +61,11 @@ class IO
 end
 `)
 		cIO.DefineClassMethod("readlines", ioSReadlines, mrb.ArgsArg(1, 3)|mrb.ArgsKey(0, 1))
-		cIO.DefineClassMethod("try_convert", ioTryConvert, mrb.ArgsReq(1))
 		cIO.DefineClassMethod("open", ioOpen, mrb.ArgsArg(1, 2)|mrb.ArgsBlock())
 		cIO.DefineClassMethod("for_fd", ioNew, mrb.ArgsArg(1, 2))
 
 		cIO.DefineMethod("initialize", ioInit, mrb.ArgsArg(1, 2))
 		cIO.DefineMethod("initialize_copy", ioInitCopy, mrb.ArgsReq(1))
-		cIO.DefineMethod("<<", ioWriteString, mrb.ArgsReq(1))
-		cIO.DefineMethod("advise", mrb.NotImplemented, mrb.ArgsArg(1, 2))
 		cIO.DefineMethod("autoclose=", ioSetAutosclose, mrb.ArgsReq(1))
 		cIO.DefineMethod("autoclose?", ioIsAutoclose, mrb.ArgsNone())
 		cIO.DefineMethod("binmode", ioBinmode, mrb.ArgsNone())
@@ -72,13 +73,9 @@ end
 		//cIO.DefineMethod("bytes", ioBytes, mrb.ArgsArg()) // Deprecated
 		//cIO.DefineMethod("chars", ioChars, mrb.ArgsArg()) // Deprecated
 		cIO.DefineMethod("close", ioClose, mrb.ArgsNone())
-		cIO.DefineMethod("close_on_exec=", mrb.NotImplemented, mrb.ArgsReq(1))
+		cIO.DefineMethod("close_on_exec=", ioSetCloseOnExec, mrb.ArgsReq(1))
 		cIO.DefineMethod("close_on_exec?", ioIsCloseOnExec, mrb.ArgsNone())
-		cIO.DefineMethod("close_read", ioCloseRead, mrb.ArgsNone())
-		cIO.DefineMethod("close_write", ioCloseWrite, mrb.ArgsNone())
 		cIO.DefineMethod("closed?", ioIsClosed, mrb.ArgsNone())
-		cIO.DefineMethod("each", ioEach, mrb.ArgsOpt(3)|mrb.ArgsBlock())
-		cIO.DefineAlias("each_line", "each")
 		cIO.DefineMethod("each_byte", ioEachByte, mrb.ArgsBlock())
 		cIO.DefineMethod("each_char", ioEachChar, mrb.ArgsBlock())
 		cIO.DefineMethod("each_codepoint", ioEachCodepoint, mrb.ArgsBlock())
@@ -87,7 +84,10 @@ end
 		cIO.DefineAlias("eof", "eof?")
 		cIO.DefineMethod("external_encoding", ioExternalEncoding, mrb.ArgsNone())
 		cIO.DefineMethod("internal_encoding", ioInternalEncoding, mrb.ArgsNone())
-		cIO.DefineMethod("fcntl", mrb.NotImplemented, mrb.ArgsReq(2))
+		cIO.DefineMethod("__oruby_fcntl", ioFcntl, mrb.ArgsReq(2))
+		cIO.DefineMethod("__oruby_buffered?", ioBuffered, mrb.ArgsNone())
+		cIO.DefineClassMethod("__oruby_fd_flags", ioFdFlags, mrb.ArgsReq(1))
+		cIO.DefineClassMethod("__oruby_pipe_fds", ioPipeFds, mrb.ArgsNone())
 		cIO.DefineMethod("fdatasync", ioFsync, mrb.ArgsNone())
 		cIO.DefineMethod("fileno", ioFileno, mrb.ArgsNone())
 		cIO.DefineMethod("flush", ioFlush, mrb.ArgsNone())
@@ -97,19 +97,13 @@ end
 		cIO.DefineMethod("gets", ioGets, mrb.ArgsOpt(3))
 		cIO.DefineMethod("inspect", ioInspect, mrb.ArgsNone())
 		//cIO.DefineMethod("internal_encoding", ioInternalEncoding, mrb.ArgsNone())
-		cIO.DefineMethod("ioctl", mrb.NotImplemented, mrb.ArgsReq(2))
 		cIO.DefineMethod("isatty", ioIsTty, mrb.ArgsNone())
 		cIO.DefineMethod("lineno", ioLineno, mrb.ArgsNone())
 		cIO.DefineMethod("lineno=", ioSetLineno, mrb.ArgsReq(1))
-		cIO.DefineAlias("lines", "each_line")
 		cIO.DefineMethod("pid", ioPid, mrb.ArgsNone())
 		cIO.DefineMethod("pos", ioPos, mrb.ArgsNone())
 		cIO.DefineMethod("pos=", ioSetPos, mrb.ArgsReq(1))
 		cIO.DefineMethod("pread", ioPread, mrb.ArgsArg(2, 1))
-		cIO.DefineMethod("print", ioPrint, mrb.ArgsAny())
-		cIO.DefineMethod("printf", ioPrintf, mrb.ArgsReq(1)|mrb.ArgsAny())
-		cIO.DefineMethod("putc", ioPutc, mrb.ArgsReq(1))
-		cIO.DefineMethod("puts", ioPuts, mrb.ArgsAny())
 		cIO.DefineMethod("pwrite", ioPwrite, mrb.ArgsReq(2))
 		cIO.DefineMethod("read", ioRead, mrb.ArgsOpt(2))
 		cIO.DefineMethod("readbyte", ioReadbyte, mrb.ArgsNone())
@@ -122,11 +116,9 @@ end
 		//cIO.DefineMethod("set_encoding", ioSet_encoding, mrb.ArgsArg(1,2))
 		//cIO.DefineMethod("set_encoding_by_bom", ioSetEncodingByBom, mrb.ArgsNone())
 		cIO.DefineMethod("stat", ioStat, mrb.ArgsNone())
-		cIO.DefineMethod("sync", ioSync, mrb.ArgsNone())
-		cIO.DefineMethod("sync=", ioSetSync, mrb.ArgsReq(1))
-		cIO.DefineMethod("sysread", ioReadpartial, mrb.ArgsArg(1, 1))
-		cIO.DefineMethod("sysseek", ioSeek, mrb.ArgsArg(1, 1))
-		cIO.DefineMethod("syswrite", ioWrite, mrb.ArgsReq(1))
+		cIO.DefineMethod("sysread", ioSysread, mrb.ArgsArg(1, 1))
+		cIO.DefineMethod("sysseek", ioSysseek, mrb.ArgsArg(1, 1))
+		cIO.DefineMethod("syswrite", ioSyswrite, mrb.ArgsReq(1))
 		cIO.DefineMethod("tell", ioTell, mrb.ArgsNone())
 		cIO.DefineMethod("to_i", ioFileno, mrb.ArgsNone())
 		cIO.DefineMethod("to_io", ioToIo, mrb.ArgsNone())
@@ -141,6 +133,7 @@ end
 			platformInit(mrb, cIO)
 			rb.LoadRuby(mrb, "io_nonblock.rb", ioNonblockRb)
 		}
+		rb.LoadRuby(mrb, "<internal:io>", ioMethodsRb)
 		// StringIO is provided by stdlib gem (require "stringio")
 
 		return &IoData{getStream, openIO}
@@ -148,7 +141,7 @@ end
 }
 
 func RaiseEOF(mrb *oruby.MrbState) oruby.Value {
-	return mrb.Raise(mrb.ExcGet("EOFError"), "")
+	return mrb.Raise(mrb.ExcGet("EOFError"), "end of file reached")
 }
 
 func RaiseIOError(mrb *oruby.MrbState, msg string) oruby.Value {
@@ -395,6 +388,38 @@ func ioOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 // ioPipe internally opens os.Pipe, returning os.File for reader and writer
+// IO.__oruby_pipe_fds: a pipe's [read fd, write fd]. Their *os.File (Go's
+// pollable pipe ends) wait in pendingPipes until IO#initialize(fd) claims
+// them, so IO.pipe can make instances the way MRI does: allocate and
+// initialize, not new.
+func ioPipeFds(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return mrb.SysFail(err)
+	}
+	rfd, wfd := RawFd(r), RawFd(w)
+	pendingMu.Lock()
+	pendingPipes[rfd] = r
+	pendingPipes[wfd] = w
+	pendingMu.Unlock()
+	return mrb.AryNewFromValues(oruby.Int(rfd).Value(), oruby.Int(wfd).Value())
+}
+
+var (
+	pendingMu    sync.Mutex
+	pendingPipes = map[int]*os.File{}
+)
+
+// ClaimPipeFD is the *os.File of a descriptor IO.__oruby_pipe_fds made, nil
+// for any other
+func ClaimPipeFD(fd int) *os.File {
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	f := pendingPipes[fd]
+	delete(pendingPipes, fd)
+	return f
+}
+
 func ioPipe(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -461,18 +486,29 @@ func ioForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return ret
 }
 
-func ioTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	f := mrb.GetArgsFirst()
-	if f.Type() == oruby.MrbTTString {
-		return mrb.NilValue()
-	}
-
-	ioData := getIOData(mrb, mrb.ClassOf(self))
-	ioObject, err := ioData.OpenIO(mrb, f, mrb.NilValue(), mrb.NilValue())
+// IO#__oruby_fcntl(cmd, arg): fcntl with an integer argument (IO#fcntl,
+// io_methods.rb, checks the arguments)
+func ioFcntl(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	cmd, arg := mrb.GetArgs2()
+	f, err := getFile(mrb, self)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	return mrb.DataValue(ioObject)
+	r, err := platformFcntl(f, cmd.Int(), arg.Int())
+	if err != nil {
+		return mrb.SysFail(err)
+	}
+	return oruby.Int(r)
+}
+
+// IO.__oruby_fd_flags(fd): the status flags of descriptor fd (F_GETFL), or
+// nil where they are not known
+func ioFdFlags(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	fl, ok := fdFlags(mrb.GetArgsFirst().Int())
+	if !ok {
+		return mrb.NilValue()
+	}
+	return oruby.Int(fl)
 }
 
 func getStream(mrb *oruby.MrbState, mode int, item oruby.Value) (interface{}, error) {

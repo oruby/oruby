@@ -101,7 +101,8 @@ class IO
     binmode = @__fmode[2] || (opts && opts[:binmode] == true)
     binmode = false if opts && opts[:textmode] == true
     ext, intern, by_bom = IO.__oruby_mode_encodings(mode, opts)
-    ext ||= Encoding::BINARY if binmode
+    # binmode means BINARY unless an internal encoding asks for text
+    ext ||= Encoding::BINARY if binmode && intern.nil?
     # sockets are binary streams
     if !binmode && defined?(::BasicSocket) && is_a?(::BasicSocket)
       binmode = true
@@ -109,7 +110,7 @@ class IO
     end
     @__binmode = binmode
     @__enc, @__enc2 = IO.__oruby_ext_int(ext, intern, by_bom)
-    @__ecopts = nil
+    @__ecopts = IO.__oruby_ecopts(opts)
     __oruby_set_encoding_by_bom if by_bom && @__fmode[0]
   end
 
@@ -136,6 +137,51 @@ class IO
 
   def internal_encoding
     @__enc2 ? (@__enc || Encoding.default_external) : nil
+  end
+
+  ECOPT_KEYS = %i[newline universal_newline crlf_newline cr_newline lf_newline
+                 invalid undef replace xml fallback].freeze
+  private_constant :ECOPT_KEYS if respond_to?(:private_constant, true)
+
+  # the conversion options among the open options, nil when none
+  def self.__oruby_ecopts(opts)
+    return nil if opts.nil? || opts.empty?
+    h = nil
+    opts.each { |k, v| (h ||= {})[k] = v if ECOPT_KEYS.include?(k) }
+    h
+  end
+
+  def self.__oruby_newline_decorator?(opts)
+    return false if opts.nil?
+    !opts[:newline].nil? || opts[:universal_newline] || opts[:crlf_newline] || opts[:cr_newline] || opts[:lf_newline]
+  end
+
+  # MRI's do_writeconv: the bytes written for str. With an encoding set
+  # (and not BINARY on its own) str is transcoded to the external one; a
+  # newline option turns "\n" into "\r\n" or "\r".
+  def __oruby_write_conv(str)
+    target = @__enc2 || @__enc
+    if target && (@__enc2 || target != Encoding::BINARY) && str.encoding != target
+      ec = @__ecopts
+      enc_opts = ec ? ec.reject { |k, _| k == :newline || k.end_with?("_newline") } : nil
+      str = enc_opts && !enc_opts.empty? ? str.encode(target, **enc_opts) : str.encode(target)
+    end
+    if (ec = @__ecopts)
+      nl = ec[:newline]
+      nl = :crlf if ec[:crlf_newline]
+      nl = :cr if ec[:cr_newline]
+      case nl
+      when :crlf then str = str.b.gsub("\n".b, "\r\n".b)
+      when :cr then str = str.b.gsub("\n".b, "\r".b)
+      end
+    end
+    str
+  end
+
+  alias __oruby_go_write write
+  def write(*objs)
+    return __oruby_go_write(*objs) unless @__enc || @__enc2 || @__ecopts
+    __oruby_go_write(*objs.map { |o| __oruby_write_conv(String === o ? o : o.to_s) })
   end
 
   def set_encoding(*args, **opts)
@@ -173,6 +219,9 @@ class IO
     if __oruby_readable? && !@__enc2 && !@__binmode
       e = @__enc || Encoding.default_external
       raise ArgumentError, "ASCII incompatible encoding needs binmode" unless e.ascii_compatible?
+    end
+    if @__binmode && IO.__oruby_newline_decorator?(opts)
+      raise ArgumentError, "newline decorator with binary mode"
     end
     @__ecopts = opts.empty? ? nil : opts
     # a BOM is read now from files only: a pipe or socket would block
@@ -220,17 +269,34 @@ class IO
     return s unless s.is_a?(String)
     if @__enc2
       s.force_encoding(@__enc2)
-      @__ecopts ? s.encode(@__enc, **@__ecopts) : s.encode(@__enc)
+      ec = __oruby_read_ecopts
+      ec ? s.encode(@__enc, **ec) : s.encode(@__enc)
     else
       s.force_encoding(@__enc || Encoding.default_external)
     end
+  end
+
+  # the conversion options that apply to reading: the write-side newline
+  # decorators (crlf, cr) do not
+  def __oruby_read_ecopts
+    ec = @__ecopts
+    return nil unless ec
+    ec = ec.reject { |k, v| %i[crlf_newline cr_newline lf_newline].include?(k) || (k == :newline && v != :universal) }
+    ec.empty? ? nil : ec
   end
 
   alias __oruby_go_read read
   def read(length = nil, outbuf = nil)
     return __oruby_go_read(length, outbuf) unless length.nil?
     s = outbuf.nil? ? __oruby_go_read : __oruby_go_read(nil, outbuf)
-    __oruby_text(s)
+    t = __oruby_text(s)
+    # read(nil, buf): the text goes into buf, in its encoding
+    if outbuf && !t.equal?(outbuf)
+      outbuf.replace(t)
+      outbuf.force_encoding(t.encoding)
+      return outbuf
+    end
+    t
   end
 
   # one character in the read encoding, read a byte at a time
@@ -249,7 +315,9 @@ class IO
       extra = "".b
       while s.bytesize < want
         t = s.dup.force_encoding(enc)
-        break if enc != Encoding::UTF_8 && t.valid_encoding? && t.size == 1
+        # the shortest valid prefix is the character (String#size counts
+        # bytes in the encodings mruby does not know)
+        break if enc != Encoding::UTF_8 && t.valid_encoding?
         nb = getbyte
         break if nb.nil?
         s << nb.chr
@@ -271,7 +339,7 @@ class IO
   end
 
   def each_char
-    return to_enum(:each_char) unless block_given?
+    return Kernel.__oruby_io_enum(self, :each_char) unless block_given?
     while (c = getc)
       yield c
     end
@@ -307,7 +375,7 @@ class IO
   def lineno=(n)
     raise IOError, "closed stream" if closed?
     raise IOError, "not opened for reading" unless __oruby_readable?
-    n = Kernel.__implicit(n, Integer)
+    n = Kernel.__to_int(n)
     raise RangeError, "integer #{n} too big to convert to 'int'" if n > 0x7fff_ffff || n < -0x8000_0000
     __oruby_go_set_lineno(n)
   end
@@ -369,8 +437,9 @@ class IO
             while (b = getbyte) == 10
             end
             ungetbyte(b) unless b.nil?
+            # chomp takes the separator; a last paragraph keeps its "\n"
+            line = line.byteslice(0, line.bytesize - 2) if chomp
           end
-          line = line.sub(/\n+\z/, "") if chomp
         end
       else
         line = limit ? __oruby_go_gets(sep, limit) : __oruby_go_gets(sep)
@@ -438,18 +507,45 @@ class IO
   end
   alias each_line each
 
-  alias __oruby_go_reopen reopen
+  # MRI's rb_io_reopen: one IO argument (or #to_io) takes over that IO's
+  # stream; otherwise the argument is a path, opened in the given mode or
+  # in the IO's own
   def reopen(*args, **kw)
-    r = kw.empty? ? __oruby_go_reopen(*args) : __oruby_go_reopen(*args, **kw)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..2)" unless (1..2) === args.size
     other = args[0]
-    if other.is_a?(IO)
-      %i[@__fmode @__enc @__enc2 @__binmode @__ecopts].each do |iv|
-        instance_variable_set(iv, other.instance_variable_get(iv))
+    if args.size == 1 && !(String === other)
+      io = IO === other ? other : IO.try_convert(other)
+      if io
+        raise IOError, "closed stream" if closed? || io.closed?
+        __oruby_reopen_io(io)
+        %i[@__fmode @__enc @__enc2 @__binmode @__ecopts].each do |iv|
+          instance_variable_set(iv, io.instance_variable_get(iv))
+        end
+        @__oruby_path = io.is_a?(File) ? io.path : nil
+        return self
       end
-    elsif args.size > 1 || !kw.empty?
-      __oruby_init_encoding(args[1], kw)
     end
-    r
+    path = IO.__oruby_path(other)
+    mode = args[1]
+    unless mode.nil? && kw.empty?
+      mode, kw = IO.__oruby_check_mode(mode, kw)
+    end
+    go_mode = mode.is_a?(String) ? mode.split(":", 2)[0] : mode
+    go_kw = kw.empty? ? nil : kw
+    if go_mode.nil? && kw[:mode].nil?
+      if @__oruby_open_mode
+        # the mode the File was opened with ("a" appends to the new file)
+        go_mode, flags = @__oruby_open_mode
+        go_kw = { flags: flags } if flags
+      else
+        # a standard stream, a pipe, IO.new(fd): its access mode
+        go_mode = __oruby_writable? ? (__oruby_readable? ? "r+" : "w") : "r"
+      end
+    end
+    __oruby_reopen_path(path, go_mode, go_kw)
+    __oruby_init_encoding(mode, kw) unless mode.nil? && kw.empty?
+    @__oruby_path = path
+    self
   end
 
   class << self
@@ -462,6 +558,35 @@ class IO
       [line_kw, open_kw]
     end
 
+    alias __oruby_go_s_write write
+    alias __oruby_go_s_read read
+
+    # MRI's rb_io_s_read: File.open(name, **opts) (or :open_args), seek to
+    # offset, read(length); the open mode's encodings and BOM apply
+    def read(*args, **opts)
+      return __oruby_go_s_read(*args, **opts) if args.empty? || __oruby_go_stream?(args[0])
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..3)" if args.size > 3
+      name, length, offset = args
+      length = Kernel.__to_int(length) unless length.nil?
+      offset = Kernel.__to_int(offset) unless offset.nil?
+      raise ArgumentError, "negative offset #{offset} given" if offset && offset < 0
+      raise ArgumentError, "negative length #{length} given" if length && length < 0
+      path = __oruby_path(name)
+      oargs = opts[:open_args]
+      f = if oargs.nil?
+            File.open(path, **opts)
+          else
+            oargs = Kernel.__implicit(oargs, Array).dup
+            kw = Hash === oargs.last ? oargs.pop : {}
+            File.open(path, *oargs, **kw)
+          end
+      begin
+        f.seek(offset) unless offset.nil?
+        length.nil? ? f.read : f.read(length)
+      ensure
+        f.close
+      end
+    end
     alias __oruby_go_s_readlines readlines
     alias __oruby_go_s_foreach foreach
 
@@ -487,6 +612,47 @@ class IO
       nil
     end
 
+    # MRI's io_s_write: File.open(name, mode: WRONLY|CREAT (|TRUNC without
+    # an offset), **opts), or with :open_args instead of the other options;
+    # the string is written through File#write (transcoded as it says)
+    def write(*args, **opts)
+      __oruby_s_write(args, opts, false)
+    end
+
+    def binwrite(*args, **opts)
+      __oruby_s_write(args, opts, true)
+    end
+
+    def __oruby_s_write(args, opts, binary)
+      unless (2..3) === args.size
+        raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 2..3)"
+      end
+      name, string, offset = args
+      return __oruby_go_s_write(*args, **opts) if __oruby_go_stream?(name)
+      path = __oruby_path(name)
+      IO.__oruby_check_mode(nil, opts) unless opts.key?(:open_args)
+      offset = Kernel.__to_int(offset) unless offset.nil?
+      if opts[:mode].nil?
+        opts = opts.dup
+        opts[:mode] = File::WRONLY | File::CREAT | (offset.nil? ? File::TRUNC : 0)
+      end
+      oargs = opts[:open_args]
+      f = if oargs.nil?
+            File.open(path, **opts)
+          else
+            oargs = Kernel.__implicit(oargs, Array).dup
+            kw = Hash === oargs.last ? oargs.pop : {}
+            File.open(path, *oargs, **kw)
+          end
+      begin
+        f.binmode if binary
+        f.seek(offset) unless offset.nil?
+        f.write(string)
+      ensure
+        f.close
+      end
+    end
+
     def __oruby_path(name)
       raise TypeError, "no implicit conversion of nil into String" if name.nil?
       return name if name.is_a?(String)
@@ -502,7 +668,7 @@ class IO
       Kernel.__responds?(m, :to_int) ? Kernel.__implicit(m, Integer) : Kernel.__implicit(m, String)
     end
     mode = coerce.call(mode)
-    if opts.key?(:mode)
+    unless opts[:mode].nil?
       raise ArgumentError, "mode specified twice" unless mode.nil?
       mode = coerce.call(opts[:mode])
     end
@@ -546,15 +712,43 @@ class IO
     fd = Kernel.__implicit(fd, Integer) unless fd.is_a?(Integer)
     raise Errno::EBADF, "Bad file descriptor - #{fd}" if fd < 0
     mode, opts = IO.__oruby_check_mode(rest[0], opts)
+    # MRI's rb_io_initialize: the descriptor's own access mode, which the
+    # mode given may narrow but not widen
+    acc = IO.__oruby_fd_access(fd)
+    if acc && !mode.nil?
+      want = IO.__oruby_fmode(mode.is_a?(String) ? mode.split(":", 2)[0] : mode)
+      raise Errno::EINVAL, fd.to_s if (want[0] && !acc[0]) || (want[1] && !acc[1])
+    end
+    mode = (acc[0] ? (acc[1] ? File::RDWR : File::RDONLY) : File::WRONLY) if mode.nil? && acc
     go_mode = mode.is_a?(String) ? mode.split(":", 2)[0] : mode
-    go_mode.nil? ? __oruby_go_initialize(fd, &block) : __oruby_go_initialize(fd, go_mode, &block)
+    __oruby_go_initialize(fd, go_mode)
     __oruby_init_encoding(mode, opts)
     self.autoclose = !!opts[:autoclose] if opts.key?(:autoclose)
+    unless opts[:path].nil?
+      @__oruby_path = Kernel.__implicit(opts[:path], String).dup.freeze
+    end
+  end
+
+  # [readable, writable] of descriptor fd (fcntl F_GETFL), nil when not known
+  def self.__oruby_fd_access(fd)
+    acc = __oruby_fd_flags(fd)
+    return nil if acc.nil?
+    acc &= 3
+    [acc != File::Constants::WRONLY, acc != File::Constants::RDONLY]
   end
 
   class << self
-    def for_fd(*args, **opts, &block)
-      opts.empty? ? new(*args, &block) : new(*args, **opts, &block)
+    # MRI's rb_io_s_new: the block is not used
+    def new(*args, **opts, &block)
+      if block
+        c = name || inspect
+        warn "#{c}::new() does not take block; use #{c}::open() instead", uplevel: 1
+      end
+      super(*args, **opts)
+    end
+
+    def for_fd(*args, **opts)
+      opts.empty? ? new(*args) : new(*args, **opts)
     end
 
     def open(*args, **opts)
@@ -574,11 +768,20 @@ class IO
 
   class << self
     alias __oruby_pipe pipe
+    # MRI's rb_io_pipe: each end is an instance of the receiver made by
+    # allocate and initialize(fd, mode) (a redefined new is not called)
     def pipe(*args, **opts, &block)
-      ext = args[0]
-      r, w = __oruby_pipe
-      r.__oruby_init_encoding("r", nil)
-      w.__oruby_init_encoding("w", nil)
+      if respond_to?(:__oruby_pipe_fds, true)
+        rfd, wfd = __oruby_pipe_fds
+        r = allocate
+        r.__send__(:initialize, rfd, File::RDONLY)
+        w = allocate
+        w.__send__(:initialize, wfd, File::WRONLY)
+      else
+        r, w = __oruby_pipe
+        r.__oruby_init_encoding("r", nil)
+        w.__oruby_init_encoding("w", nil)
+      end
       r.set_encoding(*args, **opts) unless args.empty?
       return [r, w] unless block
       begin
@@ -592,11 +795,27 @@ class IO
 end
 
 class File
+  # the name of a standard stream (oruby's STDIN is a File) or the path
+  # given by IO.new(fd, path:)
+  alias __oruby_go_path path
+  def path
+    return @__oruby_path if @__oruby_path
+    return "<STDIN>" if equal?(STDIN)
+    return "<STDOUT>" if equal?(STDOUT)
+    return "<STDERR>" if equal?(STDERR)
+    __oruby_go_path
+  end
+  alias to_path path
+
   alias __oruby_go_file_initialize initialize
   def initialize(*args, **opts, &block)
     opts.empty? ? __oruby_go_file_initialize(*args, &block) : __oruby_go_file_initialize(*args, **opts, &block)
     hash = args.last.is_a?(Hash) ? args.last : nil
     mode = args[1].is_a?(Hash) ? nil : args[1]
+    om = mode.nil? ? (opts[:mode] || (hash && hash[:mode])) : mode
+    om = om.split(":", 2)[0] if om.is_a?(String)
+    fl = opts[:flags] || (hash && hash[:flags])
+    @__oruby_open_mode = [om, fl] if om || fl
     __oruby_init_encoding(mode, hash ? hash.merge(opts) : opts)
   end
 end
