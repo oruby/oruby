@@ -295,6 +295,33 @@ static mrb_value raise_call(mrb_state *mrb, mrb_value self, int which) {
     }
     mrb_exc_raise(mrb, exc);
   }
+  {
+    /* raise(obj[, mesg]) with an object that is not an Exception, its class
+       or a String: MRI asks obj.exception([mesg]) for the exception, which
+       mruby's raise does not */
+    mrb_int argc = mrb_get_argc(mrb);
+    const mrb_value *argv = mrb_get_argv(mrb);
+    if ((argc == 1 || argc == 2) && !mrb_class_p(argv[0]) && !mrb_exception_p(argv[0]) &&
+        !mrb_string_p(argv[0]) && !mrb_hash_p(argv[0]) &&
+        mrb_respond_to(mrb, argv[0], MRB_SYM(exception))) {
+      mrb_value exc, mesg = mrb_nil_value(), cause = mrb_undef_value(), rest = mrb_nil_value();
+      mrb_sym kw_names[] = { MRB_SYM(cause) };
+      mrb_kwargs kw = { 1, 0, kw_names, &cause, &rest };
+      mrb_int n = mrb->c->ci->kw ? mrb_get_args(mrb, "o|o:", &exc, &mesg, &kw)
+                                 : mrb_get_args(mrb, "o|o", &exc, &mesg);
+      exc = n == 2 ? mrb_funcall_id(mrb, exc, MRB_SYM(exception), 1, mesg)
+                   : mrb_funcall_id(mrb, exc, MRB_SYM(exception), 0);
+      if (!mrb_obj_is_kind_of(mrb, exc, E_EXCEPTION)) {
+        mrb_raise(mrb, E_TYPE_ERROR, "exception object expected");
+      }
+      mrb->c->ci->mid = 0;
+      if (!mrb_undef_p(cause)) {
+        _orb_bt_keep_now(mrb, exc);
+        mrb_exc_raise_with_cause(mrb, exc, cause);
+      }
+      mrb_exc_raise(mrb, exc);
+    }
+  }
   if (mrb->c->ci->kw && mrb_get_argc(mrb) > 0) {
     /* raise(exc[, mesg], cause: c), as mrb_f_raise (kernel.c) raises it,
        with the stack kept for the backtrace labels */

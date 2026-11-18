@@ -241,6 +241,10 @@ static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value 
     else {
       if (!ci->mid) continue;
       raw++;
+      /* an oruby helper (__oruby_*) that core_ext's Ruby calls is part of
+         the method that calls it: Fiber.yield's __oruby_yield */
+      if (i > 0 && pos[i-1].valid && pos[i-1].internal &&
+          strncmp(mrb_sym_name(mrb, ci->mid), "__oruby_", 8) == 0) continue;
       f.kind = BT_METHOD;
       f.mid = ci->mid;
       f.owner = bt_owner(mrb_vm_ci_target_class(ci));
@@ -321,13 +325,21 @@ void _orb_bt_forget(mrb_state *mrb, mrb_value exc) {
 
 // $!: a virtual global, so that its read in mrb_exc_set() (error.c) takes
 // the stack of the exception being raised
+/* $! is per fiber, as in MRI: a fiber suspended in a rescue clause keeps
+   its $! to itself. The root fiber's is kept on Kernel, another fiber's on
+   its Fiber object (both under a name instance_variables does not list). */
+static mrb_value errinfo_holder(mrb_state *mrb) {
+  if (mrb->c != mrb->root_c && mrb->c->fib) return mrb_obj_value(mrb->c->fib);
+  return mrb_obj_value(mrb->kernel_module);
+}
+
 static mrb_value errinfo_get(mrb_state *mrb) {
   if (mrb->exc && mrb->exc->tt == MRB_TT_EXCEPTION) _orb_bt_keep(mrb, mrb_obj_value(mrb->exc));
-  return mrb_iv_get(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_errinfo__));
+  return mrb_iv_get(mrb, errinfo_holder(mrb), MRB_SYM(__oruby_errinfo__));
 }
 
 static void errinfo_set(mrb_state *mrb, mrb_value v) {
-  mrb_iv_set(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_errinfo__), v);
+  mrb_iv_set(mrb, errinfo_holder(mrb), MRB_SYM(__oruby_errinfo__), v);
 }
 
 /* Labels */
@@ -582,6 +594,34 @@ static mrb_value f_caller_locations(mrb_state *mrb, mrb_value self) {
   return bt_locations(mrb, bt, lev, n);
 }
 
+/* Fiber#backtrace / #backtrace_locations of a fiber that is not running: its
+   own stack, from where it is suspended, as MRI gives it (the running fiber
+   is caller(0), in Ruby; created and terminated fibers have no frames). The
+   walk reads mrb->c, so it is pointed at the fiber's context meanwhile, with
+   the GC off: it must not see the swapped state. */
+static mrb_value fiber_bt(mrb_state *mrb, mrb_value self, mrb_bool locs) {
+  struct mrb_context *fc = ((struct RFiber *)mrb_obj_ptr(self))->cxt;
+  if (!fc || fc == mrb->c || !fc->ci || fc->status == MRB_FIBER_CREATED ||
+      fc->status == MRB_FIBER_TERMINATED) {
+    return mrb_ary_new(mrb);
+  }
+  struct mrb_context *cur = mrb->c;
+  mrb_bool gc_off = mrb->gc.disabled;
+  mrb_int raw;
+  mrb->gc.disabled = TRUE;
+  mrb->c = fc;
+  mrb_value keep = bt_capture(mrb, fc->ci - fc->cibase, &raw);
+  mrb->c = cur;
+  mrb->gc.disabled = gc_off;
+  bt_data *bt = bt_get(mrb, keep);
+  mrb_int lev = 0, n = bt->len;
+  if (mrb_get_argc(mrb) > 0 && !caller_range(mrb, bt->len + 1, &lev, &n)) return mrb_nil_value();
+  return locs ? bt_locations(mrb, bt, lev, n) : bt_strings(mrb, bt, lev, n);
+}
+
+static mrb_value fiber_bt_m(mrb_state *mrb, mrb_value self) { return fiber_bt(mrb, self, FALSE); }
+static mrb_value fiber_bt_locs_m(mrb_state *mrb, mrb_value self) { return fiber_bt(mrb, self, TRUE); }
+
 /* Thread::Backtrace::Location */
 
 static mrb_func_t loc_orig[6];
@@ -652,6 +692,11 @@ void _orb_bt_init(mrb_state *mrb) {
     }
     o = bt_replace(mrb, loc, "absolute_path", loc_absolute_path, MRB_ARGS_NONE(), FALSE);
     if (o) loc_abs_orig = o;
+  }
+  if (mrb_class_defined_id(mrb, MRB_SYM(Fiber))) {
+    struct RClass *fib = mrb_class_get_id(mrb, MRB_SYM(Fiber));
+    mrb_define_private_method(mrb, fib, "__oruby_backtrace", fiber_bt_m, MRB_ARGS_OPT(2));
+    mrb_define_private_method(mrb, fib, "__oruby_backtrace_locations", fiber_bt_locs_m, MRB_ARGS_OPT(2));
   }
   mrb_define_private_method(mrb, mrb->kernel_module, "caller", f_caller, MRB_ARGS_OPT(2));
   mrb_define_private_method(mrb, mrb->kernel_module, "caller_locations", f_caller_locations, MRB_ARGS_OPT(2));

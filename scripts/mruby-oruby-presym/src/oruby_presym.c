@@ -357,6 +357,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__nonblock");
   (void)mrb_intern_lit(mrb, "__nonblock?");
   (void)mrb_intern_lit(mrb, "__open");
+  (void)mrb_intern_lit(mrb, "__oruby_backtrace");
+  (void)mrb_intern_lit(mrb, "__oruby_backtrace_locations");
   (void)mrb_intern_lit(mrb, "__oruby_bt__");
   (void)mrb_intern_lit(mrb, "__oruby_crypt");
   (void)mrb_intern_lit(mrb, "__oruby_deadlock");

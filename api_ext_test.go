@@ -307,3 +307,18 @@ func TestConcurrentTraceVar(t *testing.T) {
 		}
 	}
 }
+
+// $! belongs to the fiber that is handling the exception
+func TestErrinfoPerFiber(t *testing.T) {
+	mrb := MrbOpen()
+	defer mrb.Close()
+	v, err := mrb.Eval(`
+		f = Fiber.new { begin; raise "inner"; rescue; Fiber.yield $!.message; $!.message; end }
+		a = f.resume
+		root = $!
+		b = f.resume
+		[a, root, b] == ["inner", nil, "inner"]`)
+	if err != nil || !v.Bool() {
+		t.Errorf("$! leaked between fibers: %v %v", v, err)
+	}
+}
