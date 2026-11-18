@@ -370,18 +370,28 @@ end
 # spawn / system / exec argument checks as MRI does them before the Go
 # runner (gem/process) sees them: #to_str, null bytes, [command, argv0]
 module Process
+  # MRI's rb_exec_getargs: [env (Hash or #to_hash),] command (String or
+  # [cmdname, argv0], #to_ary), args... [, options Hash]
   def self.__cmd_args(args)
     out = args.dup
+    if !(Hash === out[0]) && out.size > 1 && !(String === out[0]) && Kernel.__responds?(out[0], :to_hash)
+      h = out[0].to_hash
+      out[0] = h if Hash === h
+    end
     i = Hash === out[0] ? 1 : 0
-    raise ArgumentError, "wrong number of arguments (given 0, expected 1+)" if out.size <= i
+    # an env and an options Hash but no command
+    raise ArgumentError, "wrong number of arguments (given 0, expected 1+)" if out.size <= i || (out.size == i + 1 && Hash === out[i])
+    last = out.size
+    last -= 1 if last > i + 1 && Hash === out[-1]
     c = out[i]
+    c = c.to_ary if !(Array === c) && !(String === c) && Kernel.__responds?(c, :to_ary)
     if Array === c
       raise ArgumentError, "wrong first argument" unless c.size == 2
       out[i] = c.map { |x| __cmd_str(x) }
     else
       out[i] = __cmd_str(c)
     end
-    ((i + 1)...out.size).each { |j| out[j] = __cmd_str(out[j]) }
+    ((i + 1)...last).each { |j| out[j] = __cmd_str(out[j]) }
     out
   end
 

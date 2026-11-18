@@ -504,14 +504,15 @@ func Test_dirGlob(t *testing.T) {
 		"testdata/glob/globfile.txt",
 		"testdata/glob/a/afile.txt")
 
-	doGlobFlag("testdata/*", fnmDotmatch, "testdata/.", "testdata/..", "testdata/test.txt", "testdata/zero.txt")
+	// as MRI since 3.1: "." with FNM_DOTMATCH, never ".."
+	doGlobFlag("testdata/*", fnmDotmatch, "testdata/.", "testdata/test.txt", "testdata/zero.txt")
 
 	os.Chdir("testdata")
 	defer os.Chdir("..")
 
 	doGlob("*", "test.txt", "zero.txt")
 	doGlob("*", "test.txt", "zero.txt")
-	doGlobFlag("*", fnmDotmatch, ".", "..", "test.txt", "zero.txt")
+	doGlobFlag("*", fnmDotmatch, ".", "test.txt", "zero.txt")
 }
 
 func Test_dirAref(t *testing.T) {

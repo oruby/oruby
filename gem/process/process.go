@@ -3,9 +3,11 @@ package process
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"os/user"
 	"runtime"
 	"strconv"
@@ -216,23 +218,44 @@ func errorState(err error) *status {
 func procExec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
-	//TODO: start shell
-	err := syscall.Exec(runner.cmd.Path, runner.cmd.Args, runner.cmd.Env)
-	if err != nil {
-		setStatus(mrb, errorState(err))
-		return mrb.RaiseError(oruby.EError("SystemCallError", "%v", err))
+	if runner.argErr != nil {
+		return mrb.RaiseError(runner.argErr)
 	}
-	return mrb.NilValue()
+	path := runner.cmd.Path
+	if path == "" {
+		return raiseErrno(mrb, syscall.ENOENT, path)
+	}
+	if runner.err != nil {
+		// a redirection target that could not be opened, a missing chdir
+		return raiseExecErr(mrb, runner.err, path)
+	}
+	restore, err := runner.execPrepare()
+	if err == nil {
+		err = execCmd(path, runner.cmd.Args, runner.cmd.Env)
+	}
+	restore()
+	setStatus(mrb, errorState(err))
+	if errno, ok := err.(syscall.Errno); ok {
+		return raiseErrno(mrb, errno, path)
+	}
+	return mrb.RaiseError(err)
 }
 
 func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
+	if runner.argErr != nil {
+		return mrb.RaiseError(runner.argErr)
+	}
 
 	pid, err := runner.run()
 	if err != nil {
+		// the command could not run: nil, or its Errno with exception: true
 		setStatus(mrb, errorState(err))
-		return mrb.ERuntimeError().RaiseError(err)
+		if runner.exception {
+			return raiseExecErr(mrb, err, runner.cmd.Path)
+		}
+		return mrb.NilValue()
 	}
 
 	ret, state := runner.Wait(pid, 0)
@@ -253,22 +276,31 @@ func procSystem(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if state.Exitstatus == 127 {
 		return mrb.NilValue()
 	}
+	if runner.exception && !state.IsSucess {
+		// MRI: RuntimeError naming the command and how it ended
+		how := fmt.Sprintf("exit %d", state.Exitstatus)
+		if state.IsSignaled && state.Termsig != nil {
+			how = fmt.Sprintf("signal %d", *state.Termsig)
+		}
+		return mrb.ERuntimeError().Raisef("Command failed with %s: %s", how, runner.cmdline)
+	}
 	return mrb.BoolValue(state.Exitstatus == 0)
 }
 
 func procBacktick(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
+	if runner.argErr != nil {
+		return mrb.RaiseError(runner.argErr)
+	}
 
 	var stdout bytes.Buffer
 	runner.cmd.Stdout = &stdout
-	shell := platformGetShell()
-	runner.cmd.Path = shell
 
 	pid, err := runner.run()
 	if err != nil {
 		setStatus(mrb, errorState(err))
-		return mrb.ERuntimeError().RaiseError(err)
+		return raiseExecErr(mrb, err, runner.cmd.Path)
 	}
 
 	ret, _ := runner.Wait(pid, 0)
@@ -286,12 +318,20 @@ func procBacktick(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.NilValue()
 	}
 
-	return mrb.StrNew(stdout.String())
+	// the output is text in the default external encoding
+	out := mrb.StrNew(stdout.String())
+	if enc, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_default_external); err == nil && !enc.IsNil() {
+		_, _ = mrb.Funcall(out, oruby.Sym_force_encoding, enc)
+	}
+	return out
 }
 
 func procGetCmd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, block := mrb.GetArgsWithBlock()
 	runner := parseArgs(mrb, args)
+	if runner.argErr != nil {
+		return mrb.RaiseError(runner.argErr)
+	}
 
 	if !block.IsNil() {
 		ret := mrb.YieldArgv(block, mrb.DataValue(runner.cmd))
@@ -304,11 +344,14 @@ func procGetCmd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func procSpawn(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	runner := parseArgs(mrb, mrb.GetArgs())
 	defer runner.cleanup()
+	if runner.argErr != nil {
+		return mrb.RaiseError(runner.argErr)
+	}
 
 	pid, err := runner.run()
 	if err != nil {
 		setStatus(mrb, errorState(err))
-		return mrb.ERuntimeError().RaiseError(err)
+		return raiseExecErr(mrb, err, runner.cmd.Path)
 	}
 
 	procData := getProcData(mrb, self)
@@ -627,4 +670,31 @@ wait:
 	}
 
 	return mrb.FixnumValue(int(math.Round(time.Since(start).Seconds())))
+}
+
+// raiseErrno raises Errno::EXXX "<message> - path", as MRI's exec does
+func raiseErrno(mrb *oruby.MrbState, errno syscall.Errno, path string) oruby.MrbValue {
+	exc, err := mrb.Funcall(mrb.ESystemCallError().Value(), oruby.Sym_new, path, int(errno))
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return mrb.RaiseObj(exc)
+}
+
+// raiseExecErr: a command that did not start, as its Errno (ENOENT for a
+// missing one)
+func raiseExecErr(mrb *oruby.MrbState, err error, path string) oruby.MrbValue {
+	// a file or directory the options name: its own path
+	var pe *os.PathError
+	if errors.As(err, &pe) && (pe.Op == "chdir" || pe.Op == "open" || pe.Op == "stat") {
+		path = pe.Path
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return raiseErrno(mrb, errno, path)
+	}
+	if errors.Is(err, exec.ErrNotFound) || path == "" {
+		return raiseErrno(mrb, syscall.ENOENT, path)
+	}
+	return mrb.RaiseError(err)
 }

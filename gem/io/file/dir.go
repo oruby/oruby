@@ -1,7 +1,6 @@
 package file
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,10 +47,12 @@ func initDir(mrb *oruby.MrbState) {
 	dirClass.DefineClassMethod("unlink", dirRmdir, mrb.ArgsReq(1))
 	dirClass.DefineClassMethod("home", dirHome, mrb.ArgsOpt(1))
 
-	dirClass.DefineClassMethod("glob", dirGlob, mrb.ArgsArg(1, 2))
-	dirClass.DefineClassMethod("[]", dirAref, mrb.ArgsReq(1)|mrb.ArgsRest())
+	dirClass.DefineClassMethod("__oruby_glob", dirGlob, mrb.ArgsReq(4))
 	dirClass.DefineClassMethod("exist?", dirExist, mrb.ArgsReq(1))
 	dirClass.DefineClassMethod("empty?", dirIsEmpty, mrb.ArgsReq(1))
+	if _, err := mrb.Eval(dirGlobRb); err != nil {
+		panic(err)
+	}
 }
 
 func dirOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -259,128 +260,83 @@ func dirHome(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.StrNew(foundUser.HomeDir)
 }
 
+// Dir.__oruby_glob(pattern, flags, base, sort): the paths pattern matches
+// (glob.go); Dir.glob and Dir.[] (dirGlobRb) sort out the arguments
 func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	var err error
-	args, block := mrb.GetArgsWithBlock()
-	patt := args.Item(0)
-	basePath := ""
-	ret := mrb.NilValue()
-	var patterns []string
-
-	switch patt.Type() {
-	case oruby.MrbTTString:
-		patterns = []string{patt.String()}
-	case oruby.MrbTTArray:
-		patterns = make([]string, patt.Len())
-		for i := 0; i < patt.Len(); i++ {
-			patterns[i] = mrb.AryEntry(patt, i).String()
-		}
-	default:
-		return mrb.EArgumentError().Raise("pattern must be string or array of strings")
+	a := mrb.GetArgs()
+	pat, flags, base, sorted := a.Item(0), a.Item(1), a.Item(2), a.Item(3)
+	b := ""
+	if base.IsString() {
+		b = mrb.String(base)
 	}
-
-	for _, p := range patterns {
-		if strings.ContainsRune(p, 0) {
-			return mrb.EArgumentError().Raise("string contains null byte")
-		}
-	}
-
-	flags := 0
-	if args.Item(1).IsInt() {
-		flags = args.ItemDefInt(1, flags)
-	}
-	flags |= fnmExtglob | fnmPathname
-
-	opt := mrb.KeywordArgs()
-	if !opt.IsNil() {
-		if base := mrb.HashFetch(opt, oruby.Sym_base, oruby.Nil); base.IsString() {
-			basePath = base.String()
-			if strings.ContainsRune(basePath, 0) {
-				return mrb.EArgumentError().Raise("string contains null byte")
-			}
-		}
-	}
-
-	if block.IsNil() {
-		ret = mrb.AryNew().Value()
-	}
-
-	if basePath != "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
-		err = os.Chdir(basePath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return ret
-			}
-			return mrb.RaiseError(err)
-		}
-		defer os.Chdir(wd)
-		basePath = ""
-	}
-
-	err = glob(patterns, flags, basePath, func(f string) error {
-		if block.IsNil() {
-			mrb.AryPush(ret, mrb.StrNew(f))
-		} else {
-			_ = mrb.Yield(block, mrb.StrNew(f))
-			if mrb.Exc() != nil {
-				return mrb.Err()
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return mrb.RaiseError(err)
+	paths := globPatterns([]string{mrb.String(pat)}, flags.Int(), b, b != "", sorted.Bool())
+	ret := mrb.AryNewCapa(len(paths))
+	for _, p := range paths {
+		ret.PushString(p)
 	}
 	return ret
 }
 
-func dirAref(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	args := mrb.GetArgs()
-	basePath := ""
-	opt := mrb.KeywordArgs()
-	if !opt.IsNil() {
-		if base := mrb.HashFetch(opt, oruby.Sym_base, oruby.Nil); base.IsString() {
-			basePath = base.String()
-		}
-	}
+const dirGlobRb = `
+class Dir
+  # a NUL byte: a lone String pattern is MRI's old NUL-separated list, an
+  # element of several a path name with a NUL in it
+  def self.__oruby_glob_pattern(pat, single)
+    pat = pat.to_path if !(String === pat) && pat.respond_to?(:to_path)
+    pat = pat.to_str if !(String === pat) && pat.respond_to?(:to_str)
+    raise TypeError, "no implicit conversion of #{pat.class} into String" unless String === pat
+    if pat.include?("\0")
+      raise ArgumentError, single ? "nul-separated glob pattern is deprecated" : "path name contains null byte"
+    end
+    pat
+  end
 
-	patterns := make([]string, 0, args.Len())
-	for i := 0; i < args.Len(); i++ {
-		if arg := args.Item(i); arg.IsString() {
-			patterns = append(patterns, arg.String())
-		}
-	}
+  def self.__oruby_glob_run(pats, flags, base, sort, single)
+    raise ArgumentError, "expected true or false as sort: #{sort.inspect}" unless true.equal?(sort) || false.equal?(sort)
+    unless base.nil?
+      base = base.path if Dir === base
+      base = base.to_path if !(String === base) && base.respond_to?(:to_path)
+      raise TypeError, "no implicit conversion of #{base.class} into String" unless String === base
+      base = nil if base.empty?
+    end
+    out = []
+    pats.each do |pat|
+      pat = __oruby_glob_pattern(pat, single)
+      enc = pat.encoding
+      unless enc.respond_to?(:ascii_compatible?)
+        # no Encoding support loaded: bytes in, bytes out
+        out.concat(__oruby_glob(pat, flags, base, sort))
+        next
+      end
+      raise Encoding::CompatibilityError, "incompatible character encodings: #{enc} and US-ASCII" unless enc.ascii_compatible?
+      # the file system's names are UTF-8: a pattern in another encoding is
+      # matched as UTF-8, the paths come back in its encoding
+      conv = !pat.ascii_only? && enc != Encoding::UTF_8 && enc != Encoding::BINARY
+      __oruby_glob(conv ? pat.encode(Encoding::UTF_8) : pat, flags, base, sort).each do |r|
+        out << (conv ? r.force_encoding(Encoding::UTF_8).encode(enc) : r.force_encoding(enc))
+      end
+    end
+    out
+  end
 
-	ret := mrb.AryNew()
-	if basePath != "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
-		err = os.Chdir(basePath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return ret
-			}
-			return mrb.RaiseError(err)
-		}
-		defer os.Chdir(wd)
-		basePath = ""
-	}
+  # MRI's dir_s_glob: flags positionally or as flags: (which wins)
+  def self.glob(pattern, pflags = 0, flags: nil, base: nil, sort: true, &block)
+    flags = pflags if flags.nil?
+    unless Integer === flags
+      raise TypeError, "no implicit conversion of #{flags.class} into Integer" unless flags.respond_to?(:to_int)
+      flags = flags.to_int
+    end
+    r = __oruby_glob_run(Array === pattern ? pattern : [pattern], flags, base, sort, !(Array === pattern))
+    return r unless block
+    r.each(&block)
+    nil
+  end
 
-	err := glob(patterns, fnmExtglob|fnmPathname, basePath, func(f string) error {
-		ret.PushString(f)
-		return nil
-	})
-	if err != nil {
-		return mrb.RaiseError(err)
-	}
-	return ret
-}
+  def self.[](*patterns, base: nil, sort: true)
+    __oruby_glob_run(patterns, 0, base, sort, patterns.size == 1)
+  end
+end
+`
 
 func dirExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	dir := mrb.FSPath(mrb.GetArgsFirst())

@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "f2faf222fad53b27"
+const presymTable = "9e90ce0abf600910"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -456,6 +456,7 @@ const (
 	Sym___oruby_fatal__               MrbSym = C.MRB_SYM____oruby_fatal__               // "__oruby_fatal__"
 	Sym___oruby_fcntl                 MrbSym = C.MRB_SYM____oruby_fcntl                 // "__oruby_fcntl"
 	Sym___oruby_fd_flags              MrbSym = C.MRB_SYM____oruby_fd_flags              // "__oruby_fd_flags"
+	Sym___oruby_glob                  MrbSym = C.MRB_SYM____oruby_glob                  // "__oruby_glob"
 	Sym___oruby_gv                    MrbSym = C.MRB_SYM____oruby_gv                    // "__oruby_gv"
 	Sym___oruby_gv_hook               MrbSym = C.MRB_SYM____oruby_gv_hook               // "__oruby_gv_hook"
 	Sym___oruby_gv_raw_set            MrbSym = C.MRB_SYM____oruby_gv_raw_set            // "__oruby_gv_raw_set"
@@ -550,7 +551,6 @@ const (
 	Sym_atime                         MrbSym = C.MRB_SYM__atime                         // "atime"
 	Sym_backtrace                     MrbSym = C.MRB_SYM__backtrace                     // "backtrace"
 	Sym_backtrace_locations           MrbSym = C.MRB_SYM__backtrace_locations           // "backtrace_locations"
-	Sym_base                          MrbSym = C.MRB_SYM__base                          // "base"
 	Sym_base_label                    MrbSym = C.MRB_SYM__base_label                    // "base_label"
 	Sym_basename                      MrbSym = C.MRB_SYM__basename                      // "basename"
 	Sym_begin                         MrbSym = C.MRB_SYM__begin                         // "begin"
@@ -696,7 +696,6 @@ const (
 	Sym_getutc                        MrbSym = C.MRB_SYM__getutc                        // "getutc"
 	Sym_getwd                         MrbSym = C.MRB_SYM__getwd                         // "getwd"
 	Sym_gid                           MrbSym = C.MRB_SYM__gid                           // "gid"
-	Sym_glob                          MrbSym = C.MRB_SYM__glob                          // "glob"
 	Sym_gm                            MrbSym = C.MRB_SYM__gm                            // "gm"
 	Sym_gmt_offset                    MrbSym = C.MRB_SYM__gmt_offset                    // "gmt_offset"
 	Sym_gmtime                        MrbSym = C.MRB_SYM__gmtime                        // "gmtime"
@@ -946,6 +945,7 @@ const (
 	Sym_times                         MrbSym = C.MRB_SYM__times                         // "times"
 	Sym_tmpdir                        MrbSym = C.MRB_SYM__tmpdir                        // "tmpdir"
 	Sym_to_a                          MrbSym = C.MRB_SYM__to_a                          // "to_a"
+	Sym_to_ary                        MrbSym = C.MRB_SYM__to_ary                        // "to_ary"
 	Sym_to_enum                       MrbSym = C.MRB_SYM__to_enum                       // "to_enum"
 	Sym_to_f                          MrbSym = C.MRB_SYM__to_f                          // "to_f"
 	Sym_to_hash                       MrbSym = C.MRB_SYM__to_hash                       // "to_hash"

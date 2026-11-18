@@ -4,7 +4,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/oruby/oruby"
 )
@@ -21,10 +23,26 @@ type cmdRunner struct {
 	exception     bool
 	cleanup       func()
 	err           error
+	argErr        error // a bad command or option: raised before running
+	umaskSet      bool
+	fdMap         map[int]int // child fd -> parent fd (Integer option keys)
+	opened        []*os.File  // files opened or duplicated for the child
+	name          string      // the command as given, looked up on PATH
+	cmdline       string      // the command for messages
+	childStd      [3]int      // [:child, :out]: the child's stream a std stream copies (-1: none)
 }
 
 func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
-	env, command, params, options := parseArgsStructure(mrb, args)
+	env, command, params, options, argErr := parseArgsStructure(mrb, args)
+	name := command
+	if command == platformGetShell() && len(params) == 3 && params[0] == shellArgv0() && params[1] == "-c" {
+		name = ""
+	}
+	cmdline := strings.Join(params, " ")
+	if name == "" && len(params) == 3 {
+		cmdline = params[2]
+	}
+	command = lookPath(command, os.Getenv("PATH"))
 
 	// Create command
 	runner := &cmdRunner{
@@ -36,13 +54,23 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 			Stdin:  os.Stdin,
 			Stderr: os.Stderr,
 		},
-		closeOthers: true,
+		closeOthers: false, // MRI's default: only close-on-exec descriptors close
 		cleanup:     func() {},
+		argErr:      argErr,
+		name:        name,
+		cmdline:     cmdline,
+		childStd:    [3]int{-1, -1, -1},
 	}
 
 	mrb.HashValueForEach(options, func(key, val oruby.Value) int {
-		if key.IsInteger() || key.IsArray() || key.HasBasic() {
-			runner.parseFd(key, val)
+		// MRI's rb_execarg_addopt: an Integer, an IO or an Array of them is
+		// a redirection, a Symbol an option; anything else is an error
+		if !key.IsSymbol() {
+			if key.IsInteger() || key.IsArray() || key.IsData() {
+				runner.parseFd(key, val)
+			} else {
+				runner.fail(oruby.EArgumentError("wrong exec option: %s", mrb.Inspect(key)))
+			}
 			return 0
 		}
 
@@ -57,50 +85,210 @@ func parseArgs(mrb *oruby.MrbState, args oruby.RArgs) *cmdRunner {
 		case "in", "out", "err":
 			runner.parseFd(key, val)
 		case "umask":
-			v := val.Int()
+			v, err := umaskArg(mrb, val)
+			if err != nil {
+				runner.fail(err)
+				return 0
+			}
 			runner.umask = &v
 		case "pgroup":
-			v := val.Int()
-			switch val.Type() {
-			case oruby.MrbTTTrue:
+			// true or 0: a new group; a pgid: that group; nil, false: none
+			var v int
+			switch {
+			case val.IsNil() || val.Type() == oruby.MrbTTFalse:
+				return 0
+			case val.Type() == oruby.MrbTTTrue:
 				v = 0
-			case oruby.MrbTTFalse:
+			case val.IsInteger():
+				v = val.Int()
+				if v < 0 {
+					runner.fail(oruby.EArgumentError("negative process group ID : %d", v))
+					return 0
+				}
+			default:
+				runner.fail(oruby.ETypeError("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ObjClass(val))))
 				return 0
 			}
 			runner.pgroup = &v
 		case "chdir":
-			runner.cmd.Dir = val.String()
-		case "close_others":
-			runner.closeOthers = val.Bool()
-		case "unsetenv_others":
-			runner.unsetenvOther = val.Bool()
-		case "exception":
-			runner.exception = val.Bool()
+			dir, err := pathArg(mrb, val)
+			if err != nil {
+				runner.fail(err)
+				return 0
+			}
+			runner.cmd.Dir = dir
+			if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+				// raised when the command would run, as MRI's child reports it
+				if err == nil {
+					err = &os.PathError{Op: "chdir", Path: dir, Err: syscall.ENOTDIR}
+				}
+				runner.err = err
+			}
+		case "new_pgroup":
+			if !val.IsNil() && val.Type() != oruby.MrbTTTrue && val.Type() != oruby.MrbTTFalse {
+				runner.fail(oruby.EArgumentError("expected true or false as new_pgroup: %s", mrb.Inspect(val)))
+			}
+		case "close_others", "unsetenv_others", "exception":
+			// MRI's check_exec_options: true, false or nil
+			if !val.IsNil() && val.Type() != oruby.MrbTTTrue && val.Type() != oruby.MrbTTFalse {
+				runner.fail(oruby.EArgumentError("expected true or false as %s: %s", k, mrb.Inspect(val)))
+				return 0
+			}
+			switch k {
+			case "close_others":
+				runner.closeOthers = val.Bool()
+			case "unsetenv_others":
+				runner.unsetenvOther = val.Bool()
+			default:
+				runner.exception = val.Bool()
+			}
+		default:
+			runner.fail(oruby.EArgumentError("wrong exec option symbol: %s", k))
 		}
 
 		return 0
 	})
 
+	// [:child, :out] and the like: the child's other stream
+	for i, src := range runner.childStd {
+		switch src {
+		case 1:
+			runner.setStd(i, runner.cmd.Stdout)
+		case 2:
+			runner.setStd(i, runner.cmd.Stderr)
+		}
+	}
+
+	if strings.ContainsRune(command, 0) {
+		runner.fail(oruby.EArgumentError("string contains null byte"))
+	}
+	for _, p := range params {
+		if strings.ContainsRune(p, 0) {
+			runner.fail(oruby.EArgumentError("string contains null byte"))
+		}
+	}
+
 	// ENV
 	runner.setENV(env)
+	if runner.name != "" && !strings.ContainsRune(runner.name, '/') {
+		// the command is looked up on the PATH the child gets
+		for _, kv := range runner.cmd.Env {
+			if strings.HasPrefix(kv, "PATH=") {
+				runner.cmd.Path = lookPath(runner.name, kv[5:])
+			}
+		}
+	}
 
-	// Parse OS specific options
-	runner.parseOptionsOS(options)
+	// Parse OS specific options (applied only when the options are valid)
+	if runner.argErr == nil {
+		runner.parseOptionsOS(options)
+		runner.extraFiles()
+	}
+	osCleanup := runner.cleanup
+	runner.cleanup = func() {
+		osCleanup()
+		for _, f := range runner.opened {
+			_ = f.Close()
+		}
+		runner.opened = nil
+	}
 
 	return runner
 }
 
+// fail keeps the first argument error
+func (runner *cmdRunner) fail(err error) {
+	if runner.argErr == nil {
+		runner.argErr = err
+	}
+}
+
+// umaskArg is MRI's NUM2MODET of the umask: option
+func umaskArg(mrb *oruby.MrbState, v oruby.Value) (int, error) {
+	var n float64
+	switch {
+	case v.IsInteger():
+		n = float64(v.Int64())
+	case v.Type() == oruby.MrbTTFloat:
+		n = v.Float64()
+		if n != n {
+			return 0, oruby.ERangeError("float NaN out of range of integer")
+		}
+	case v.Type() == oruby.MrbTTBigInt:
+		return 0, oruby.ERangeError("bignum out of range of unsigned int")
+	case v.IsNil():
+		return 0, oruby.ETypeError("no implicit conversion from nil to integer")
+	default:
+		return 0, oruby.ETypeError("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ObjClass(v)))
+	}
+	if n < -2147483648 || n > 4294967295 {
+		return 0, oruby.ERangeError("integer %d too big to convert to 'unsigned int'", int64(n))
+	}
+	return int(int64(n)), nil
+}
+
+// extraFiles gives the child the descriptors of the Integer option keys
+// above 2 (spawn: exec.Cmd.ExtraFiles, entry i is fd 3+i). Each is a
+// duplicate of the parent's, closed after the start.
+func (runner *cmdRunner) extraFiles() {
+	for child, parent := range runner.fdMap {
+		if child < 3 {
+			continue
+		}
+		dup, err := dupFd(parent)
+		if err != nil {
+			runner.err = err
+			continue
+		}
+		f := os.NewFile(uintptr(dup), "fd")
+		runner.opened = append(runner.opened, f)
+		for len(runner.cmd.ExtraFiles) < child-2 {
+			runner.cmd.ExtraFiles = append(runner.cmd.ExtraFiles, nil)
+		}
+		runner.cmd.ExtraFiles[child-3] = f
+	}
+}
+
 // parseArgsStructure returns env, command, params and options from args
-func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, string, []string, oruby.Value) {
+func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, string, []string, oruby.Value, error) {
 	env := mrb.NilValue()
 	options := mrb.KeywordArgs()
 	command := args.Item(0)
 	argStart := 1
+	var argErr error
 
+	// the env: a Hash or #to_hash
+	if !command.IsHash() && !command.IsString() && !command.IsArray() && !command.IsNil() && mrb.RespondTo(command, oruby.Sym_to_hash) {
+		if h, err := mrb.Funcall(command, oruby.Sym_to_hash); err == nil && h.IsHash() {
+			command = h
+		}
+	}
 	if command.IsHash() {
 		env = command
 		command = args.Item(1)
 		argStart++
+	}
+
+	// the command: a String (#to_str) or [command, argv0] (#to_ary)
+	if !command.IsString() && !command.IsArray() && !command.IsNil() {
+		if mrb.RespondTo(command, mrb.Intern("to_ary")) {
+			if a, err := mrb.Funcall(command, mrb.Intern("to_ary")); err == nil && a.IsArray() {
+				command = a
+			}
+		} else if mrb.RespondTo(command, oruby.Sym_to_str) {
+			if str, err := mrb.Funcall(command, oruby.Sym_to_str); err == nil && str.IsString() {
+				command = str
+			}
+		}
+	}
+	if command.IsNil() || command.IsHash() {
+		// spawn({}, {}): an env and options, no command
+		argErr = oruby.EArgumentError("wrong number of arguments (given 0, expected 1+)")
+		command = mrb.StrNew("")
+	}
+	if command.IsArray() && oruby.RArrayLen(command) != 2 {
+		argErr = oruby.EArgumentError("wrong first argument")
+		command = mrb.StrNew("")
 	}
 
 	params := make([]string, 0, args.Len()-argStart+1)
@@ -119,58 +307,147 @@ func parseArgsStructure(mrb *oruby.MrbState, args oruby.RArgs) (oruby.Value, str
 
 	if command.IsArray() {
 		// [command, argv0]: run command directly, argv[0] as given
-		params = append([]string{mrb.AryRef(command, 1).String()}, params...)
-		cmd = lookPath(mrb.AryRef(command, 0).String())
+		params = append([]string{mrb.String(mrb.AryRef(command, 1))}, params...)
+		cmd = mrb.String(mrb.AryRef(command, 0))
 	} else if command.IsString() && len(params) > 0 {
 		// command plus arguments: run directly, no shell (as MRI)
 		params = append([]string{command.String()}, params...)
-		cmd = lookPath(command.String())
+		cmd = command.String()
 	} else if command.IsString() {
-		shell := platformGetShell()
-		params = []string{shell, "-c", command.String()}
-		cmd = shell
+		if words, direct := shellWords(command.String()); direct {
+			// no shell needed: the words are the argv ("" runs nothing: ENOENT)
+			if len(words) == 0 {
+				words = []string{""}
+			}
+			params = words
+			cmd = words[0]
+		} else {
+			// /bin/sh, run as "sh" ($0)
+			cmd = platformGetShell()
+			params = []string{shellArgv0(), "-c", command.String()}
+		}
 	} else {
 		cmd = command.String()
 		params = append([]string{cmd}, params...)
 	}
 
-	return env, cmd, params, options.Value()
+	return env, cmd, params, options.Value(), argErr
 }
 
-// setENV sets Cmd Environment
+// setENV sets Cmd Environment: the parent's, changed by the env Hash (keys
+// and values are Strings or #to_str, nil unsets), or only the Hash's with
+// unsetenv_others: true
 func (runner *cmdRunner) setENV(env oruby.Value) {
 	mrb := runner.mrb
-	EnvIsHash := env.IsHash()
-
-	if !EnvIsHash && !runner.unsetenvOther {
+	if !env.IsHash() && !runner.unsetenvOther {
 		runner.cmd.Env = os.Environ()
 		return
 	}
-
-	seen := map[string]bool{}
-	for _, v := range os.Environ() {
-		kv := strings.SplitN(v, "=", 2)
-		key := mrb.StrNew(kv[0])
-		seen[kv[0]] = true
-		if EnvIsHash && mrb.HashKeyP(env, key) {
-			// Env has variable - add if not nil
-			value := mrb.HashGet(env, key)
-			if !value.IsNil() {
-				runner.cmd.Env = append(runner.cmd.Env, kv[0]+"="+value.String())
-			}
-		} else if !runner.unsetenvOther {
-			// Variable not in env, add respecting :unsetenv_other option
-			runner.cmd.Env = append(runner.cmd.Env, v)
-		}
+	type entry struct {
+		name  string
+		value *string
 	}
-	if EnvIsHash {
-		// variables the env Hash adds
+	var changes []entry
+	if env.IsHash() {
 		mrb.HashValueForEach(env, func(k, v oruby.Value) int {
-			if name := mrb.String(k); !seen[name] && !v.IsNil() {
-				runner.cmd.Env = append(runner.cmd.Env, name+"="+mrb.String(v))
+			name, err := envStr(mrb, k)
+			if err != nil {
+				runner.fail(err)
+				return 0
 			}
+			if strings.ContainsRune(name, '=') {
+				runner.fail(oruby.EArgumentError("environment name contains a equal : %s", name))
+				return 0
+			}
+			e := entry{name: name}
+			if !v.IsNil() {
+				value, err := envStr(mrb, v)
+				if err != nil {
+					runner.fail(err)
+					return 0
+				}
+				e.value = &value
+			}
+			changes = append(changes, e)
 			return 0
 		})
+	}
+	changed := map[string]bool{}
+	for _, e := range changes {
+		changed[e.name] = true
+	}
+	runner.cmd.Env = nil
+	if !runner.unsetenvOther {
+		for _, kv := range os.Environ() {
+			if name, _, _ := strings.Cut(kv, "="); !changed[name] {
+				runner.cmd.Env = append(runner.cmd.Env, kv)
+			}
+		}
+	}
+	for _, e := range changes {
+		if e.value != nil {
+			runner.cmd.Env = append(runner.cmd.Env, e.name+"="+*e.value)
+		}
+	}
+}
+
+// envStr: an environment name or value, a String or #to_str, no null byte
+func envStr(mrb *oruby.MrbState, v oruby.Value) (string, error) {
+	if !v.IsString() {
+		if !mrb.RespondTo(v, oruby.Sym_to_str) {
+			return "", oruby.ETypeError("no implicit conversion of %s into String", mrb.ClassName(mrb.ObjClass(v)))
+		}
+		s, err := mrb.Funcall(v, oruby.Sym_to_str)
+		if err != nil {
+			return "", err
+		}
+		if !s.IsString() {
+			return "", oruby.ETypeError("can't convert %s to String", mrb.ClassName(mrb.ObjClass(v)))
+		}
+		v = s
+	}
+	str := mrb.String(v)
+	if strings.ContainsRune(str, 0) {
+		return "", oruby.EArgumentError("string contains null byte")
+	}
+	return str, nil
+}
+
+// pathArg: a path option, a String or #to_path (#to_str)
+func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
+	for _, conv := range []oruby.MrbSym{oruby.Sym_to_path, oruby.Sym_to_str} {
+		if v.IsString() {
+			break
+		}
+		if mrb.RespondTo(v, conv) {
+			r, err := mrb.Funcall(v, conv)
+			if err != nil {
+				return "", err
+			}
+			v = r
+		}
+	}
+	if !v.IsString() {
+		return "", oruby.ETypeError("no implicit conversion of %s into String", mrb.ClassName(mrb.ObjClass(v)))
+	}
+	return mrb.String(v), nil
+}
+
+// setStd sets the child's stream i (0 in, 1 out, 2 err)
+func (runner *cmdRunner) setStd(i int, v interface{}) {
+	switch i {
+	case 0:
+		if r, ok := v.(io.Reader); ok {
+			runner.cmd.Stdin = r
+		}
+	case 1:
+		if w, ok := v.(io.Writer); ok {
+			runner.cmd.Stdout = w
+		}
+	case 2:
+		if w, ok := v.(io.Writer); ok {
+			runner.cmd.Stderr = w
+		}
 	}
 }
 
@@ -194,25 +471,42 @@ func (runner *cmdRunner) parseFd(key, val oruby.Value) {
 	mrb := runner.mrb
 
 	if key.IsInteger() {
-		switch key.Int() {
+		switch k := key.Int(); k {
 		case 0:
 			runner.cmd.Stdin = runner.getReader(val)
 		case 1:
 			runner.cmd.Stdout = runner.getWriter(val)
 		case 2:
 			runner.cmd.Stderr = runner.getWriter(val)
+		default:
+			// child fd k: the parent's descriptor the value names
+			if fd, ok := runner.redirectFd(val, true); ok {
+				if runner.fdMap == nil {
+					runner.fdMap = map[int]int{}
+				}
+				runner.fdMap[k] = fd
+			}
 		}
 		return
 	}
 
 	if key.IsSymbol() {
-		switch key.Symbol() {
-		case oruby.Sym_in:
+		std := map[oruby.MrbSym]int{oruby.Sym_in: 0, oruby.Sym_out: 1, oruby.Sym_err: 2}[key.Symbol()]
+		// [:child, :out]: the child's stdout (applied once all are parsed)
+		if val.IsArray() && oruby.RArrayLen(val) == 2 && mrb.AryEntry(val, 0).IsSymbol() &&
+			mrb.String(mrb.AryEntry(val, 0)) == "child" {
+			switch mrb.String(mrb.AryEntry(val, 1)) {
+			case "out":
+				runner.childStd[std] = 1
+			case "err":
+				runner.childStd[std] = 2
+			}
+			return
+		}
+		if std == 0 {
 			runner.cmd.Stdin = runner.getReader(val)
-		case oruby.Sym_out:
-			runner.cmd.Stdout = runner.getWriter(val)
-		case oruby.Sym_err:
-			runner.cmd.Stderr = runner.getWriter(val)
+		} else {
+			runner.setStd(std, runner.getWriter(val))
 		}
 		return
 	}
@@ -271,7 +565,16 @@ func (runner *cmdRunner) redirect(val oruby.Value, write bool) interface{} {
 		case 2:
 			return os.Stderr
 		}
-		return os.NewFile(uintptr(val.Int()), "fd")
+		// a duplicate: an *os.File of the parent's own number would close it
+		// when collected
+		dup, err := dupFd(val.Int())
+		if err != nil {
+			runner.err = err
+			return nil
+		}
+		f := os.NewFile(uintptr(dup), "fd")
+		runner.opened = append(runner.opened, f)
+		return f
 	case val.IsSymbol():
 		switch val.Symbol() {
 		case oruby.Sym_in:
@@ -280,6 +583,27 @@ func (runner *cmdRunner) redirect(val oruby.Value, write bool) interface{} {
 			return os.Stdout
 		case oruby.Sym_err:
 			return os.Stderr
+		}
+		if mrb.String(val) == "close" {
+			// a closed stream: /dev/null opened the other way, so the child's
+			// reads or writes fail with EBADF as on a closed descriptor
+			fl := os.O_WRONLY
+			if write {
+				fl = os.O_RDONLY
+			}
+			f, err := os.OpenFile(os.DevNull, fl, 0)
+			if err != nil {
+				runner.err = err
+				return nil
+			}
+			runner.opened = append(runner.opened, f)
+			return f
+		}
+		return nil
+	case !val.IsString() && !val.IsArray() && mrb.RespondTo(val, oruby.Sym_to_io):
+		// an object wrapping an IO
+		if io, err := mrb.Funcall(val, oruby.Sym_to_io); err == nil && io.IsData() {
+			return mrb.Data(io)
 		}
 		return nil
 	}
@@ -316,7 +640,41 @@ func (runner *cmdRunner) redirect(val oruby.Value, write bool) interface{} {
 		runner.err = err
 		return nil
 	}
+	runner.opened = append(runner.opened, f)
 	return f
+}
+
+// redirectFd: the parent's descriptor number a redirection value names (an
+// IO, an Integer, or a path opened for it)
+func (runner *cmdRunner) redirectFd(val oruby.Value, write bool) (int, bool) {
+	mrb := runner.mrb
+	if val.IsInteger() {
+		return val.Int(), true
+	}
+	if val.IsData() {
+		if f, ok := mrb.Data(val).(*os.File); ok {
+			fd := rawFd(f)
+			return fd, fd >= 0
+		}
+		if f, ok := mrb.Data(val).(interface{ Fd() uintptr }); ok {
+			return int(f.Fd()), true
+		}
+		return 0, false
+	}
+	if f, ok := runner.redirect(val, write).(*os.File); ok {
+		fd := rawFd(f)
+		return fd, fd >= 0
+	}
+	return 0, false
+}
+
+// rawFd is f's descriptor without switching it to blocking mode (Fd does)
+func rawFd(f *os.File) int {
+	fd := -1
+	if sc, err := f.SyscallConn(); err == nil {
+		_ = sc.Control(func(p uintptr) { fd = int(p) })
+	}
+	return fd
 }
 
 // modeFlags: the open flags of an fopen-style mode ("r", "w", "a", "r+" ...)
@@ -378,14 +736,20 @@ func (runner *cmdRunner) Wait(pid, flags int) (oruby.Value, *status) {
 	return mrb.FixnumValue(ret), lastState
 }
 
-// lookPath resolves a command name on PATH like execvp; names with a slash
-// are used as given
-func lookPath(name string) string {
-	if strings.ContainsRune(name, '/') {
+// lookPath resolves a command name on path (a PATH value) like execvp;
+// names with a slash, or not found, are used as given
+func lookPath(name, path string) string {
+	if name == "" || strings.ContainsRune(name, '/') {
 		return name
 	}
-	if p, err := exec.LookPath(name); err == nil {
-		return p
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0111 != 0 {
+			return p
+		}
 	}
 	return name
 }

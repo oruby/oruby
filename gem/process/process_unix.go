@@ -1,10 +1,15 @@
 package process
 
 import (
+	"errors"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/oruby/oruby"
+	"golang.org/x/sys/unix"
 )
 
 // RLimit pseudo constants
@@ -193,19 +198,85 @@ func (runner *cmdRunner) checkLimitOption(limit int, option oruby.Value) {
 func (runner *cmdRunner) parseOptionsOS(options oruby.Value) {
 	if runner.umask != nil {
 		runner.oldUmask = syscall.Umask(*runner.umask)
+		runner.umaskSet = true
 	}
 
 	if runner.pgroup != nil {
+		// setpgid(0, pgid) in the child: 0 makes a new group (no new session)
+		if runner.cmd.SysProcAttr == nil {
+			runner.cmd.SysProcAttr = &syscall.SysProcAttr{}
+		}
 		runner.cmd.SysProcAttr.Pgid = *runner.pgroup
 		runner.cmd.SysProcAttr.Setpgid = true
-		runner.cmd.SysProcAttr.Setsid = true
 	}
 
 	runner.cleanup = func() {
-		if runner.oldUmask != 0 {
+		if runner.umaskSet {
 			syscall.Umask(runner.oldUmask)
+			runner.umaskSet = false
 		}
 	}
+}
+
+func dupFd(fd int) (int, error) { return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0) }
+
+// execPrepare does in this process what spawn does in the child before
+// exec(2) (MRI's rb_execarg_run_options): chdir, the standard streams and
+// the Integer fd keys. The function it returns undoes the chdir and the
+// standard streams when exec fails; an fd kept by {fd => fd} stays
+// inheritable, as in MRI.
+func (runner *cmdRunner) execPrepare() (func(), error) {
+	var undo []func()
+	restore := func() {
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
+		}
+	}
+	if dir := runner.cmd.Dir; dir != "" {
+		old, err := os.Getwd()
+		if err != nil {
+			return restore, err
+		}
+		if err := syscall.Chdir(dir); err != nil {
+			return restore, err
+		}
+		undo = append(undo, func() { _ = syscall.Chdir(old) })
+	}
+	for i, s := range []interface{}{runner.cmd.Stdin, runner.cmd.Stdout, runner.cmd.Stderr} {
+		f, ok := s.(*os.File)
+		if !ok || f == nil {
+			continue
+		}
+		fd := rawFd(f)
+		if fd < 0 || fd == i {
+			continue
+		}
+		saved, err := dupFd(i)
+		if err != nil {
+			return restore, err
+		}
+		if err := unix.Dup2(fd, i); err != nil {
+			_ = syscall.Close(saved)
+			return restore, err
+		}
+		target := i
+		undo = append(undo, func() { _ = unix.Dup2(saved, target); _ = syscall.Close(saved) })
+	}
+	if runner.closeOthers {
+		undo = append(undo, closeOthers(runner.fdMap))
+	}
+	for child, parent := range runner.fdMap {
+		if child == parent {
+			if _, err := unix.FcntlInt(uintptr(child), unix.F_SETFD, 0); err != nil {
+				return restore, err
+			}
+			continue
+		}
+		if err := unix.Dup2(parent, child); err != nil {
+			return restore, err
+		}
+	}
+	return restore, nil
 }
 
 func (runner *cmdRunner) forkExec() (int, error) {
@@ -222,8 +293,61 @@ func (runner *cmdRunner) forkExec() (int, error) {
 	})
 }
 
+// closeOthers is close_others: true: every descriptor >= 3 the child would
+// inherit gets close-on-exec for the start (Go's fork has no hook in the
+// child); the function returned clears the flag again. keep: descriptors
+// the child is given ({fd => fd}).
+func closeOthers(keep map[int]int) func() {
+	entries, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		return func() {}
+	}
+	var marked []int
+	for _, e := range entries {
+		fd, err := strconv.Atoi(e.Name())
+		if err != nil || fd < 3 {
+			continue
+		}
+		if _, ok := keep[fd]; ok {
+			continue
+		}
+		fl, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+		if err != nil || fl&unix.FD_CLOEXEC != 0 {
+			continue // closed (the directory's own) or closing already
+		}
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, fl|unix.FD_CLOEXEC); err == nil {
+			marked = append(marked, fd)
+		}
+	}
+	return func() {
+		for _, fd := range marked {
+			if fl, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err == nil {
+				_, _ = unix.FcntlInt(uintptr(fd), unix.F_SETFD, fl&^unix.FD_CLOEXEC)
+			}
+		}
+	}
+}
+
 func (runner *cmdRunner) run() (int, error) {
+	if runner.err != nil {
+		// a redirection target or chdir directory that is not there
+		return 0, runner.err
+	}
+	if runner.closeOthers {
+		defer closeOthers(nil)()
+	}
 	err := runner.cmd.Start()
+	if errors.Is(err, syscall.ENOEXEC) {
+		// an executable with no #! line: MRI runs it with /bin/sh
+		c := runner.cmd
+		sh := &exec.Cmd{
+			Path: platformGetShell(), Args: append([]string{"sh", c.Path}, c.Args[1:]...),
+			Env: c.Env, Dir: c.Dir, Stdin: c.Stdin, Stdout: c.Stdout, Stderr: c.Stderr,
+			ExtraFiles: c.ExtraFiles, SysProcAttr: c.SysProcAttr,
+		}
+		runner.cmd = sh
+		err = sh.Start()
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -232,15 +356,45 @@ func (runner *cmdRunner) run() (int, error) {
 	return runner.cmd.Process.Pid, err
 }
 
-func platformGetShell() string {
-	if shell, ok := os.LookupEnv("SHELL"); ok {
-		return shell
+// platformGetShell: MRI runs a command string with /bin/sh, whatever
+// $SHELL says, as "sh" ($0)
+func platformGetShell() string { return "/bin/sh" }
+
+func shellArgv0() string { return "sh" }
+
+// execCmd is exec(2) of the command, with /bin/sh for an executable that
+// has no #! line (ENOEXEC), as MRI does
+func execCmd(path string, args, env []string) error {
+	err := syscall.Exec(path, args, env)
+	if errors.Is(err, syscall.ENOEXEC) {
+		err = syscall.Exec(platformGetShell(), append([]string{"sh", path}, args[1:]...), env)
 	}
-	shell := "/bin/bash"
-	if _, err := os.Stat(shell); err == nil {
-		return shell
+	return err
+}
+
+// shellWords is MRI's rb_exec_fillarg test: a command string without shell
+// metacharacters, whose first word is no reserved word, special builtin or
+// variable assignment, runs directly, split on blanks. ok false: it needs
+// the shell.
+func shellWords(s string) ([]string, bool) {
+	if strings.ContainsAny(s, "*?{}[]<>()~&|\\$;'`\"\n#") {
+		return nil, false
 	}
-	return "/bin/sh"
+	words := strings.Fields(s)
+	if len(words) > 0 {
+		if strings.Contains(words[0], "=") || shellReserved[words[0]] {
+			return nil, false
+		}
+	}
+	return words, true
+}
+
+var shellReserved = map[string]bool{
+	"case": true, "do": true, "done": true, "elif": true, "else": true, "esac": true, "fi": true,
+	"for": true, "if": true, "in": true, "then": true, "until": true, "while": true,
+	"!": true, ".": true, ":": true, "break": true, "continue": true, "eval": true, "exec": true,
+	"exit": true, "export": true, "readonly": true, "return": true, "set": true, "shift": true,
+	"times": true, "trap": true, "unset": true,
 }
 
 func platformWait(pid, flags int, lastState *status) (int, error) {

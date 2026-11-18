@@ -1,8 +1,10 @@
 package process
 
 import (
-	"github.com/oruby/oruby"
 	"os"
+	"syscall"
+
+	"github.com/oruby/oruby"
 )
 
 // RLimit pseudo constants
@@ -103,3 +105,15 @@ func (runner *cmdRunner) forkExec() (int, error) {
 		Sys:   runner.cmd.SysProcAttr,
 	})
 }
+
+// shellWords: a command string always goes to the command interpreter here
+func shellWords(string) ([]string, bool) { return nil, false }
+
+func dupFd(fd int) (int, error) { return 0, syscall.EWINDOWS }
+
+// execPrepare: exec is not supported here
+func (runner *cmdRunner) execPrepare() (func(), error) { return func() {}, nil }
+
+func shellArgv0() string { return platformGetShell() }
+
+func execCmd(path string, args, env []string) error { return syscall.Exec(path, args, env) }

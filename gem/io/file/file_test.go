@@ -256,7 +256,7 @@ func Test_fileMatch(t *testing.T) {
 	assert.Equal(t, fnmatch("ca[^t]", "cat"), false)
 	assert.Equal(t, fnmatch("cat", "CAT"), false)
 	assert.Equal(t, fnmatch("cat", "CAT", fnmCasefold), true)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+	if runtime.GOOS == "windows" { // MRI: FNM_SYSCASE is 0 on macOS
 		assert.Equal(t, fnmatch("cat", "CAT", fnmSyscase), true)
 	} else {
 		assert.Equal(t, fnmatch("cat", "CAT", fnmSyscase), false)

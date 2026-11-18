@@ -70,7 +70,7 @@ func Test_fnmatch(t *testing.T) {
 	fnmFalse(t, "ca[^t]", "cat")
 	fnmFalse(t, "cat", "CAT")
 	fnmTrue(t, "cat", "CAT", fnmCasefold)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+	if runtime.GOOS == "windows" { // MRI: FNM_SYSCASE is 0 on macOS
 		fnmTrue(t, "cat", "CAT", fnmSyscase)
 	} else {
 		fnmFalse(t, "cat", "CAT", fnmSyscase)

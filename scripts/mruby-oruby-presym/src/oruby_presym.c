@@ -376,6 +376,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_fatal__");
   (void)mrb_intern_lit(mrb, "__oruby_fcntl");
   (void)mrb_intern_lit(mrb, "__oruby_fd_flags");
+  (void)mrb_intern_lit(mrb, "__oruby_glob");
   (void)mrb_intern_lit(mrb, "__oruby_gv");
   (void)mrb_intern_lit(mrb, "__oruby_gv_hook");
   (void)mrb_intern_lit(mrb, "__oruby_gv_raw_set");
@@ -479,7 +480,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "autoclose?");
   (void)mrb_intern_lit(mrb, "backtrace");
   (void)mrb_intern_lit(mrb, "backtrace_locations");
-  (void)mrb_intern_lit(mrb, "base");
   (void)mrb_intern_lit(mrb, "base_label");
   (void)mrb_intern_lit(mrb, "basename");
   (void)mrb_intern_lit(mrb, "begin");
@@ -655,7 +655,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "getwd");
   (void)mrb_intern_lit(mrb, "gid");
   (void)mrb_intern_lit(mrb, "gid=");
-  (void)mrb_intern_lit(mrb, "glob");
   (void)mrb_intern_lit(mrb, "gm");
   (void)mrb_intern_lit(mrb, "gmt?");
   (void)mrb_intern_lit(mrb, "gmt_offset");
@@ -946,6 +945,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "times");
   (void)mrb_intern_lit(mrb, "tmpdir");
   (void)mrb_intern_lit(mrb, "to_a");
+  (void)mrb_intern_lit(mrb, "to_ary");
   (void)mrb_intern_lit(mrb, "to_enum");
   (void)mrb_intern_lit(mrb, "to_f");
   (void)mrb_intern_lit(mrb, "to_hash");

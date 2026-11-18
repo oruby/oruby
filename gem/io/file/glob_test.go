@@ -110,3 +110,14 @@ func Test_globPath5(t *testing.T) {
 	//GlobFlag(t,"testdata/test.tx?", 0,	 "testdata/test.txt")
 	GlobFlag(t, "testdata/test.tx?", fnmPathname, "testdata/test.txt")
 }
+
+// glob runs the patterns through the glob engine (glob.go) as the tests
+// above call it
+func glob(patterns []string, flags int, base string, onFound func(f string) error) error {
+	for _, p := range globPatterns(patterns, flags, base, base != "", true) {
+		if err := onFound(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
