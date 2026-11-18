@@ -406,6 +406,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_reopen_path");
   (void)mrb_intern_lit(mrb, "__oruby_rpos");
   (void)mrb_intern_lit(mrb, "__oruby_signal__");
+  (void)mrb_intern_lit(mrb, "__oruby_singleton_class_or_nil");
   (void)mrb_intern_lit(mrb, "__oruby_timeout_start");
   (void)mrb_intern_lit(mrb, "__oruby_timeout_stop");
   (void)mrb_intern_lit(mrb, "__oruby_trace_fire");

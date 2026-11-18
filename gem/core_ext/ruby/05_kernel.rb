@@ -158,12 +158,9 @@ end
 # of a name decides: a private one hides the others.
 module Kernel
   def singleton_methods(all = true)
-    sc = begin
-      singleton_class
-    rescue TypeError
-      return []
-    end
-    return [] unless sc.singleton_class?
+    # the singleton class there is (asking does not make one, as in MRI)
+    sc = __oruby_singleton_class_or_nil
+    return [] if sc.nil?
     chain = [sc]
     if all
       anc = sc.ancestors

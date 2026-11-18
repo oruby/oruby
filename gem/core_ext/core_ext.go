@@ -117,6 +117,14 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 			f := self.Float64()
 			return mrb.FloatValue(math.Nextafter(f, math.Inf(1)))
 		}, oruby.ArgsNone())
+		// obj.__oruby_singleton_class_or_nil: the singleton class obj has,
+		// without making one (Kernel#singleton_methods, 05_kernel.rb)
+		mrb.DefineMethod(mrb.KernelModule(), "__oruby_singleton_class_or_nil", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			if c := mrb.ClassOf(self); !c.IsNil() && c.Type() == oruby.MrbTTSClass {
+				return c.Value()
+			}
+			return mrb.NilValue()
+		}, oruby.ArgsNone())
 
 		entries, err := fs.ReadDir(rubyFiles, "ruby")
 		if err != nil {
