@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "9bcfa212e707d388"
+const presymTable = "a6dbe4a117760a8a"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -380,6 +380,7 @@ const (
 	Sym_Thread                        MrbSym = C.MRB_SYM__Thread                        // "Thread"
 	Sym_ThreadError                   MrbSym = C.MRB_SYM__ThreadError                   // "ThreadError"
 	Sym_Time                          MrbSym = C.MRB_SYM__Time                          // "Time"
+	Sym_Timeout                       MrbSym = C.MRB_SYM__Timeout                       // "Timeout"
 	Sym_TimeoutError                  MrbSym = C.MRB_SYM__TimeoutError                  // "TimeoutError"
 	Sym_Tx                            MrbSym = C.MRB_SYM__Tx                            // "Tx"
 	Sym_UID                           MrbSym = C.MRB_SYM__UID                           // "UID"
@@ -444,6 +445,7 @@ const (
 	Sym___oruby_deliver__             MrbSym = C.MRB_SYM____oruby_deliver__             // "__oruby_deliver__"
 	Sym___oruby_enc_concat            MrbSym = C.MRB_SYM____oruby_enc_concat            // "__oruby_enc_concat"
 	Sym___oruby_errinfo__             MrbSym = C.MRB_SYM____oruby_errinfo__             // "__oruby_errinfo__"
+	Sym___oruby_expire                MrbSym = C.MRB_SYM____oruby_expire                // "__oruby_expire"
 	Sym___oruby_fatal__               MrbSym = C.MRB_SYM____oruby_fatal__               // "__oruby_fatal__"
 	Sym___oruby_gv                    MrbSym = C.MRB_SYM____oruby_gv                    // "__oruby_gv"
 	Sym___oruby_gv_hook               MrbSym = C.MRB_SYM____oruby_gv_hook               // "__oruby_gv_hook"
@@ -461,6 +463,8 @@ const (
 	Sym___oruby_os__                  MrbSym = C.MRB_SYM____oruby_os__                  // "__oruby_os__"
 	Sym___oruby_pack                  MrbSym = C.MRB_SYM____oruby_pack                  // "__oruby_pack"
 	Sym___oruby_signal__              MrbSym = C.MRB_SYM____oruby_signal__              // "__oruby_signal__"
+	Sym___oruby_timeout_start         MrbSym = C.MRB_SYM____oruby_timeout_start         // "__oruby_timeout_start"
+	Sym___oruby_timeout_stop          MrbSym = C.MRB_SYM____oruby_timeout_stop          // "__oruby_timeout_stop"
 	Sym___oruby_trace_fire            MrbSym = C.MRB_SYM____oruby_trace_fire            // "__oruby_trace_fire"
 	Sym___oruby_unpack                MrbSym = C.MRB_SYM____oruby_unpack                // "__oruby_unpack"
 	Sym___owners__                    MrbSym = C.MRB_SYM____owners__                    // "__owners__"

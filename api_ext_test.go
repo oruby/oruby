@@ -322,3 +322,39 @@ func TestErrinfoPerFiber(t *testing.T) {
 		t.Errorf("$! leaked between fibers: %v %v", v, err)
 	}
 }
+
+// A Go method that blocks waits on GoContext(): the deadline of the
+// enclosing Timeout block (or EvalContext's ctx) ends its wait the Go way
+func TestGoContextDeadline(t *testing.T) {
+	mrb := MrbOpen()
+	defer mrb.Close()
+	mrb.DefineMethod(mrb.ObjectClass(), "go_wait", func(mrb *MrbState, self Value) MrbValue {
+		select {
+		case <-mrb.GoContext().Done():
+			return mrb.StrNew(context.Cause(mrb.GoContext()).Error())
+		case <-time.After(5 * time.Second):
+			return mrb.StrNew("not stopped")
+		}
+	}, ArgsNone())
+
+	token := mrb.TimeoutStart(50 * time.Millisecond)
+	if _, ok := mrb.GoContext().Deadline(); !ok {
+		t.Error("GoContext has no deadline inside a timeout")
+	}
+	start := time.Now()
+	v, err := mrb.Eval(`go_wait`)
+	mrb.TimeoutStop(token)
+	if err != nil || mrb.String(v) != "execution expired" || time.Since(start) > 2*time.Second {
+		t.Errorf("go_wait = %v, %v after %v", mrb.String(v), err, time.Since(start))
+	}
+	if _, ok := mrb.GoContext().Deadline(); ok {
+		t.Error("deadline kept after TimeoutStop")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	v, err = mrb.EvalContext(ctx, `go_wait`)
+	if err != nil || mrb.String(v) != "context deadline exceeded" {
+		t.Errorf("EvalContext go_wait = %v, %v", mrb.String(v), err)
+	}
+}

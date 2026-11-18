@@ -301,7 +301,11 @@ static mrb_value raise_call(mrb_state *mrb, mrb_value self, int which) {
        mruby's raise does not */
     mrb_int argc = mrb_get_argc(mrb);
     const mrb_value *argv = mrb_get_argv(mrb);
-    if ((argc == 1 || argc == 2) && !mrb_class_p(argv[0]) && !mrb_exception_p(argv[0]) &&
+    /* an Exception with a message too: MRI asks it as well, which an
+       exception(*) returning self (Timeout::ExitException) relies on; mruby
+       clones it instead */
+    if ((argc == 1 || argc == 2) && !mrb_class_p(argv[0]) &&
+        (!mrb_exception_p(argv[0]) || argc == 2) &&
         !mrb_string_p(argv[0]) && !mrb_hash_p(argv[0]) &&
         mrb_respond_to(mrb, argv[0], MRB_SYM(exception))) {
       mrb_value exc, mesg = mrb_nil_value(), cause = mrb_undef_value(), rest = mrb_nil_value();

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -353,6 +354,19 @@ end
 		mrb.GVSet(args.Item(0).Symbol(), args.Item(1))
 		return args.Item(1)
 	}, mrb.ArgsReq(2))
+	// Timeout.timeout's deadline (gem/stdlib timeout.rb): a Go context per
+	// block, see TimeoutStart
+	mrb.DefineClassMethod(mrb.KernelModule(), "__oruby_timeout_start", func(mrb *MrbState, self Value) MrbValue {
+		secs, err := mrb.AsFloat(mrb.GetArgsFirst())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.Int64Value(mrb.TimeoutStart(time.Duration(secs * float64(time.Second))))
+	}, mrb.ArgsReq(1))
+	mrb.DefineClassMethod(mrb.KernelModule(), "__oruby_timeout_stop", func(mrb *MrbState, self Value) MrbValue {
+		mrb.TimeoutStop(mrb.GetArgsFirst().Int64())
+		return mrb.NilValue()
+	}, mrb.ArgsReq(1))
 	// trace_var makes the global virtual so that assignments reach its hooks
 	mrb.DefineClassMethod(mrb.KernelModule(), "__oruby_gv_hook", func(mrb *MrbState, self Value) MrbValue {
 		name := C.CString(mrb.GetArgsFirst().String())
@@ -1075,7 +1089,11 @@ func (mrb *MrbState) EvalContext(ctx context.Context, code string) (RValue, erro
 		case <-stop:
 		}
 	}()
+	// Go methods the script calls see ctx (GoContext): a blocking one stops
+	// when it is done
+	mrb.pushContext(0, ctx)
 	v, err := mrb.Eval(code)
+	mrb.popContext(ctx)
 	close(stop)
 	<-done
 	// a cancel that came after the script ended must not stop the next one

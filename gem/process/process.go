@@ -602,6 +602,9 @@ func procSleep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err := mrb.CheckSignals(); err != nil {
 		return mrb.RaiseError(err)
 	}
+	// a Timeout.timeout deadline or an EvalContext cancel ends the sleep
+	ctx := mrb.GoContext()
+	done := ctx.Done()
 wait:
 	for {
 		select {
@@ -615,6 +618,11 @@ wait:
 			if err := mrb.CheckSignals(); err != nil {
 				return mrb.RaiseError(err)
 			}
+		case <-done:
+			if err := mrb.ContextErr(ctx); err != nil {
+				return mrb.RaiseError(err)
+			}
+			break wait // EvalContext: the VM stops at its next instruction
 		}
 	}
 

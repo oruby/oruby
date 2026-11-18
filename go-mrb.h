@@ -83,8 +83,12 @@ extern struct RProc* inject_run(mrb_int idx);
 extern int go_has_line_debug(mrb_int idx);
 extern void go_debug_line_hook(mrb_int idx, struct mrb_irep *irep, uint32_t pc_off, mrb_value *regs, int32_t line, char *file);
 
+void _orb_vm_poll(mrb_state *mrb);
+int _orb_vm_hooked(mrb_state *mrb);
+
 static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
   mrb_int idx = _mrb_get_idx(mrb);
+  _orb_vm_poll(mrb); /* signals and timeouts (go-signal.c) */
   struct RProc *p = inject_run(idx);
   if (p) {
     mrb_funcall_with_block(mrb, mrb_obj_value(p), MRB_SYM(call), 0, NULL, mrb_nil_value());
@@ -100,7 +104,8 @@ static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const m
 }
 
 static void set_mrb_injector(mrb_state *mrb) {
-	if (!mrb->code_fetch_hook) {
+	/* the request hook of go-signal.c gives way: the injector polls too */
+	if (!mrb->code_fetch_hook || _orb_vm_hooked(mrb)) {
 		mrb->code_fetch_hook = injector;
 	}
 }
@@ -988,6 +993,9 @@ int _orb_sig_pending_p(int signo);
 void _orb_sig_clear(mrb_state *mrb);
 void _orb_sig_dfl(int signo);
 void _orb_sig_kill_self(int signo);
+void _orb_vm_arm(mrb_state *mrb);
+void _orb_timeout_post(mrb_state *mrb);
+void _orb_timeout_taken(void);
 void _mrb_make_method_private(mrb_state *mrb, struct RClass *c, mrb_sym mid);
 
 // Numeric operators the AOT compiler evaluates inline for Integer and Float

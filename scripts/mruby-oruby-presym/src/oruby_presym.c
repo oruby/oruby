@@ -296,6 +296,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "Thread");
   (void)mrb_intern_lit(mrb, "ThreadError");
   (void)mrb_intern_lit(mrb, "Time");
+  (void)mrb_intern_lit(mrb, "Timeout");
   (void)mrb_intern_lit(mrb, "TimeoutError");
   (void)mrb_intern_lit(mrb, "Tx");
   (void)mrb_intern_lit(mrb, "UID");
@@ -366,6 +367,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_deliver__");
   (void)mrb_intern_lit(mrb, "__oruby_enc_concat");
   (void)mrb_intern_lit(mrb, "__oruby_errinfo__");
+  (void)mrb_intern_lit(mrb, "__oruby_expire");
   (void)mrb_intern_lit(mrb, "__oruby_fatal__");
   (void)mrb_intern_lit(mrb, "__oruby_gv");
   (void)mrb_intern_lit(mrb, "__oruby_gv_hook");
@@ -383,6 +385,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_os__");
   (void)mrb_intern_lit(mrb, "__oruby_pack");
   (void)mrb_intern_lit(mrb, "__oruby_signal__");
+  (void)mrb_intern_lit(mrb, "__oruby_timeout_start");
+  (void)mrb_intern_lit(mrb, "__oruby_timeout_stop");
   (void)mrb_intern_lit(mrb, "__oruby_trace_fire");
   (void)mrb_intern_lit(mrb, "__oruby_unpack");
   (void)mrb_intern_lit(mrb, "__owners__");

@@ -1,16 +1,20 @@
-// Signal delivery into a running VM.
+// Delivery of asynchronous requests into a running VM: OS signals and
+// Timeout.timeout deadlines.
 //
-// Go receives OS signals on a goroutine (signal.Notify, see signal.go). That
-// goroutine cannot run Ruby, so it marks the signal pending here and arms a
-// one-shot code_fetch_hook. The VM calls the hook before its next instruction,
-// on the thread that runs Ruby; the hook disarms itself and calls
-// Signal.__oruby_signal__(signo), which runs the trap handler or raises the
-// SignalException as an ordinary raise at that instruction. A state not
-// running Ruby when the signal arrives picks it up at its next instruction;
-// Go code that blocks (sleep) or signals itself (Process.kill) takes pending
-// signals with _orb_sig_take and runs them itself (MrbState.CheckSignals).
+// Go receives them on goroutines (signal.Notify, timers; see signal.go).
+// Those cannot run Ruby, so they mark the request pending here and arm a
+// one-shot code_fetch_hook. The VM calls the hook before its next
+// instruction, on the thread that runs Ruby; the hook disarms itself and
+// runs the request: Signal.__oruby_signal__(signo), which runs the trap
+// handler or raises SignalException, or Timeout.__oruby_expire(token), which
+// raises the timeout error inside the block. Both are ordinary raises at
+// that instruction. Go code that blocks (sleep) takes pending requests
+// itself (MrbState.CheckSignals).
 //
-// The hook costs nothing while no signal is pending: the VM tests
+// The hook is installed only where none is: a state that has the injector
+// (Inject, the line debugger) keeps it, and the injector polls the same
+// requests (_orb_vm_poll), so no previous hook has to be kept and put back.
+// The hook costs nothing while nothing is pending: the VM tests
 // code_fetch_hook for NULL at every instruction anyway (MRB_USE_DEBUG_HOOK).
 
 #include <stdatomic.h>
@@ -22,21 +26,25 @@
 #endif
 #include "go-mrb.h"
 
-typedef void (*orb_fetch_hook)(mrb_state *mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
-
 // one bit per signal number; signals are process-wide, so is the set
 static _Atomic uint64_t orb_sig_pending;
-// the hook that was installed when the signal hook was armed (the injector)
-static _Atomic(orb_fetch_hook) orb_sig_prev;
+// timeouts that fired and no state has taken yet, over all states; which
+// state each belongs to is kept in Go
+static _Atomic int orb_timeouts_fired;
 
-static void orb_sig_hook(mrb_state *mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
+extern mrb_int go_take_timeout(mrb_int idx);
 
-static void orb_sig_arm(mrb_state *mrb) {
-  orb_fetch_hook h = mrb->code_fetch_hook;
-  if (h != orb_sig_hook) {
-    atomic_store(&orb_sig_prev, h);
-    mrb->code_fetch_hook = orb_sig_hook;
-  }
+static void orb_vm_hook(mrb_state *mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
+
+// _orb_vm_arm makes mrb poll at its next instruction
+void _orb_vm_arm(mrb_state *mrb) {
+  if (mrb->code_fetch_hook == NULL) mrb->code_fetch_hook = orb_vm_hook;
+}
+
+// _orb_vm_hooked: the poll hook is what the state has (the injector may
+// take its place)
+int _orb_vm_hooked(mrb_state *mrb) {
+  return mrb->code_fetch_hook == orb_vm_hook;
 }
 
 // next pending signal, cleared from the set; 0 when none is pending
@@ -55,7 +63,7 @@ int _orb_sig_take(void) {
 void _orb_sig_post(mrb_state *mrb, int signo) {
   if (signo <= 0 || signo >= 64) return;
   atomic_fetch_or(&orb_sig_pending, (uint64_t)1 << signo);
-  orb_sig_arm(mrb);
+  _orb_vm_arm(mrb);
 }
 
 int _orb_sig_pending_p(int signo) {
@@ -65,9 +73,17 @@ int _orb_sig_pending_p(int signo) {
 
 void _orb_sig_clear(mrb_state *mrb) {
   atomic_store(&orb_sig_pending, 0);
-  if (mrb && mrb->code_fetch_hook == orb_sig_hook) {
-    mrb->code_fetch_hook = atomic_load(&orb_sig_prev);
-  }
+}
+
+// called from a Go timer goroutine: a deadline of mrb's passed
+void _orb_timeout_post(mrb_state *mrb) {
+  atomic_fetch_add(&orb_timeouts_fired, 1);
+  _orb_vm_arm(mrb);
+}
+
+// Go took (or dropped) a fired timeout
+void _orb_timeout_taken(void) {
+  atomic_fetch_sub(&orb_timeouts_fired, 1);
 }
 
 static void orb_sig_dispatch(mrb_state *mrb, int signo) {
@@ -77,18 +93,35 @@ static void orb_sig_dispatch(mrb_state *mrb, int signo) {
   mrb_funcall_id(mrb, sig, MRB_SYM(__oruby_signal__), 1, mrb_fixnum_value(signo));
 }
 
-static void orb_sig_hook(mrb_state *mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
-  // disarm first: a signal posted from now on arms the hook again
-  orb_fetch_hook prev = atomic_load(&orb_sig_prev);
-  mrb->code_fetch_hook = prev;
+static void orb_timeout_dispatch(mrb_state *mrb, mrb_int token) {
+  if (!mrb_class_defined_id(mrb, MRB_SYM(Timeout))) return;
+  mrb_value t = mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(Timeout)));
+  if (!mrb_respond_to(mrb, t, MRB_SYM(__oruby_expire))) return;
+  mrb_funcall_id(mrb, t, MRB_SYM(__oruby_expire), 1, mrb_fixnum_value(token));
+}
+
+// _orb_vm_poll runs one pending request of mrb's, at an instruction
+// boundary (the hook, the injector); the rest are polled at the next
+// instruction, so one that raises does not drop them
+void _orb_vm_poll(mrb_state *mrb) {
+  if (!atomic_load(&orb_sig_pending) && !atomic_load(&orb_timeouts_fired)) return;
   int signo = _orb_sig_take();
   if (signo) {
-    // the others run at the next instruction, so one that raises does not
-    // drop them
-    if (atomic_load(&orb_sig_pending)) orb_sig_arm(mrb);
+    if (atomic_load(&orb_sig_pending) || atomic_load(&orb_timeouts_fired)) _orb_vm_arm(mrb);
     orb_sig_dispatch(mrb, signo);
+    return;
   }
-  if (prev) prev(mrb, irep, pc, regs);
+  mrb_int token = go_take_timeout(_mrb_get_idx(mrb));
+  if (token) {
+    if (atomic_load(&orb_timeouts_fired)) _orb_vm_arm(mrb);
+    orb_timeout_dispatch(mrb, token);
+  }
+}
+
+static void orb_vm_hook(mrb_state *mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
+  // disarm first: a request posted from now on arms the hook again
+  if (mrb->code_fetch_hook == orb_vm_hook) mrb->code_fetch_hook = NULL;
+  _orb_vm_poll(mrb);
 }
 
 // Set signo to the OS default action. Go's signal.Reset gives Go's own

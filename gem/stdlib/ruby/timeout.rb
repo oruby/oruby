@@ -1,6 +1,13 @@
+# Timeout as MRI's timeout.rb has it, with oruby's own deadline instead of a
+# timer thread: each block gets a Go context with the deadline (derived from
+# the one around it, so blocks nest; Go methods that block wait on it). When
+# it passes, Timeout.__oruby_expire raises in the block at its next
+# instruction, a sleep included, as MRI's timer thread does with Thread#raise.
 module Timeout
   VERSION = "0.4.3"
 
+  # raised in the block when no exception class was given; never rescued by
+  # the block's own `rescue => e`, turned into Timeout::Error outside it
   class ExitException < Exception
     def exception(*) = self
   end
@@ -17,18 +24,29 @@ module Timeout
     end
   end
 
-  # The block runs in the calling thread. oruby cannot interrupt running
-  # Ruby code, so the timeout is checked when the block returns.
+  @__oruby_requests = {}
+
   def self.timeout(sec, klass = nil, message = nil, &block)
-    return yield(sec) if sec.nil? || sec == 0
-    raise ArgumentError, "Timeout sec must be a non-negative number" if sec < 0
+    return yield(sec) if sec.nil? || sec.zero?
+    raise ArgumentError, "Timeout sec must be a non-negative number" if 0 > sec
     message ||= "execution expired"
-    start = Time.now
-    result = yield(sec)
-    if Time.now - start > sec
-      raise (klass || Error), message
+    perform = proc do |exc|
+      token = ::Kernel.__oruby_timeout_start(sec)
+      @__oruby_requests[token] = [exc, message]
+      begin
+        return yield(sec)
+      ensure
+        @__oruby_requests.delete(token)
+        ::Kernel.__oruby_timeout_stop(token)
+      end
     end
-    result
+    klass ? perform.call(klass) : Error.handle_timeout(message, &perform)
+  end
+
+  # the deadline of block token passed (go-signal.c, MrbState.CheckSignals)
+  def self.__oruby_expire(token)
+    exc, message = @__oruby_requests.delete(token)
+    raise exc, message if exc
   end
 
   def timeout(*args, &block)
