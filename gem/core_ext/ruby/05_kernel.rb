@@ -151,3 +151,40 @@ end
 module Kernel
   module_function :warn
 end
+
+# MRI's rb_obj_singleton_methods: the public and protected methods of the
+# singleton class and, with all, of the singleton classes and extended
+# modules after it (up to the first ordinary class). The closest definition
+# of a name decides: a private one hides the others.
+module Kernel
+  def singleton_methods(all = true)
+    sc = begin
+      singleton_class
+    rescue TypeError
+      return []
+    end
+    return [] unless sc.singleton_class?
+    chain = [sc]
+    if all
+      anc = sc.ancestors
+      i = anc.index { |c| !c.equal?(sc) && c.instance_of?(Class) && !c.singleton_class? } || anc.size
+      chain = anc[0...i]
+      # modules prepended to that class come before it in ancestors, but
+      # the superclass chain reaches the class first
+      if (stop = anc[i])
+        chain -= stop.ancestors.take_while { |c| !c.equal?(stop) }
+      end
+    end
+    seen = {}
+    out = []
+    chain.each do |c|
+      c.private_instance_methods(false).each { |m| seen[m] = true }
+      (c.public_instance_methods(false) + c.protected_instance_methods(false)).each do |m|
+        next if seen[m]
+        seen[m] = true
+        out << m
+      end
+    end
+    out
+  end
+end
