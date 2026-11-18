@@ -1,7 +1,17 @@
 class ARGFClass
   include Enumerable
 
-  attr_accessor :lineno, :inplace_mode
+  def inplace_mode
+    @use_global_argv ? $-i : @inplace_mode
+  end
+
+  def inplace_mode=(val)
+    if @use_global_argv
+      $-i = val
+    else
+      @inplace_mode = val
+    end
+  end
 
   def initialize(*argv)
     @lineno = 0
@@ -9,17 +19,15 @@ class ARGFClass
     @last_io = nil
     @current_file = nil
     @inplace_mode = nil
-    if argv.empty?
-      @argv = nil
-      @files = nil
-    else
-      @argv = argv
-      @files = argv.dup
-    end
-  end
-
-  def path
-    filename
+    @inplace_out = nil
+    @orig_stdout = nil
+    @binmode = false
+    @ext_enc = nil
+    @int_enc = nil
+    @use_global_argv = false
+    @argv = argv
+    @files = nil
+    @started = false
   end
 
   def filename
@@ -32,9 +40,10 @@ class ARGFClass
       "-"
     end
   end
+  alias path filename
 
   def argv
-    @argv || (defined?(ARGV) ? ARGV : [])
+    @use_global_argv ? (defined?(ARGV) ? ARGV : []) : @argv
   end
 
   def file
@@ -43,14 +52,20 @@ class ARGFClass
   alias to_io file
 
   def binmode
+    @binmode = true
+    @ext_enc = Encoding::BINARY if defined?(Encoding)
     io = ensure_io
-    io.binmode if io && io.respond_to?(:binmode)
+    if io
+      io.binmode if io.respond_to?(:binmode)
+      io.set_encoding(Encoding::BINARY) if defined?(Encoding) && io.respond_to?(:set_encoding)
+    end
     self
   end
 
   def binmode?
+    return true if @binmode
     io = ensure_io
-    io.respond_to?(:binmode?) ? io.binmode? : false
+    io && io.respond_to?(:binmode?) ? io.binmode? : false
   end
 
   def lineno
@@ -68,18 +83,18 @@ class ARGFClass
   alias inspect to_s
 
   def pos
-    raise ArgumentError, "closed stream" if @current_io.nil? || @current_io.closed?
+    raise ArgumentError, "closed stream" if @current_io.nil? || io_closed?(@current_io)
     @current_io.pos
   end
   alias tell pos
 
   def pos=(offset)
-    raise ArgumentError, "closed stream" if @current_io.nil? || @current_io.closed?
+    raise ArgumentError, "closed stream" if @current_io.nil? || io_closed?(@current_io)
     @current_io.pos = offset
   end
 
   def fileno
-    raise ArgumentError, "closed stream" if @current_io.nil? || @current_io.closed?
+    raise ArgumentError, "closed stream" if @current_io.nil? || io_closed?(@current_io)
     @current_io.fileno
   end
   alias to_i fileno
@@ -91,23 +106,24 @@ class ARGFClass
   end
 
   def rewind
-    @lineno = 0
-    $. = 0
-    if @current_io && @current_io.respond_to?(:rewind)
-      @current_io.rewind rescue nil
-    end
+    io = ensure_io
+    raise ArgumentError, "no stream to rewind" unless io
+    @lineno -= io.lineno if io.respond_to?(:lineno)
+    @lineno = 0 if @lineno < 0
+    $. = @lineno
+    io.rewind if io.respond_to?(:rewind)
     0
   end
 
   def eof?
-    raise IOError, "closed stream" if @current_io.nil? || @current_io.closed?
+    raise IOError, "closed stream" if @current_io.nil? || io_closed?(@current_io)
     @current_io.eof?
   end
   alias eof eof?
 
   def closed?
     io = @current_io || @last_io
-    io ? io.closed? : false
+    io ? io_closed?(io) : false
   end
 
   def close
@@ -115,9 +131,10 @@ class ARGFClass
     if @current_io
       @last_io = @current_io
       if @current_file != "-" && !@current_io.equal?($stdin)
-        @current_io.close unless @current_io.closed?
+        @current_io.close unless io_closed?(@current_io)
       end
     end
+    close_inplace
     self
   end
 
@@ -129,6 +146,14 @@ class ARGFClass
   end
 
   def set_encoding(*args)
+    if args.size == 1 && String === args[0] && args[0].include?(":")
+      ext_s, int_s = args[0].split(":", 2)
+      @ext_enc = ext_s.empty? ? nil : Encoding.find(ext_s)
+      @int_enc = int_s.empty? ? nil : Encoding.find(int_s)
+    else
+      @ext_enc = args[0]
+      @int_enc = args[1] if args.size > 1
+    end
     io = ensure_io
     io.set_encoding(*args) if io && io.respond_to?(:set_encoding)
     self
@@ -136,20 +161,19 @@ class ARGFClass
 
   def external_encoding
     io = ensure_io
-    io.respond_to?(:external_encoding) ? io.external_encoding : nil
+    io && io.respond_to?(:external_encoding) ? io.external_encoding : @ext_enc
   end
 
   def internal_encoding
     io = ensure_io
-    io.respond_to?(:internal_encoding) ? io.internal_encoding : nil
+    io && io.respond_to?(:internal_encoding) ? io.internal_encoding : @int_enc
   end
 
-  def gets(*args)
-    line = nil
+  def gets(*args, **kw)
     loop do
       io = ensure_io
       break unless io
-      line = io.gets(*args)
+      line = kw.empty? ? io.gets(*args) : io.gets(*args, **kw)
       if line
         @lineno += 1
         $. = @lineno
@@ -163,10 +187,27 @@ class ARGFClass
     nil
   end
 
-  def readline(*args)
-    res = gets(*args)
-    raise EOFError, "end of file reached" if res.nil?
-    res
+  def readline(*args, **kw)
+    loop do
+      io = ensure_io
+      raise EOFError, "end of file reached" unless io
+      if !(IO === io)
+        line = kw.empty? ? io.readline(*args) : io.readline(*args, **kw)
+        @lineno += 1
+        $. = @lineno
+        $_ = line
+        return line
+      end
+      line = kw.empty? ? io.gets(*args) : io.gets(*args, **kw)
+      if line
+        @lineno += 1
+        $. = @lineno
+        $_ = line
+        return line
+      else
+        next_file
+      end
+    end
   end
 
   def getc
@@ -215,7 +256,7 @@ class ARGFClass
   end
 
   def each_byte
-    return to_enum(:each_byte) unless block_given?
+    return to_enum(:each_byte) { nil } unless block_given?
     while b = getbyte
       yield b
     end
@@ -224,7 +265,7 @@ class ARGFClass
   alias bytes each_byte
 
   def each_char
-    return to_enum(:each_char) unless block_given?
+    return to_enum(:each_char) { nil } unless block_given?
     while c = getc
       yield c
     end
@@ -233,7 +274,7 @@ class ARGFClass
   alias chars each_char
 
   def each_codepoint
-    return to_enum(:each_codepoint) unless block_given?
+    return to_enum(:each_codepoint) { nil } unless block_given?
     while c = getc
       yield c.ord
     end
@@ -241,18 +282,45 @@ class ARGFClass
   end
   alias codepoints each_codepoint
 
-  def each_line(*args, &block)
-    return to_enum(:each_line, *args) unless block_given?
-    while line = gets(*args)
+  def each_line(*args, **kw, &block)
+    unless block
+      return to_enum(:each_line, *args) { nil } if kw.empty?
+      return Enumerator.new { |y| each_line(*args, **kw) { |l| y << l } }
+    end
+    io = ensure_io
+    if io && !(IO === io)
+      if kw.empty?
+        io.each_line(*args) do |line|
+          @lineno += 1
+          $. = @lineno
+          yield line
+        end
+      else
+        io.each_line(*args, **kw) do |line|
+          @lineno += 1
+          $. = @lineno
+          yield line
+        end
+      end
+      next_file
+      return self
+    end
+    while line = (kw.empty? ? gets(*args) : gets(*args, **kw))
       yield line
     end
     self
   end
   alias each each_line
 
-  def readlines(*args)
+  def readlines(*args, **kw)
+    io = ensure_io
+    if io && !(IO === io)
+      lines = kw.empty? ? io.readlines(*args) : io.readlines(*args, **kw)
+      next_file
+      return lines
+    end
     lines = []
-    while line = gets(*args)
+    while line = (kw.empty? ? gets(*args) : gets(*args, **kw))
       lines << line
     end
     lines
@@ -260,74 +328,173 @@ class ARGFClass
   alias to_a readlines
 
   def read(length = nil, outbuf = nil)
-    res = +""
+    res = nil
     loop do
       io = ensure_io
       break unless io
       if length.nil?
         chunk = io.read
-        res << chunk if chunk
+        if chunk
+          if res.nil?
+            res = chunk.dup
+          else
+            res << chunk
+          end
+        end
         next_file
       else
-        needed = length - res.bytesize
+        needed = length - (res ? res.bytesize : 0)
         break if needed <= 0
         chunk = io.read(needed)
         if chunk && !chunk.empty?
-          res << chunk
+          if res.nil?
+            res = chunk.dup
+          else
+            res << chunk
+          end
           break if res.bytesize >= length
         else
           next_file
         end
       end
     end
-    return nil if length && res.empty? && !@current_io
+    if res.nil?
+      if length && !@current_io
+        outbuf.replace("") if outbuf
+        return nil
+      end
+      res = +""
+      if defined?(Encoding) && @ext_enc
+        res.force_encoding(@ext_enc)
+      elsif defined?(Encoding) && Encoding.default_external
+        res.force_encoding(Encoding.default_external)
+      end
+    end
     outbuf.replace(res) if outbuf
     res
   end
 
   def readpartial(length, outbuf = nil)
     io = ensure_io
-    raise EOFError, "end of file reached" unless io
+    unless io
+      outbuf.replace("") if outbuf
+      raise EOFError, "end of file reached"
+    end
     begin
-      chunk = io.readpartial(length, outbuf)
-      return chunk
+      return outbuf ? io.readpartial(length, outbuf) : io.readpartial(length)
     rescue EOFError
+      outbuf.replace("") if outbuf
+      if @files && !@files.empty?
+        next_file
+        return outbuf || +""
+      end
       next_file
-      io = ensure_io
-      raise EOFError, "end of file reached" unless io
-      io.readpartial(length, outbuf)
+      raise EOFError, "end of file reached"
     end
   end
 
-  def read_nonblock(maxlen, *args)
+  def read_nonblock(maxlen, outbuf = (no_buf = true; nil), exception: true)
+    unless exception == true || exception == false
+      raise ArgumentError, "expected true or false as exception: #{exception.inspect}"
+    end
     io = ensure_io
-    raise EOFError, "end of file reached" unless io
-    io.read_nonblock(maxlen, *args)
+    unless io
+      outbuf.replace("") if !no_buf && outbuf
+      return nil unless exception
+      raise EOFError, "end of file reached"
+    end
+    begin
+      if no_buf
+        res = io.read_nonblock(maxlen, exception: exception)
+      else
+        res = io.read_nonblock(maxlen, outbuf, exception: exception)
+      end
+      if res.nil? && !exception
+        if @files && !@files.empty?
+          next_file
+          return (!no_buf && outbuf) ? outbuf.replace("") : +""
+        end
+        next_file
+      end
+      res
+    rescue EOFError
+      outbuf.replace("") if !no_buf && outbuf
+      if @files && !@files.empty?
+        next_file
+        return (!no_buf && outbuf) ? outbuf : +""
+      end
+      next_file
+      raise EOFError, "end of file reached"
+    end
   end
 
   private
 
-  def ensure_files
-    @files ||= begin
-      cur_argv = argv
-      (cur_argv.nil? || cur_argv.empty?) ? ["-"] : cur_argv.dup
+  def io_closed?(io)
+    io.respond_to?(:closed?) ? io.closed? : false
+  end
+
+  def close_inplace
+    if @inplace_out
+      @inplace_out.close unless @inplace_out.closed?
+      @inplace_out = nil
     end
+    if @orig_stdout
+      $stdout = @orig_stdout
+      @orig_stdout = nil
+    end
+  end
+
+  def ensure_files
+    return if @started
+    @started = true
+    cur_argv = argv
+    @files = (cur_argv.nil? || cur_argv.empty?) ? ["-"] : cur_argv.dup
+  end
+
+  def open_inplace(path)
+    mode = inplace_mode
+    if mode.empty?
+      io = File.open(path, "r")
+      File.unlink(path)
+      @inplace_out = File.open(path, "w")
+    else
+      backup = path + mode
+      File.rename(path, backup)
+      io = File.open(backup, "r")
+      @inplace_out = File.open(path, "w")
+    end
+    @orig_stdout ||= $stdout
+    $stdout = @inplace_out
+    io
   end
 
   def ensure_io
     ensure_files
-    return @current_io if @current_io && !@current_io.closed?
+    return @current_io if @current_io && !io_closed?(@current_io)
 
     while !@files.empty?
       @current_file = @files.shift
-      @argv.shift if @argv && @argv != ARGV && !@argv.empty?
+      cur_argv = argv
+      cur_argv.shift if cur_argv && !cur_argv.empty?
       ::Kernel.__oruby_gv_raw_set(:$FILENAME, @current_file)
       if @current_file == "-"
         @current_io = $stdin
         return @current_io
       else
         begin
-          @current_io = File.open(@current_file, "r")
+          io = inplace_mode ? open_inplace(@current_file) : File.open(@current_file, "r")
+          if @binmode
+            io.binmode if io.respond_to?(:binmode)
+            io.set_encoding(Encoding::BINARY) if defined?(Encoding) && io.respond_to?(:set_encoding)
+          elsif @ext_enc
+            if @int_enc
+              io.set_encoding(@ext_enc, @int_enc)
+            else
+              io.set_encoding(@ext_enc)
+            end
+          end
+          @current_io = io
           return @current_io
         rescue => e
           $stderr.puts "cannot open #{@current_file}: #{e.message}"
@@ -335,13 +502,7 @@ class ARGFClass
       end
     end
 
-    if @current_file.nil? && @files.empty?
-      @current_file = "-"
-      ::Kernel.__oruby_gv_raw_set(:$FILENAME, "-")
-      @current_io = $stdin
-      return @current_io
-    end
-
+    close_inplace
     nil
   end
 
@@ -349,22 +510,24 @@ class ARGFClass
     if @current_io
       @last_io = @current_io
       if @current_file != "-" && !@current_io.equal?($stdin)
-        @current_io.close unless @current_io.closed?
+        @current_io.close unless io_closed?(@current_io)
       end
     end
+    close_inplace
     @current_io = nil
   end
 end
 
 ARGF = ARGFClass.new
+ARGF.instance_variable_set(:@use_global_argv, true)
 
 module Kernel
-  def gets(*args)
-    ARGF.gets(*args)
+  def gets(*args, **kw)
+    kw.empty? ? ARGF.gets(*args) : ARGF.gets(*args, **kw)
   end
 
-  def readline(*args)
-    ARGF.readline(*args)
+  def readline(*args, **kw)
+    kw.empty? ? ARGF.readline(*args) : ARGF.readline(*args, **kw)
   end
 
   def getc
@@ -383,7 +546,7 @@ module Kernel
     ARGF.readbyte
   end
 
-  def readlines(*args)
-    ARGF.readlines(*args)
+  def readlines(*args, **kw)
+    kw.empty? ? ARGF.readlines(*args) : ARGF.readlines(*args, **kw)
   end
 end

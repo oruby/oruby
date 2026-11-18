@@ -101,7 +101,7 @@ class Enumerator
       @__x = x
       @__init = true
       seq = self
-      Enumerator.instance_method(:initialize).bind_call(self, Enumerator::Generator.new { |y| seq.each { |v| y << v } }, :each)
+      Enumerator.instance_method(:initialize).bind_call(self) { |y| seq.each { |v| y << v } }
     end
     private :__setup
 

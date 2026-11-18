@@ -17,24 +17,15 @@ func init() {
 		//env := mrb.HashNew().RValue
 		//env := mrb.ClassNew(mrb.HashClass())
 		env, _ := mrb.ObjectClass().New()
-		mrb.DefineSingletonMethod(env, "values", envValues, mrb.ArgsNone())
-		mrb.DefineSingletonMethod(env, "value?", envHasValue, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "has_value?", envHasValue, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "keys", envKeys, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "key?", envHasKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "has_key?", envHasKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "member?", envHasKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "include?", envHasKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "get", envGetKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "[]", envGetKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "[]=", envSetKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "store", envSetKey, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "empty?", envIsEmpty, mrb.ArgsReq(1))
+		mrb.DefineSingletonMethod(env, "__raw_values", envValues, mrb.ArgsNone())
+		mrb.DefineSingletonMethod(env, "__raw_keys", envKeys, mrb.ArgsNone())
+		mrb.DefineSingletonMethod(env, "__raw_get", envGetKey, mrb.ArgsReq(1))
+		mrb.DefineSingletonMethod(env, "__raw_set", envSetKey, mrb.ArgsReq(2))
+		mrb.DefineSingletonMethod(env, "__raw_delete", envDelete, mrb.ArgsReq(1))
+		mrb.DefineSingletonMethod(env, "empty?", envIsEmpty, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "length", envSize, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "size", envSize, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "clear", envClear, mrb.ArgsNone())
-		mrb.DefineSingletonMethod(env, "__delete", envDelete, mrb.ArgsReq(1))
-		mrb.DefineSingletonMethod(env, "delete", envDelete, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "to_s", envToS, mrb.ArgsNone())
 
 		mrb.ConstSet(mrb.KernelModule(), oruby.Sym_ENV, env)
@@ -54,17 +45,6 @@ func envValues(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return ret
 }
 
-func envHasValue(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arg := mrb.String(mrb.GetArgsFirst())
-	for _, s := range os.Environ() {
-		kv := strings.SplitN(s, "=", 2)
-		if arg == kv[1] {
-			return mrb.TrueValue()
-		}
-	}
-	return mrb.FalseValue()
-}
-
 func envKeys(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	env := os.Environ()
 	ret := mrb.AryNewCapa(len(env))
@@ -73,17 +53,6 @@ func envKeys(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ret.PushString(kv[0])
 	}
 	return ret
-}
-
-func envHasKey(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arg := mrb.String(mrb.GetArgsFirst())
-	for _, s := range os.Environ() {
-		kv := strings.SplitN(s, "=", 2)
-		if arg == kv[0] {
-			return mrb.TrueValue()
-		}
-	}
-	return mrb.FalseValue()
 }
 
 func envIsEmpty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

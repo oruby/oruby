@@ -249,13 +249,14 @@ class Enumerator
       @__enums = enums
       @__init = true
       super() { |y| __each { |v| y << v } }
+      self
     end
     private :initialize
 
     def initialize_copy(other)
-      raise FrozenError, "can't modify frozen #{self.class}" if frozen?
       return self if equal?(other)
-      raise TypeError, "wrong argument class" unless Product === other
+      raise FrozenError, "can't modify frozen #{self.class}" if frozen?
+      raise TypeError, "initialize_copy should take same class object" unless self.class == other.class
       raise ArgumentError, "uninitialized product" unless other.instance_variable_get(:@__init)
       @__enums = other.instance_variable_get(:@__enums).dup
       @__init = true
@@ -264,8 +265,7 @@ class Enumerator
     end
     private :initialize_copy
 
-    def each(*args, &block)
-      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0)" unless args.empty?
+    def each(&block)
       return self unless block
       __each(&block)
       self
@@ -284,13 +284,21 @@ class Enumerator
     end
 
     def rewind
-      @__enums.reverse_each { |e| e.rewind if e.respond_to?(:rewind) }
+      @__enums.each { |e| e.rewind if e.respond_to?(:rewind) }
       super
     end
 
+    INSPECT_GUARD = {}
     def inspect
       return "#<#{self.class}: uninitialized>" unless @__init
-      "#<#{self.class}: #{@__enums.inspect}>"
+      oid = object_id
+      return "#<#{self.class}: ...>" if INSPECT_GUARD[oid]
+      INSPECT_GUARD[oid] = true
+      begin
+        "#<#{self.class}: #{@__enums.inspect}>"
+      ensure
+        INSPECT_GUARD.delete(oid)
+      end
     end
     alias to_s inspect
 

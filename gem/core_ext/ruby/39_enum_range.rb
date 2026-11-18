@@ -301,6 +301,7 @@ module Enumerable
     out = []
     each(*args) do |*x|
       out << (x.size <= 1 ? x[0] : x)
+      nil
     end
     out
   end

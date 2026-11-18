@@ -15,13 +15,16 @@ func initDir(mrb *oruby.MrbState) {
 	dirClass.Include(mrb.ModuleGet("Enumerable"))
 	oruby.MrbSetInstanceTT(dirClass, oruby.MrbTTCData)
 
-	dirClass.DefineClassMethod("open", dirOpen, mrb.ArgsArg(1, 1))
-	dirClass.DefineClassMethod("foreach", dirForeach, mrb.ArgsArg(1, 1))
-	dirClass.DefineClassMethod("entries", dirEntries, mrb.ArgsArg(1, 1))
-	dirClass.DefineClassMethod("each_child", dirSEachChild, mrb.ArgsArg(1, 1))
-	dirClass.DefineClassMethod("children", dirChildren, oruby.ArgsReq(1))
+	dirClass.DefineClassMethod("open", dirOpen, mrb.ArgsArg(1, 1)|mrb.ArgsKey(1, 0)|mrb.ArgsBlock())
+	dirClass.DefineClassMethod("for_fd", dirForFd, mrb.ArgsReq(1))
+	dirClass.DefineClassMethod("fchdir", dirSFchdir, mrb.ArgsReq(1)|mrb.ArgsBlock())
+	dirClass.DefineClassMethod("foreach", dirForeach, mrb.ArgsArg(1, 1)|mrb.ArgsKey(1, 0)|mrb.ArgsBlock())
+	dirClass.DefineClassMethod("entries", dirEntries, mrb.ArgsArg(1, 1)|mrb.ArgsKey(1, 0))
+	dirClass.DefineClassMethod("each_child", dirSEachChild, mrb.ArgsArg(1, 1)|mrb.ArgsKey(1, 0)|mrb.ArgsBlock())
+	dirClass.DefineClassMethod("children", dirChildren, mrb.ArgsArg(1, 1)|mrb.ArgsKey(1, 0))
 
-	dirClass.DefineMethod("initialize", dirInitialize, mrb.ArgsArg(1, 1))
+	dirClass.DefineMethod("initialize", dirInitialize, mrb.ArgsArg(1, 1)|mrb.ArgsKey(1, 0))
+	dirClass.DefineMethod("chdir", dirChdirInst, mrb.ArgsNone()|mrb.ArgsBlock())
 	dirClass.DefineMethod("fileno", dirFileno, mrb.ArgsNone())
 	dirClass.DefineMethod("path", dirPath, mrb.ArgsNone())
 	dirClass.DefineMethod("to_path", dirPath, mrb.ArgsNone())
@@ -57,9 +60,136 @@ func initDir(mrb *oruby.MrbState) {
 	}
 }
 
+func toInt(mrb *oruby.MrbState, v oruby.Value) (int, error) {
+	if v.IsInt() {
+		return v.Int(), nil
+	}
+	if mrb.RespondTo(v, oruby.Sym_to_int) {
+		ret, err := mrb.Funcall(v, oruby.Sym_to_int)
+		if err != nil {
+			return 0, err
+		}
+		if ret.IsInt() {
+			return ret.Int(), nil
+		}
+		return 0, &typeError{msg: fmt.Sprintf("can't convert %s to Integer (%s#to_int gives %s)",
+			mrb.ClassName(mrb.ClassOf(v)), mrb.ClassName(mrb.ClassOf(v)), mrb.ClassName(mrb.ClassOf(ret)))}
+	}
+	return 0, &typeError{msg: fmt.Sprintf("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ClassOf(v)))}
+}
+
+func pathValueAndString(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, string, error) {
+	if mrb.NilP(v) {
+		return mrb.NilValue(), "", &typeError{msg: "no implicit conversion of nil into String"}
+	}
+	orig := v
+	if !oruby.MrbStringP(orig) {
+		if mrb.RespondTo(orig, oruby.Sym_to_path) {
+			ret, err := mrb.Funcall(orig, oruby.Sym_to_path)
+			if err != nil {
+				return mrb.NilValue(), "", err
+			}
+			orig = ret
+		}
+		if !oruby.MrbStringP(orig) && mrb.RespondTo(orig, oruby.Sym_to_str) {
+			ret, err := mrb.Funcall(orig, oruby.Sym_to_str)
+			if err != nil {
+				return mrb.NilValue(), "", err
+			}
+			orig = ret
+		}
+		if !oruby.MrbStringP(orig) {
+			return mrb.NilValue(), "", &typeError{msg: fmt.Sprintf("no implicit conversion of %s into String", mrb.ClassName(mrb.ClassOf(v)))}
+		}
+	}
+	s := orig.String()
+	if strings.ContainsRune(s, 0) {
+		return mrb.NilValue(), "", &argumentError{msg: "path name contains null byte"}
+	}
+	return orig, mrb.FSPath(orig), nil
+}
+
+func dirEncodingOpt(mrb *oruby.MrbState) oruby.Value {
+	if kw := mrb.KeywordArgs(); !kw.IsNil() {
+		if v := mrb.HashFetch(kw.Value(), mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue()); !v.IsNil() {
+			return v
+		}
+	}
+	if h := mrb.GetArgs().Item(1); h.IsHash() {
+		return mrb.HashFetch(h, mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue())
+	}
+	return mrb.NilValue()
+}
+
+func resolveDirEncoding(mrb *oruby.MrbState, enc oruby.Value) (oruby.Value, bool, error) {
+	if !enc.IsNil() {
+		if !enc.IsData() {
+			e, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_find, enc)
+			if err != nil {
+				return mrb.NilValue(), false, err
+			}
+			return e.Value(), true, nil
+		}
+		return enc, true, nil
+	}
+	// External encoding defaults to filesystem/default_external
+	if mrb.RespondTo(mrb.EncodingClass(), oruby.Sym_default_external) {
+		if e, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_default_external); err == nil && !e.IsNil() {
+			return e.Value(), false, nil
+		}
+	}
+	return mrb.NilValue(), false, nil
+}
+
+func encodeDirEntry(mrb *oruby.MrbState, name string, extEnc oruby.Value, explicit bool) oruby.Value {
+	s := mrb.StrNew(name).Value()
+	if !extEnc.IsNil() {
+		_, _ = mrb.Funcall(s, oruby.Sym_force_encoding, extEnc)
+	}
+	if !explicit && mrb.RespondTo(mrb.EncodingClass(), oruby.Sym_default_internal) {
+		if di, err := mrb.Funcall(mrb.EncodingClass(), oruby.Sym_default_internal); err == nil && !di.IsNil() {
+			converted, err := mrb.Funcall(s, mrb.Intern("encode"), di.Value())
+			if err == nil {
+				return converted.Value()
+			}
+			mrb.SetExc(nil)
+		}
+	}
+	return s
+}
+
+func dirFile(mrb *oruby.MrbState, self oruby.Value) (*os.File, error) {
+	if mrb.GetIV(self, "@closed").Bool() {
+		return nil, &ioClosedError{msg: "closed directory"}
+	}
+	f, _ := mrb.Data(self).(*os.File)
+	if f == nil {
+		return nil, &ioClosedError{msg: "closed directory"}
+	}
+	return f, nil
+}
+
+type ioClosedError struct{ msg string }
+
+func (e *ioClosedError) Error() string { return e.msg }
+
+func raiseDirError(mrb *oruby.MrbState, err error) oruby.MrbValue {
+	if ce, ok := err.(*ioClosedError); ok {
+		return mrb.Raise(mrb.ClassGet("IOError"), ce.msg)
+	}
+	return raisePathError(mrb, err)
+}
+
 func dirOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	block := mrb.GetArgsBlock()
-	ret, err := mrb.ObjNew(mrb.ClassPtr(self), mrb.GetArgs().SliceIntf()...)
+	args, block := mrb.GetArgsWithBlock()
+	var callArgs []interface{}
+	for i := 0; i < args.Len(); i++ {
+		callArgs = append(callArgs, args.Item(i))
+	}
+	if kw := mrb.KeywordArgs(); !kw.IsNil() {
+		callArgs = append(callArgs, kw.Value())
+	}
+	ret, err := mrb.ObjNew(mrb.ClassPtr(self), callArgs...)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -67,31 +197,24 @@ func dirOpen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return ret
 	}
 	result := mrb.Yield(block, ret)
-	_ = ret.Data().(*os.File).Close()
+	dirCloseRaw(mrb, ret.Value())
 	return result
 }
 
 func dirInitialize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arg := mrb.GetArgsFirst()
-	if strings.ContainsRune(arg.String(), 0) {
-		return mrb.EArgumentError().Raise("string contains null byte")
+	pathVal, dir, err := pathValueAndString(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return raisePathError(mrb, err)
 	}
-	dir := mrb.FSPath(arg)
 	f, err := os.Open(dir)
 	if err != nil {
-		return mrb.RaiseError(err)
+		return mrb.SysFail(err)
 	}
-	mrb.SetIV(self, "@path", dir)
+	mrb.SetIV(self, "@path", pathVal)
 	mrb.SetIV(self, "@pos", 0)
-	// Dir.new(path, encoding:): the entries' encoding
-	opts := mrb.KeywordArgs().Value()
-	if !opts.IsHash() {
-		opts = mrb.GetArgs().Item(1)
-	}
-	if opts.IsHash() {
-		if enc := mrb.HashFetch(opts, mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue()); !enc.IsNil() {
-			mrb.SetIV(self, "@encoding", enc)
-		}
+	mrb.SetIV(self, "@closed", false)
+	if enc := dirEncodingOpt(mrb); !enc.IsNil() {
+		mrb.SetIV(self, "@encoding", enc)
 	}
 	mrb.DataSetInterface(self, f)
 
@@ -99,41 +222,51 @@ func dirInitialize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirEntries(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arg := mrb.GetArgsFirst()
-	if strings.ContainsRune(arg.String(), 0) {
-		return mrb.EArgumentError().Raise("string contains null byte")
+	_, dir, err := pathValueAndString(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return raisePathError(mrb, err)
 	}
-	dir := mrb.FSPath(arg)
-	f, err := os.Open(dir)
+	extEnc, explicit, err := resolveDirEncoding(mrb, dirEncodingOpt(mrb))
 	if err != nil {
 		return mrb.RaiseError(err)
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return mrb.SysFail(err)
 	}
 
 	files, err := f.Readdirnames(-1)
 	_ = f.Close()
 	if err != nil {
-		return mrb.RaiseError(err)
+		return mrb.SysFail(err)
 	}
 	ret := mrb.AryNewCapa(len(files) + 2)
-	ret.PushString(".")
-	ret.PushString("..")
-	for _, f := range files {
-		ret.PushString(f)
+	ret.Push(encodeDirEntry(mrb, ".", extEnc, explicit))
+	ret.Push(encodeDirEntry(mrb, "..", extEnc, explicit))
+	for _, name := range files {
+		ret.Push(encodeDirEntry(mrb, name, extEnc, explicit))
 	}
 	return ret
 }
 
-func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, skipDots bool) oruby.MrbValue {
+func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, enc oruby.Value, skipDots bool) oruby.MrbValue {
 	block := mrb.GetArgsBlock()
 	if block.IsNil() {
 		args := mrb.GetArgs()
 		if args.Len() > 0 {
+			if kw := mrb.KeywordArgs(); !kw.IsNil() {
+				return mrb.Call(self, "to_enum", mrb.GetMID(), args.Item(0), kw.Value())
+			}
 			return mrb.Call(self, "to_enum", mrb.GetMID(), args.Item(0))
 		}
 		return mrb.Call(self, "to_enum", mrb.GetMID())
 	}
-	err := eachName(dir, skipDots, func(f string) error {
-		_ = mrb.Yield(block, mrb.StrNew(f))
+	extEnc, explicit, err := resolveDirEncoding(mrb, enc)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	err = eachName(dir, skipDots, func(f string) error {
+		_ = mrb.Yield(block, encodeDirEntry(mrb, f, extEnc, explicit))
 		if mrb.Exc() != nil {
 			return mrb.Err()
 		}
@@ -148,48 +281,61 @@ func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, skipDots bo
 	return self
 }
 
-func dirForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arg := mrb.GetArgsFirst()
-	if strings.ContainsRune(arg.String(), 0) {
-		return mrb.EArgumentError().Raise("string contains null byte")
+func dirForeachEnum(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	var callArgs []interface{}
+	callArgs = append(callArgs, mrb.GetMID())
+	for i := 0; i < args.Len(); i++ {
+		callArgs = append(callArgs, args.Item(i))
 	}
-	dir := mrb.FSPath(arg)
-	return dirDoForeach(mrb, self, dir, false)
+	if kw := mrb.KeywordArgs(); !kw.IsNil() {
+		callArgs = append(callArgs, kw.Value())
+	}
+	return mrb.Call(self, "to_enum", callArgs...)
+}
+
+func dirForeach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if mrb.GetArgsBlock().IsNil() {
+		return dirForeachEnum(mrb, self)
+	}
+	_, dir, err := pathValueAndString(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return raisePathError(mrb, err)
+	}
+	return dirDoForeach(mrb, self, dir, dirEncodingOpt(mrb), false)
 }
 
 func dirSEachChild(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arg := mrb.GetArgsFirst()
-	if strings.ContainsRune(arg.String(), 0) {
-		return mrb.EArgumentError().Raise("string contains null byte")
+	if mrb.GetArgsBlock().IsNil() {
+		return dirForeachEnum(mrb, self)
 	}
-	dir := mrb.FSPath(arg)
-	return dirDoForeach(mrb, self, dir, true)
+	_, dir, err := pathValueAndString(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return raisePathError(mrb, err)
+	}
+	return dirDoForeach(mrb, self, dir, dirEncodingOpt(mrb), true)
 }
 
 func dirChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	arg := mrb.GetArgsFirst()
-	if strings.ContainsRune(arg.String(), 0) {
-		return mrb.EArgumentError().Raise("string contains null byte")
+	_, dir, err := pathValueAndString(mrb, mrb.GetArgsFirst())
+	if err != nil {
+		return raisePathError(mrb, err)
 	}
-	dir := mrb.FSPath(arg)
 	if dir == "" {
 		return mrb.EArgumentError().Raise("ENOENT empty directory not allowed")
 	}
-	ret := mrb.AryNew()
-	err := eachName(dir, true, func(f string) error {
-		ret.PushString(f)
-		return nil
-	})
+	extEnc, explicit, err := resolveDirEncoding(mrb, dirEncodingOpt(mrb))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	enc := mrb.NilValue()
-	if kw := mrb.KeywordArgs(); !kw.IsNil() {
-		enc = mrb.HashFetch(kw.Value(), mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue())
-	} else if h := mrb.GetArgs().Item(1); h.IsHash() {
-		enc = mrb.HashFetch(h, mrb.SymbolValue(oruby.Sym_encoding), mrb.NilValue())
+	ret := mrb.AryNew()
+	err = eachName(dir, true, func(f string) error {
+		ret.Push(encodeDirEntry(mrb, f, extEnc, explicit))
+		return nil
+	})
+	if err != nil {
+		return mrb.SysFail(err)
 	}
-	entryEncoding(mrb, ret.Value(), enc)
 	return ret
 }
 
@@ -203,16 +349,23 @@ func dirChdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if arg.IsNil() {
 		dir, err = os.UserHomeDir()
 		if err != nil {
-			return mrb.RaiseError(err)
+			if u, uerr := user.Current(); uerr == nil && u.HomeDir != "" {
+				dir = u.HomeDir
+			} else {
+				return mrb.RaiseError(err)
+			}
 		}
 	} else {
-		dir = mrb.FSPath(arg)
+		dir, err = pathString(mrb, arg)
+		if err != nil {
+			return raisePathError(mrb, err)
+		}
 	}
 
 	if block.IsNil() {
 		err = os.Chdir(dir)
 		if err != nil {
-			return mrb.RaiseError(err)
+			return mrb.SysFail(err)
 		}
 
 		return ret
@@ -220,18 +373,18 @@ func dirChdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	wdir, err := os.Getwd()
 	if err != nil {
-		return mrb.RaiseError(err)
+		return mrb.SysFail(err)
 	}
 
 	err = os.Chdir(dir)
 	if err != nil {
-		return mrb.RaiseError(err)
+		return mrb.SysFail(err)
 	}
 
 	ret = mrb.YieldArgv(block, mrb.StrNew(dir))
 
 	if err := os.Chdir(wdir); err != nil {
-		return mrb.RaiseError(err)
+		return mrb.SysFail(err)
 	}
 	return ret
 }
@@ -239,25 +392,39 @@ func dirChdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func dirGetwd(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	dir, err := os.Getwd()
 	if err != nil {
-		return mrb.RaiseError(err)
+		return mrb.SysFail(err)
 	}
 	return mrb.StrNew(dir)
 }
 
 func dirMkdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir, perm := mrb.GetArgs2("", os.ModePerm)
-	err := os.Mkdir(mrb.FSPath(dir), os.FileMode(perm.Int()))
+	args := mrb.GetArgs()
+	dir, err := pathString(mrb, args.Item(0))
 	if err != nil {
-		return mrb.RaiseError(err)
+		return raisePathError(mrb, err)
+	}
+	perm := int(os.ModePerm)
+	if args.Len() > 1 {
+		perm, err = toInt(mrb, args.Item(1))
+		if err != nil {
+			return raisePathError(mrb, err)
+		}
+	}
+	err = os.Mkdir(dir, os.FileMode(perm))
+	if err != nil {
+		return mrb.SysFail(err)
 	}
 	return oruby.Int(0)
 }
 
 func dirRmdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.FSPath(mrb.GetArgsFirst())
-	err := os.Remove(dir)
+	dir, err := pathString(mrb, mrb.GetArgsFirst())
 	if err != nil {
-		return mrb.RaiseError(err)
+		return raisePathError(mrb, err)
+	}
+	err = dirSysRmdir(dir)
+	if err != nil {
+		return mrb.SysFail(err)
 	}
 	return oruby.Int(0)
 }
@@ -266,15 +433,32 @@ func dirHome(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	usr := mrb.GetArgsFirst()
 	if usr.IsNil() {
 		home, err := os.UserHomeDir()
-		if err != nil {
-			return mrb.RaiseError(err)
+		if err != nil || home == "" {
+			u, uerr := user.Current()
+			if uerr != nil {
+				return mrb.EArgumentError().Raise("couldn't find HOME environment -- expanding `~'")
+			}
+			home = u.HomeDir
 		}
 		return mrb.StrNew(home)
 	}
 
-	foundUser, err := user.Lookup(usr.String())
+	name, err := pathString(mrb, usr)
 	if err != nil {
-		return mrb.RaiseError(err)
+		return raisePathError(mrb, err)
+	}
+	if name == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			if u, uerr := user.Current(); uerr == nil {
+				home = u.HomeDir
+			}
+		}
+		return mrb.StrNew(home)
+	}
+	foundUser, err := user.Lookup(name)
+	if err != nil {
+		return mrb.EArgumentError().Raisef("user %s doesn't exist", name)
 	}
 	return mrb.StrNew(foundUser.HomeDir)
 }
@@ -466,13 +650,29 @@ func dirIsEmpty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.Bool(err == io.EOF && len(files) == 0)
 }
 
+func dirCloseRaw(mrb *oruby.MrbState, self oruby.Value) error {
+	if mrb.GetIV(self, "@closed").Bool() {
+		return nil
+	}
+	mrb.SetIV(self, "@closed", true)
+	f, _ := mrb.Data(self).(*os.File)
+	if f != nil {
+		return f.Close()
+	}
+	return nil
+}
+
 func dirClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	f := mrb.Data(self).(*os.File)
-	_ = f.Close()
+	if err := dirCloseRaw(mrb, self); err != nil {
+		return raiseDirErrno(mrb, err, "closedir")
+	}
 	return mrb.NilValue()
 }
 
 func dirCollectChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if _, err := dirFile(mrb, self); err != nil {
+		return raiseDirError(mrb, err)
+	}
 	ret, _ := mrb.FuncallWithBlock(mrb.ClassOf(self), oruby.Sym_children, mrb.GetIV(self, "@path"))
 	if enc := mrb.GetIV(self, "@encoding"); !enc.IsNil() && ret.Value().IsArray() {
 		entryEncoding(mrb, ret.Value(), enc)
@@ -514,6 +714,10 @@ func dirInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirSetPos(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	f, err := dirFile(mrb, self)
+	if err != nil {
+		return raiseDirError(mrb, err)
+	}
 	newPos := mrb.GetArgs().Item(0)
 	if !newPos.IsInt() {
 		return mrb.EArgumentError().Raise("integer position expected")
@@ -527,14 +731,29 @@ func dirSetPos(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return newPos
 	} else if delta < 0 {
 		dirRewind(mrb, self)
+		if mrb.Exc() != nil {
+			return mrb.NilValue()
+		}
+		f, _ = mrb.Data(self).(*os.File)
 		delta = newPos.Int()
 	}
 
 	if delta > 0 {
-		f := mrb.Data(self).(*os.File)
-		_, err := f.Readdirnames(delta)
-		if err != nil {
-			return mrb.RaiseError(err)
+		// first two entries are "." and ".."
+		skip := delta
+		if pos < 2 {
+			avail := 2 - pos
+			if skip <= avail {
+				skip = 0
+			} else {
+				skip -= avail
+			}
+		}
+		if skip > 0 {
+			_, err := f.Readdirnames(skip)
+			if err != nil && err != io.EOF {
+				return mrb.SysFail(err)
+			}
 		}
 	}
 
@@ -548,24 +767,36 @@ func dirSeek(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func dirTell(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if _, err := dirFile(mrb, self); err != nil {
+		return raiseDirError(mrb, err)
+	}
 	return mrb.GetIV(self, "@pos")
 }
 
 func dirRewind(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	f := mrb.Data(self).(*os.File)
-	_ = f.Close()
-	f, err := os.Open(mrb.GetIV(self, "@path").String())
+	f, err := dirFile(mrb, self)
 	if err != nil {
-		return mrb.RaiseError(err)
+		return raiseDirError(mrb, err)
 	}
-	mrb.DataSetInterface(self, f)
+	pathVal := mrb.GetIV(self, "@path")
+	if !pathVal.IsNil() {
+		_ = f.Close()
+		f, err = os.Open(mrb.FSPath(pathVal))
+		if err != nil {
+			return mrb.SysFail(err)
+		}
+		mrb.DataSetInterface(self, f)
+	}
 
 	mrb.SetIV(self, "@pos", 0)
 	return self
 }
 
-func dirRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	f := mrb.Data(self).(*os.File)
+func dirReadOne(mrb *oruby.MrbState, self oruby.Value) (oruby.Value, bool, error) {
+	f, err := dirFile(mrb, self)
+	if err != nil {
+		return mrb.NilValue(), false, err
+	}
 	pos := mrb.GetIV(self, "@pos").Int()
 	var ret string
 
@@ -577,25 +808,94 @@ func dirRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	default:
 		files, err := f.Readdirnames(1)
 		if err == io.EOF {
-			return mrb.NilValue()
+			return mrb.NilValue(), false, nil
 		} else if err != nil {
-			return mrb.RaiseError(err)
+			return mrb.NilValue(), false, err
 		}
 		ret = files[len(files)-1]
 	}
 
 	mrb.SetIV(self, "@pos", pos+1)
-	return mrb.StrNew(ret)
+	extEnc, explicit, err := resolveDirEncoding(mrb, mrb.GetIV(self, "@encoding"))
+	if err != nil {
+		return mrb.NilValue(), false, err
+	}
+	return encodeDirEntry(mrb, ret, extEnc, explicit), true, nil
+}
+
+func dirRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	v, ok, err := dirReadOne(mrb, self)
+	if err != nil {
+		return raiseDirError(mrb, err)
+	}
+	if !ok {
+		return mrb.NilValue()
+	}
+	return v
 }
 
 func dirEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetIV(self, "@path").String()
-	return dirDoForeach(mrb, self, dir, false)
+	block := mrb.GetArgsBlock()
+	if block.IsNil() {
+		return mrb.Call(self, "to_enum", mrb.GetMID())
+	}
+	if _, err := dirFile(mrb, self); err != nil {
+		return raiseDirError(mrb, err)
+	}
+	if mrb.GetIV(self, "@pos").Int() > 0 {
+		dirRewind(mrb, self)
+		if mrb.Exc() != nil {
+			return mrb.NilValue()
+		}
+	}
+	for {
+		v, ok, err := dirReadOne(mrb, self)
+		if err != nil {
+			return raiseDirError(mrb, err)
+		}
+		if !ok {
+			break
+		}
+		_ = mrb.Yield(block, v)
+		if mrb.Exc() != nil {
+			return mrb.NilValue()
+		}
+	}
+	return self
 }
 
 func dirEachChild(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	dir := mrb.GetIV(self, "@path").String()
-	return dirDoForeach(mrb, self, dir, true)
+	block := mrb.GetArgsBlock()
+	if block.IsNil() {
+		return mrb.Call(self, "to_enum", mrb.GetMID())
+	}
+	if _, err := dirFile(mrb, self); err != nil {
+		return raiseDirError(mrb, err)
+	}
+	if mrb.GetIV(self, "@pos").Int() > 0 {
+		dirRewind(mrb, self)
+		if mrb.Exc() != nil {
+			return mrb.NilValue()
+		}
+	}
+	for {
+		v, ok, err := dirReadOne(mrb, self)
+		if err != nil {
+			return raiseDirError(mrb, err)
+		}
+		if !ok {
+			break
+		}
+		s := v.String()
+		if s == "." || s == ".." {
+			continue
+		}
+		_ = mrb.Yield(block, v)
+		if mrb.Exc() != nil {
+			return mrb.NilValue()
+		}
+	}
+	return self
 }
 
 func eachName(dir string, skipDots bool, f func(s string) error) error {
