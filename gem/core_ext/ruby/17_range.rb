@@ -193,3 +193,101 @@ class Range
     __oruby_each(&block)
   end
 end
+
+# Range#cover? as MRI's range_cover: a value is between the boundaries
+# (r_cover_p); a Range is covered when its begin is and its end does not
+# reach past self's (r_cover_range_p, with max for an inclusive other
+# range against an exclusive self). Comparisons go through <=> (r_less):
+# nil there means not comparable.
+class Range
+  def cover?(val)
+    b = self.begin
+    e = self.end
+    return __oruby_cover_range?(b, e, val) if Range === val
+    __oruby_cover?(b, e, val)
+  end
+
+  # MRI's range_eqq: cover? of a value (a Range argument is a value here)
+  def ===(val)
+    __oruby_cover?(self.begin, self.end, val)
+  end
+
+  # MRI's range_include: numeric (and Time) boundaries compare, String ones
+  # walk String#upto (one ASCII character each: a byte compare), anything
+  # else iterates (Enumerable#include?)
+  def include?(val)
+    b = self.begin
+    e = self.end
+    return true if b.nil? && e.nil? && __oruby_linear?(val)
+    if __oruby_linear?(b) || __oruby_linear?(e) || b.respond_to?(:to_int) || e.respond_to?(:to_int)
+      return __oruby_cover?(b, e, val)
+    end
+    if String === b || String === e
+      raise TypeError, "cannot determine inclusion in beginless/endless ranges" unless String === b && String === e
+      return false if val.nil?
+      unless String === val
+        return false unless val.respond_to?(:to_str)
+        v = val.to_str
+        raise TypeError, "can't convert #{val.class} to String (#{val.class}#to_str gives #{v.class})" unless String === v
+        val = v
+      end
+      if b.bytesize == 1 && e.bytesize == 1 && b.ascii_only? && e.ascii_only?
+        return false unless val.bytesize == 1
+        if val.ascii_only?
+          return (b <= val && val < e) || (!exclude_end? && val == e)
+        end
+      end
+      b.upto(e, exclude_end?) { |x| return true if x == val }
+      return false
+    end
+    raise TypeError, "cannot determine inclusion in beginless/endless ranges" if b.nil? || e.nil?
+    super
+  end
+  alias member? include?
+
+  private
+
+  def __oruby_linear?(x)
+    Numeric === x || (defined?(::Time) && ::Time === x)
+  end
+
+  # MRI's r_less: < 0, 0, > 0 (not comparable counts as greater)
+  def __oruby_r_less(a, b)
+    r = a <=> b
+    return 0x7fffffff if r.nil?
+    return r <=> 0 if Integer === r
+    r > 0 ? 1 : (r < 0 ? -1 : 0)
+  end
+
+  def __oruby_cover?(b, e, val)
+    if b.nil? || __oruby_r_less(b, val) <= 0
+      return true if e.nil? || __oruby_r_less(val, e) <= (exclude_end? ? -1 : 0)
+    end
+    false
+  end
+
+  def __oruby_cover_range?(b, e, val)
+    vb = val.begin
+    ve = val.end
+    return false if !e.nil? && ve.nil?
+    return false if !b.nil? && vb.nil?
+    return false if !vb.nil? && !ve.nil? && __oruby_r_less(vb, ve) > (val.exclude_end? ? -1 : 0)
+    return false if !vb.nil? && !__oruby_cover?(b, e, vb)
+    cmp_end = __oruby_r_less(e, ve)
+    if exclude_end? == val.exclude_end?
+      cmp_end >= 0
+    elsif exclude_end?
+      cmp_end > 0
+    elsif cmp_end >= 0
+      true
+    else
+      # (1..5).cover?(1...6) when the last element of the other is 5
+      vmax = begin
+        val.max
+      rescue TypeError
+        nil
+      end
+      !vmax.nil? && __oruby_r_less(e, vmax) >= 0
+    end
+  end
+end
