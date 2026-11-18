@@ -8,8 +8,14 @@ import (
 type MatchData struct {
 	r      *Regexp
 	s      string
+	enc    string
 	names  []string
 	result []int
+}
+
+// Enc returns the source string's encoding name
+func (m *MatchData) Enc() string {
+	return m.enc
 }
 
 // NewMatchData creates MatchData for matched regex
@@ -43,7 +49,7 @@ func NewMatchData(regx *Regexp, s string, result []int, pos int) *MatchData {
 		}
 	}
 
-	return &MatchData{regx, s, names, ret}
+	return &MatchData{regx, s, "", names, ret}
 }
 
 func (m *MatchData) String() string {
@@ -67,7 +73,7 @@ func (m *MatchData) IsEqual(m2 *MatchData) bool {
 
 func (m *MatchData) toString(idx int) (string, bool) {
 	if idx < 0 {
-		idx = m.Size() - idx
+		idx = m.Size() + idx
 	}
 	if (idx < 0) || (idx >= m.Size()) {
 		return "", true

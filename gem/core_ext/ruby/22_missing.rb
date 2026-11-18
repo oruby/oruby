@@ -8,6 +8,18 @@ end
 
 class Module
   private def ruby2_keywords(*names)
+    names.each do |name|
+      sym = Symbol === name ? name : Kernel.__implicit(name, String).to_sym
+      orig = instance_method(sym)
+      priv = private_method_defined?(sym)
+      prot = protected_method_defined?(sym)
+      define_method(sym) do |*args, **kw, &blk|
+        args << Hash.ruby2_keywords_hash(kw) unless kw.empty?
+        orig.bind_call(self, *args, &blk)
+      end
+      private(sym) if priv
+      protected(sym) if prot
+    end
     nil
   end
 end

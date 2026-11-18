@@ -403,6 +403,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_load");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
   (void)mrb_intern_lit(mrb, "__oruby_max");
+  (void)mrb_intern_lit(mrb, "__oruby_new__");
   (void)mrb_intern_lit(mrb, "__oruby_new_regexp");
   (void)mrb_intern_lit(mrb, "__oruby_notify");
   (void)mrb_intern_lit(mrb, "__oruby_nsig__");
@@ -497,6 +498,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "adler32_combine");
   (void)mrb_intern_lit(mrb, "after_init");
   (void)mrb_intern_lit(mrb, "aliases");
+  (void)mrb_intern_lit(mrb, "all_symbols");
   (void)mrb_intern_lit(mrb, "allocate");
   (void)mrb_intern_lit(mrb, "ancestors");
   (void)mrb_intern_lit(mrb, "anonymous");

@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "1b5a32ab818d45f3"
+const presymTable = "c550ea2649bd35af"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -483,6 +483,7 @@ const (
 	Sym___oruby_load                   MrbSym = C.MRB_SYM____oruby_load                   // "__oruby_load"
 	Sym___oruby_main__                 MrbSym = C.MRB_SYM____oruby_main__                 // "__oruby_main__"
 	Sym___oruby_max                    MrbSym = C.MRB_SYM____oruby_max                    // "__oruby_max"
+	Sym___oruby_new__                  MrbSym = C.MRB_SYM____oruby_new__                  // "__oruby_new__"
 	Sym___oruby_new_regexp             MrbSym = C.MRB_SYM____oruby_new_regexp             // "__oruby_new_regexp"
 	Sym___oruby_notify                 MrbSym = C.MRB_SYM____oruby_notify                 // "__oruby_notify"
 	Sym___oruby_nsig__                 MrbSym = C.MRB_SYM____oruby_nsig__                 // "__oruby_nsig__"
@@ -571,6 +572,7 @@ const (
 	Sym_adler32_combine                MrbSym = C.MRB_SYM__adler32_combine                // "adler32_combine"
 	Sym_after_init                     MrbSym = C.MRB_SYM__after_init                     // "after_init"
 	Sym_aliases                        MrbSym = C.MRB_SYM__aliases                        // "aliases"
+	Sym_all_symbols                    MrbSym = C.MRB_SYM__all_symbols                    // "all_symbols"
 	Sym_allocate                       MrbSym = C.MRB_SYM__allocate                       // "allocate"
 	Sym_ancestors                      MrbSym = C.MRB_SYM__ancestors                      // "ancestors"
 	Sym_anonymous                      MrbSym = C.MRB_SYM__anonymous                      // "anonymous"

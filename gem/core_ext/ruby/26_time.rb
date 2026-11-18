@@ -456,11 +456,6 @@ class Time
     [p[0], p[1]].hash
   end
 
-  def succ
-    warn "Time#succ is obsolete; use time + 1" if $VERBOSE
-    self + 1
-  end
-
   def round(ndigits = 0) = __round(ndigits, :round)
   def floor(ndigits = 0) = __round(ndigits, :floor)
   def ceil(ndigits = 0) = __round(ndigits, :ceil)

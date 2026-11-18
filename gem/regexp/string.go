@@ -409,14 +409,41 @@ func sliceWith(mrb *oruby.MrbState, self oruby.Value, old string) oruby.MrbValue
 		}
 		return mrb.Call(self, old, args.Item(0), args.Item(1))
 	}
+	hasCap := args.Len() > 1
 	capture := args.ItemDef(1, mrb.NilValue())
+	if hasCap {
+		switch capture.Type() {
+		case oruby.MrbTTFixnum, oruby.MrbTTString, oruby.MrbTTSymbol:
+		default:
+			if !capture.IsNil() && mrb.RespondTo(capture, oruby.Sym_to_int) {
+				toI, err := mrb.Funcall(capture, oruby.Sym_to_int)
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+				if toI.Type() != oruby.MrbTTFixnum {
+					cname := mrb.ClassName(mrb.ObjClass(capture))
+					return mrb.ETypeError().Raisef("can't convert %s to Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(toI.Value())))
+				}
+				capture = toI.Value()
+			} else {
+				return mrb.ETypeError().Raisef("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ObjClass(capture)))
+			}
+		}
+	}
 	matchData := doMatch(mrb, r, mrb.String(self), 0)
 	if matchData.Value().IsNil() {
 		return matchData
 	}
 	m := mrb.Data(matchData.Value()).(*MatchData)
-	if capture.Value().IsNil() {
+	m.enc = encName(mrb, strEnc(mrb, self))
+	if !hasCap {
 		return strOrNil(mrb, m.StringOrNil(0))
+	}
+	if capture.Type() == oruby.MrbTTFixnum {
+		i := oruby.MrbFixnum(capture)
+		if i < 0 && i+m.Size() <= 0 {
+			return mrb.NilValue()
+		}
 	}
 	return matchDataGetIndex(mrb, m, capture.Value())
 }
@@ -645,6 +672,7 @@ func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replace
 	var md oruby.Value
 	for _, m := range matches {
 		data := NewMatchData(re, s, m, 0)
+		data.enc = encName(mrb, selfEnc)
 		md = mrb.NewInstance("MatchData", data).Value()
 		repl, enc, exc := rep(md, data)
 		if exc != nil {
@@ -855,6 +883,9 @@ func stringMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	md := doMatch(mrb, re, s, pos)
 	if !md.Value().IsNil() && md.Value().Type() == oruby.MrbTTCData {
 		_ = mrb.IVSet(md.Value(), oruby.IvSym_regexp, reValue)
+		if m, ok := mrb.Data(md.Value()).(*MatchData); ok {
+			m.enc = encName(mrb, strEnc(mrb, self))
+		}
 		if !block.IsNil() {
 			return mrb.Yield(block, md)
 		}
@@ -877,6 +908,7 @@ func stringMatchEqual(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return md
 	}
 	data := mrb.Data(md.Value()).(*MatchData)
+	data.enc = encName(mrb, strEnc(mrb, self))
 	idx := data.byteBegin(0)
 	return mrb.FixnumValue(charIndex(s, idx))
 }
@@ -902,6 +934,7 @@ func stringIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return md
 	}
 	data := mrb.Data(md.Value()).(*MatchData)
+	data.enc = encName(mrb, strEnc(mrb, self))
 	idx := data.byteBegin(0)
 	return mrb.FixnumValue(charIndex(s, idx))
 }

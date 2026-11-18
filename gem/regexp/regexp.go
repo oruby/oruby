@@ -22,6 +22,7 @@ func init() {
 
 		data := mrb.DefineGoClass("MatchData", &MatchData{})
 		data.DefineMethod("[]", matchDataIndex, mrb.ArgsArg(1, 1))
+		data.DefineMethod("initialize_copy", matchDataInitCopy, mrb.ArgsReq(1))
 		data.DefineMethod("values_at", matchGoValuesAt, mrb.ArgsAny())
 		data.DefineMethod("regexp", matchDataRegexp, mrb.ArgsNone())
 		data.DefineMethod("begin", matchDataPos(func(m *MatchData, i int) (interface{}, error) { return m.charBegin(i) }), mrb.ArgsReq(1))
@@ -297,6 +298,18 @@ func regexpOf(mrb *oruby.MrbState, self oruby.Value) *Regexp {
 	return r
 }
 
+func matchDataInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	src := mrb.GetArgsFirst()
+	if m, ok := mrb.Data(src).(*MatchData); ok {
+		cp := *m
+		mrb.DataSetInterface(self, &cp)
+		if v := mrb.IVGet(src, oruby.IvSym_regexp); !v.IsNil() {
+			_ = mrb.IVSet(self, oruby.IvSym_regexp, v)
+		}
+	}
+	return self
+}
+
 func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby.Value {
 	s := ""
 	switch idx.Type() {
@@ -313,20 +326,24 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 		return mrb.Value(a[beg : beg+l])
 	case oruby.MrbTTFixnum:
 		i := oruby.MrbFixnum(idx)
-		if i < 0 {
-			i += m.Size()
-		}
 		if s, isNil := m.toString(i); !isNil {
 			return mrb.StrNew(s)
 		}
 		return mrb.NilValue()
 	default:
 		if mrb.RespondTo(idx, oruby.Sym_to_int) {
-			toI := mrb.Call(idx, "to_int")
-			if toI.Type() != oruby.MrbTTFixnum {
-				return mrb.NilValue()
+			toI, err := mrb.Funcall(idx, oruby.Sym_to_int)
+			if err != nil {
+				return mrb.RaiseError(err).Value()
 			}
-			return strOrNil(mrb, m.StringOrNil(oruby.MrbFixnum(toI))).Value()
+			if toI.Type() != oruby.MrbTTFixnum {
+				cname := mrb.ClassName(mrb.ObjClass(idx))
+				return mrb.ETypeError().Raisef("can't convert %s to Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(toI.Value()))).Value()
+			}
+			if s, isNil := m.toString(oruby.MrbFixnum(toI.Value())); !isNil {
+				return mrb.StrNew(s)
+			}
+			return mrb.NilValue()
 		}
 		return mrb.NilValue()
 	}
@@ -600,6 +617,16 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	matchData := doMatch(mrb, regx, s, pos)
 	if !matchData.Value().IsNil() && matchData.Value().Type() == oruby.MrbTTCData {
 		_ = mrb.IVSet(matchData.Value(), oruby.IvSym_regexp, self)
+		if md, ok := mrb.Data(matchData.Value()).(*MatchData); ok {
+			subj := args.Item(0)
+			if subj.Type() == oruby.MrbTTString {
+				md.enc = encName(mrb, strEnc(mrb, subj))
+			} else if mrb.RespondTo(subj, oruby.Sym_to_str) {
+				if sv, err := mrb.Funcall(subj, oruby.Sym_to_str); err == nil && sv.Type() == oruby.MrbTTString {
+					md.enc = encName(mrb, strEnc(mrb, sv.Value()))
+				}
+			}
+		}
 	}
 
 	if !block.IsNil() && !matchData.Value().IsNil() {
@@ -801,7 +828,19 @@ func matchDataPos(f func(m *MatchData, i int) (interface{}, error)) oruby.MrbFun
 				return mrb.Raise(mrb.EIndexError(), "undefined group name reference: "+name)
 			}
 		default:
-			return mrb.Raise(mrb.ETypeError(), "no implicit conversion into Integer")
+			if mrb.RespondTo(arg, oruby.Sym_to_int) {
+				v, err := mrb.Funcall(arg, oruby.Sym_to_int)
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+				if v.Type() != oruby.MrbTTFixnum {
+					cname := mrb.ClassName(mrb.ObjClass(arg))
+					return mrb.ETypeError().Raisef("can't convert %s to Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(v.Value())))
+				}
+				idx = oruby.MrbFixnum(v.Value())
+			} else {
+				return mrb.ETypeError().Raisef("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ObjClass(arg)))
+			}
 		}
 		v, err := f(m, idx)
 		if err != nil {

@@ -1,4 +1,6 @@
 class Float
+  alias to_int to_i
+
   alias __orig_eq ==
   def ==(other)
     return true if equal?(other)

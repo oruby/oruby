@@ -124,25 +124,38 @@ class IO
   end
 
   def wait(*args)
-    events = READABLE
-    timeout = nil
-    if args.first.is_a?(Integer) && args.size == 2
+    raise IOError, "closed stream" if closed?
+    if args.size == 2 && Integer === args[0] && (Numeric === args[1] || args[1].nil?)
       events, timeout = args
-    else
-      args.each do |a|
-        case a
-        when :r, :read, :readable then events = READABLE
-        when :w, :write, :writable then events = WRITABLE
-        when :rw, :read_write, :readable_writable then events = READABLE | WRITABLE
-        when Numeric, nil then timeout = a
-        end
+      raise ArgumentError, "Events must be positive integer!" if events <= 0
+      r = events & READABLE != 0 ? [self] : nil
+      w = events & WRITABLE != 0 ? [self] : nil
+      res = IO.select(r, w, nil, timeout)
+      return nil unless res
+      mask = (res[0].empty? ? 0 : READABLE) | (res[1].empty? ? 0 : WRITABLE)
+      return mask == 0 ? nil : mask
+    end
+    events = 0
+    timeout = nil
+    timeout_set = false
+    args.each do |a|
+      case a
+      when :r, :read, :readable then events |= READABLE
+      when :w, :write, :writable then events |= WRITABLE
+      when :rw, :read_write, :readable_writable then events |= READABLE | WRITABLE
+      when Symbol
+        raise ArgumentError, "unsupported mode: #{a}"
+      else
+        raise ArgumentError, "timeout given more than once" if timeout_set
+        timeout_set = true
+        timeout = a
       end
     end
+    events = READABLE if events == 0
     r = events & READABLE != 0 ? [self] : nil
     w = events & WRITABLE != 0 ? [self] : nil
     res = IO.select(r, w, nil, timeout)
-    return nil unless res
-    args.first.is_a?(Integer) ? ((res[0].empty? ? 0 : READABLE) | (res[1].empty? ? 0 : WRITABLE)) : self
+    res ? self : nil
   end
 
   def ready?

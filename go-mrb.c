@@ -841,6 +841,28 @@ static void gv_init_checked(mrb_state *mrb) {
 
 void _orb_bt_init(mrb_state *mrb);
 
+static mrb_value sym_all_symbols_m(mrb_state *mrb, mrb_value self) {
+  mrb_sym presym_max = mrb_presym_max();
+  mrb_value ary = mrb_ary_new_capa(mrb, presym_max + mrb->symidx);
+  for (mrb_sym i = 1; i <= presym_max; i++) {
+    mrb_ary_push(mrb, ary, mrb_symbol_value(i));
+  }
+  for (mrb_sym i = 1; i <= mrb->symidx; i++) {
+    mrb_int len;
+    if (mrb_sym_name_len(mrb, i + presym_max, &len) != NULL) {
+      mrb_ary_push(mrb, ary, mrb_symbol_value(i + presym_max));
+    }
+  }
+  return ary;
+}
+
+static mrb_value complex_oruby_new_m(mrb_state *mrb, mrb_value self) {
+  mrb_value r, i;
+  (void)self;
+  mrb_get_args(mrb, "oo", &r, &i);
+  return mrb_complex_new_value(mrb, r, i);
+}
+
 /* runs under coreMu (mruby.go): it fills the process-wide tables */
 void _mrb_init_oruby_core(mrb_state *mrb) {
   _mrb_wrap_string_encoding(mrb);
@@ -864,6 +886,10 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   }
   mrb_define_method(mrb, mrb->eException_class, "set_backtrace", exc_set_backtrace_m, MRB_ARGS_REQ(1));
   _orb_bt_init(mrb);
+  mrb_define_class_method(mrb, mrb->symbol_class, "all_symbols", sym_all_symbols_m, MRB_ARGS_NONE());
+  if (mrb_class_defined(mrb, "Complex")) {
+    mrb_define_class_method(mrb, mrb_class_get(mrb, "Complex"), "__oruby_new__", complex_oruby_new_m, MRB_ARGS_REQ(2));
+  }
   mrb_define_private_method(mrb, mrb->module_class, "__alias_from_object", mod_alias_from_object, MRB_ARGS_REQ(2));
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_binary?", str_enc_binary_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag", str_enc_tag, MRB_ARGS_NONE());

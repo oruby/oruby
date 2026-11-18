@@ -313,7 +313,7 @@ class Range
         return Enumerator::ArithmeticSequence.__new(self, :step, args, {}, b, e, st, exclude_end?)
       end
       raise ArgumentError, "#step for non-numeric beginless ranges is meaningless" if b.nil?
-      return to_enum(:step, *args)
+      return to_enum(:step, *args) { nil }
     end
     raise ArgumentError, "#step iteration for beginless ranges is meaningless" if b.nil?
     x = exclude_end?

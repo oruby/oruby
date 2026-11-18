@@ -5,7 +5,7 @@ class Hash
     return nil unless obj.respond_to?(:to_hash)
     r = obj.to_hash
     return r if r.nil? || r.is_a?(Hash)
-    raise TypeError, "can't convert #{obj.class} to Hash (#{obj.class}#to_hash gives #{r.class})"
+    raise TypeError, "can't convert #{Kernel.__cname(obj)} into Hash (#{Kernel.__cname(obj)}#to_hash gives #{Kernel.__cname(r)})"
   end
 end
 
@@ -15,7 +15,7 @@ class String
     return nil unless obj.respond_to?(:to_str)
     r = obj.to_str
     return r if r.nil? || r.is_a?(String)
-    raise TypeError, "can't convert #{obj.class} to String (#{obj.class}#to_str gives #{r.class})"
+    raise TypeError, "can't convert #{Kernel.__cname(obj)} into String (#{Kernel.__cname(obj)}#to_str gives #{Kernel.__cname(r)})"
   end
 end
 
@@ -25,7 +25,7 @@ class Integer
     return nil unless obj.respond_to?(:to_int)
     r = obj.to_int
     return r if r.nil? || r.is_a?(Integer)
-    raise TypeError, "can't convert #{obj.class} to Integer (#{obj.class}#to_int gives #{r.class})"
+    raise TypeError, "can't convert #{Kernel.__cname(obj)} into Integer (#{Kernel.__cname(obj)}#to_int gives #{Kernel.__cname(r)})"
   end
 end
 

@@ -1,4 +1,6 @@
 class Rational
+  alias to_int to_i
+
   def floor(ndigits = nil)
     return numerator.div(denominator) if ndigits.nil? || ndigits == 0
     s = 10**ndigits.abs
