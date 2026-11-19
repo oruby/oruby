@@ -22,9 +22,9 @@ class String
       raise ZeroDivisionError, "divided by 0" if d == 0
       return r.is_a?(Rational) ? r / d : __oruby_Rational(r, d)
     end
-    if t.include?(".") || t =~ /[eE]/
+    if t.include?(".") || t.match?(/[eE]/)
       return Float(t) unless exact
-      m = t.match(/\A([-+])?(\d*)(?:\.(\d+))?(?:[eE]([-+]?\d+))?\z/)
+      m = /\A([-+])?(\d*)(?:\.(\d+))?(?:[eE]([-+]?\d+))?\z/.__match_raw(t)
       frac = m[3] || ""
       r = __oruby_Rational((m[2] + frac).to_i, 10**frac.size)
       e = m[4].to_i
@@ -36,7 +36,7 @@ class String
   end
 
   def to_r
-    m = RAT_PREFIX.match(self)
+    m = RAT_PREFIX.__match_raw(self)
     return __oruby_Rational(0, 1) unless m
     r = String.__num(m[0].strip, true)
     Integer === r ? __oruby_Rational(r, 1) : r
@@ -49,18 +49,18 @@ class String
   # returns nil when strict and the whole string isn't a complex number
   def self.__to_c(s, strict)
     s = s.b.force_encoding("UTF-8") unless s.valid_encoding?
-    if (m = COMP_POLAR.match(s))
+    if (m = COMP_POLAR.__match_raw(s))
       c = Complex.polar(__num(m[1], false), __num(m[2], false))
-    elsif (m = COMP_RECT.match(s))
+    elsif (m = COMP_RECT.__match_raw(s))
       re = m[1] ? __num(m[1], false) : 0
       im = m[3] && !m[3].empty? ? __num(m[3], false) : 1
       im = -im if m[2] == "-"
       c = __oruby_Complex(re, im)
-    elsif (m = COMP_IMAG.match(s))
+    elsif (m = COMP_IMAG.__match_raw(s))
       t = m[1]
       im = t.empty? || t == "+" ? 1 : t == "-" ? -1 : __num(t, false)
       c = __oruby_Complex(0, im)
-    elsif (m = COMP_REAL.match(s))
+    elsif (m = COMP_REAL.__match_raw(s))
       c = __oruby_Complex(__num(m[1], false), 0)
     else
       return nil
@@ -254,7 +254,7 @@ module Kernel
       when Float then v.to_r
       when String
         s = v.strip
-        m = s.match(/\A[-+]?(?:\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?|\.\d+(?:_\d+)*)(?:[eE][-+]?\d+)?(?:\/\d+(?:_\d+)*)?\z/)
+        m = /\A[-+]?(?:\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?|\.\d+(?:_\d+)*)(?:[eE][-+]?\d+)?(?:\/\d+(?:_\d+)*)?\z/.__match_raw(s)
         raise ArgumentError, "invalid value for convert(): #{v.inspect}" unless m
         r = String.__num(s, true)
         Integer === r ? __oruby_Rational(r, 1) : r

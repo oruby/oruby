@@ -55,8 +55,10 @@ class Time
       raise ArgumentError, "utc_offset out of range" if Numeric === z
       s = Kernel.__check_implicit(z, String)
       raise TypeError, "can't convert #{Kernel.__cname(z)} into an exact number" unless s
+      # MRI's: a UTF-16/32 offset string has NUL bytes
+      raise ArgumentError, "string contains null byte" if s.b.include?("\0".b) || !s.encoding.ascii_compatible?
       return [0, 0] if s == "UTC" || s == "Z" || s == "-00:00"
-      if s.size == 1 && s =~ /\A[A-IK-Z]\z/
+      if s.size == 1 && s.match?(/\A[A-IK-Z]\z/)
         c = s.ord
         h = if c <= "I".ord then c - "A".ord + 1
             elsif c <= "M".ord then c - "K".ord + 10
@@ -65,7 +67,9 @@ class Time
             end
         return [2, h * 3600]
       end
-      if (m = s.match(/\A([-+])(\d\d)(?::?(\d\d)(?::?(\d\d))?)?\z/))
+      # __match_raw: the caller's $~ is not this core code's
+      m = /\A([-+])(\d\d)(?::?(\d\d)(?::?(\d\d))?)?\z/.__match_raw(s)
+      if m
         h, mi, se = m[2].to_i, m[3].to_i, m[4].to_i
         # MRI: minutes or seconds past 59 are a malformed offset, hours past
         # 23 one out of range
@@ -80,7 +84,7 @@ class Time
 
     # a String zone that is no offset or UTC: a name for find_timezone
     def __zone_name?(s)
-      !(s == "UTC" || s == "Z" || s == "-00:00" || s =~ /\A[A-IK-Z]\z/ || s =~ /\A[-+]\d\d(?::?\d\d(?::?\d\d)?)?\z/)
+      !(s == "UTC" || s == "Z" || s == "-00:00" || s.match?(/\A[A-IK-Z]\z/) || s.match?(/\A[-+]\d\d(?::?\d\d(?::?\d\d)?)?\z/))
     end
 
     # the instant a timezone's #local_to_utc / #utc_to_local result stands
@@ -384,7 +388,7 @@ class Time
       return __take(Time.__in_tz(Time, p[0], p[1], off)) if mode == :tz
       return __take(Time.__make_obj(Time, p[0], p[1], mode, off))
     end
-    if String === year && mon.nil? && day.nil? && hour.nil? && year !~ /\A\s*-?\d+\s*\z/
+    if String === year && mon.nil? && day.nil? && hour.nil? && !year.match?(/\A\s*-?\d+\s*\z/)
       return __take(Time.__parse_new(self.class, year, zone, precision))
     end
     mode, off = Time.__zone(zone, self.class)

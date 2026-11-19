@@ -90,6 +90,29 @@ func init() {
 		cls.DefineClassMethod("escape", regexQuote, mrb.ArgsReq(1))
 		cls.DefineClassMethod("compile", regexCompile, mrb.ArgsAny()+mrb.ArgsBlock())
 		cls.DefineClassMethod("last_match", regexLastMatch, mrb.ArgsOpt(1))
+		// re.__match_raw(str): a MatchData or nil, leaving $~ alone (for
+		// core Ruby, whose frames are its callers', go-mrb.c)
+		cls.DefineMethod("__match_raw", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			arg := mrb.GetArgsFirst()
+			re := regexpOf(mrb, self)
+			if re == nil || arg.Type() != oruby.MrbTTString {
+				return mrb.NilValue()
+			}
+			s := rstr(arg)
+			result, err := re.findErr(s, 0)
+			if err != nil {
+				return raiseTimeout(mrb, err)
+			}
+			if len(result) == 0 {
+				return mrb.NilValue()
+			}
+			md := newMatchValue(mrb, re, s, result)
+			_ = mrb.IVSet(md, oruby.IvSym_regexp, self)
+			if m, ok := mrb.Data(md).(*MatchData); ok {
+				m.enc = encName(mrb, strEnc(mrb, arg))
+			}
+			return md
+		}, mrb.ArgsReq(1))
 		cls.DefineClassMethod("try_convert", regexTryConvert, mrb.ArgsReq(1))
 		cls.DefineClassMethod("union", regexUnion, mrb.ArgsAny())
 		cls.DefineClassMethod("timeout", regexTimeout, mrb.ArgsNone())
@@ -611,6 +634,9 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		setLastMatch(mrb, mrb.NilValue())
 		return mrb.NilValue()
 	}
+	if !matchCheck(mrb, self, args.Item(0)) {
+		return mrb.Exc().Value()
+	}
 	pos, ok := byteIndex(s, oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0))))
 	if !ok {
 		setLastMatch(mrb, mrb.NilValue())
@@ -696,6 +722,9 @@ func regexEqualMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.Exc().Value()
 		}
 		return oruby.False
+	}
+	if !matchCheck(mrb, self, args.Item(0)) {
+		return mrb.Exc().Value()
 	}
 	pos, ok := byteIndex(s, oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0))))
 	if !ok {

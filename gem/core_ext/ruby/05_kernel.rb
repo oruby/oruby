@@ -205,3 +205,50 @@ module Kernel
     out
   end
 end
+
+module Kernel
+  # MRI's rb_Array: #to_ary (private too), then #to_a, each answer an Array
+  # or nil; anything else is [arg]
+  def Array(arg)
+    return arg if Array === arg
+    return [] if arg.nil?
+    # the common kinds, none with #to_ary
+    case arg
+    when String, Symbol, Integer, Float, true, false then return [arg]
+    when Hash then return arg.to_a
+    end
+    if Kernel.__responds?(arg, :to_ary)
+      r = arg.__send__(:to_ary)
+      return Kernel.__oruby_ary_conv(arg, r, :to_ary) unless r.nil?
+    end
+    if Kernel.__responds?(arg, :to_a)
+      r = arg.__send__(:to_a)
+      return Kernel.__oruby_ary_conv(arg, r, :to_a) unless r.nil?
+    end
+    [arg]
+  end
+
+  def self.__oruby_ary_conv(arg, r, meth)
+    return r if Array === r
+    c = Kernel.__cname(arg)
+    raise TypeError, "can't convert #{c} to Array (#{c}##{meth} gives #{Kernel.__cname(r)})"
+  end
+
+  # MRI's Kernel#open: an object with #to_open opens itself (the block gets
+  # what it answers); anything else must be a path
+  alias_method :__oruby_kernel_open, :open
+  def open(name, *rest, **kw, &blk)
+    unless String === name
+      if Kernel.__responds?(name, :to_open)
+        io = kw.empty? ? name.to_open(*rest) : name.to_open(*rest, **kw)
+        return blk ? yield(io) : io
+      end
+      unless Kernel.__responds?(name, :to_str) || Kernel.__responds?(name, :to_path)
+        raise TypeError, "no implicit conversion of #{Kernel.__cname(name)} into String"
+      end
+    end
+    kw.empty? ? __oruby_kernel_open(name, *rest, &blk) : __oruby_kernel_open(name, *rest, **kw, &blk)
+  end
+  module_function :Array, :open
+  private :__oruby_kernel_open
+end

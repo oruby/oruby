@@ -40,6 +40,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "$__at_exit_running__");
   (void)mrb_intern_lit(mrb, "$__backtrace_limit__");
   (void)mrb_intern_lit(mrb, "$__exit_trap_proc__");
+  (void)mrb_intern_lit(mrb, "$__oruby_atexit_exc__");
+  (void)mrb_intern_lit(mrb, "$__oruby_data__");
   (void)mrb_intern_lit(mrb, "$__oruby_incs__");
   (void)mrb_intern_lit(mrb, "$__oruby_lib__");
   (void)mrb_intern_lit(mrb, "$__oruby_top_exc__");
@@ -439,10 +441,12 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__lineno__");
   (void)mrb_intern_lit(mrb, "__log");
   (void)mrb_intern_lit(mrb, "__make");
+  (void)mrb_intern_lit(mrb, "__match_raw");
   (void)mrb_intern_lit(mrb, "__merge");
   (void)mrb_intern_lit(mrb, "__mkdtemp");
   (void)mrb_intern_lit(mrb, "__names");
   (void)mrb_intern_lit(mrb, "__new");
+  (void)mrb_intern_lit(mrb, "__no_kw_disallow__");
   (void)mrb_intern_lit(mrb, "__nonblock");
   (void)mrb_intern_lit(mrb, "__nonblock?");
   (void)mrb_intern_lit(mrb, "__now");
@@ -511,6 +515,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_new__");
   (void)mrb_intern_lit(mrb, "__oruby_new_regexp");
   (void)mrb_intern_lit(mrb, "__oruby_nmembers");
+  (void)mrb_intern_lit(mrb, "__oruby_noblk");
   (void)mrb_intern_lit(mrb, "__oruby_nochild");
   (void)mrb_intern_lit(mrb, "__oruby_notify");
   (void)mrb_intern_lit(mrb, "__oruby_nsig__");
@@ -518,6 +523,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_os__");
   (void)mrb_intern_lit(mrb, "__oruby_owner");
   (void)mrb_intern_lit(mrb, "__oruby_pack");
+  (void)mrb_intern_lit(mrb, "__oruby_params");
   (void)mrb_intern_lit(mrb, "__oruby_pipe_fds");
   (void)mrb_intern_lit(mrb, "__oruby_pop");
   (void)mrb_intern_lit(mrb, "__oruby_popen_close_read");
@@ -678,6 +684,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "bit_or_operator");
   (void)mrb_intern_lit(mrb, "bit_xor_operator");
   (void)mrb_intern_lit(mrb, "blksize");
+  (void)mrb_intern_lit(mrb, "block");
   (void)mrb_intern_lit(mrb, "block_length");
   (void)mrb_intern_lit(mrb, "blockdev?");
   (void)mrb_intern_lit(mrb, "blocks");
@@ -926,6 +933,9 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "issuer_certificate=");
   (void)mrb_intern_lit(mrb, "it");
   (void)mrb_intern_lit(mrb, "join");
+  (void)mrb_intern_lit(mrb, "key");
+  (void)mrb_intern_lit(mrb, "keyreq");
+  (void)mrb_intern_lit(mrb, "keyrest");
   (void)mrb_intern_lit(mrb, "kill");
   (void)mrb_intern_lit(mrb, "label");
   (void)mrb_intern_lit(mrb, "last_match");
@@ -1002,6 +1012,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "next");
   (void)mrb_intern_lit(mrb, "next_float");
   (void)mrb_intern_lit(mrb, "nlink");
+  (void)mrb_intern_lit(mrb, "noblock");
+  (void)mrb_intern_lit(mrb, "nokey");
   (void)mrb_intern_lit(mrb, "not_after");
   (void)mrb_intern_lit(mrb, "not_after=");
   (void)mrb_intern_lit(mrb, "not_before");
@@ -1021,6 +1033,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "old_split");
   (void)mrb_intern_lit(mrb, "old_sub");
   (void)mrb_intern_lit(mrb, "open");
+  (void)mrb_intern_lit(mrb, "opt");
   (void)mrb_intern_lit(mrb, "options");
   (void)mrb_intern_lit(mrb, "original_name");
   (void)mrb_intern_lit(mrb, "out");
@@ -1028,6 +1041,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "owner");
   (void)mrb_intern_lit(mrb, "p");
   (void)mrb_intern_lit(mrb, "padding");
+  (void)mrb_intern_lit(mrb, "parameters");
   (void)mrb_intern_lit(mrb, "parse");
   (void)mrb_intern_lit(mrb, "parse!");
   (void)mrb_intern_lit(mrb, "parse_file");
@@ -1093,11 +1107,13 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "remove_const");
   (void)mrb_intern_lit(mrb, "rename");
   (void)mrb_intern_lit(mrb, "replace");
+  (void)mrb_intern_lit(mrb, "req");
   (void)mrb_intern_lit(mrb, "require");
   (void)mrb_intern_lit(mrb, "require_relative");
   (void)mrb_intern_lit(mrb, "reset");
   (void)mrb_intern_lit(mrb, "resolve_feature_path");
   (void)mrb_intern_lit(mrb, "respond_to?");
+  (void)mrb_intern_lit(mrb, "rest");
   (void)mrb_intern_lit(mrb, "restore");
   (void)mrb_intern_lit(mrb, "result");
   (void)mrb_intern_lit(mrb, "reverse");

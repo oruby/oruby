@@ -84,7 +84,7 @@ class IO
       ext = opts[:external_encoding] if opts.key?(:external_encoding)
       intern = opts[:internal_encoding] if opts.key?(:internal_encoding)
     end
-    if ext.is_a?(String) && ext =~ /\Abom\|/i
+    if ext.is_a?(String) && ext.match?(/\Abom\|/i)
       by_bom = true
       ext = ext[4..]
     end

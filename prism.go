@@ -121,6 +121,15 @@ func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 	return recs, enc, errs == 0
 }
 
+// DataOffset is where the data after a script's __END__ line starts (what
+// DATA reads), or -1 when the script has none (Prism's data_loc)
+func DataOffset(src []byte) int {
+	if len(src) == 0 || !bytes.Contains(src, []byte("__END__")) {
+		return -1
+	}
+	return int(C._oruby_prism_data_offset((*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src))))
+}
+
 // hasBareIt: `it` as a word (a block's implicit parameter, ORB_IT_BLOCK)
 func hasBareIt(src []byte) bool {
 	ident := func(c byte) bool {
@@ -147,7 +156,7 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if (opts == nil || !opts.NoRegexpLiterals) && (bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
-	if hasArrayKwHash(src) || hasBareIt(src) {
+	if hasArrayKwHash(src) || hasBareIt(src) || bytes.Contains(src, []byte("&nil")) {
 		return true
 	}
 	// "**": **obj (ORB_KWSPLAT)
@@ -556,6 +565,17 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			cpathWraps[key] = w
 			v := "__oruby_cpv" + id
 			r.addWrap(s[1], e[1], func(*rewriter) string { return "(" + v + " = (" }, w.closer(v))
+		case C.ORB_NOBLOCK:
+			// &nil: a hidden block parameter (Proc#parameters answers
+			// [:noblock] for it) and MRI's ArgumentError for a block given
+			check := `::Kernel.raise(::ArgumentError, "no block accepted") if __oruby_noblk`
+			r.add(s[0], e[0], func(*rewriter) string { return "&__oruby_noblk" })
+			if rc.flags&1 != 0 {
+				r.addWrap(s[2], e[2], func(*rewriter) string { return "(" + check + "; " },
+					func(*rewriter) string { return ")" })
+			} else {
+				r.add(s[1], s[1], func(*rewriter) string { return "; " + check + ";" })
+			}
 		case C.ORB_IT_BLOCK:
 			// dead code: the local exists in the block's table, the line never runs
 			r.add(s[0], s[0], func(*rewriter) string { return " __oruby_it = nil if false;" })

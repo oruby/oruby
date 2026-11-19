@@ -72,14 +72,49 @@ func (mrb *MrbState) RunAtExitHandlers() {
 	// during a handler must not free the rest
 	mrb.SetGV("$__at_exit_running__", list.Value())
 	defer mrb.SetGV("$__at_exit_running__", mrb.NilValue())
+	// MRI's rb_ec_exec_end_proc: each handler protected; a SystemExit in one
+	// decides the exit status, any other exception is printed (status 1);
+	// either is $! for the handlers after it
 	for list.Len() > 0 {
 		handler := list.Shift()
-		if !handler.IsNil() {
-			mrb.SetGV("$__at_exit_current__", handler)
-			mrb.Yield(handler, mrb.NilValue())
+		if handler.IsNil() {
+			continue
 		}
+		mrb.SetGV("$__at_exit_current__", handler)
+		mrb.Yield(handler, mrb.NilValue())
+		exc := mrb.Exc()
+		if exc == nil {
+			continue
+		}
+		ev := exc.Value()
+		mrb.ExcClear()
+		if mrb.ClassDefined("SystemExit") && exc.IsKindOf(mrb.ClassGet("SystemExit")) {
+			if st := mrb.Call(ev, "status"); st.IsInteger() {
+				mrb.atExitStatus = st.Int()
+			}
+		} else {
+			mrb.SetGV("$__oruby_atexit_exc__", ev)
+			// as MRI prints it: the raising line and the message, no cause (the
+			// exception ending the program is $! as handlers run)
+			mrb.LoadString(`begin
+  e = $__oruby_atexit_exc__
+  $stderr.write("#{(e.backtrace || [])[0] || '-'}: #{e.message} (#{e.class})\n")
+rescue Exception
+end
+$__oruby_atexit_exc__ = nil`)
+			mrb.ExcClear()
+			mrb.atExitStatus = 1
+		}
+		mrb.atExitStatusSet = true
+		mrb.SetGV("$!", ev)
 	}
 	mrb.SetGV("$__at_exit_current__", mrb.NilValue())
+}
+
+// AtExitStatus is the exit status an at_exit handler decided (by exit, or
+// 1 for an exception it raised), when one did
+func (mrb *MrbState) AtExitStatus() (int, bool) {
+	return mrb.atExitStatus, mrb.atExitStatusSet
 }
 
 func kernelExit(mrb *MrbState, self Value) MrbValue {

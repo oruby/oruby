@@ -34,6 +34,7 @@ enum {
   ORB_FOR_CPATH,          // s0: a constant path target of a for loop, s1: (zero width) where its body starts
   ORB_MASGN_NESTED,       // s0: a nested target (a, b) of a multiple assignment, s1: the assignment, s2: inside its parentheses
   ORB_IT_BLOCK,           // s0: (zero width) just after the opening of a block or lambda whose parameter is `it`
+  ORB_NOBLOCK,            // s0: an &nil parameter, s1: (zero width) where the body starts; flags 1: s2 an endless def's body, to wrap
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the
@@ -53,6 +54,7 @@ typedef struct {
   int32_t e[ORB_SPANS];
 } orb_rec;
 
+long _oruby_prism_data_offset(const char *src, size_t len);
 orb_rec *_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_opts *opts, int *count, int *errors, char *encname, size_t encname_len);
 
 #endif

@@ -78,7 +78,7 @@ class NoMethodError
   alias __orig_nme_to_s to_s
   def to_s
     s = __orig_nme_to_s
-    if instance_variable_defined?(:@receiver) && (m = s.match(/\Aundefined method '([^']+)' for .*\z/))
+    if instance_variable_defined?(:@receiver) && (m = /\Aundefined method '([^']+)' for .*\z/.__match_raw(s))
       recv = @receiver
       desc = if nil.equal?(recv)
                "nil"

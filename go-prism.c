@@ -231,6 +231,35 @@ visit(const pm_node_t *node, void *data)
       r = add(sc, ORB_IT_BLOCK);
       r->s[0] = r->e[0] = (int32_t)(open.start + open.length);
     }
+    // |&nil|: as a def's (ORB_NOBLOCK), the check after the parameters
+    if (params && PM_NODE_TYPE(params) == PM_BLOCK_PARAMETERS_NODE) {
+      const pm_block_parameters_node_t *bp = (const pm_block_parameters_node_t *)params;
+      if (bp->parameters && bp->parameters->block && PM_NODE_TYPE(bp->parameters->block) == PM_NO_BLOCK_PARAMETER_NODE &&
+          bp->closing_loc.length > 0) {
+        r = add(sc, ORB_NOBLOCK);
+        span(r, 0, bp->parameters->block);
+        r->s[1] = r->e[1] = (int32_t)(bp->closing_loc.start + bp->closing_loc.length);
+      }
+    }
+    break;
+  }
+  case PM_DEF_NODE: {
+    // def m(&nil): mruby's code generator takes the parameter's name from an
+    // unset constant (a random symbol, or an abort); it becomes a hidden
+    // block parameter and MRI's check (prism.go)
+    const pm_def_node_t *d = (const pm_def_node_t *)node;
+    if (d->parameters && d->parameters->block && PM_NODE_TYPE(d->parameters->block) == PM_NO_BLOCK_PARAMETER_NODE) {
+      if (d->equal_loc.length > 0 && d->body) {
+        r = add(sc, ORB_NOBLOCK);
+        span(r, 0, d->parameters->block);
+        span(r, 2, d->body);
+        r->flags = 1;
+      } else if (d->rparen_loc.length > 0) {
+        r = add(sc, ORB_NOBLOCK);
+        span(r, 0, d->parameters->block);
+        r->s[1] = r->e[1] = (int32_t)(d->rparen_loc.start + d->rparen_loc.length);
+      }
+    }
     break;
   }
   case PM_PRE_EXECUTION_NODE: {
@@ -461,6 +490,31 @@ visit(const pm_node_t *node, void *data)
     break;
   }
   return PM_VISIT_DESCEND;
+}
+
+/* The offset of the data after a script's __END__ line (Prism's data_loc,
+   past that line), or -1 without one */
+long
+_oruby_prism_data_offset(const char *src, size_t len)
+{
+  static mrb_state *data_mrb = NULL;
+  if (!data_mrb) data_mrb = mrb_open_core();
+  void *cc = mrc_ccontext_new(data_mrb);
+  pm_arena_t *arena = pm_arena_new();
+  pm_parser_t *parser = pm_parser_new(arena, (const uint8_t *)src, len, NULL);
+  pm_parse(parser);
+  const pm_location_t *d = pm_parser_data_loc(parser);
+  long off = -1;
+  if (d && d->length > 0) {
+    size_t p = (size_t)d->start + 7; /* __END__ */
+    if (p < len && src[p] == '\r') p++;
+    if (p < len && src[p] == '\n') p++;
+    off = (long)p;
+  }
+  pm_parser_free(parser);
+  pm_arena_free(arena);
+  mrc_ccontext_free(cc);
+  return off;
 }
 
 orb_rec *

@@ -240,7 +240,7 @@ class String
         when "\\", '"', "#" then out << e
         when "x"
           hex = s[i, 2]
-          raise RuntimeError, "invalid hex escape" unless hex =~ /\A\h\h\z/
+          raise RuntimeError, "invalid hex escape" unless hex.match?(/\A\h\h\z/)
           raise RuntimeError, "hex escape and Unicode escape are mixed" if utf8
           binary = true
           out << hex.to_i(16).chr
@@ -252,12 +252,12 @@ class String
             j = s.index("}", i)
             raise RuntimeError, "invalid Unicode escape" unless j
             cps = s[i + 1...j].split(" ")
-            raise RuntimeError, "invalid Unicode escape" if cps.empty? || cps.any? { |h| h !~ /\A\h{1,6}\z/ }
+            raise RuntimeError, "invalid Unicode escape" if cps.empty? || cps.any? { |h| !h.match?(/\A\h{1,6}\z/) }
             cps.each { |h| out << h.to_i(16).chr(Encoding::UTF_8).b }
             i = j + 1
           else
             hex = s[i, 4]
-            raise RuntimeError, "invalid Unicode escape" unless hex =~ /\A\h{4}\z/
+            raise RuntimeError, "invalid Unicode escape" unless hex.match?(/\A\h{4}\z/)
             out << hex.to_i(16).chr(Encoding::UTF_8).b
             i += 4
           end

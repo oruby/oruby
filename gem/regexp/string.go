@@ -893,6 +893,9 @@ func stringMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if exc != nil {
 		return exc
 	}
+	if !matchCheck(mrb, reValue, self) {
+		return mrb.Exc().Value()
+	}
 	s := mrb.String(self)
 	pos, ok := byteIndex(s, args.ItemDef(1, mrb.FixnumValue(0)).Int())
 	if !ok {
@@ -920,6 +923,9 @@ func stringMatchEqual(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.Raise(mrb.ETypeError(), "wrong argument type String (expected Regexp)")
 		}
 		return mrb.Call(arg, "=~", self)
+	}
+	if !matchCheck(mrb, arg, self) {
+		return mrb.Exc().Value()
 	}
 	s := mrb.String(self)
 	md := doMatch(mrb, re, s, 0)

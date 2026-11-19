@@ -241,7 +241,39 @@ static mrb_value eval_default_file(mrb_state *mrb) {
   return mrb_nil_value();
 }
 
+/* `it` as a word: a block's implicit parameter (prism.go's hasBareIt) */
+static mrb_bool src_bare_it(const char *s, mrb_int len) {
+#define IDENT_C(c) ((c) == '_' || ((c) >= '0' && (c) <= '9') || ((c) >= 'a' && (c) <= 'z') || ((c) >= 'A' && (c) <= 'Z') || (unsigned char)(c) >= 0x80)
+  for (mrb_int i = 0; i + 1 < len; i++) {
+    if (s[i] == 'i' && s[i + 1] == 't' && (i == 0 || !IDENT_C(s[i - 1])) && (i + 2 == len || !IDENT_C(s[i + 2]))) return TRUE;
+  }
+  return FALSE;
+#undef IDENT_C
+}
+
+/* MRI's implicit conversion (00_convert.rb's Kernel.__implicit and its
+   messages) of argv[i] into klass, in place */
+static void eval_arg_implicit(mrb_state *mrb, mrb_value *argv, mrb_int i, struct RClass *klass) {
+  mrb_value cv[2] = {argv[i], mrb_obj_value(klass)};
+  argv[i] = mrb_funcall_argv(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__implicit), 2, cv);
+}
+
+/* instance_eval / class_eval / module_eval of a string, as MRI's: at most 3
+   arguments, the source and file by #to_str, the line by #to_int */
+static void eval_string_args(mrb_state *mrb, int which) {
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_int argc = mrb_get_argc(mrb);
+  if (ci->n >= 15 || ci->kw || !mrb_nil_p(ci->stack[argc + 1])) return; /* a block, or packed */
+  if (argc > 3) mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong number of arguments (given %i, expected 1..3)", argc);
+  mrb_value *argv = (mrb_value *)mrb_get_argv(mrb);
+  if (argc > 0 && !mrb_string_p(argv[0])) eval_arg_implicit(mrb, argv, 0, mrb->string_class);
+  if (argc > 1 && !mrb_string_p(argv[1])) eval_arg_implicit(mrb, argv, 1, mrb->string_class);
+  if (argc > 2 && !mrb_integer_p(argv[2])) eval_arg_implicit(mrb, argv, 2, mrb->integer_class);
+  (void)which;
+}
+
 static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
+  if (which >= 2 && which <= 4) eval_string_args(mrb, which);
   mrb_int argc = mrb_get_argc(mrb);
   if (argc > 0) {
     mrb_value *argv = (mrb_value *)mrb_get_argv(mrb);
@@ -266,7 +298,8 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, "END") || src_contains(s, len, "__ENCODING__") ||
           src_contains(s, len, "frozen_string_literal") ||
           src_contains(s, len, "||=") || src_contains(s, len, "&&=") ||
-          src_contains(s, len, "::") || src_contains(s, len, "$") || len > 255) {
+          src_contains(s, len, "::") || src_contains(s, len, "$") || src_contains(s, len, "&nil") ||
+          src_bare_it(s, len) || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
       if (!mrb_nil_p(deffile)) {
@@ -1318,6 +1351,164 @@ static mrb_value attr_w(mrb_state *mrb, mrb_value mod) {
   return attr_orig(mrb, mod);
 }
 
+/* ---- Proc#parameters / Method#parameters, as MRI's ----
+   mruby's answers no :keyreq, loses keyword names and shows **nil and &nil
+   by their hidden locals. Registers after self: required, optional, rest,
+   post, the keyword hash (when there are keywords), the block; keyword
+   locals are named by the OP_KARG that fills each (OP_KEY_P first for an
+   optional one). lambda: -1 the proc's own kind, 0 as a proc, 1 as a lambda. */
+#define OPSIZE_Z 1
+#define OPSIZE_B 2
+#define OPSIZE_BB 3
+#define OPSIZE_BBB 4
+#define OPSIZE_BS 4
+#define OPSIZE_BSS 6
+#define OPSIZE_S 3
+#define OPSIZE_W 4
+static const uint8_t orb_op_size[] = {
+#define OPCODE(x, f) OPSIZE_##f,
+#include <mruby/ops.h>
+#undef OPCODE
+};
+
+mrb_value mrb_proc_parameters(mrb_state *mrb, mrb_value proc);
+
+static mrb_value param_pair(mrb_state *mrb, mrb_sym kind, mrb_sym name) {
+  mrb_value a = mrb_ary_new_capa(mrb, 2);
+  mrb_ary_push(mrb, a, mrb_symbol_value(kind));
+  if (name) mrb_ary_push(mrb, a, mrb_symbol_value(name));
+  return a;
+}
+
+static mrb_value orb_params(mrb_state *mrb, mrb_value procv, int lambda) {
+  const struct RProc *proc = mrb_proc_ptr(procv);
+  while (MRB_PROC_ALIAS_P(proc)) {
+    proc = proc->upper;
+    if (!proc) return mrb_ary_new(mrb);
+  }
+  const mrb_irep *irep = MRB_PROC_CFUNC_P(proc) ? NULL : proc->body.irep;
+  if (!irep || !irep->lv || irep->ilen < 4 || irep->iseq[0] != OP_ENTER) return mrb_proc_parameters(mrb, procv);
+  mrb_aspec aspec = PEEK_W(irep->iseq + 1);
+  mrb_bool strict = lambda < 0 ? MRB_PROC_STRICT_P(proc) : lambda > 0;
+  int m1 = MRB_ASPEC_REQ(aspec), o = MRB_ASPEC_OPT(aspec), r = MRB_ASPEC_REST(aspec);
+  int m2 = MRB_ASPEC_POST(aspec), k = MRB_ASPEC_KEY(aspec), kd = MRB_ASPEC_KDICT(aspec);
+  int nlv = irep->nlocals - 1, reg = 0;
+#define LV(i) ((i) < nlv ? irep->lv[i] : 0) /* i is evaluated twice: no side effects */
+  mrb_value out = mrb_ary_new(mrb);
+  mrb_sym req = strict ? MRB_SYM(req) : MRB_SYM(opt);
+  for (int i = 0; i < m1; i++, reg++) mrb_ary_push(mrb, out, param_pair(mrb, req, LV(reg)));
+  for (int i = 0; i < o; i++, reg++) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(opt), LV(reg)));
+  if (r) {
+    mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(rest), LV(reg)));
+    reg++;
+  }
+  for (int i = 0; i < m2; i++, reg++) mrb_ary_push(mrb, out, param_pair(mrb, req, LV(reg)));
+  mrb_sym kdname = 0;
+  if (k || kd) {
+    kdname = LV(reg);
+    reg++;
+  }
+  /* the block register, then an explicit block's own name */
+  mrb_sym blkname = LV(reg + 1);
+  /* the keywords, in order, from the code filling them */
+  if (k) {
+    const mrb_code *pc = irep->iseq + 4, *end = irep->iseq + irep->ilen;
+    mrb_sym keyp[32];
+    int nkeyp = 0, found = 0;
+    mrb_value opts = mrb_ary_new(mrb); /* MRI lists the required keywords first */
+    while (pc < end && found < k) {
+      int op = *pc, ext = 0;
+      if (op == OP_EXT1 || op == OP_EXT2 || op == OP_EXT3) {
+        ext = op - OP_EXT1 + 1; /* 1: a 16 bit, 2: b, 3: both */
+        pc++;
+        op = *pc;
+      }
+      if (op >= (int)sizeof(orb_op_size)) break;
+      if (op == OP_KEY_P || op == OP_KARG) {
+        const mrb_code *q = pc + 1;
+        q += (ext & 1) ? 2 : 1; /* a */
+        uint32_t b = (ext & 2) ? PEEK_S(q) : PEEK_B(q);
+        mrb_sym name = b < irep->slen ? irep->syms[b] : 0;
+        if (op == OP_KEY_P) {
+          if (nkeyp < 32) keyp[nkeyp++] = name;
+        } else {
+          mrb_bool opt = FALSE;
+          for (int i = 0; i < nkeyp; i++) if (keyp[i] == name) opt = TRUE;
+          if (opt) mrb_ary_push(mrb, opts, param_pair(mrb, MRB_SYM(key), name));
+          else mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(keyreq), name));
+          found++;
+        }
+      }
+      pc += orb_op_size[op] + ((ext & 1) ? 1 : 0) + ((ext & 2) ? 1 : 0);
+    }
+    mrb_ary_concat(mrb, out, opts);
+  }
+  if (kd) {
+    if (kdname == MRB_SYM(__no_kw_disallow__)) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(nokey), 0));
+    else mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(keyrest), kdname));
+  }
+  if (MRB_ASPEC_BLOCK(aspec)) {
+    /* &nil, as the Prism rewriter makes it (ORB_NOBLOCK) */
+    if (blkname == MRB_SYM(__oruby_noblk)) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(noblock), 0));
+    else mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(block), blkname));
+  }
+#undef LV
+  return out;
+}
+
+/* Proc#__oruby_params(lambda): -1, 0 or 1 (see orb_params) */
+static mrb_value proc_params_m(mrb_state *mrb, mrb_value self) {
+  mrb_int lambda = -1;
+  mrb_get_args(mrb, "|i", &lambda);
+  return orb_params(mrb, self, (int)lambda);
+}
+
+mrb_value mrb_attr_writer(mrb_state *mrb, mrb_value obj);
+
+/* a core method's parameters as MRI shows its C methods': one [:req] per
+   argument of a fixed arity, [[:rest]] for any other */
+static mrb_value core_params(mrb_state *mrb, mrb_aspec aspec) {
+  mrb_value out = mrb_ary_new(mrb);
+  if (MRB_ASPEC_OPT(aspec) || MRB_ASPEC_REST(aspec) || MRB_ASPEC_POST(aspec) || MRB_ASPEC_KEY(aspec) ||
+      MRB_ASPEC_KDICT(aspec)) {
+    mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(rest), 0));
+    return out;
+  }
+  for (int i = 0; i < MRB_ASPEC_REQ(aspec); i++) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(req), 0));
+  return out;
+}
+
+/* Method#parameters, UnboundMethod#parameters: a method takes its
+   arguments as a lambda does; a core one (C, Go or core Ruby) shows as
+   MRI's C methods do, and one respond_to_missing? answers takes any */
+static mrb_value method_params_m(mrb_state *mrb, mrb_value self) {
+  mrb_value procv = mrb_iv_get(mrb, self, MRB_SYM(_proc));
+  mrb_value out;
+  if (!mrb_proc_p(procv)) {
+    out = mrb_ary_new(mrb);
+    mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(rest), 0));
+    return out;
+  }
+  const struct RProc *p = mrb_proc_ptr(procv);
+  while (MRB_PROC_ALIAS_P(p) && p->upper) p = p->upper;
+  if (MRB_PROC_CFUNC_P(p)) {
+    if (MRB_PROC_CFUNC(p) == mrb_attr_writer) {
+      out = mrb_ary_new(mrb);
+      mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(req), 0));
+      return out;
+    }
+    uint32_t caspec = p->flags & MRB_PROC_CASPEC_MASK;
+    if (caspec) return core_params(mrb, mrb_proc_decompress_caspec(caspec));
+    if (MRB_PROC_NOARG_P(p)) return mrb_ary_new(mrb);
+    return core_params(mrb, MRB_ARGS_ANY());
+  }
+  const mrb_irep *irep = p->body.irep;
+  if (irep && irep_core_p(mrb, irep) && irep->ilen >= 4 && irep->iseq[0] == OP_ENTER) {
+    return core_params(mrb, PEEK_W(irep->iseq + 1));
+  }
+  return orb_params(mrb, procv, 1);
+}
+
 /* Fiber#__oruby_status: mruby's status word (its inspect's), for
    29_fiber.rb, which parsed it out of #inspect with a regexp */
 static mrb_value fiber_status_m(mrb_state *mrb, mrb_value self) {
@@ -1353,6 +1544,17 @@ void _orb_bt_init(mrb_state *mrb);
 /* the string has mruby's binary flag (BINARY, or a tagged encoding) */
 int _orb_str_binary_p(mrb_value s) {
   return mrb_string_p(s) && RSTR_ENCODING(mrb_str_ptr(s)) == 1;
+}
+
+/* the string's coderange, computed once and cached (mruby's
+   mrb_str_valid_encoding_p): 1 ASCII only, 2 valid UTF-8, 3 broken; 4 for
+   mruby's binary flag (BINARY, or an encoding core_ext tags) */
+int _orb_str_cr(mrb_state *mrb, mrb_value s) {
+  if (!mrb_string_p(s)) return 0;
+  struct RString *p = mrb_str_ptr(s);
+  if (RSTR_BINARY_P(p)) return 4;
+  mrb_str_valid_encoding_p(mrb, s);
+  return (int)RSTR_CODERANGE(p);
 }
 
 /* mark an ASCII-only string US-ASCII (mruby's encoding flag 2) */
@@ -1548,10 +1750,13 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   wrap_cfunc(mrb, mrb->module_class, "alias_method", alias_method_w, &alias_method_orig);
   if (mrb_class_defined_id(mrb, MRB_SYM(Method))) {
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Method)), MRB_SYM(original_name), method_original_name_m, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Method)), MRB_SYM(parameters), method_params_m, MRB_ARGS_NONE());
   }
   if (mrb_class_defined_id(mrb, MRB_SYM(UnboundMethod))) {
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)), MRB_SYM(original_name), method_original_name_m, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)), MRB_SYM(parameters), method_params_m, MRB_ARGS_NONE());
   }
+  mrb_define_private_method_id(mrb, mrb->proc_class, MRB_SYM(__oruby_params), proc_params_m, MRB_ARGS_OPT(1));
   if (mrb_class_defined_id(mrb, MRB_SYM(Binding))) {
     struct RClass *bc = mrb_class_get_id(mrb, MRB_SYM(Binding));
     wrap_cfunc(mrb, bc, "local_variables", b_lvars_w, &b_lvars_orig);

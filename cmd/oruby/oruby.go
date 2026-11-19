@@ -612,6 +612,7 @@ func run() int {
 			}
 		}
 	}
+	origLen := len(src)
 	if src != nil && len(o.eLines) == 0 {
 		// a shebang line not naming ruby means -x
 		if o.xflag || bytes.HasPrefix(src, []byte("#!")) && !rubyShebang.Match(firstLine(src)) {
@@ -735,6 +736,17 @@ func run() int {
 		dc.Free()
 	}
 
+	// DATA: the main script file opened just past its __END__ line
+	if src != nil && len(o.eLines) == 0 && o.script != "" && o.script != "-" {
+		if off := oruby.DataOffset(src); off >= 0 {
+			mrb.SetGV("$__oruby_data__", o.script)
+			if _, err := mrb.LoadString(fmt.Sprintf("Object.const_set(:DATA, File.open($__oruby_data__)).seek(%d); $__oruby_data__ = nil", off+origLen-len(src))); err != nil {
+				code, _ := reportException(mrb, err)
+				return code
+			}
+		}
+	}
+
 	c.Filename(cmdline)
 	mrb.SetMainScript(cmdline)
 	// a program not read from a file is kept for #source_range (core_ext)
@@ -823,6 +835,9 @@ func finish(mrb *oruby.MrbState) int {
 		code, _ := reportException(mrb, mrb.Err())
 		return code
 	}
+	if st, ok := mrb.AtExitStatus(); ok {
+		return st
+	}
 	return 0
 }
 
@@ -848,6 +863,10 @@ func reportException(mrb *oruby.MrbState, err error) (int, bool) {
 			code = int(status.Int())
 		}
 		mrb.RunAtExitHandlers()
+		// an exit in a handler decides the status (MRI's)
+		if st, ok := mrb.AtExitStatus(); ok {
+			code = st
+		}
 		return code, true
 	}
 	mrb.SetGV("$__oruby_top_exc__", exc.Value())

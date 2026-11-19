@@ -87,6 +87,10 @@ type MrbState struct {
 	threadFinishHooks []func(t *Thread)
 	mainFiberSched    bool  // the main thread has a Fiber scheduler (before the first Thread.new)
 	pendingUnblocks   Value // scheduler unblocks for the Ruby side (thread.go DeferUnblock)
+
+	// the exit status an at_exit handler decided (RunAtExitHandlers)
+	atExitStatus    int
+	atExitStatusSet bool
 }
 
 // coreMu serializes writes to go-mrb.c's process-wide tables (virtual
@@ -134,6 +138,8 @@ func NewCore() (*MrbState, error) {
 		nil,
 		false,
 		Nil,
+		0,
+		false,
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)

@@ -5,7 +5,7 @@ class Struct
       if !args.empty? && !args[0].nil? && !(Symbol === args[0])
         name = Kernel.__implicit(args[0], String)
         args[0] = name
-        if name =~ /\A[A-Z]/ && const_defined?(name.to_sym, false)
+        if name.match?(/\A[A-Z]/) && const_defined?(name.to_sym, false)
           warn("warning: redefining constant Struct::#{name}")
           remove_const(name.to_sym)
         end

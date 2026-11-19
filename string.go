@@ -284,6 +284,20 @@ func StrBinary(s Value) bool {
 	return C._orb_str_binary_p(s.v) != 0
 }
 
+// String coderanges (StrCoderange)
+const (
+	StrASCII  = 1 // ASCII only
+	StrValid  = 2 // valid UTF-8 with non-ASCII characters
+	StrBroken = 3 // invalid UTF-8
+	StrBytes  = 4 // mruby's binary flag: BINARY or a tagged encoding
+)
+
+// StrCoderange is what s holds (StrASCII .. StrBytes), from mruby's cached
+// coderange: the string is walked once, not on every call
+func (mrb *MrbState) StrCoderange(s Value) int {
+	return int(C._orb_str_cr(mrb.p, s.v))
+}
+
 // StrNewUSASCII returns a new US-ASCII String of s, which must be ASCII
 // only (as MRI's Integer#to_s or Time#to_s results are)
 func (mrb *MrbState) StrNewUSASCII(s string) Value {

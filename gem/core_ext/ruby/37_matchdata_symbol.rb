@@ -94,21 +94,20 @@ if Object.const_defined?(:MatchData)
         elsif s.start_with?("+")
           s = s[1..]
         end
-        if s =~ /\A0[xX]([0-9a-fA-F]+)/
-          return $1.to_i(16) * sign
-        elsif s =~ /\A0[bB]([01]+)/
-          return $1.to_i(2) * sign
-        elsif s =~ /\A0[oO]([0-7]+)/
-          return $1.to_i(8) * sign
-        elsif s =~ /\A0[dD]([0-9]+)/
-          return $1.to_i(10) * sign
-        elsif s =~ /\A0([0-7]+)/
-          return $1.to_i(8) * sign
-        elsif s =~ /\A([0-9]+)/
-          return $1.to_i(10) * sign
-        else
-          return nil
-        end
+        # the prefix and its digits without captures: this core code must
+        # leave the caller's $~ alone
+        radix, at = if s.match?(/\A0[xX]\h/) then [16, 2]
+                    elsif s.match?(/\A0[bB][01]/) then [2, 2]
+                    elsif s.match?(/\A0[oO][0-7]/) then [8, 2]
+                    elsif s.match?(/\A0[dD]\d/) then [10, 2]
+                    elsif s.match?(/\A0[0-7]/) then [8, 1]
+                    elsif s.match?(/\A\d/) then [10, 0]
+                    end
+        return nil unless radix
+        digits = "0123456789abcdef"[0, radix]
+        n = at
+        n += 1 while n < s.size && digits.include?(s[n].downcase)
+        return s[at...n].to_i(radix) * sign
       end
       raise ArgumentError, "invalid radix #{base}" if base < 2 || base > 36
       digits = "0123456789abcdefghijklmnopqrstuvwxyz"[0, base]
@@ -243,9 +242,12 @@ class Symbol
     end
     return ':"&&"' if raw == "&&"
     return ':"||"' if raw == "||"
-    return ":#{raw}" if raw =~ /\A[A-Z_][A-Za-z0-9_]*[!?]\z/
+    # match?, not =~: this core code must leave the caller's $~ alone; the
+    # name in the symbol's own encoding (a BINARY one is no broken UTF-8)
+    raw = raw.dup.force_encoding(enc) unless raw.encoding == enc
+    return ":#{raw}" if raw.match?(/\A[A-Z_][A-Za-z0-9_]*[!?]\z/)
     if enc == Encoding::UTF_8 && Encoding.default_external == Encoding::UTF_8 && raw.valid_encoding? && !raw.ascii_only?
-      if raw !~ /[\x00-\x20"#'(),.:;<>?\[\\\]`{|}~]/
+      unless raw.match?(/[\x00-\x20"#'(),.:;<>?\[\\\]`{|}~]/)
         return ":#{raw}"
       end
     end
@@ -358,11 +360,12 @@ class Proc
   end
 
   alias __orig_proc_parameters parameters
-  def parameters(*args, **kw)
+  # MRI's parameters(lambda: nil): go-mrb.c's __oruby_params
+  def parameters(lambda: nil)
     return [[:req], [:rest]] if __oruby_sym_proc?
     m = @__oruby_method
     return m.parameters if m
-    kw.empty? ? __orig_proc_parameters(*args) : __orig_proc_parameters(*args, **kw)
+    __oruby_params(lambda.nil? ? -1 : (lambda ? 1 : 0))
   end
 
   alias __orig_proc_source_location source_location

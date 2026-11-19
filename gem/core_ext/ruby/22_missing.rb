@@ -39,8 +39,36 @@ class Module
 end
 
 class Proc
+  # MRI's: only a proc taking *args, without keywords or arguments after
+  # the splat, gets the flag (the flag itself is not modelled)
   def ruby2_keywords
+    params = parameters
+    rest = params.index { |t, _| t == :rest }
+    if rest.nil? || params.any? { |t, _| t == :key || t == :keyreq || t == :keyrest || t == :nokey } ||
+       params[(rest + 1)..].any? { |t, _| t == :req || t == :opt }
+      warn "Skipping set of ruby2_keywords flag for proc (proc accepts keywords or post arguments " \
+           "or proc does not accept argument splat)", uplevel: 0
+    end
     self
+  end
+
+  # BINARY, as MRI's
+  alias_method :__oruby_proc_to_s, :to_s
+  def to_s = __oruby_proc_to_s.force_encoding(Encoding::BINARY)
+  alias inspect to_s
+end
+
+module Kernel
+  # Kernel#method for a public method only: MRI's NameError for a private
+  # or protected one
+  def public_method(name)
+    sym = Symbol === name ? name : Kernel.__implicit(name, String).to_sym
+    cls = Kernel.instance_method(:class).bind_call(self)
+    vis = if singleton_class.private_method_defined?(sym) then "private"
+          elsif singleton_class.protected_method_defined?(sym) then "protected"
+          end
+    raise NameError.new("method '#{sym}' for class '#{cls}' is #{vis}", sym, receiver: self) if vis
+    method(sym)
   end
 end
 
@@ -158,7 +186,7 @@ class String
     out = []
     if sep.empty? # paragraph mode
       rest = self
-      while (m = rest.match(/\n\n+/))
+      while (m = /\n\n+/.__match_raw(rest))
         out << (chomp ? m.pre_match : m.pre_match + m[0])
         rest = m.post_match
       end

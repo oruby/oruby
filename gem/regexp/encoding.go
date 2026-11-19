@@ -164,8 +164,12 @@ func regexpEncoding(mrb *oruby.MrbState, src string, srcEnc oruby.Value, opts in
 
 // regexpEncName is self's encoding name (a Go-made Regexp: from its source)
 func regexpEncName(mrb *oruby.MrbState, self oruby.Value) string {
-	if r := regexpOf(mrb, self); r != nil && r.enc != "" {
+	r := regexpOf(mrb, self)
+	if r != nil && r.enc != "" {
 		return r.enc
+	}
+	if r == nil && mrb.IVGet(self, mrb.Intern("@source")).IsNil() {
+		return "ASCII-8BIT" // Regexp.allocate, not initialized (MRI's)
 	}
 	src := ivString(mrb, self, "@source")
 	opts := ivOptions(mrb, self)
@@ -454,4 +458,63 @@ func regexToSOptions(src string, options int) (string, int) {
 		return orig, origOpts
 	}
 	return src, options
+}
+
+// matchCheck is MRI's rb_reg_prepare_enc for matching the Regexp self
+// against str: an ArgumentError for a broken string, an
+// Encoding::CompatibilityError for encodings that cannot meet, the warning
+// for a /n regexp against a non-ASCII UTF-8 string. False when it raised.
+// A plain UTF-8 subject costs one read of its cached coderange.
+func matchCheck(mrb *oruby.MrbState, self, str oruby.Value) bool {
+	if str.Type() != oruby.MrbTTString {
+		return true
+	}
+	cr := mrb.StrCoderange(str)
+	compat := func(renc, senc string) bool {
+		mrb.Raisef(mrb.ClassGetUnder(mrb.EncodingClass(), "CompatibilityError"),
+			"incompatible encoding regexp match (%s regexp with %s string)", renc, senc)
+		return false
+	}
+	r := regexpOf(mrb, self)
+	switch cr {
+	case oruby.StrASCII:
+		// only a regexp of a fixed encoding that is not ASCII compatible refuses it
+		if r != nil && r.enc != "" && !asciiCompatibleName(r.enc) {
+			return compat(r.enc, "UTF-8")
+		}
+		return true
+	case oruby.StrBroken:
+		mrb.Raise(mrb.EArgumentError(), "invalid byte sequence in UTF-8")
+		return false
+	case oruby.StrValid:
+		opts := ivOptions(mrb, self)
+		renc := regexpEncName(mrb, self)
+		if opts&NoEncoding != 0 {
+			warn(mrb, "historical binary regexp match /.../n against UTF-8 string")
+			return true
+		}
+		if (opts&FixedEncoding != 0 || !asciiCompatibleName(renc)) && renc != "UTF-8" {
+			return compat(renc, "UTF-8")
+		}
+		return true
+	case oruby.StrBytes:
+		senc := encName(mrb, mrb.Call(str, "encoding"))
+		renc := regexpEncName(mrb, self)
+		if senc == renc {
+			return true
+		}
+		if !asciiCompatibleName(senc) || !asciiCompatibleName(renc) {
+			return compat(renc, senc)
+		}
+		if ivOptions(mrb, self)&FixedEncoding != 0 && !isASCII(rstr(str)) {
+			return compat(renc, senc)
+		}
+	}
+	return true
+}
+
+// asciiCompatibleName: the encodings oruby knows that are not ASCII
+// compatible are the UTF-16 and UTF-32 family
+func asciiCompatibleName(name string) bool {
+	return !strings.HasPrefix(name, "UTF-16") && !strings.HasPrefix(name, "UTF-32") && !strings.HasPrefix(name, "UTF16") && !strings.HasPrefix(name, "UTF32")
 }
