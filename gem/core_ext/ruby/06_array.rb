@@ -345,7 +345,7 @@ class Array
   alias __orig_index index
   def index(*args, &block)
     if args.size == 1
-      warn "warning: given block not used", uplevel: 1 if block
+      warn "given block not used", uplevel: 1 if block
       __orig_index(args[0])
     elsif args.empty?
       if block
@@ -362,7 +362,7 @@ class Array
   alias __orig_rindex rindex
   def rindex(*args, &block)
     if args.size == 1
-      warn "warning: given block not used", uplevel: 1 if block
+      warn "given block not used", uplevel: 1 if block
       __orig_rindex(args[0])
     elsif args.empty?
       if block
@@ -937,20 +937,21 @@ class Array
     rng = opts[:random]
     if rng
       raise NoMethodError, "undefined method 'rand' for #{rng}" unless rng.respond_to?(:rand)
-      return [] if empty?
-      indices = (0...size).to_a
-      res = []
-      size.times do
-        max = indices.size
-        r = rng.rand(max)
-        r = Array.__coerce_to_int(r) unless r.is_a?(Integer)
-        raise RangeError, "random value #{r} out of bounds" if r < 0 || r >= max
-        res << self[indices.delete_at(r)]
-      end
-      Array.new(res)
-    else
-      Array.new(__orig_shuffle)
     end
+    len = size
+    return [] if len == 0
+    res = Array.new(self)
+    i = len
+    while i > 1
+      r = rng ? rng.rand(i) : Random.rand(i)
+      r = Array.__coerce_to_int(r) unless r.is_a?(Integer)
+      raise RangeError, "random value #{r} out of bounds" if r < 0 || r >= i
+      i -= 1
+      tmp = res[i]
+      res[i] = res[r]
+      res[r] = tmp
+    end
+    res
   end
 
   def shuffle!(*args)
@@ -1203,7 +1204,7 @@ class Array
   def initialize(*args, &block)
     raise FrozenError, "can't modify frozen Array" if frozen?
     if args.empty?
-      warn "warning: given block not used", uplevel: 1 if block_given?
+      warn "given block not used", uplevel: 1 if block_given?
       self.clear
     elsif args.size == 1
       arg = args[0]
@@ -1330,7 +1331,7 @@ class Array
   alias __orig_count count
   def count(*args, &block)
     if !args.empty? && block_given?
-      warn "warning: given block not used", uplevel: 1
+      warn "given block not used", uplevel: 1
       return __orig_count(*args)
     end
     __orig_count(*args, &block)

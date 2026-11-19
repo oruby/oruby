@@ -124,9 +124,10 @@ module URI
 
     def make_regexp(schemes = nil)
       if schemes
-        /(?:#{schemes.map { |s| Regexp.quote(s) }.join('|')}):[^\s<>"]+/
+        return /(?!)/ if schemes.empty?
+        /(?:#{schemes.map { |s| Regexp.quote(s) }.join('|')}):[^\s<>"]*/
       else
-        /[a-zA-Z][a-zA-Z0-9+\-.]*:[^\s<>"]+/
+        /[a-zA-Z][a-zA-Z0-9+\-.]*:[^\s<>"]*/
       end
     end
 
@@ -518,8 +519,10 @@ module URI
       raise BadURIError, "both URI are relative" if relative? && oth.relative?
       raise BadURIError, "relative URI: #{self}" if relative?
       return oth.dup if oth.absolute?
+      oth_str = oth.to_s
+      return dup if oth_str.empty?
       base = to_s
-      res = URI.__merge(base, oth.to_s)
+      res = URI.__merge(base, oth_str)
       raise BadURIError, "cannot merge #{oth} into #{self}" unless res
       parser.parse(res)
     end
@@ -529,14 +532,20 @@ module URI
       oth = parser.parse(oth) unless oth.is_a?(Generic)
       raise BadURIError, "relative URI: #{self}" if relative?
       raise BadURIError, "relative URI: #{oth}" if oth.relative?
-      return dup if scheme != oth.scheme || userinfo != oth.userinfo || host&.downcase != oth.host&.downcase || port != oth.port
+      return dup if scheme != oth.scheme
+      if userinfo != oth.userinfo || host&.downcase != oth.host&.downcase || port != oth.port
+        rel = Generic.new(nil, userinfo, host, port == default_port ? nil : port, nil, path, opaque, query, fragment)
+        return rel
+      end
       rel = Generic.new(nil, nil, nil, nil, nil, "", nil, query, fragment)
       if path == oth.path
         rel.set_path("")
         rel.query = nil if query == oth.query
         return rel
       end
-      rel.set_path(route_from_path(oth.path, path))
+      rpath = route_from_path(oth.path, path)
+      rpath = "" if rpath == "./" && !query.nil?
+      rel.set_path(rpath)
       rel
     end
 
@@ -793,23 +802,35 @@ module URI
       tmp
     end
 
+    def check_path(v)
+      if v && @opaque
+        raise InvalidURIError, "path conflicts with opaque"
+      end
+      __check("path", v)
+    end
+    private :check_path
+
     def path
-      @path.sub(/^\//, "%2F")
+      @path
     end
 
     def set_path(v)
-      super("/" + v.sub(/^%2F/, "/"))
+      @path = v
     end
     protected :set_path
 
     def to_s
-      save_path = nil
-      if @typecode
-        save_path = @path
-        @path = @path + TYPECODE_PREFIX + @typecode
+      save_path = @path
+      p = @path
+      if p && p.start_with?("/")
+        p = "/%2F" + p[1..]
       end
+      if @typecode
+        p = (p || "") + TYPECODE_PREFIX + @typecode
+      end
+      @path = p
       str = super
-      @path = save_path if save_path
+      @path = save_path
       str
     end
   end
@@ -828,7 +849,10 @@ module URI
       @host = v
     end
 
-    def set_port(v) = raise(InvalidURIError, "cannot set port for file URI")
+    def set_port(v)
+      return if v.nil?
+      raise InvalidURIError, "cannot set port for file URI"
+    end
     def check_userinfo(user) = raise(InvalidURIError, "cannot set userinfo for file URI")
     def check_user(user) = raise(InvalidURIError, "cannot set user for file URI")
     def check_password(user) = raise(InvalidURIError, "cannot set password for file URI")
@@ -943,13 +967,24 @@ module URI
       else
         tmp[:opaque] = +""
       end
+      unless tmp[:opaque].empty?
+        unless /\A[^@\s?:&=()]+@[^@\s?:&=()]+(?:,[^@\s?:&=()]+@[^@\s?:&=()]+)*\z/.match?(tmp[:opaque])
+          raise InvalidComponentError, "bad component(expected to component): #{tmp[:opaque]}"
+        end
+      end
       if tmp[:headers]
         query = case tmp[:headers]
-                when Array then tmp[:headers].collect { |x| x.size != 2 ? x.first.to_s : x.join("=") }.join("&")
+                when Array
+                  tmp[:headers].collect { |x| x.is_a?(Array) ? (x.size != 2 ? x.first.to_s : x.join("=")) : x.to_s }.join("&")
                 when Hash then tmp[:headers].collect { |h, v| "#{h}=#{v}" }.join("&")
                 else tmp[:headers].to_s
                 end
-        tmp[:opaque] << "?" << query unless query.empty?
+        unless query.empty?
+          unless /\A[^?&=]+(?:=[^?&=]*)?(?:&[^?&=]+(?:=[^?&=]*)?)*\z/.match?(query)
+            raise InvalidComponentError, "bad component(expected headers component): #{query}"
+          end
+          tmp[:opaque] << "?" << query
+        end
       end
       new(tmp[:scheme], nil, nil, nil, nil, nil, tmp[:opaque], nil, nil, DEFAULT_PARSER, false)
     end
@@ -1023,7 +1058,12 @@ module Kernel
     case uri
     when URI::Generic then uri
     when String then URI.parse(uri)
-    else raise ArgumentError, "bad argument (expected URI object or URI string)"
+    else
+      if uri.respond_to?(:to_str)
+        URI.parse(uri.to_str)
+      else
+        raise ArgumentError, "bad argument (expected URI object or URI string)"
+      end
     end
   end
   module_function :URI

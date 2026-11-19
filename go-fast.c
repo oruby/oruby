@@ -1399,6 +1399,7 @@ void _orb_fast_install(mrb_state *mrb) {
     for (int n = 0; n < FAST_N; n++) if (MRB_METHOD_FUNC(m) == fast_fns[n]) ours = TRUE;
     if (ours) mrb_alias_method(mrb, c, mrb_intern_cstr(mrb, fast_aliases[i].alias), mrb_intern_cstr(mrb, fast_aliases[i].name));
   }
+  _orb_string_install(mrb);
 }
 
 /* ---- implicit argument conversion (00_convert.rb's __implicit_args) ----

@@ -306,10 +306,10 @@ var (
 	reDay   = regexp.MustCompile(`(?i)\b` + dayPat + `[^-/\d\s]*`)
 	reTime  = regexp.MustCompile(`(?i)(\d+):(\d+)(?::(\d+)(?:[,.](\d+))?)?\s*(?:([ap])(?:m\b|\.m\.))?(?:\s*` + zonePat + `)?|(\d+)\s*([ap])(?:m\b|\.m\.)(?:\s*` + zonePat + `)?`)
 	reEU    = regexp.MustCompile(`(?i)'?(\d+)[^-\d\s]*\s*` + monPat + `[^-\d\s']*(?:\s*(?:\s*,\s*)?(c(?:e|\.e\.)|b(?:ce|\.c\.e\.)|a(?:d|\.d\.)|b(?:c|\.c\.))?\s*('?-?\d+(?:(?:st|nd|rd|th)\b)?))?`)
-	reUS    = regexp.MustCompile(`(?i)\b` + monPat + `[^-\d\s']*\s*('?\d+)[^-\d\s']*(?:\s*,?\s*(c(?:e|\.e\.)|b(?:ce|\.c\.e\.)|a(?:d|\.d\.)|b(?:c|\.c\.))?\s*('?-?\d+))?`)
+	reUS    = regexp.MustCompile(`(?i)\b` + monPat + `[^-\d\s']*\s*('?-?\d+)[^-\d\s']*(?:\s*,?\s*(c(?:e|\.e\.)|b(?:ce|\.c\.e\.)|a(?:d|\.d\.)|b(?:c|\.c\.))?\s*('?-?\d+))?`)
 	reISO   = regexp.MustCompile(`('?[-+]?\d+)-(\d+)-('?-?\d+)`)
-	reVMS1  = regexp.MustCompile(`(?i)('?-?\d+)-` + monPat + `[^-/.]*-('?-?\d+)`)
-	reVMS2  = regexp.MustCompile(`(?i)\b` + monPat + `[^-/.]*-('?-?\d+)(?:-('?-?\d+))?`)
+	reVMS1  = regexp.MustCompile(`(?i)('?-?\d+(?:st|nd|rd|th)?)[-/.]` + monPat + `[^\s-/.]*[-/.]('?-?\d+(?:st|nd|rd|th)?)`)
+	reVMS2  = regexp.MustCompile(`(?i)\b` + monPat + `[^\s-/.]*[-/.]('?-?\d+(?:st|nd|rd|th)?)(?:[-/.]('?-?\d+))?`)
 	reSla   = regexp.MustCompile(`('?-?\d+)/\s*('?\d+)(?:\D\s*('?-?\d+))?`)
 	reSlaM  = regexp.MustCompile(`(?i)('?-?\d+)/\s*` + monPat + `(?:\D\s*('?-?\d+))?`)
 	reDot   = regexp.MustCompile(`('?-?\d+)\.\s*('?\d+)\.\s*('?-?\d+)`)
@@ -439,7 +439,47 @@ func sub(s string, m []int, i int) string {
 	return s[m[2*i]:m[2*i+1]]
 }
 
+func stripOrd(s string) string {
+	low := strings.ToLower(s)
+	for _, suf := range []string{"st", "nd", "rd", "th"} {
+		if strings.HasSuffix(low, suf) {
+			return s[:len(s)-2]
+		}
+	}
+	return s
+}
+
+func isLongOrSignedYear(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") || strings.HasPrefix(s, "'") {
+		return true
+	}
+	return len(s) >= 3
+}
+
+// s3e applies MRI's 3-element year/month/day disambiguation
+func setS3E(p parsed, a, b, c string) {
+	a, c = stripOrd(a), stripOrd(c)
+	if isLongOrSignedYear(c) && !isLongOrSignedYear(a) {
+		setYMD(p, c, b, a, false)
+	} else {
+		setYMD(p, a, b, c, false)
+	}
+}
+
 func setYMD(p parsed, y, m, d string, bc bool) {
+	y = stripOrd(y)
+	d = stripOrd(d)
+	// When only day and no year was matched, a 3+ digit or signed number is actually the year (e.g. "feb 2008")
+	if y == "" && d != "" && (isLongOrSignedYear(d) || atoi(d) > 31) {
+		y, d = d, ""
+	}
+	// When first token was a 4-digit year and last token is a day (e.g. "2008 feb 23")
+	if d != "" && y != "" && isLongOrSignedYear(d) && !isLongOrSignedYear(y) {
+		y, d = d, y
+	}
 	if y != "" {
 		if !strings.HasPrefix(y, "'") && len(strings.TrimLeft(y, "-+")) > 2 {
 			p["_comp"] = false
@@ -514,22 +554,33 @@ func parseDate(str string, comp bool) parsed {
 
 	bcGlobal := reBC.MatchString(s)
 	switch {
+	case matchApply(&s, reVMS1, func(m []int, t string) {
+		a, mo, c := stripOrd(sub(t, m, 1)), sub(t, m, 2), stripOrd(sub(t, m, 3))
+		if isLongOrSignedYear(a) && !isLongOrSignedYear(c) {
+			setYMD(p, a, mo, c, false)
+		} else {
+			setYMD(p, c, mo, a, false)
+		}
+	}):
+	case matchApply(&s, reVMS2, func(m []int, t string) {
+		mo, d, y := sub(t, m, 1), stripOrd(sub(t, m, 2)), stripOrd(sub(t, m, 3))
+		setYMD(p, y, mo, d, false)
+	}):
 	case matchApply(&s, reEU, func(m []int, t string) {
 		bc := strings.HasPrefix(strings.ToLower(sub(t, m, 3)), "b")
-		setYMD(p, sub(t, m, 4), sub(t, m, 2), sub(t, m, 1), bc)
+		d, mo, y := stripOrd(sub(t, m, 1)), sub(t, m, 2), stripOrd(sub(t, m, 4))
+		if y != "" && isLongOrSignedYear(d) && !isLongOrSignedYear(y) {
+			setYMD(p, d, mo, y, bc)
+		} else {
+			setYMD(p, y, mo, d, bc)
+		}
 	}):
 	case matchApply(&s, reUS, func(m []int, t string) {
 		bc := strings.HasPrefix(strings.ToLower(sub(t, m, 3)), "b")
 		setYMD(p, sub(t, m, 4), sub(t, m, 1), sub(t, m, 2), bc)
 	}):
 	case matchApply(&s, reISO, func(m []int, t string) {
-		setYMD(p, sub(t, m, 1), sub(t, m, 2), sub(t, m, 3), false)
-	}):
-	case matchApply(&s, reVMS1, func(m []int, t string) {
-		setYMD(p, sub(t, m, 3), sub(t, m, 2), sub(t, m, 1), false)
-	}):
-	case matchApply(&s, reVMS2, func(m []int, t string) {
-		setYMD(p, sub(t, m, 3), sub(t, m, 1), sub(t, m, 2), false)
+		setS3E(p, sub(t, m, 1), sub(t, m, 2), sub(t, m, 3))
 	}):
 	case matchApply(&s, reSlaM, func(m []int, t string) {
 		setYMD(p, sub(t, m, 3), sub(t, m, 2), sub(t, m, 1), false)
@@ -538,19 +589,12 @@ func parseDate(str string, comp bool) parsed {
 		a, b, c := sub(t, m, 1), sub(t, m, 2), sub(t, m, 3)
 		if c == "" {
 			setYMD(p, "", a, b, false) // mon/mday
-		} else if len(strings.TrimLeft(a, "'-+")) > 2 || strings.HasPrefix(a, "'") {
-			setYMD(p, a, b, c, false) // y/m/d
 		} else {
-			setYMD(p, c, a, b, false) // m/d/y (US)
+			setS3E(p, a, b, c)
 		}
 	}):
 	case matchApply(&s, reDot, func(m []int, t string) {
-		a, b, c := sub(t, m, 1), sub(t, m, 2), sub(t, m, 3)
-		if len(strings.TrimLeft(a, "'-+")) > 2 || strings.HasPrefix(a, "'") {
-			setYMD(p, a, b, c, false)
-		} else {
-			setYMD(p, c, b, a, false) // d.m.y
-		}
+		setS3E(p, sub(t, m, 1), sub(t, m, 2), sub(t, m, 3))
 	}):
 	case matchApply(&s, reIsoW, func(m []int, t string) {
 		if y := sub(t, m, 1); y != "" {
@@ -952,10 +996,12 @@ func dateStrptime(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	}
 	if c, ok := p["_cent"].(int64); ok {
 		if y, ok := p["year"].(int64); ok {
-			p["year"] = c*100 + y
+			p["year"] = c*100 + (y % 100)
+		} else {
+			p["year"] = c * 100
 		}
 		if y, ok := p["cwyear"].(int64); ok {
-			p["cwyear"] = c*100 + y
+			p["cwyear"] = c*100 + (y % 100)
 		}
 	}
 	if mer, ok := p["_merid"].(int64); ok {

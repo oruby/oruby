@@ -26,6 +26,7 @@ type processData struct {
 	sync.Mutex
 	runners     map[int]*cmdRunner
 	savedUserID int
+	maxGroups   int
 	wakeupChan  chan struct{}
 	tms         oruby.RClass
 }
@@ -81,18 +82,47 @@ func init() {
 
 		mProcData := &processData{
 			savedUserID: os.Geteuid(),
+			maxGroups:   32,
 			wakeupChan:  make(chan struct{}),
 			tms:         mrb.ClassPtr(tmsV.Value()),
 			runners:     make(map[int]*cmdRunner, 10),
 		}
 
 		mProc := mrb.DefineGoModule("Process", mProcData)
+		mProc.Const("Tms", tmsV)
 
 		mProc.Const("WNOHANG", 1)
 		mProc.Const("WUNTRACED", 2)
 
 		mrb.DefineClassMethod(mProc, "exec", procExec, mrb.ArgsAny())
-		//mrb.DefineClassMethod(mProc, "fork", procFork, mrb.ArgsAny())
+		mrb.DefineClassMethod(mProc, "_fork", mrb.NotImplemented, mrb.ArgsNone())
+		mrb.DefineClassMethod(mProc, "daemon", mrb.NotImplemented, mrb.ArgsOpt(2))
+		mrb.DefineClassMethod(mProc, "warmup", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+			return mrb.TrueValue()
+		}, mrb.ArgsNone())
+		mrb.DefineClassMethod(mProc, "setproctitle", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+			s, err := rb.Str(mrb, mrb.GetArgsFirst())
+			if err != nil {
+				return rb.TypeError(mrb, err)
+			}
+			v := mrb.StrNew(s)
+			mrb.SetGV("$0", v)
+			return v
+		}, mrb.ArgsReq(1))
+		mrb.DefineClassMethod(mProc, "maxgroups", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			return mrb.FixnumValue(getProcData(mrb, self).maxGroups)
+		}, mrb.ArgsNone())
+		mrb.DefineClassMethod(mProc, "maxgroups=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			n, err := rb.Int(mrb, mrb.GetArgsFirst())
+			if err != nil {
+				return rb.TypeError(mrb, err)
+			}
+			if n <= 0 {
+				return mrb.Raise(mrb.EArgumentError(), "maxgroups must be positive")
+			}
+			getProcData(mrb, self).maxGroups = int(n)
+			return mrb.FixnumValue(int(n))
+		}, mrb.ArgsReq(1))
 		mrb.DefineClassMethod(mProc, "spawn", procSpawn, mrb.ArgsReq(1)+mrb.ArgsRest())
 		mrb.DefineClassMethod(mProc, "exit!", procExitBang, mrb.ArgsOpt(1))
 		mrb.DefineClassMethod(mProc, "exit", procExit, mrb.ArgsOpt(1))
@@ -130,20 +160,20 @@ func init() {
 		mProcUID := mrb.DefineModuleUnder(mProc, "UID")
 		mProcGID := mrb.DefineModuleUnder(mProc, "GID")
 		mrb.DefineModuleFunc(mProcUID, "rid", os.Getuid)
-		mrb.DefineModuleFunc(mProcGID, "gid", os.Getgid)
+		mrb.DefineModuleFunc(mProcGID, "rid", os.Getgid)
 		mrb.DefineModuleFunc(mProcUID, "eid", os.Geteuid)
-		mrb.DefineModuleFunc(mProcGID, "gid", os.Getegid)
+		mrb.DefineModuleFunc(mProcGID, "eid", os.Getegid)
 
 		mrb.DefineModuleFunc(mProcUID, "from_name", func(name string) (int, error) {
-			g, err := user.Lookup(name)
+			u, err := user.Lookup(name)
 			if err != nil {
 				return -1, oruby.EArgumentError("%v", err)
 			}
-			gid, err := strconv.Atoi(g.Gid)
+			uid, err := strconv.Atoi(u.Uid)
 			if err != nil {
 				return -1, oruby.EArgumentError("%v", err)
 			}
-			return gid, nil
+			return uid, nil
 		})
 
 		mrb.DefineModuleFunc(mProcGID, "from_name", func(name string) (int, error) {
@@ -197,6 +227,10 @@ func procInitgroups(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.SysFail(err)
 	}
 
+	gids := []int{}
+	if gidVal, err := rb.Int(mrb, gid); err == nil {
+		gids = append(gids, int(gidVal))
+	}
 	for _, grp := range grps {
 		if isWin {
 			ret.PushString(grp)
@@ -207,8 +241,16 @@ func procInitgroups(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				ret.PushString(grp)
 				continue
 			}
-
+			gids = append(gids, grpid)
 			ret.PushInt(grpid)
+		}
+	}
+	if !isWin {
+		if os.Geteuid() != 0 {
+			return mrb.SysFail(syscall.EPERM)
+		}
+		if err := syscall.Setgroups(gids); err != nil {
+			return mrb.SysFail(err)
 		}
 	}
 	return ret

@@ -13,7 +13,7 @@ module Kernel
       msgs[0] = "#{loc || 'warning'}: warning: #{msgs[0]}"
     end
     category = category.to_sym unless category.nil? || Symbol === category
-    str = msgs.map { |m| s = m.to_s; s.end_with?("\n") ? s : s + "\n" }.join
+    str = msgs.map { |m| s = m.to_s; s.end_with?("\n") ? s : s + "\n" }.join("")
     if Warning.method(:warn).parameters.any? { |t, _| t == :key || t == :keyreq || t == :keyrest }
       Warning.warn(str, category: category)
     else

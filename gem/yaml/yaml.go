@@ -57,14 +57,28 @@ func init() {
 
 func initYAML(mrb *oruby.MrbState) interface{} {
 	psych := mrb.DefineModule("Psych")
+	psych.Const("VERSION", "5.2.0")
 	psychErr := mrb.DefineClassUnder(psych, "Exception", mrb.ClassGet("StandardError"))
 	mrb.DefineClassUnder(psych, "SyntaxError", psychErr)
 	psych.DefineClassMethod("load", yamlLoad, mrb.ArgsReq(1))
 	psych.DefineClassMethod("safe_load", yamlLoad, mrb.ArgsReq(1))
+	psych.DefineClassMethod("unsafe_load", yamlLoad, mrb.ArgsReq(1))
 	psych.DefineClassMethod("load_file", yamlLoadFile, mrb.ArgsReq(1))
 	psych.DefineClassMethod("safe_load_file", yamlLoadFile, mrb.ArgsReq(1))
+	psych.DefineClassMethod("load_stream", yamlLoadStream, mrb.ArgsReq(1)|mrb.ArgsBlock())
+	psych.DefineClassMethod("parse", yamlParse, mrb.ArgsReq(1))
+	psych.DefineClassMethod("parse_file", yamlParseFile, mrb.ArgsReq(1))
 	psych.DefineClassMethod("dump", yamlDump, mrb.ArgsArg(1, 1))
 	psych.DefineClassMethod("safe_dump", yamlDump, mrb.ArgsArg(1, 1))
+	psych.DefineClassMethod("dump_stream", yamlDumpStream, mrb.ArgsRest())
+	nodesMod := mrb.DefineModuleUnder(psych, "Nodes")
+	docCls := mrb.DefineClassUnder(nodesMod, "Document", mrb.ObjectClass())
+	docCls.DefineMethod("to_ruby", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		return mrb.GetIV(self, "@__value")
+	}, mrb.ArgsNone())
+	docCls.DefineMethod("root", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		return self
+	}, mrb.ArgsNone())
 	mrb.ObjectClass().DefineMethod("to_yaml", yamlToYAML, mrb.ArgsOpt(1))
 	mrb.ConstSet(mrb.ObjectClass(), oruby.Sym_YAML, psych)
 	return nil
@@ -75,11 +89,10 @@ func yamlLoad(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.Raise(mrb.EArgumentError(), err.Error())
 	}
-	source := mrb.GetArgsFirst()
-	if !source.IsString() {
-		return mrb.Raise(mrb.ExcGet("TypeError"), fmt.Sprintf("YAML source must be a String, got %s", rb.TypeName(mrb, source)))
+	text, exc := yamlReadSource(mrb, mrb.GetArgsFirst())
+	if exc != nil {
+		return exc
 	}
-	text := mrb.String(source)
 	if len(text) > maxYAMLBytes {
 		return mrb.Raise(mrb.EArgumentError(), "YAML input exceeds size limit")
 	}
@@ -262,6 +275,134 @@ func decodeYAMLNode(node *yamllib.Node, depth int, limits *yamlNodeLimits) (inte
 	default:
 		return nil, unsafeYAMLError{message: fmt.Sprintf("YAML node kind %d is not supported", node.Kind)}
 	}
+}
+
+func yamlReadSource(mrb *oruby.MrbState, source oruby.Value) (string, oruby.MrbValue) {
+	if source.IsString() {
+		return mrb.String(source), nil
+	}
+	if mrb.RespondTo(source, oruby.Sym_read) {
+		v, err := mrb.Funcall(source, oruby.Sym_read)
+		if err != nil {
+			return "", mrb.RaiseError(err)
+		}
+		if v.IsNil() {
+			return "", nil
+		}
+		return mrb.String(v), nil
+	}
+	return "", mrb.Raise(mrb.ExcGet("TypeError"), fmt.Sprintf("YAML source must be a String, got %s", rb.TypeName(mrb, source)))
+}
+
+func yamlLoadStream(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	allowAliases, err := yamlAliasesEnabled(mrb)
+	if err != nil {
+		return mrb.Raise(mrb.EArgumentError(), err.Error())
+	}
+	text, exc := yamlReadSource(mrb, mrb.GetArgsFirst())
+	if exc != nil {
+		return exc
+	}
+	if len(text) > maxYAMLBytes {
+		return mrb.Raise(mrb.EArgumentError(), "YAML input exceeds size limit")
+	}
+	blk := mrb.GetArgsBlock()
+	decoder := yamllib.NewDecoder(strings.NewReader(text))
+	out := mrb.AryNew()
+	for {
+		var document yamllib.Node
+		if err := decoder.Decode(&document); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return mrb.Raise(rb.ClassPath(mrb, "Psych::SyntaxError"), err.Error())
+		}
+		var val interface{}
+		if len(document.Content) > 0 {
+			limits := yamlNodeLimits{allowAliases: allowAliases, active: make(map[*yamllib.Node]bool)}
+			val, err = decodeYAMLNode(document.Content[0], 0, &limits)
+			if err != nil {
+				var unsafeErr unsafeYAMLError
+				if errors.As(err, &unsafeErr) {
+					return mrb.Raise(mrb.EArgumentError(), err.Error())
+				}
+				return mrb.Raise(rb.ClassPath(mrb, "Psych::SyntaxError"), err.Error())
+			}
+		}
+		rv := mrb.Value(val)
+		if !blk.IsNil() {
+			mrb.Yield(blk, rv)
+			if e := mrb.Exc(); e != nil {
+				return e.Value()
+			}
+		} else {
+			out.Push(rv)
+		}
+	}
+	if !blk.IsNil() {
+		return mrb.NilValue()
+	}
+	return out
+}
+
+func yamlParse(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	text, exc := yamlReadSource(mrb, mrb.GetArgsFirst())
+	if exc != nil {
+		return exc
+	}
+	if strings.TrimSpace(text) == "" {
+		return mrb.FalseValue()
+	}
+	val := loadYAMLText(mrb, text, false)
+	if mrb.Exc() != nil {
+		return val
+	}
+	docCls := rb.ClassPath(mrb, "Psych::Nodes::Document")
+	doc, err := mrb.ObjNew(docCls)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	mrb.SetIV(doc.Value(), "@__value", val.Value())
+	return doc
+}
+
+func yamlParseFile(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	path := mrb.GetArgsFirst()
+	if !path.IsString() {
+		return mrb.Raise(mrb.ExcGet("TypeError"), "YAML filename must be a String")
+	}
+	data, err := os.ReadFile(mrb.String(path))
+	if err != nil {
+		return mrb.Raise(rb.ClassPath(mrb, "Psych::Exception"), err.Error())
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return mrb.FalseValue()
+	}
+	val := loadYAMLText(mrb, string(data), false)
+	if mrb.Exc() != nil {
+		return val
+	}
+	docCls := rb.ClassPath(mrb, "Psych::Nodes::Document")
+	doc, err := mrb.ObjNew(docCls)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	mrb.SetIV(doc.Value(), "@__value", val.Value())
+	return doc
+}
+
+func yamlDumpStream(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	items := mrb.GetArgs().Slice()
+	var buf bytes.Buffer
+	psych := mrb.ModuleGet("Psych")
+	for _, it := range items {
+		d := mrb.Call(psych, "dump", it)
+		if e := mrb.Exc(); e != nil {
+			return e.Value()
+		}
+		buf.Write(d.Bytes())
+	}
+	return mrb.BytesValue(buf.Bytes())
 }
 
 func yamlDump(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {

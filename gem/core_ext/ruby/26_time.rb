@@ -33,6 +33,22 @@ class Time
         raise ArgumentError, "utc_offset out of range" unless z.abs < 86400
         return [2, z]
       end
+      if Rational === z
+        raise ArgumentError, "utc_offset out of range" unless z.abs < 86400
+        return [2, z.denominator == 1 ? z.numerator : z]
+      end
+      if Float === z
+        raise ArgumentError, "utc_offset out of range" unless z.finite? && z.abs < 86400
+        r = z.to_r
+        return [2, r.denominator == 1 ? r.numerator : r]
+      end
+      if !(String === z) && Kernel.__responds?(z, :to_r) && !(Integer === z)
+        r = z.to_r
+        if Rational === r
+          raise ArgumentError, "utc_offset out of range" unless r.abs < 86400
+          return [2, r.denominator == 1 ? r.numerator : r]
+        end
+      end
       if !(String === z) && Kernel.__responds?(z, :to_int) && !(Numeric === z && !(Integer === z))
         return __zone(Kernel.__implicit(z, Integer))
       end
@@ -92,9 +108,12 @@ class Time
       t
     end
 
-    def __make_obj(klass, sec, ns, mode, off)
+    def __make_obj(klass, sec, ns, mode, off, subsec = nil)
       t = klass.allocate
-      t.__set(Time.__make(sec, ns, mode, off))
+      int_off = Rational === off ? off.round : off
+      t.__set(Time.__make(sec, ns, mode, int_off))
+      t.__send__(:__roff=, off) if Rational === off && off.denominator != 1
+      t.__send__(:__subsec=, subsec) if subsec
       t
     end
 
@@ -130,38 +149,69 @@ class Time
       __int(v)
     end
 
-    # seconds argument as [Integer seconds, nanoseconds]
+    # exact (a + b) for Rationals without 64-bit Rational overflow;
+    # returns [carry_sec, ns, exact_subsec_or_nil]
+    def __add_frac(a, b)
+      an, ad = a.numerator, a.denominator
+      bn, bd = b.numerator, b.denominator
+      num = an * bd + bn * ad
+      den = ad * bd
+      carry = num.div(den)
+      rem = num - carry * den
+      ns = (rem * 1_000_000_000).div(den)
+      if (rem * 1_000_000_000) % den == 0
+        [carry, ns, nil]
+      else
+        g = rem.gcd(den)
+        rn, rd = rem / g, den / g
+        sub = (rd < (1 << 62) && rn.abs < (1 << 62)) ? Rational(rn, rd) : nil
+        [carry, ns, sub]
+      end
+    end
+
+    # seconds argument as [Integer seconds, nanoseconds, exact_subsec_or_nil]
     def __sec(v)
-      return [0, 0] if v.nil?
+      return [0, 0, nil] if v.nil?
       v = Rational(v) if String === v && v.include?(".")
       v = Integer(v, 10) if String === v
-      return [v, 0] if Integer === v
+      return [v, 0, nil] if Integer === v
       v = Kernel.__implicit(v, Integer) unless Numeric === v
       r = v.to_r
-      s = r.floor
-      # integer arithmetic: mruby's Rational overflows past 64 bits (a Float
-      # has a 2**52 denominator) where its Integer becomes a Bignum
-      f = r - s
-      [s, f.numerator * 1_000_000_000 / f.denominator]
+      __add_frac(r, 0r)
     end
 
     # builds a Time from civil fields with MRI's range checks and carries
-    def __from_civil(klass, y, mon, d, h, mi, s, mode, off, nsec = nil)
+    def __from_civil(klass, y, mon, d, h, mi, s, mode, off, nsec = nil, isdst = nil, subsec = nil)
       y = __int(y)
       mon = __month(mon)
       d = d.nil? ? 1 : __int(d)
       h = h.nil? ? 0 : __int(h)
       mi = mi.nil? ? 0 : __int(mi)
-      sec, ns = __sec(s)
-      ns = nsec if nsec
+      sec, ns, sub = __sec(s)
+      if nsec
+        ns = nsec
+        sub = subsec
+      end
       raise ArgumentError, "mon out of range" unless (1..12).include?(mon)
       raise ArgumentError, "argument out of range" unless (1..31).include?(d)
       raise ArgumentError, "argument out of range" unless (0..24).include?(h)
       raise ArgumentError, "argument out of range" unless (0..59).include?(mi)
       raise ArgumentError, "argument out of range" unless (0..60).include?(sec)
       raise ArgumentError, "argument out of range" if h == 24 && (mi != 0 || sec != 0)
+      int_off = Rational === off ? off.round : off
       t = klass.allocate
-      t.__set(Time.__civil(y, mon, d, h, mi, sec, ns, mode, off))
+      raw = Time.__civil(y, mon, d, h, mi, sec, ns, mode, int_off, isdst)
+      if Rational === off && off.denominator != 1
+        delta = Rational(int_off) - off
+        p = raw.__parts
+        base_f = sub || Rational(p[1], 1_000_000_000)
+        carry, new_ns, new_sub = __add_frac(base_f, delta)
+        raw = Time.__make(p[0] + carry, new_ns, mode, int_off)
+        sub = new_sub
+      end
+      t.__set(raw)
+      t.__send__(:__roff=, off) if Rational === off && off.denominator != 1
+      t.__send__(:__subsec=, sub) if sub
       t
     end
 
@@ -179,34 +229,36 @@ class Time
         # NUM2INT: a Float or Rational truncated, anything else by #to_int
         precision = Numeric === precision && !(Complex === precision) ? precision.to_i : Kernel.__to_int(precision)
       end
-      precision = 9 if precision.nil? || precision < 0 || precision > 9
+      precision = nil if precision && precision < 0
       m = str.match(/\A(\d{4,})-(\d\d)-(\d\d)(?:[ T](\d\d):(\d\d):(\d\d)(?:\.(\d+))?)?(?: *(\S+))?\z/)
       raise ArgumentError, "can't parse: #{str.inspect}" unless m
       raise ArgumentError, "missing min part: #{m[4]}" if m[4] && m[5].nil?
       raise ArgumentError, "no time information" if m[4].nil?
       zone = m[8] || zone
       mode, off = __zone(zone, klass)
-      if mode == :tz
-        frac = (m[7] || "")
-        frac = frac[0, precision] if precision
-        ns = (frac + "000000000")[0, 9].to_i
-        return __from_civil_tz(klass, m[1], m[2].to_i, m[3].to_i, m[4] && m[4].to_i, m[5] && m[5].to_i, m[6] && m[6].to_i, off, ns)
-      end
       frac = m[7] || ""
       frac = frac[0, precision] if precision
       ns = (frac + "000000000")[0, 9].to_i
-      __from_civil(klass, m[1], m[2].to_i, m[3].to_i, m[4] && m[4].to_i, m[5] && m[5].to_i, m[6] && m[6].to_i, mode, off, ns)
+      sub = nil
+      if frac.size > 9
+        r = Rational(frac.to_i, 10**frac.size)
+        sub = r if r.numerator * 1_000_000_000 % r.denominator != 0
+      end
+      if mode == :tz
+        t = __from_civil_tz(klass, m[1], m[2].to_i, m[3].to_i, m[4] && m[4].to_i, m[5] && m[5].to_i, m[6] && m[6].to_i, off, ns)
+        t.__send__(:__subsec=, sub) if sub
+        return t
+      end
+      __from_civil(klass, m[1], m[2].to_i, m[3].to_i, m[4] && m[4].to_i, m[5] && m[5].to_i, m[6] && m[6].to_i, mode, off, ns, nil, sub)
     end
 
     def now(**kw)
       __kw(kw, [:in])
       z = kw[:in]
-      t = allocate
       p = __current_parts
       mode, off = __zone(z, self)
       return __in_tz(self, p[0], p[1], off) if mode == :tz
-      t.__set(Time.__make(p[0], p[1], mode, off))
-      t
+      __make_obj(self, p[0], p[1], mode, off)
     end
 
     def __current_parts
@@ -216,10 +268,12 @@ class Time
     def at(time, subsec = (no_sub = true; nil), unit = :microsecond, **kw)
       __kw(kw, [:in])
       z = kw[:in]
+      sub = nil
       if Time === time
         p = time.__parts
         sec, ns = p[0], p[1]
-        mode, off = z.nil? ? [p[2], p[3]] : __zone(z, self)
+        sub = time.__send__(:__subsec)
+        mode, off = z.nil? ? [p[2], time.__send__(:__roff) || p[3]] : __zone(z, self)
         mode, off = :tz, time.__send__(:__tz) if z.nil? && time.__send__(:__tz)
       else
         raise TypeError, "can't convert #{Kernel.__cname(time)} into an exact number" if time.nil? || String === time
@@ -229,7 +283,7 @@ class Time
           raise TypeError, "can't convert #{Kernel.__cname(time)} into an exact number" unless Kernel.__responds?(time, :to_int)
           time = Kernel.__responds?(time, :to_r) ? time.to_r : time.to_int
         end
-        sec, ns = __sec(time)
+        sec, ns, sub = __sec(time)
         mode, off = __zone(z, self)
       end
       unless no_sub
@@ -238,44 +292,47 @@ class Time
           raise TypeError, "can't convert #{Kernel.__cname(subsec)} into an exact number" unless Kernel.__responds?(subsec, :to_int)
           subsec = subsec.to_int
         end
-        mul = case unit
-              when :millisecond then 1_000_000
-              when :usec, :microsecond then 1_000
-              when :nsec, :nanosecond then 1
+        div = case unit
+              when :millisecond then 1_000
+              when :usec, :microsecond then 1_000_000
+              when :nsec, :nanosecond then 1_000_000_000
               else raise ArgumentError, "unexpected unit: #{unit.inspect}"
               end
-        extra = (subsec.to_r * mul)
-        total = ns + extra
-        sec += (total / 1_000_000_000).floor
-        ns = (total % 1_000_000_000).floor
+        base_f = sub || Rational(ns, 1_000_000_000)
+        sr = subsec.to_r
+        extra = Rational(sr.numerator, sr.denominator * div)
+        carry, ns, sub = __add_frac(base_f, extra)
+        sec += carry
       end
-      return __in_tz(self, sec, ns, off) if mode == :tz
-      t = allocate
-      t.__set(Time.__make(sec, ns, mode, off))
-      t
+      if mode == :tz
+        t = __in_tz(self, sec, ns, off)
+        t.__send__(:__subsec=, sub) if sub
+        return t
+      end
+      __make_obj(self, sec, ns, mode, off, sub)
     end
 
     def __civil_args(args)
       if args.size == 10
-        sec, min, hour, day, mon, year = args
-        return [year, mon, day, hour, min, sec, nil]
+        sec, min, hour, day, mon, year, _wday, _yday, isdst = args
+        return [year, mon, day, hour, min, sec, nil, isdst]
       end
       raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..8)" if args.empty? || args.size > 8
       y, mon, d, h, mi, s, us = args
-      [y, mon, d, h, mi, s, us]
+      [y, mon, d, h, mi, s, us, nil]
     end
 
     def utc(*args)
-      y, mon, d, h, mi, s, us = __civil_args(args)
+      y, mon, d, h, mi, s, us, _isdst = __civil_args(args)
       s, ns = __usec_args(s, us)
       __from_civil(self, y, mon, d, h, mi, s, 0, 0, ns)
     end
     alias gm utc
 
     def local(*args)
-      y, mon, d, h, mi, s, us = __civil_args(args)
+      y, mon, d, h, mi, s, us, isdst = __civil_args(args)
       s, ns = __usec_args(s, us)
-      __from_civil(self, y, mon, d, h, mi, s, 1, 0, ns)
+      __from_civil(self, y, mon, d, h, mi, s, 1, 0, ns, isdst)
     end
 
     # MRI's time_arg: with a microsecond argument the seconds are whole
@@ -301,20 +358,22 @@ class Time
       p = Time.__current_parts
       mode, off = Time.__zone(zone, self.class)
       return __take(Time.__in_tz(Time, p[0], p[1], off)) if mode == :tz
-      return __set(Time.__make(p[0], p[1], mode, off))
+      return __take(Time.__make_obj(Time, p[0], p[1], mode, off))
     end
     if String === year && mon.nil? && day.nil? && hour.nil? && year !~ /\A\s*-?\d+\s*\z/
       return __take(Time.__parse_new(self.class, year, zone, precision))
     end
     mode, off = Time.__zone(zone, self.class)
     return __take(Time.__from_civil_tz(Time, year, mon, day, hour, min, sec, off)) if mode == :tz
-    __set(Time.__from_civil(Time, year, mon, day, hour, min, sec, mode, off))
+    __take(Time.__from_civil(Time, year, mon, day, hour, min, sec, mode, off))
   end
 
   # self becomes t (its instant, zone and timezone object)
   def __take(t)
     __set(t)
     self.__tz = t.__send__(:__tz)
+    self.__roff = t.__send__(:__roff)
+    self.__subsec = t.__send__(:__subsec)
     self
   end
   private :__take
@@ -324,12 +383,20 @@ class Time
   def __tz=(tz)
     @__tz = tz
   end
-  private :__tz, :__tz=
+  def __roff = @__roff
+  def __roff=(r)
+    @__roff = r
+  end
+  def __subsec = @__subsec
+  def __subsec=(s)
+    @__subsec = s
+  end
+  private :__tz, :__tz=, :__roff, :__roff=, :__subsec, :__subsec=
 
   def __ns = __parts[1]
   def __sec_i = __parts[0]
 
-  def utc_offset = __parts[3]
+  def utc_offset = @__roff || __parts[3]
   alias gmt_offset utc_offset
   alias gmtoff utc_offset
 
@@ -349,11 +416,17 @@ class Time
   def localtime(off = nil)
     p = __parts
     # already local: nothing changes (a frozen Time too)
-    return self if off.nil? && p[2] == 1 && @__tz.nil?
+    return self if off.nil? && p[2] == 1 && @__tz.nil? && @__roff.nil?
     mode, o = off.nil? ? [1, 0] : Time.__zone(off, self.class)
-    return __take(Time.__in_tz(Time, p[0], p[1], o)) if mode == :tz
+    if mode == :tz
+      t = Time.__in_tz(Time, p[0], p[1], o)
+      t.__send__(:__subsec=, @__subsec) if @__subsec
+      return __take(t)
+    end
     @__tz = nil
-    __set(Time.__make(p[0], p[1], mode, o))
+    int_o = Rational === o ? o.round : o
+    @__roff = (Rational === o && o.denominator != 1) ? o : nil
+    __set(Time.__make(p[0], p[1], mode, int_o))
   end
 
   def getlocal(off = nil)
@@ -364,6 +437,7 @@ class Time
     p = __parts
     return self if p[2] == 0
     @__tz = nil
+    @__roff = nil
     __set(Time.__make(p[0], p[1], 0, 0))
   end
   alias gmtime utc
@@ -378,13 +452,14 @@ class Time
   def usec = __parts[1] / 1000
   alias tv_usec usec
   def subsec
+    return @__subsec if @__subsec
     ns = __parts[1]
     ns == 0 ? 0 : Rational(ns, 1_000_000_000)
   end
 
   def to_r
     p = __parts
-    Rational(p[0]) + Rational(p[1], 1_000_000_000)
+    Rational(p[0]) + subsec
   end
 
   def to_f
@@ -395,10 +470,16 @@ class Time
   # a Time of self's class at another instant, in self's own zone (not the
   # local zone of now)
   # (+ and - give a Time, not an instance of self's subclass, as MRI)
-  def __with(sec, ns)
-    return Time.__in_tz(Time, sec, ns, @__tz) if @__tz
+  def __with(sec, ns, sub = nil)
+    if @__tz
+      t = Time.__in_tz(Time, sec, ns, @__tz)
+      t.__send__(:__subsec=, sub) if sub
+      return t
+    end
     t = Time.allocate
     t.__set(__at(sec, ns))
+    t.__send__(:__roff=, @__roff) if @__roff
+    t.__send__(:__subsec=, sub) if sub
     t
   end
   private :__with
@@ -408,18 +489,20 @@ class Time
     raise TypeError, "can't convert #{Kernel.__cname(other)} into an exact number" if other.nil? || String === other
     d = Numeric === other ? other : Kernel.__implicit(other, Integer)
     p = __parts
-    # in nanoseconds with Integer arithmetic: mruby's Rational overflows
-    # on a Float's 2**52 denominator
+    if Integer === d
+      return __with(p[0] + d, p[1], @__subsec)
+    end
     r = d.to_r
-    total = p[1] + (r.numerator * 1_000_000_000).div(r.denominator)
-    __with(p[0] + total.div(1_000_000_000), total % 1_000_000_000)
+    base_f = @__subsec || Rational(p[1], 1_000_000_000)
+    carry, ns, sub = Time.__add_frac(base_f, r)
+    __with(p[0] + carry, ns, sub)
   end
 
   def -(other)
     p = __parts
     if Time === other
       q = other.__parts
-      return (p[0] - q[0]) + (p[1] - q[1]) / 1e9
+      return (p[0] - q[0]) + (subsec - other.subsec).to_f
     end
     raise TypeError, "can't convert #{Kernel.__cname(other)} into an exact number" if other.nil? || String === other
     d = Numeric === other ? other : Kernel.__implicit(other, Integer)
@@ -440,7 +523,12 @@ class Time
     a = __parts
     b = other.__parts
     c = a[0] <=> b[0]
-    c == 0 ? a[1] <=> b[1] : c
+    return c unless c == 0
+    if @__subsec || other.__send__(:__subsec)
+      subsec <=> other.subsec
+    else
+      a[1] <=> b[1]
+    end
   end
 
   def ==(other)
@@ -544,6 +632,16 @@ class Time
            end
       ab = ab.to_s.gsub("%", "%%")
       fmt = fmt.gsub(/%(%|Z)/) { |m| m == "%%" ? m : ab }
+    end
+    if @__subsec && fmt.include?("N")
+      f = @__subsec
+      fmt = fmt.gsub(/%(%|(\d*)N)/) do |m|
+        next m if m == "%%"
+        w = $2.empty? ? 9 : $2.to_i
+        w = 9 if w <= 0
+        digits = (f.numerator * (10**w)).div(f.denominator).to_s.rjust(w, "0")
+        digits[0, w]
+      end
     end
     __oruby_go_strftime(fmt)
   end

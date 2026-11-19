@@ -149,15 +149,37 @@ class String
     ::UnicodeNormalize.normalized?(self, form)
   end
 
-  def grapheme_clusters
-    return chars unless encoding == Encoding::UTF_8 || encoding == Encoding::US_ASCII
-    scan(/\X/)
+  def grapheme_clusters(&block)
+    enc = encoding
+    res = if enc == Encoding::UTF_8 || enc == Encoding::US_ASCII
+            scan(/\X/)
+          elsif enc == Encoding::UTF_16LE || enc == Encoding::UTF_16BE || enc == Encoding::UTF_32LE || enc == Encoding::UTF_32BE
+            encode(Encoding::UTF_8).scan(/\X/).map { |g| g.encode(enc) }
+          elsif !enc.dummy? && enc != Encoding::BINARY && defined?(Encoding::Converter) && Encoding::Converter.respond_to?(:__char_len)
+            out = []
+            pos = 0
+            n = bytesize
+            ename = enc.name
+            while pos < n
+              cl = Encoding::Converter.__char_len(self, pos, ename)
+              cl = 1 if cl <= 0
+              out << byteslice(pos, cl).force_encoding(enc)
+              pos += cl
+            end
+            out
+          else
+            chars
+          end
+    if block
+      res.each(&block)
+      return self
+    end
+    res
   end
 
   def each_grapheme_cluster(&block)
     return to_enum(:each_grapheme_cluster) { grapheme_clusters.size } unless block
-    grapheme_clusters.each(&block)
-    self
+    grapheme_clusters(&block)
   end
 
   def sum(bits = 16)
@@ -301,35 +323,7 @@ class String
     __oruby_chomp!(Kernel.__implicit(sep, String))
   end
 
-  # Ruby 4.1: strip/lstrip/rstrip take character selectors, as #count does
-  %i[strip lstrip rstrip].each do |m|
-    alias_method :"__oruby_#{m}", m
-    alias_method :"__oruby_#{m}!", :"#{m}!"
-  end
-
-  def __oruby_sel_strip(sel, left, right)
-    sel = sel.map { |s| Kernel.__implicit(s, String) }
-    cs = chars
-    i = 0
-    j = cs.size
-    i += 1 while left && i < j && cs[i].count(*sel) > 0
-    j -= 1 while right && j > i && cs[j - 1].count(*sel) > 0
-    String.new(self[i, j - i])
-  end
-  private :__oruby_sel_strip
-
-  def strip(*sel) = sel.empty? ? __oruby_strip : __oruby_sel_strip(sel, true, true)
-  def lstrip(*sel) = sel.empty? ? __oruby_lstrip : __oruby_sel_strip(sel, true, false)
-  def rstrip(*sel) = sel.empty? ? __oruby_rstrip : __oruby_sel_strip(sel, false, true)
-
-  %i[strip lstrip rstrip].each do |m|
-    define_method(:"#{m}!") do |*sel|
-      return __send__(:"__oruby_#{m}!") if sel.empty?
-      raise FrozenError.new("can't modify frozen String: #{inspect}", receiver: self) if frozen?
-      r = __send__(m, *sel)
-      r == self ? nil : replace(r)
-    end
-  end
+  # strip/lstrip/rstrip (0-arg and selector forms) are installed in C by go-string.c
 end
 
 # String.new(str = "", encoding: nil, capacity: nil) as MRI has it: without

@@ -162,9 +162,9 @@ func uriValid(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ok = reUserinfo.MatchString(v)
 	case "host":
 		ok = reHost.MatchString(v)
-	case "path", "opaque":
+	case "path":
 		ok = rePchar.MatchString(v)
-	case "query", "fragment":
+	case "opaque", "query", "fragment":
 		ok = reQuery.MatchString(v)
 	default:
 		ok = true

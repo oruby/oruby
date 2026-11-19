@@ -11,6 +11,7 @@ package transcode
 import (
 	_ "embed"
 	"errors"
+	"strings"
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/internal/rb"
@@ -35,6 +36,7 @@ func init() {
 		cls.DefineMethod("__names", convNames, mrb.ArgsNone())
 		cls.DefineClassMethod("__path", convPath, mrb.ArgsReq(2))
 		cls.DefineClassMethod("__invalid_spans", convInvalidSpans, mrb.ArgsReq(2))
+		cls.DefineClassMethod("__char_len", convCharLen, mrb.ArgsReq(3))
 		for name, v := range map[string]int{
 			"INVALID_MASK": InvalidMask, "INVALID_REPLACE": InvalidReplace,
 			"UNDEF_MASK": UndefMask, "UNDEF_REPLACE": UndefReplace, "UNDEF_HEX_CHARREF": UndefHexCharref,
@@ -191,4 +193,25 @@ func convInvalidSpans(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		vals = append(vals, mrb.FixnumValue(s[0]), mrb.FixnumValue(s[1]))
 	}
 	return mrb.AryNewFromValues(vals...)
+}
+
+// Converter.__char_len(str, pos, enc_name) -> byte length of the character at pos
+func convCharLen(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	a := mrb.GetArgs().Slice()
+	b := a[0].Bytes()
+	pos := a[1].Int()
+	if pos < 0 || pos >= len(b) {
+		return mrb.FixnumValue(0)
+	}
+	c, ok := codecs[strings.ToUpper(a[2].String())]
+	if !ok {
+		return mrb.FixnumValue(1)
+	}
+	dec := c.dec()
+	var buf [8]byte
+	_, n, res, _ := dec.decode(buf[:0], b[pos:])
+	if res == rInvalid || n <= 0 {
+		return mrb.FixnumValue(1)
+	}
+	return mrb.FixnumValue(n)
 }

@@ -2,6 +2,12 @@
 # (String, Symbol, #to_str) where a leading "-" signals process groups. A
 # signal this process sends to itself is handled before kill returns.
 module Process
+  def self.respond_to?(name, include_all = false)
+    s = name.to_sym
+    return false if s == :daemon || s == :_fork
+    super
+  end
+
   def self.kill(sig, *pids)
     raise ArgumentError, "wrong number of arguments (given 1, expected 2+)" if pids.empty?
     signo = Integer === sig ? sig : Signal.__oruby_signo(sig, true, false)

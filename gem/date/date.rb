@@ -11,10 +11,10 @@ class Date
   UNIX_EPOCH_IN_CJD = 2440588
 
   MONTHNAMES = [nil, "January", "February", "March", "April", "May", "June", "July",
-                "August", "September", "October", "November", "December"].freeze
-  ABBR_MONTHNAMES = [nil, "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].freeze
-  DAYNAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].freeze
-  ABBR_DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].freeze
+                "August", "September", "October", "November", "December"].map { |s| s&.freeze }.freeze
+  ABBR_MONTHNAMES = [nil, "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map { |s| s&.freeze }.freeze
+  DAYNAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map(&:freeze).freeze
+  ABBR_DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(&:freeze).freeze
   VERSION = "3.4.1"
 
   # -- helpers ---------------------------------------------------------------
@@ -132,8 +132,9 @@ class Date
     return false unless y.is_a?(Numeric) && m.is_a?(Numeric) && d.is_a?(Numeric)
     !__valid_civil(y.to_i, m.to_i, d.to_i, __sg(sg)).nil?
   end
-
-  def self.valid_date?(*args) = valid_civil?(*args)
+  class << self
+    alias valid_date? valid_civil?
+  end
 
   def self.valid_jd?(jd, sg = ITALY)
     jd.is_a?(Numeric)
@@ -198,6 +199,31 @@ class Date
     if h[:seconds]
       return nil
     end
+    if h[:wnum0] || h[:wnum1]
+      y = h[:year] || Date.today.year
+      first = __valid_civil(y, 1, 1, sg)
+      return nil unless first
+      if h[:wnum0]
+        fwday = (first + 1) % 7 # 0=Sun..6=Sat
+        sun1 = first + (7 - fwday) % 7
+        wday = h[:wday] || 0
+        return sun1 + (h[:wnum0] - 1) * 7 + wday
+      else
+        fcwday = first % 7 # 0=Mon..6=Sun
+        mon1 = first + (7 - fcwday) % 7
+        w = if h[:wday] then (h[:wday] == 0 ? 6 : h[:wday] - 1)
+            elsif h[:cwday] then h[:cwday] - 1
+            else 0
+            end
+        return mon1 + (h[:wnum1] - 1) * 7 + w
+      end
+    end
+    if h[:year] && h[:wday] && !h[:mon] && !h[:mday] && !h[:yday]
+      first = __valid_civil(h[:year], 1, 1, sg)
+      return nil unless first
+      fwday = (first + 1) % 7
+      return first + (h[:wday] - fwday) % 7
+    end
     if h[:year] || h[:mon] || h[:mday]
       if h[:yday] && !h[:mon] && !h[:mday]
         y = h[:year] || (today ||= Date.today).year
@@ -222,15 +248,6 @@ class Date
     if h[:wday]
       today ||= Date.today
       return __commercial_jd(today.cwyear, today.cweek, h[:wday] == 0 ? 7 : h[:wday], sg)
-    end
-    if h[:wnum0] || h[:wnum1]
-      y = h[:year] || Date.today.year
-      first = __valid_civil(y, 1, 1, sg)
-      fwday = (first + 1) % 7
-      if h[:wnum0]
-        wday = h[:wday] || 0
-        return first + (h[:wnum0] * 7) + wday - fwday - (fwday > wday ? 0 : 7) + 7 - 7
-      end
     end
     nil
   end
@@ -377,9 +394,17 @@ class Date
   def -(x)
     case x
     when Date
-      Rational(@jd - x.instance_variable_get(:@jd)) +
-        Rational(@df - x.instance_variable_get(:@df), 86400) +
-        Rational(@sf - x.instance_variable_get(:@sf), 86400)
+      d_sec = (@jd - x.instance_variable_get(:@jd)) * 86400 + (@df - x.instance_variable_get(:@df))
+      sf1 = @sf.is_a?(Integer) ? 0r : @sf.to_r
+      sf2 = x.instance_variable_get(:@sf)
+      sf2 = sf2.is_a?(Integer) ? 0r : sf2.to_r
+      # BigInt-safe rational subtraction divided by 86400
+      n1, d1 = sf1.numerator, sf1.denominator
+      n2, d2 = sf2.numerator, sf2.denominator
+      num = d_sec * d1 * d2 + n1 * d2 - n2 * d1
+      den = 86400 * d1 * d2
+      g = num.gcd(den)
+      Rational(num / g, den / g)
     when Numeric
       self + -x
     else
@@ -480,7 +505,12 @@ class Date
   def __fields
     y, m, d = __civil
     cw = self.class.__jd_to_commercial(jd, @sg)
-    sf = @sf.is_a?(Integer) ? 0 : (@sf * 1_000_000_000).to_i
+    sf = if @sf.is_a?(Integer)
+           0
+         else
+           r = @sf.to_r
+           (r.numerator * 1_000_000_000).div(r.denominator)
+         end
     df = __local_df
     epoch = (@jd - UNIX_EPOCH_IN_CJD) * 86400 + @df
     [y, m, d, df / 3600, df / 60 % 60, df % 60, sf, wday, yday, @of, zone, cw[0], cw[1], cw[2],
@@ -489,6 +519,15 @@ class Date
   private :__fields
 
   def strftime(fmt = "%F")
+    if !@sf.is_a?(Integer) && fmt.include?("N")
+      r = @sf.to_r
+      fmt = fmt.gsub(/%(%|(\d*)N)/) do |m|
+        next m if m == "%%"
+        w = $2.empty? ? 9 : $2.to_i
+        w = 9 if w <= 0
+        (r.numerator * (10**w)).div(r.denominator).to_s.rjust(w, "0")[0, w]
+      end
+    end
     self.class.__strftime(fmt, __fields)
   end
 
@@ -538,6 +577,7 @@ class Date
   private :new_offset
 
   def deconstruct_keys(keys)
+    raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.nil? || keys.is_a?(Array)
     h = { year: year, month: mon, day: mday, yday: yday, wday: wday }
     keys ? h.select { |k, _| keys.include?(k) } : h
   end
@@ -597,12 +637,36 @@ class DateTime < Date
     end
   end
 
+  def self.__check_whole(v, name)
+    raise TypeError, "invalid #{name} (not numeric)" unless v.is_a?(Numeric)
+    raise Date::Error, "invalid date" unless v == v.to_i
+    v.to_i
+  end
+
+  def self.__split_hms(h, min, s)
+    h = __check_whole(h, "hour")
+    min = __check_whole(min, "minute")
+    raise TypeError, "invalid second (not numeric)" unless s.is_a?(Numeric)
+    sf = 0
+    if s.is_a?(Rational) || s.is_a?(Float)
+      sr = s.to_r
+      raise Date::Error, "invalid date" if sr < -60 || sr >= 60
+      si = sr.floor
+      sf = sr - si
+      s = si
+    else
+      s = s.to_i
+    end
+    [h, min, s, sf]
+  end
+
   # build from local fields
   def self.__from_local(jd, h, min, s, sf, of, sg)
+    raise Date::Error, "invalid date" if h < -24 || h > 24 || min < -60 || min > 59 || s < -60 || s > 59
     h += 24 if h < 0
     min += 60 if min < 0
     s += 60 if s < 0
-    raise Date::Error, "invalid date" if h > 24 || min > 59 || s > 59 || h < 0 || min < 0 || s < 0
+    raise Date::Error, "invalid date" if h == 24 && (min != 0 || s != 0 || sf != 0)
     sf = sf.is_a?(Integer) ? 0 : sf.to_r
     local = h * 3600 + min * 60 + s
     utc = local - of
@@ -612,34 +676,33 @@ class DateTime < Date
 
   def self.civil(y = -4712, m = 1, d = 1, h = 0, min = 0, s = 0, of = 0, sg = ITALY)
     sg = __sg(sg)
-    jd = __civil_jd(y, m, d.to_i, sg)
-    raise TypeError, "invalid hour (not numeric)" unless h.is_a?(Numeric)
-    sf = 0
-    if s.is_a?(Rational) || s.is_a?(Float)
-      sf = s.to_r - s.floor
-      s = s.floor
-    end
-    __from_local(jd, h.to_i, min.to_i, s.to_i, sf, __offset_seconds(of), sg)
+    d = __check_whole(d, "day")
+    jd = __civil_jd(y, m, d, sg)
+    h, min, s, sf = __split_hms(h, min, s)
+    __from_local(jd, h, min, s, sf, __offset_seconds(of), sg)
   end
 
   def self.new(*args) = civil(*args)
 
   def self.jd(jd = 0, h = 0, min = 0, s = 0, of = 0, sg = ITALY)
-    __from_local(jd.floor, h, min, s, 0, __offset_seconds(of), __sg(sg))
+    h, min, s, sf = __split_hms(h, min, s)
+    __from_local(jd.floor, h, min, s, sf, __offset_seconds(of), __sg(sg))
   end
 
   def self.ordinal(y = -4712, yday = 1, h = 0, min = 0, s = 0, of = 0, sg = ITALY)
     sg = __sg(sg)
-    jd = __ordinal_jd(y.to_i, yday.to_i, sg)
+    jd = __ordinal_jd(y.to_i, __check_whole(yday, "yday"), sg)
     raise Date::Error, "invalid date" unless jd
-    __from_local(jd, h, min, s, 0, __offset_seconds(of), sg)
+    h, min, s, sf = __split_hms(h, min, s)
+    __from_local(jd, h, min, s, sf, __offset_seconds(of), sg)
   end
 
   def self.commercial(y = -4712, w = 1, d = 1, h = 0, min = 0, s = 0, of = 0, sg = ITALY)
     sg = __sg(sg)
-    jd = __commercial_jd(y.to_i, w.to_i, d.to_i, sg)
+    jd = __commercial_jd(y.to_i, w.to_i, __check_whole(d, "day"), sg)
     raise Date::Error, "invalid date" unless jd
-    __from_local(jd, h, min, s, 0, __offset_seconds(of), sg)
+    h, min, s, sf = __split_hms(h, min, s)
+    __from_local(jd, h, min, s, sf, __offset_seconds(of), sg)
   end
 
   def self.now(sg = ITALY)
@@ -701,10 +764,14 @@ class DateTime < Date
   def to_datetime = self
 
   def to_time
-    Time.at((@jd - UNIX_EPOCH_IN_CJD) * 86400 + @df + @sf.to_f).getlocal
+    sec = (@jd - UNIX_EPOCH_IN_CJD) * 86400 + @df
+    sf = @sf.is_a?(Integer) ? 0 : @sf
+    t = Time.at(sec, sf * 1_000_000, :usec, in: @of)
+    t
   end
 
   def deconstruct_keys(keys)
+    raise TypeError, "wrong argument type #{keys.class} (expected Array or nil)" unless keys.nil? || keys.is_a?(Array)
     h = { year: year, month: mon, day: mday, yday: yday, wday: wday, hour: hour, min: min,
           sec: sec, sec_fraction: sec_fraction, zone: zone }
     keys ? h.select { |k, _| keys.include?(k) } : h
@@ -713,12 +780,14 @@ end
 
 class Time
   def to_date
-    Date.civil(year, mon, mday)
+    jd = Date.__valid_civil(year, mon, mday, Date::GREGORIAN)
+    Date.__new_jd(jd, Date::ITALY)
   end
 
   def to_datetime
     of = utc_offset rescue 0
-    DateTime.civil(year, mon, mday, hour, min, sec + Rational(nsec, 1_000_000_000), Rational(of, 86400))
+    jd = Date.__valid_civil(year, mon, mday, Date::GREGORIAN)
+    DateTime.__from_local(jd, hour, min, sec, subsec, of, Date::ITALY)
   end
 
   def to_time = self

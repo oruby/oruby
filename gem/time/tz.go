@@ -101,13 +101,29 @@ func initTZ(mrb *oruby.MrbState, t oruby.RClass) {
 		tm := time.Unix(int64(a.Item(0).Int()), int64(a.Item(1).Int())).In(zoneFor(a.Item(2).Int(), a.Item(3).Int()))
 		return mrb.DataValue(tm)
 	}, mrb.ArgsReq(4))
-	// Time.__civil(y, mon, d, h, mi, s, nsec, mode, off): wall time in a zone
+	// Time.__civil(y, mon, d, h, mi, s, nsec, mode, off[, isdst]): wall time in a zone
 	t.DefineClassMethod("__civil", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		a := mrb.GetArgs()
-		tm := time.Date(a.Item(0).Int(), time.Month(a.Item(1).Int()), a.Item(2).Int(), a.Item(3).Int(), a.Item(4).Int(),
-			a.Item(5).Int(), a.Item(6).Int(), zoneFor(a.Item(7).Int(), a.Item(8).Int()))
+		y, mon, d := a.Item(0).Int(), time.Month(a.Item(1).Int()), a.Item(2).Int()
+		h, mi, s, nsec := a.Item(3).Int(), a.Item(4).Int(), a.Item(5).Int(), a.Item(6).Int()
+		mode, off := a.Item(7).Int(), a.Item(8).Int()
+		loc := zoneFor(mode, off)
+		tm := time.Date(y, mon, d, h, mi, s, nsec, loc)
+		if a.Len() >= 10 && !a.Item(9).IsNil() && mode == 1 {
+			wantDST := a.Item(9).Bool()
+			if tm.IsDST() != wantDST {
+				shift := time.Hour
+				if wantDST {
+					shift = -time.Hour
+				}
+				alt := tm.Add(shift)
+				if alt.Year() == y && alt.Month() == mon && alt.Day() == d && alt.Hour() == h && alt.Minute() == mi && alt.IsDST() == wantDST {
+					tm = alt
+				}
+			}
+		}
 		return mrb.DataValue(tm)
-	}, mrb.ArgsReq(9))
+	}, mrb.ArgsArg(9, 1))
 	// time.__parts => [sec, nsec, kind, utc_offset, zone abbreviation]
 	t.DefineMethod("__parts", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		tm := getTime(mrb, self)

@@ -591,6 +591,9 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			case rc.flags&1 != 0:
 			case rc.flags&2 != 0:
 				r.addAfter(s[0], e[0], func(*rewriter) string { return ".force_encoding(::Encoding::BINARY)" })
+			case rc.flags&4 != 0:
+				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_dstr_enc(" },
+					func(*rewriter) string { return `, ::Encoding.find("` + encName + `"))` })
 			default:
 				r.addAfter(s[0], e[0], func(*rewriter) string { return `.force_encoding(::Encoding.find("` + encName + `"))` })
 			}

@@ -19,21 +19,9 @@ func fileUmask(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if len(args) > 1 {
 		return mrb.Raisef(mrb.EArgumentError(), "wrong number of arguments (given %d, expected 0..1)", len(args))
 	}
-	arg := args[0]
-	if mrb.ClassOf(arg).Name() == "Bignum" {
-		return mrb.Raise(mrb.ClassGet("RangeError"), "bignum too big to convert into 'int'")
-	}
-	var newMask int
-	if arg.IsInt() {
-		newMask = arg.Int()
-	} else if mrb.RespondTo(arg, oruby.Sym_to_int) {
-		v, err := mrb.Funcall(arg, oruby.Sym_to_int)
-		if err != nil {
-			return mrb.RaiseError(err)
-		}
-		newMask = v.Int()
-	} else {
-		return mrb.Raisef(mrb.ETypeError(), "no implicit conversion of %s into Integer", mrb.ClassOf(arg).Name())
+	newMask, err := parseMode(mrb, args[0])
+	if err != nil {
+		return mrb.RaiseError(err)
 	}
 	old := syscall.Umask(newMask)
 	return oruby.Integer(old)

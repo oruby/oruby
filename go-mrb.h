@@ -105,6 +105,7 @@ static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const m
 
 void _orb_trace_close(mrb_state *mrb);
 void _orb_fast_install(mrb_state *mrb);
+void _orb_string_install(mrb_state *mrb);
 int _orb_str_binary_p(mrb_value s);
 void _orb_fast_close(mrb_state *mrb);
 

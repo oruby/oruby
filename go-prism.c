@@ -312,8 +312,23 @@ visit(const pm_node_t *node, void *data)
     // the parts of "a" "b" or "a#{x}" are not literals of their own
     const pm_interpolated_string_node_t *is = (const pm_interpolated_string_node_t *)node;
     if (sc->nonutf8 && is->opening_loc.length > 0) {
+      int has_embed = 0, has_nonascii_lit = 0;
+      for (size_t i = 0; i < is->parts.size; i++) {
+        const pm_node_t *pt = is->parts.nodes[i];
+        if (pt->type == PM_STRING_NODE) {
+          const pm_string_node_t *ps = (const pm_string_node_t *)pt;
+          const uint8_t *bs = pm_string_source(&ps->unescaped);
+          size_t bl = pm_string_length(&ps->unescaped);
+          for (size_t j = 0; j < bl; j++) {
+            if (bs[j] >= 0x80) { has_nonascii_lit = 1; break; }
+          }
+        } else {
+          has_embed = 1;
+        }
+      }
       r = add(sc, ORB_LITERAL_ENCODING);
       span(r, 0, node);
+      if (has_embed && !has_nonascii_lit) r->flags = 4;
     }
     if (sc->frozen && PM_NODE_FLAG_P(node, PM_INTERPOLATED_STRING_NODE_FLAGS_FROZEN) && is->opening_loc.length > 0) {
       r = add(sc, ORB_FROZEN_STRING);

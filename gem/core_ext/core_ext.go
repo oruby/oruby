@@ -84,8 +84,11 @@ module RbConfig
     'RUBY_INSTALL_NAME' => 'oruby',
     'RUBY_BASE_NAME' => 'oruby',
     'RUBY_SO_NAME' => 'oruby',
+    'UNICODE_VERSION' => '17.0.0',
+    'UNICODE_EMOJI_VERSION' => '17.0',
     'CROSS_COMPILING' => 'no'
   }
+  TOPDIR = prefix
   def self.ruby
     CONFIG['bindir'] + '/' + CONFIG['ruby_install_name'] + CONFIG['EXEEXT']
   end

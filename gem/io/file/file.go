@@ -316,7 +316,10 @@ func fileLink(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func parseMode(mrb *oruby.MrbState, arg oruby.Value) (int, error) {
-	if mrb.ClassOf(arg).Name() == "Bignum" {
+	if arg.Type() == oruby.MrbTTBigInt {
+		if z, err := mrb.BigInt(arg); err == nil && z.IsUint64() {
+			return int(z.Uint64()), nil
+		}
 		return 0, oruby.ERangeError("bignum too big to convert into 'int'")
 	}
 	if arg.IsInt() {
@@ -327,7 +330,10 @@ func parseMode(mrb *oruby.MrbState, arg oruby.Value) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if mrb.ClassOf(v).Name() == "Bignum" {
+		if v.Type() == oruby.MrbTTBigInt {
+			if z, err := mrb.BigInt(v); err == nil && z.IsUint64() {
+				return int(z.Uint64()), nil
+			}
 			return 0, oruby.ERangeError("bignum too big to convert into 'int'")
 		}
 		if v.IsInt() {

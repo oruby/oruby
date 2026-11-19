@@ -99,13 +99,38 @@ func initStatus(mProc oruby.RClass) {
 		return v
 	}, mrb.ArgsReq(1))
 	cProcessStatus.UndefClassMethod("new")
-	cProcessStatus.DefineAlias("==", "equal")
+	cProcessStatus.DefineMethod("==", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		st, ok := mrb.Data(self).(*status)
+		if !ok || st == nil {
+			return mrb.FalseValue()
+		}
+		other := mrb.GetArgsFirst()
+		if other.IsInt() {
+			return mrb.BoolValue(int64(st.ToI) == other.Int64())
+		}
+		if other.Type() == oruby.MrbTTBigInt {
+			if z, err := mrb.BigInt(other); err == nil && z.IsUint64() {
+				return mrb.BoolValue(uint64(st.ToI) == z.Uint64())
+			}
+			return mrb.FalseValue()
+		}
+		if s2, ok := mrb.Data(other).(*status); ok && s2 != nil {
+			return mrb.BoolValue(st.ToI == s2.ToI)
+		}
+		return mrb.FalseValue()
+	}, mrb.ArgsReq(1))
 	cProcessStatus.DefineAlias("&", "bit_and")
 	cProcessStatus.DefineAlias(">>", "r_shift")
 	cProcessStatus.DefineAlias("exited?", "is_exited")
 	cProcessStatus.DefineAlias("signaled?", "is_signaled")
 	cProcessStatus.DefineAlias("stopped?", "is_stopped")
-	cProcessStatus.DefineAlias("success?", "is_sucess")
+	cProcessStatus.DefineMethod("success?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		st, ok := mrb.Data(self).(*status)
+		if !ok || st == nil || !st.IsExited {
+			return mrb.NilValue()
+		}
+		return mrb.BoolValue(st.IsSucess)
+	}, mrb.ArgsNone())
 
 	// nil unless the process ended that way, as in MRI
 	optInt := func(get func(*status) *int) oruby.MrbFuncT {

@@ -59,7 +59,7 @@ class BigDecimal
       when :half_even, :banker then ROUND_HALF_EVEN
       when :ceiling, :ceil then ROUND_CEILING
       when :floor then ROUND_FLOOR
-      else raise ArgumentError, "invalid rounding mode"
+      else raise ArgumentError, "invalid rounding mode (#{v})"
       end
     end
 
@@ -99,8 +99,7 @@ class BigDecimal
       when BigDecimal then v
       when Integer then __new(v.to_s, 0, true)
       when Float
-        return __new(v.nan? ? "NaN" : (v > 0 ? "Infinity" : "-Infinity"), 0, true) if v.nan? || v.infinite?
-        __new(prec > 0 ? format("%.#{prec}e", v) : v.to_s, prec, true)
+        __from_float(v, prec)
       when Rational
         p = prec > 0 ? prec : 32
         __new(v.numerator.to_s, 0, true).div(__new(v.denominator.to_s, 0, true), p)
@@ -117,12 +116,11 @@ class BigDecimal
     when Integer
       __new(v.to_s, prec, true)
     when Float
-      raise ArgumentError, "can't omit precision for a Float." if prec == 0 && false
       if v.nan? || v.infinite?
         __new(v.nan? ? "NaN" : (v > 0 ? "Infinity" : "-Infinity"), 0, true)
       else
         raise ArgumentError, "precision too large." if prec > 17
-        __new(prec > 0 ? format("%.#{prec - 1}e", v) : v.to_s, prec, true)
+        __from_float(v, prec)
       end
     when Rational
       raise ArgumentError, "can't omit precision for a Rational." if prec == 0
@@ -136,7 +134,11 @@ class BigDecimal
       if v.respond_to?(:to_str)
         s = v.to_str
         begin
-          __new(s, prec, true)
+          r = __new(s, prec, true)
+          if r.infinite? && !(s.strip == "Infinity" || s.strip == "+Infinity" || s.strip == "-Infinity") && BigDecimal.__exc?(EXCEPTION_OVERFLOW)
+            raise FloatDomainError, "Computation results in '#{r.infinite? > 0 ? '' : '-'}Infinity'"
+          end
+          r
         rescue ArgumentError => __exc
           raise __exc if exception
           nil
@@ -219,7 +221,7 @@ class BigDecimal
   def /(v)
     o = __other(v) or return __coerced(:/, v)
     if o.zero? && !nan? && !zero? && BigDecimal.__exc?(EXCEPTION_ZERODIVIDE)
-      raise ZeroDivisionError, "divided by 0"
+      raise FloatDomainError, "Division by zero"
     end
     __check(__div(o, 0, BigDecimal.mode(ROUND_MODE)))
   end
@@ -231,20 +233,31 @@ class BigDecimal
   end
   private :__coerced
 
-  def add(v, digits)
+  def __check_prec(digits)
+    unless digits.is_a?(Integer)
+      raise TypeError, "no implicit conversion of #{digits.nil? ? 'nil' : digits.class} into Integer" unless digits.respond_to?(:to_int)
+      digits = digits.to_int
+      raise TypeError, "can't convert into Integer" unless digits.is_a?(Integer)
+    end
     raise ArgumentError, "negative precision" if digits < 0
+    digits
+  end
+  private :__check_prec
+
+  def add(v, digits)
+    digits = __check_prec(digits)
     r = self + v
     digits > 0 ? r.round_sig(digits) : r
   end
 
   def sub(v, digits)
-    raise ArgumentError, "negative precision" if digits < 0
+    digits = __check_prec(digits)
     r = self - v
     digits > 0 ? r.round_sig(digits) : r
   end
 
   def mult(v, digits)
-    raise ArgumentError, "negative precision" if digits < 0
+    digits = __check_prec(digits)
     r = self * v
     digits > 0 ? r.round_sig(digits) : r
   end
@@ -258,7 +271,7 @@ class BigDecimal
       return 0 if o.infinite?
       return (self / o).floor
     end
-    raise ArgumentError, "negative precision" if digits < 0
+    digits = __check_prec(digits)
     o = __other(v)
     return self / o if digits == 0
     __check(__div(o, digits, BigDecimal.mode(ROUND_MODE)))
@@ -317,7 +330,7 @@ class BigDecimal
         base *= base
         e >>= 1
       end
-      result = BigDecimal("1").div(result, prec || [n_significant_digits * n.abs, 32].max) if n < 0
+      result = BigDecimal("1").div(result, prec || [n_significant_digits * n.abs + 32, 64].max) if n < 0
       return prec ? result.round_sig(prec) : result
     end
     if n.is_a?(BigDecimal) && n.frac.zero? && n.finite?
@@ -327,10 +340,10 @@ class BigDecimal
     BigDecimal(to_f**n.to_f, prec || 16)
   end
 
-  def sqrt(n = 0)
+  def sqrt(n)
+    n = __check_prec(n)
     raise FloatDomainError, "sqrt of negative value" if negative?
     raise FloatDomainError, "sqrt of 'NaN'(Not a Number)" if nan?
-    raise ArgumentError, "negative precision" if n < 0
     __sqrt(n)
   end
 
@@ -405,7 +418,7 @@ class BigDecimal
   # -- comparison --------------------------------------------------------------
 
   def <=>(v)
-    o = BigDecimal.__coerce(v, 20)
+    o = BigDecimal.__coerce(v, 0)
     if o.nil?
       return nil unless v.respond_to?(:coerce)
       a, b = v.coerce(self) rescue (return nil)
@@ -415,7 +428,7 @@ class BigDecimal
   end
 
   def ==(v)
-    o = BigDecimal.__coerce(v, 20)
+    o = BigDecimal.__coerce(v, 0)
     return (v == self) if o.nil? && v.respond_to?(:coerce) && !v.is_a?(Numeric) rescue false
     return false if o.nil?
     __cmp(o) == 0
@@ -425,7 +438,7 @@ class BigDecimal
 
   %i[< <= > >=].each do |op|
     define_method(op) do |v|
-      o = BigDecimal.__coerce(v, 20)
+      o = BigDecimal.__coerce(v, 0)
       if o.nil?
         raise ArgumentError, "comparison of BigDecimal with #{v.nil? ? 'nil' : v.inspect} failed" unless v.respond_to?(:coerce)
         a, b = v.coerce(self)
@@ -450,7 +463,7 @@ class BigDecimal
     __to_s(fmt.is_a?(String) ? fmt : fmt.to_s)
   end
 
-  def inspect = to_s
+  def inspect = __to_s("")
 
   def to_i
     raise FloatDomainError, nan? ? "NaN" : (infinite? > 0 ? "Infinity" : "-Infinity") unless finite?
@@ -500,6 +513,18 @@ module BigMath
   module_function
 
   def sqrt(x, prec) = BigDecimal(x).sqrt(prec)
+
+  def log(x, prec)
+    raise ArgumentError, "Zero or negative precision for log" if prec <= 0
+    x = case x
+        when BigDecimal then x
+        when Rational then BigDecimal(x, prec + 16)
+        when Integer then BigDecimal(x)
+        when Float then BigDecimal(x, 0)
+        else raise TypeError, "can't convert #{x.class} into BigDecimal"
+        end
+    BigDecimal.__log(x, prec)
+  end
 
   def PI(prec)
     raise ArgumentError, "Zero or negative precision for PI" if prec <= 0

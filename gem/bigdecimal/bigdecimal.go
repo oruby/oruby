@@ -174,6 +174,15 @@ func mul(a, b *decimal) *decimal {
 		}
 		return inf(a.neg != b.neg)
 	}
+	if a.isZero() || b.isZero() {
+		return zero(a.neg != b.neg)
+	}
+	if b.exp > 0 && a.exp > math.MaxInt64-b.exp {
+		return inf(a.neg != b.neg)
+	}
+	if b.exp < 0 && a.exp < math.MinInt64-b.exp {
+		return zero(a.neg != b.neg)
+	}
 	return newFinite(a.neg != b.neg, new(big.Int).Mul(a.coef, b.coef), a.exp+b.exp)
 }
 
@@ -645,6 +654,8 @@ func init() {
 			}
 			return mrb.FixnumValue(int(old))
 		}, mrb.ArgsOpt(1))
+		cls.DefineClassMethod("__from_float", bdFromFloat, mrb.ArgsReq(2))
+		cls.DefineClassMethod("__log", bdLog, mrb.ArgsReq(2))
 		rb.LoadRuby(mrb, "bigdecimal.rb", bigdecimalRb)
 		return nil
 	})
@@ -737,5 +748,112 @@ func bdSqrt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func bdToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return mrb.StrNew(get(mrb, self).toS(mrb.GetArgsFirst().String()))
+	s := mrb.StrNew(get(mrb, self).toS(mrb.GetArgsFirst().String()))
+	return mrb.Call(s, "force_encoding", mrb.StrNew("US-ASCII"))
+}
+
+func bdFromFloat(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	a := mrb.GetArgs().Slice()
+	f := a[0].Float64()
+	prec := a[1].Int64()
+	if math.IsNaN(f) {
+		return wrap(mrb, nan())
+	}
+	if math.IsInf(f, 0) {
+		return wrap(mrb, inf(f < 0))
+	}
+	var s string
+	if prec > 0 {
+		s = strconv.FormatFloat(f, 'e', int(prec-1), 64)
+	} else {
+		s = strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	d, ok := parse(s, true)
+	if !ok {
+		return mrb.Raise(mrb.EArgumentError(), "invalid value for BigDecimal()")
+	}
+	if prec == 0 && d.digits() > 16 {
+		d = roundSig(d, 16, roundDown)
+	} else if prec > 0 {
+		d = roundSig(d, prec, roundHalfUp)
+	}
+	return wrap(mrb, d)
+}
+
+// bigFloatLnNear1 computes ln(z) for z near 1 using 2*(u + u^3/3 + u^5/5 + ...)
+// where u = (z-1)/(z+1).
+func bigFloatLnNear1(z *big.Float, precBits uint) *big.Float {
+	one := new(big.Float).SetPrec(precBits).SetInt64(1)
+	num := new(big.Float).SetPrec(precBits).Sub(z, one)
+	den := new(big.Float).SetPrec(precBits).Add(z, one)
+	u := new(big.Float).SetPrec(precBits).Quo(num, den)
+	u2 := new(big.Float).SetPrec(precBits).Mul(u, u)
+	sum := new(big.Float).SetPrec(precBits).Set(u)
+	term := new(big.Float).SetPrec(precBits).Set(u)
+	tmp := new(big.Float).SetPrec(precBits)
+	kVal := new(big.Float).SetPrec(precBits)
+	epsExp := -int(precBits) - 8
+	for k := int64(3); ; k += 2 {
+		term.Mul(term, u2)
+		kVal.SetInt64(k)
+		tmp.Quo(term, kVal)
+		sum.Add(sum, tmp)
+		if tmp.Sign() == 0 || tmp.MantExp(nil) < epsExp {
+			break
+		}
+	}
+	two := new(big.Float).SetPrec(precBits).SetInt64(2)
+	return sum.Mul(sum, two)
+}
+
+func bdLog(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	a := mrb.GetArgs().Slice()
+	d := get(mrb, a[0])
+	prec := a[1].Int64()
+	if prec <= 0 {
+		return mrb.Raise(mrb.EArgumentError(), "Zero or negative precision for log")
+	}
+	if d.kind == kNaN || d.neg || d.isZero() {
+		return rb.Raise(mrb, "Math::DomainError", "Domain error - log")
+	}
+	if d.kind == kInf {
+		return wrap(mrb, inf(false))
+	}
+	workDigits := prec + 24
+	precBits := uint(float64(workDigits)*3.4) + 128
+	// Parse exact decimal into big.Float
+	s := d.coef.String() + "e" + strconv.FormatInt(d.exp, 10)
+	x, _, err := big.ParseFloat(s, 10, precBits, big.ToNearestEven)
+	if err != nil {
+		return mrb.Raise(mrb.EArgumentError(), "invalid argument for log")
+	}
+	// Reduce x = m * 2^e with m in [0.5, 1.0)
+	mant := new(big.Float).SetPrec(precBits)
+	exp2 := x.MantExp(mant)
+	// Adjust so mant is in [0.75, 1.5) for faster convergence
+	if mant.Cmp(new(big.Float).SetPrec(precBits).SetFloat64(0.75)) < 0 {
+		mant.Mul(mant, new(big.Float).SetPrec(precBits).SetInt64(2))
+		exp2--
+	}
+	res := bigFloatLnNear1(mant, precBits)
+	if exp2 != 0 {
+		// ln(2) = ln(4/3) + ln(3/2)
+		f43 := new(big.Float).SetPrec(precBits).Quo(
+			new(big.Float).SetPrec(precBits).SetInt64(4),
+			new(big.Float).SetPrec(precBits).SetInt64(3),
+		)
+		f32 := new(big.Float).SetPrec(precBits).Quo(
+			new(big.Float).SetPrec(precBits).SetInt64(3),
+			new(big.Float).SetPrec(precBits).SetInt64(2),
+		)
+		ln2 := new(big.Float).SetPrec(precBits).Add(bigFloatLnNear1(f43, precBits), bigFloatLnNear1(f32, precBits))
+		eTerm := new(big.Float).SetPrec(precBits).Mul(ln2, new(big.Float).SetPrec(precBits).SetInt64(int64(exp2)))
+		res.Add(res, eTerm)
+	}
+	outStr := res.Text('e', int(prec+10))
+	outDec, ok := parse(outStr, true)
+	if !ok {
+		return wrap(mrb, nan())
+	}
+	return wrap(mrb, roundSig(outDec, prec+1, roundHalfUp))
 }

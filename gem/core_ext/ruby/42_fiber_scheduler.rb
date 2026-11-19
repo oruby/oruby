@@ -199,10 +199,15 @@ module Process
     def self.wait(pid = -1, flags = 0)
       pid = Kernel.__to_int(pid) unless Integer === pid
       flags = Kernel.__to_int(flags) unless Integer === flags || flags.nil?
-      r = Process.__oruby_wait2(pid, flags || 0)
-      r ? r[1] : nil
-    rescue Errno::ECHILD
-      __oruby_nochild
+      saved = $?
+      begin
+        r = Process.__oruby_wait2(pid, flags || 0)
+        r ? r[1] : nil
+      rescue Errno::ECHILD
+        __oruby_nochild
+      ensure
+        Process.__oruby_set_status(saved)
+      end
     end
   end
 

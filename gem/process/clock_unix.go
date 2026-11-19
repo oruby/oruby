@@ -93,15 +93,19 @@ func clockGettime(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	return clockValue(mrb, ts.Nano(), unit)
 }
 
-// clockGetres reports the clock resolution (1ns for the supported clocks)
+// clockGetres reports the clock resolution
 func clockGetres(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs().Slice()
 	if _, exc := clockID(mrb, a[0]); exc != nil {
 		return exc
 	}
+	res := int64(1000)
+	if a[0].Type() == oruby.MrbTTSymbol && mrb.SymString(a[0].Symbol()) == "TIME_BASED_CLOCK_REALTIME" {
+		res = 1_000_000_000
+	}
 	unit := oruby.Nil
 	if len(a) > 1 {
 		unit = a[1]
 	}
-	return clockValue(mrb, 1000, unit)
+	return clockValue(mrb, res, unit)
 }

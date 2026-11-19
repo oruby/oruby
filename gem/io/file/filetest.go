@@ -14,7 +14,7 @@ func initFileTest(mrb *oruby.MrbState) oruby.RClass {
 	proxyClassMethodToStat(f, "exist?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(f, "file?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(f, "grpowned?", mrb.ArgsReq(1))
-	proxyClassMethodToStat(f, "identical?", mrb.ArgsReq(1))
+	mrb.DefineClassMethod(f, "identical?", fileIdentical, mrb.ArgsReq(2))
 	proxyClassMethodToStat(f, "owned?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(f, "pipe?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(f, "readable?", mrb.ArgsReq(1))

@@ -77,6 +77,18 @@ class Random
     @__mt.left
   end
 
+  private def marshal_dump
+    [state, left, @__seed]
+  end
+
+  private def marshal_load(ary)
+    raise TypeError, "expected Array" unless Array === ary && ary.size == 3
+    st, lft, s = ary
+    @__seed = s
+    @__mt = Random::MTState.new.restore(st, lft)
+    self
+  end
+
   def ==(other)
     return false unless Random === other
     seed == other.seed &&

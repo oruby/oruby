@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"math/big"
 	randv2 "math/rand/v2"
 	"sync"
 
@@ -244,6 +245,34 @@ func initRandom(mrb *oruby.MrbState) {
 		*dst = *src
 		return self
 	}, oruby.ArgsReq(1))
+
+	mrb.DefineMethod(mtCls, "restore", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		mt := mrb.Data(self).(*mt19937)
+		a := mrb.GetArgs().Slice()
+		z, err := mrb.BigInt(a[0])
+		if err != nil {
+			if a[0].IsInt() {
+				z = big.NewInt(a[0].Int64())
+			} else {
+				return mrb.Raise(mrb.ETypeError(), "invalid Random state")
+			}
+		}
+		var buf [mtN * 4]byte
+		raw := z.Bytes()
+		for i := 0; i < len(raw) && i < len(buf); i++ {
+			buf[i] = raw[len(raw)-1-i]
+		}
+		for i := 0; i < mtN; i++ {
+			mt.state[i] = binary.LittleEndian.Uint32(buf[i*4:])
+		}
+		mt.left = a[1].Int()
+		if mt.left >= 0 && mt.left <= mtN {
+			mt.next = mtN - mt.left
+		} else {
+			mt.next = 0
+		}
+		return self
+	}, oruby.ArgsReq(2))
 }
 
 // defaultMT is the state of Random.default (nil before 40_random.rb ran)

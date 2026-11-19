@@ -25,6 +25,7 @@ class StringIO
   attr_reader :lineno
 
   def initialize(string = nil, mode = nil, **opts)
+    warn "warning: StringIO::new() does not take block; use StringIO::open() instead" if block_given?
     __setup(string, mode, opts, true)
   end
   private :initialize
@@ -35,8 +36,16 @@ class StringIO
   end
 
   def reopen(*args, **opts)
-    if args.size == 1 && args[0].is_a?(StringIO) && opts.empty?
+    if args.size == 1 && opts.empty? && !args[0].is_a?(String)
       other = args[0]
+      unless other.is_a?(StringIO)
+        if other.respond_to?(:to_strio)
+          other = other.to_strio
+          raise TypeError, "can't convert #{args[0].class} to StringIO (#{args[0].class}#to_strio gives #{other.class})" unless other.is_a?(StringIO)
+        else
+          raise TypeError, "no implicit conversion of #{other.nil? ? 'nil' : other.class} into StringIO"
+        end
+      end
       @string = other.string
       @pos = other.pos
       @lineno = other.lineno
@@ -182,10 +191,17 @@ class StringIO
   end
 
   def set_encoding_by_bom
+    raise FrozenError, "can't modify frozen StringIO" if frozen?
     return nil unless @string
     s = @string
-    { "\xEF\xBB\xBF".b => "UTF-8", "\xFE\xFF".b => "UTF-16BE", "\xFF\xFE".b => "UTF-16LE" }.each do |bom, enc|
-      if s.byteslice(0, bom.bytesize).b == bom
+    [
+      ["\x00\x00\xFE\xFF".b, "UTF-32BE"],
+      ["\xFF\xFE\x00\x00".b, "UTF-32LE"],
+      ["\xEF\xBB\xBF".b, "UTF-8"],
+      ["\xFE\xFF".b, "UTF-16BE"],
+      ["\xFF\xFE".b, "UTF-16LE"],
+    ].each do |bom, enc|
+      if s.bytesize >= bom.bytesize && s.byteslice(0, bom.bytesize).b == bom
         @pos = bom.bytesize
         set_encoding(enc)
         return Encoding.find(enc)
@@ -194,9 +210,7 @@ class StringIO
     nil
   end
 
-  def inspect
-    "#<StringIO:0x#{(object_id << 1).to_s(16).rjust(16, '0')}>"
-  end
+  alias inspect to_s
 
   # -- reading -------------------------------------------------------------
 
@@ -216,7 +230,11 @@ class StringIO
       if length == 0
         data = +""
       elsif @pos >= size
-        outbuf&.replace("")
+        if outbuf
+          enc = outbuf.encoding
+          outbuf.replace("")
+          outbuf.force_encoding(enc)
+        end
         return nil
       else
         data = @string.byteslice(@pos, length)
@@ -225,8 +243,9 @@ class StringIO
       data.force_encoding(Encoding::BINARY)
     end
     if outbuf
-      outbuf.replace(data)
-      outbuf.force_encoding(data.encoding)
+      enc = outbuf.encoding
+      outbuf.replace(data.b)
+      outbuf.force_encoding(enc)
       return outbuf
     end
     data
@@ -245,8 +264,9 @@ class StringIO
   end
 
   def sysread(length = nil, outbuf = nil, exception: true)
+    length = __to_int(length) unless length.nil?
     data = read(length, outbuf)
-    if data.nil? || (length.nil? ? false : (length.to_int > 0 && data.empty?))
+    if data.nil? || (length.nil? ? false : (length > 0 && data.empty?))
       return nil unless exception
       raise EOFError, "end of file reached"
     end
@@ -255,8 +275,9 @@ class StringIO
   alias readpartial sysread
 
   def read_nonblock(length, outbuf = nil, exception: true)
+    length = __to_int(length) unless length.nil?
     data = read(length, outbuf)
-    if data.nil? && length.to_int > 0
+    if data.nil? && length && length > 0
       return nil unless exception
       raise EOFError, "end of file reached"
     end
@@ -450,19 +471,30 @@ class StringIO
       raise ArgumentError, "both textmode and binmode specified"
     end
     if string.nil?
-      string = +"" if default_string
-      string ||= +""
+      string = (+"").force_encoding(Encoding.default_external)
     else
       string = __to_str(string)
     end
     mode = __to_str(mode) if mode && !mode.is_a?(Integer)
+    if mode.is_a?(String)
+      parts = mode.split(":", 3)
+      acc_part = parts[0].to_s
+      if parts.size > 1 && (opts[:encoding] || opts[:external_encoding] || opts[:internal_encoding])
+        raise ArgumentError, "encoding specified twice"
+      end
+      if (acc_part.include?("b") || acc_part.include?("t")) && (opts.key?(:binmode) || opts.key?(:textmode))
+        raise ArgumentError, "binmode/textmode specified twice"
+      end
+    end
     readable, writable, append, truncate = __mode(mode, string)
     if writable && string.frozen?
       raise Errno::EACCES, "Permission denied"
     end
     if truncate
       raise FrozenError, "can't modify frozen String" if string.frozen?
+      enc = string.encoding
       string.replace("")
+      string.force_encoding(enc)
     end
     @string = string
     @pos = 0
@@ -475,8 +507,11 @@ class StringIO
       set_encoding(opts[:encoding])
     elsif opts[:external_encoding]
       set_encoding(opts[:external_encoding])
+    elsif mode.is_a?(String) && mode.include?(":")
+      enc_part = mode.split(":", 3)[1]
+      set_encoding(enc_part) if enc_part && !enc_part.empty?
     end
-    binmode if opts[:binmode] || (mode.is_a?(String) && mode.include?("b"))
+    binmode if opts[:binmode] || (mode.is_a?(String) && mode.split(":").first.to_s.include?("b"))
   end
 
   def __mode(mode, string)
@@ -541,6 +576,10 @@ class StringIO
   # length in bytes of the character starting at byte position pos
   def __char_len(pos)
     return 1 if __binary?
+    enc = external_encoding
+    if enc && enc != Encoding::UTF_8 && defined?(Encoding::Converter) && Encoding::Converter.respond_to?(:__char_len)
+      return Encoding::Converter.__char_len(@string, pos, enc.name)
+    end
     b = @string.getbyte(pos)
     need = if b < 0x80 then 1
            elsif b >= 0xf0 && b < 0xf8 then 4
@@ -559,7 +598,9 @@ class StringIO
 
   def __write(str)
     str = str.to_s
-    if str.encoding != @string.encoding && !str.ascii_only? && @string.empty?
+    if @encoding && @encoding != Encoding::BINARY && str.encoding != Encoding::BINARY && str.encoding != @encoding
+      str = str.encode(@encoding)
+    elsif str.encoding != @string.encoding && !str.ascii_only? && @string.empty?
       @string.force_encoding(str.encoding)
     end
     @pos = @string.bytesize if @append
@@ -570,9 +611,13 @@ class StringIO
     end
     len = str.bytesize
     if @pos == size
-      @string << str
+      if str.encoding == @string.encoding
+        @string << str
+      else
+        __splice_bytes(size, 0, str.b)
+      end
     else
-      __splice_bytes(@pos, [len, size - @pos].min, str.b.force_encoding(@string.encoding))
+      __splice_bytes(@pos, [len, size - @pos].min, str.b)
     end
     @pos += len
     len
@@ -583,13 +628,27 @@ class StringIO
     len = str.bytesize
     raise IOError, "not modifiable string" if @string.frozen?
     size = @string.bytesize
-    @pos = size if @pos > size
+    if @pos > size
+      target = @pos - len
+      if target >= size
+        @string << ("\0" * (target - size))
+        __splice_bytes(target, 0, str.b)
+        @pos = target
+      elsif target >= 0
+        __splice_bytes(target, size - target, str.b)
+        @pos = target
+      else
+        __splice_bytes(0, size, str.b)
+        @pos = 0
+      end
+      return nil
+    end
     if len > @pos
-      __splice_bytes(0, @pos, str)
+      __splice_bytes(0, @pos, str.b)
       @pos = 0
     else
       @pos -= len
-      __splice_bytes(@pos, len, str)
+      __splice_bytes(@pos, len, str.b)
     end
     nil
   end
@@ -660,33 +719,34 @@ class StringIO
       stop = size
       sep_len = 0
     else
-      idx = @string.byteindex(sep_used, start)
+      idx = @string.b.byteindex(sep_used.b, start)
       if idx
         stop = idx + sep_used.bytesize
-        sep_len = sep_used.bytesize
+        if paragraph
+          stop += 1 while stop < size && @string.getbyte(stop) == 10
+        end
+        sep_len = stop - idx
       else
         stop = size
         sep_len = 0
       end
     end
     if limit && stop - start > limit
-      stop = start + limit
-      # do not split a character
-      unless __binary?
+      if __binary?
+        stop = start + limit
+      else
         p = start
-        while p < stop
-          p += __char_len(p)
+        target = start + limit
+        while p < target && p < size
+          n = __char_len(p)
+          p += n > 0 ? n : 1
         end
         stop = p
       end
-      sep_len = 0 if sep_len > 0 && stop < (idx || size) + sep_len
       sep_len = 0
     end
     line = @string.byteslice(start, stop - start)
     @pos = stop
-    if paragraph
-      @pos += 1 while @pos < size && @string.getbyte(@pos) == 10
-    end
     line.force_encoding(external_encoding) if external_encoding
     if chomp
       if paragraph

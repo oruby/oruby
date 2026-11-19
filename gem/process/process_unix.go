@@ -4,11 +4,13 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/user"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,10 +29,35 @@ const (
 func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RClass) {
 	mrb.DefineModuleFunc(mProc, "getpgrp", syscall.Getpgrp)
 	mrb.DefineModuleFunc(mProc, "setpgrp", syscall.Setgroups)
-	mrb.DefineModuleFunc(mProc, "getpgid", syscall.Getpgid)
+	mrb.DefineModuleFunction(mProc, "getpgid", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		pid, err := rb.Int(mrb, mrb.GetArgsFirst())
+		if err != nil {
+			return rb.TypeError(mrb, err)
+		}
+		pgid, err := syscall.Getpgid(int(pid))
+		if err != nil {
+			return mrb.SysFail(err)
+		}
+		return mrb.FixnumValue(pgid)
+	}, mrb.ArgsReq(1))
 	mrb.DefineModuleFunc(mProc, "setpgid", syscall.Setpgid)
 	mrb.DefineModuleFunc(mProc, "setsid", syscall.Setsid)
-	mrb.DefineModuleFunc(mProc, "getpriority", syscall.Getpriority)
+	mrb.DefineModuleFunction(mProc, "getpriority", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		a := mrb.GetArgs().Slice()
+		which, err := rb.Int(mrb, a[0])
+		if err != nil {
+			return rb.TypeError(mrb, err)
+		}
+		who, err := rb.Int(mrb, a[1])
+		if err != nil {
+			return rb.TypeError(mrb, err)
+		}
+		prio, err := syscall.Getpriority(int(which), int(who))
+		if err != nil {
+			return mrb.SysFail(err)
+		}
+		return mrb.FixnumValue(prio)
+	}, mrb.ArgsReq(2))
 	mrb.DefineModuleFunc(mProc, "setpriority", func(which, who, prio int) (int, error) {
 		err := syscall.Setpriority(which, who, prio)
 		if err != nil {
@@ -45,15 +72,12 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 
 	initRlimit(mrb, mProc)
 
-	mrb.DefineModuleFunc(mProc, "uid=", syscall.Setuid)
-	mrb.DefineModuleFunc(mProc, "gid=", syscall.Setgid)
-	mrb.DefineModuleFunc(mProc, "euid=", syscall.Seteuid)
-	mrb.DefineModuleFunc(mProc, "egid=", syscall.Setegid)
-	mrb.DefineModuleFunc(mProc, "groups=", syscall.Setgroups)
+	mrb.DefineModuleFunction(mProc, "uid=", setUIDFunc(syscall.Setuid), mrb.ArgsReq(1))
+	mrb.DefineModuleFunction(mProc, "gid=", setGIDFunc(syscall.Setgid), mrb.ArgsReq(1))
+	mrb.DefineModuleFunction(mProc, "euid=", setUIDFunc(syscall.Seteuid), mrb.ArgsReq(1))
+	mrb.DefineModuleFunction(mProc, "egid=", setGIDFunc(syscall.Setegid), mrb.ArgsReq(1))
+	mrb.DefineModuleFunction(mProc, "groups=", procSetGroups, mrb.ArgsReq(1))
 
-	//mrb.DefineModuleFunc(mProc, "maxgroups", proc_getmaxgroups, 0)
-	//mrb.DefineModuleFunc(mProc, "maxgroups=", proc_setmaxgroups, 1)
-	mrb.DefineModuleFunction(mProc, "daemon", mrb.NotImplemented, 0)
 	mrb.DefineModuleFunction(mProc, "times", procTimes, mrb.ArgsNone())
 
 	initClock(mrb, mProc)
@@ -85,6 +109,92 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	//mrb.DefineModuleFunc(mSys, "setresgid", syscall.Setresgid)
 
 	initPlatformUnix(mrb, mProc, mSys)
+}
+
+func resolveUID(mrb *oruby.MrbState, v oruby.Value) (int, oruby.MrbValue) {
+	if v.IsString() {
+		u, err := user.Lookup(v.String())
+		if err != nil {
+			return 0, mrb.Raise(mrb.EArgumentError(), "can't find user for "+v.String())
+		}
+		id, err := strconv.Atoi(u.Uid)
+		if err != nil {
+			return 0, mrb.Raise(mrb.EArgumentError(), err.Error())
+		}
+		return id, nil
+	}
+	id, err := rb.Int(mrb, v)
+	if err != nil {
+		return 0, rb.TypeError(mrb, err)
+	}
+	return int(id), nil
+}
+
+func resolveGID(mrb *oruby.MrbState, v oruby.Value) (int, oruby.MrbValue) {
+	if v.IsString() {
+		g, err := user.LookupGroup(v.String())
+		if err != nil {
+			return 0, mrb.Raise(mrb.EArgumentError(), "can't find group for "+v.String())
+		}
+		id, err := strconv.Atoi(g.Gid)
+		if err != nil {
+			return 0, mrb.Raise(mrb.EArgumentError(), err.Error())
+		}
+		return id, nil
+	}
+	id, err := rb.Int(mrb, v)
+	if err != nil {
+		return 0, rb.TypeError(mrb, err)
+	}
+	return int(id), nil
+}
+
+func setUIDFunc(fn func(int) error) oruby.MrbFuncT {
+	return func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		arg := mrb.GetArgsFirst()
+		id, exc := resolveUID(mrb, arg)
+		if exc != nil {
+			return exc
+		}
+		if err := fn(id); err != nil {
+			return mrb.SysFail(err)
+		}
+		return arg
+	}
+}
+
+func setGIDFunc(fn func(int) error) oruby.MrbFuncT {
+	return func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		arg := mrb.GetArgsFirst()
+		id, exc := resolveGID(mrb, arg)
+		if exc != nil {
+			return exc
+		}
+		if err := fn(id); err != nil {
+			return mrb.SysFail(err)
+		}
+		return arg
+	}
+}
+
+func procSetGroups(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	arg := mrb.GetArgsFirst()
+	if !arg.IsArray() {
+		return mrb.Raisef(mrb.ETypeError(), "no implicit conversion of %s into Array", mrb.ClassOf(arg).Name())
+	}
+	items := oruby.RArraySlice(arg)
+	gids := make([]int, len(items))
+	for i, it := range items {
+		id, exc := resolveGID(mrb, it)
+		if exc != nil {
+			return exc
+		}
+		gids[i] = id
+	}
+	if err := syscall.Setgroups(gids); err != nil {
+		return mrb.SysFail(err)
+	}
+	return arg
 }
 
 func trueFunc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

@@ -40,7 +40,7 @@ module Kernel
     # rb_convert_type: obj converted to klass or TypeError
     def __implicit(obj, klass, meth = __conv_method(klass))
       return obj if klass === obj
-      if !obj.nil? && __responds?(obj, meth)
+      if !nil.equal?(obj) && __responds?(obj, meth)
         r = obj.__send__(meth)
         return r if klass === r
         raise TypeError, "can't convert #{__cname(obj)} into #{klass} (#{__cname(obj)}##{meth} gives #{__cname(r)})"
@@ -51,9 +51,9 @@ module Kernel
     # rb_check_convert_type: converted obj, or nil when obj has no conversion
     def __check_implicit(obj, klass, meth = __conv_method(klass))
       return obj if klass === obj
-      return nil if obj.nil? || !__responds?(obj, meth)
+      return nil if nil.equal?(obj) || !__responds?(obj, meth)
       r = obj.__send__(meth)
-      return r if klass === r || r.nil?
+      return r if klass === r || nil.equal?(r)
       raise TypeError, "can't convert #{__cname(obj)} into #{klass} (#{__cname(obj)}##{meth} gives #{__cname(r)})"
     end
 
@@ -91,9 +91,9 @@ class Module
       while i < n && i < args.size
         t = types[i]
         a = args[i]
-        if t && !a.nil? && !(t === a)
+        if t && !nil.equal?(a) && !(t === a)
           c = Kernel.__check_implicit(a, t)
-          args[i] = c unless c.nil?
+          args[i] = c unless nil.equal?(c)
         end
         i += 1
       end

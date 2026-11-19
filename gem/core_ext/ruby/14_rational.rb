@@ -58,7 +58,10 @@ class Rational
   def coerce(other)
     case other
     when Integer then [Rational(other, 1), self]
+    when Rational then [other, self]
     when Float then [other, to_f]
+    when Complex
+      other.imaginary == 0 ? [other.real.to_r, self] : [other, Complex(self)]
     else raise TypeError, "#{other.class} can't be coerced into Rational"
     end
   end

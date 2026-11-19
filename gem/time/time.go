@@ -15,6 +15,7 @@ func init() {
 		t.Include(mrb.ModuleGet("Comparable"))
 		initTZ(mrb, t)
 		initMarshal(mrb, t)
+		initParse(mrb, t)
 
 		t.DefineClassMethod("at", timeAt, mrb.ArgsArg(1, 1))
 		t.DefineClassMethod("gm", timeNewUTC, mrb.ArgsArg(1, 6))

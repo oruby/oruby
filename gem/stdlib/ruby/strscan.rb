@@ -116,7 +116,14 @@ class StringScanner
 
   def getch
     return __fail if eos?
-    c = rest[0]
+    enc = @string.encoding
+    if enc != Encoding::UTF_8 && enc != Encoding::BINARY && enc != Encoding::US_ASCII &&
+       defined?(Encoding::Converter) && Encoding::Converter.respond_to?(:__char_len)
+      len = Encoding::Converter.__char_len(@string, @pos, enc.name)
+      c = @string.byteslice(@pos, len > 0 ? len : 1)
+    else
+      c = rest[0]
+    end
     __set_simple(c)
   end
 
@@ -147,6 +154,9 @@ class StringScanner
 
   def scan_integer(base: 10)
     raise ArgumentError, "Unsupported integer base: #{base.inspect}, expected 10 or 16" unless base == 10 || base == 16
+    unless @string.encoding.ascii_compatible?
+      raise Encoding::CompatibilityError, "ASCII incompatible encoding: #{@string.encoding}"
+    end
     re = base == 10 ? /[+-]?\d+/ : /[+-]?(?:0x)?[0-9a-fA-F]+/
     s = scan(re)
     s && s.to_i(base)
@@ -186,7 +196,11 @@ class StringScanner
       raise IndexError, "undefined group name reference: #{i}" unless @match.respond_to?(:names) && @match.names.include?(i.to_s)
       @match[i.to_s]
     else
-      i = i.to_int
+      unless i.is_a?(Integer)
+        raise TypeError, "no implicit conversion of #{i.nil? ? 'nil' : i.class} into Integer" unless i.respond_to?(:to_int)
+        i = i.to_int
+        raise TypeError, "can't convert into Integer" unless i.is_a?(Integer)
+      end
       i += @match.size if i < 0
       return nil if i < 0 || i >= @match.size
       @match[i]
@@ -278,11 +292,21 @@ class StringScanner
       def m.size = 1
       len = pattern.bytesize
     elsif pattern.is_a?(Regexp)
-      m = pattern.match(rest)
-      return nil unless m
-      offset = m.pre_match.bytesize
-      return nil if anchored && offset != 0
-      len = m[0].bytesize
+      if @fixed_anchor
+        cp = charpos
+        m = pattern.match(@string, cp)
+        return nil unless m
+        m_byte_pos = m.pre_match.bytesize
+        offset = m_byte_pos - @pos
+        return nil if offset < 0 || (anchored && offset != 0)
+        len = m[0].bytesize
+      else
+        m = pattern.match(rest)
+        return nil unless m
+        offset = m.pre_match.bytesize
+        return nil if anchored && offset != 0
+        len = m[0].bytesize
+      end
     else
       raise TypeError, "wrong argument type #{pattern.class} (expected Regexp)"
     end

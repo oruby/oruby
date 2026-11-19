@@ -609,6 +609,8 @@ func (w *writer) exception(v oruby.Value, limit int) error {
 	mesg := w.mrb.ExcMessage(v)
 	if w.mrb.IVGet(v, w.mrb.Intern("@__nil_mesg")).Bool() {
 		mesg = oruby.Nil // made without a message: MRI dumps nil
+	} else if m, err := w.mrb.Funcall(v, oruby.Sym_message); err == nil && m.IsString() {
+		mesg = m
 	}
 	list := []ivar{
 		{w.mrb.Intern("mesg"), mesg},

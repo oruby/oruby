@@ -188,9 +188,7 @@ class Encoding
     freeze
   end
 
-  def to_s
-    @name
-  end
+  alias to_s name
 
   def names
     [@name, *@aliases, *Encoding.__dynamic_names(self)]
@@ -254,6 +252,12 @@ class Encoding
       return name if name.is_a?(Encoding)
       raise TypeError, "no implicit conversion of #{name.class} into String" unless name.respond_to?(:to_str)
       key = name.to_str
+      unless key.is_a?(String)
+        raise TypeError, "can't convert #{name.class} to String (#{name.class}#to_str gives #{key.class})"
+      end
+      unless key.encoding.ascii_compatible?
+        raise ArgumentError, "invalid encoding name (non ASCII)"
+      end
       case key.downcase
       when "external" then return default_external
       when "internal" then return default_internal
@@ -268,8 +272,10 @@ class Encoding
     end
 
     def locale_charmap
-      lc = ENV["LC_ALL"] || ENV["LC_CTYPE"] || ENV["LANG"] || ""
-      lc == "C" || lc == "POSIX" ? "US-ASCII" : "UTF-8"
+      (@locale_charmap ||= begin
+        lc = (defined?(ENV) ? (ENV["LC_ALL"] || ENV["LC_CTYPE"] || ENV["LANG"]) : nil) || ""
+        lc == "C" || lc == "POSIX" ? "US-ASCII" : "UTF-8"
+      end).dup
     end
 
     def default_external
@@ -310,7 +316,7 @@ class Encoding
       return enc1 if isstr2 && b.empty?
       isstr1 = a.is_a?(String)
       if isstr1 && isstr2 && a.empty?
-        return enc1.ascii_compatible? && b.ascii_only? ? enc1 : enc2
+        return enc1.ascii_compatible? && enc2.ascii_compatible? && b.ascii_only? ? enc1 : enc2
       end
       return nil unless enc1.ascii_compatible? && enc2.ascii_compatible?
       return enc1 if !isstr2 && enc2.equal?(US_ASCII)
