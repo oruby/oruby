@@ -911,6 +911,11 @@ int _orb_str_binary_p(mrb_value s) {
   return mrb_string_p(s) && RSTR_ENCODING(mrb_str_ptr(s)) == 1;
 }
 
+/* mark an ASCII-only string US-ASCII (mruby's encoding flag 2) */
+void _orb_str_set_us_ascii(mrb_value s) {
+  if (mrb_string_p(s)) RSTR_ENCODING_SET(mrb_str_ptr(s), 2);
+}
+
 static mrb_value sym_all_symbols_m(mrb_state *mrb, mrb_value self) {
   mrb_sym presym_max = mrb_presym_max();
   mrb_value ary = mrb_ary_new_capa(mrb, presym_max + mrb->symidx);

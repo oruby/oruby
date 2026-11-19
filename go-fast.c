@@ -689,6 +689,119 @@ static mrb_bool p_str_case(mrb_state *mrb, mrb_value self, mrb_int argc, const m
   return argc == 0 && mrb_nil_p(blk);
 }
 
+/* ---- Kernel#format / #sprintf, String#% ----
+   A simple format string goes to mruby-sprintf's C (a port of MRI's
+   sprintf.c): %% and %[-+ 0]*[width][.prec] with d i u x X o b s f e E g G,
+   as many arguments as conversions, each of a plain kind. Anything else (*,
+   $, <name>, {name}, #, c, p, a, an encoding to negotiate) runs 19_format.rb. */
+#define FMT_FAST_MAX 16
+static mrb_func_t sprintf_builtin; /* mruby-sprintf's Kernel#sprintf */
+
+/* a %s String the C copies as MRI would: plain UTF-8 (ASCII under a width or
+   precision, which count characters), or ASCII-only US-ASCII/BINARY */
+static mrb_bool fmt_str_arg_p(mrb_state *mrb, mrb_value v, mrb_bool sized) {
+  if (RSTR_ENCODING(mrb_str_ptr(v)) == ORB_ENC_UTF8 && !sized) return TRUE;
+  return !str_tagged(mrb, v) && ascii_only(v);
+}
+
+static mrb_bool fmt_simple_p(mrb_state *mrb, mrb_value fmt, mrb_int argc, const mrb_value *argv) {
+  if (!mrb_string_p(fmt) || RSTR_ENCODING(mrb_str_ptr(fmt)) != ORB_ENC_UTF8 || argc > FMT_FAST_MAX) return FALSE;
+  const char *p = RSTRING_PTR(fmt), *e = p + RSTRING_LEN(fmt);
+  mrb_int ai = 0;
+  while (p < e) {
+    const char *q = (const char *)memchr(p, '%', (size_t)(e - p));
+    if (!q) break;
+    p = q + 1;
+    if (p >= e) return FALSE; /* a lone % at the end raises */
+    if (*p == '%') {
+      p++;
+      continue;
+    }
+    while (p < e && (*p == '-' || *p == '+' || *p == ' ' || *p == '0')) p++;
+    mrb_bool sized = FALSE;
+    while (p < e && *p >= '0' && *p <= '9') {
+      p++;
+      sized = TRUE;
+    }
+    int prec = -1;
+    if (p < e && *p == '.') {
+      p++;
+      sized = TRUE;
+      prec = 0;
+      while (p < e && *p >= '0' && *p <= '9') {
+        if (prec < 100) prec = prec * 10 + (*p - '0');
+        p++;
+      }
+    }
+    if (p >= e || ai >= argc) return FALSE;
+    mrb_value a = argv[ai++];
+    switch (*p++) {
+    case 'd': case 'i': case 'u':
+      if (!mrb_integer_p(a)) return FALSE;
+      break;
+    case 'x': case 'X': case 'o': case 'b':
+      if (!mrb_integer_p(a) || mrb_integer(a) < 0) return FALSE; /* MRI's "..f" two's complement */
+      break;
+    case 'f': case 'e': case 'E': case 'g': case 'G': {
+      /* the C prints at most 17 significant digits and pads with zeros, MRI
+         the exact ones: only up to 15 digits here. (MRI prints "%.2f" % 2.675
+         as "2.68"; this C and 19_format.rb both "2.67".) */
+      static const double p10[16] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8,
+                                     1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15};
+      double x;
+      if (mrb_float_p(a)) x = mrb_float(a);
+      else if (mrb_integer_p(a)) x = (double)mrb_integer(a);
+      else return FALSE;
+      if (!isfinite(x)) return FALSE;
+      int pr = prec < 0 ? 6 : prec;
+      if (p[-1] == 'f') {
+        if (pr > 15 || fabs(x) >= p10[15 - pr]) return FALSE;
+      } else if (pr > 14) {
+        return FALSE;
+      }
+      break;
+    }
+    case 's':
+      if (mrb_string_p(a)) {
+        if (!fmt_str_arg_p(mrb, a, sized)) return FALSE;
+      } else if (mrb_symbol_p(a)) {
+        if (sized) return FALSE;
+      } else if (!(mrb_integer_p(a) || mrb_nil_p(a) || mrb_true_p(a) || mrb_false_p(a))) {
+        return FALSE;
+      }
+      break;
+    default:
+      return FALSE;
+    }
+  }
+  return ai == argc;
+}
+
+static mrb_bool p_format(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc >= 1 && fmt_simple_p(mrb, argv[0], argc - 1, argv + 1);
+}
+
+/* String#%: an Array is the arguments, a Hash names them (19_format.rb) */
+static mrb_bool p_str_mod(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  if (argc != 1 || !sprintf_builtin) return FALSE;
+  if (mrb_array_p(argv[0])) return fmt_simple_p(mrb, self, RARRAY_LEN(argv[0]), RARRAY_PTR(argv[0]));
+  return fmt_simple_p(mrb, self, 1, argv);
+}
+
+static mrb_value d_str_mod(mrb_state *mrb, mrb_value self) {
+  mrb_value a = mrb_get_argv(mrb)[0];
+  mrb_value buf[FMT_FAST_MAX + 1];
+  mrb_int n = 1;
+  buf[0] = self;
+  if (mrb_array_p(a)) {
+    n = RARRAY_LEN(a); /* at most FMT_FAST_MAX: p_str_mod */
+    for (mrb_int i = 0; i < n; i++) buf[i + 1] = RARRAY_PTR(a)[i];
+  } else {
+    buf[1] = a;
+  }
+  return mrb_funcall_argv(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_csprintf), n + 1, buf);
+}
+
 /* String#to_sym: an encoding a Symbol need not record (core_ext keeps the
    others in Symbol.__sym_encodings) */
 static mrb_bool p_str_to_sym(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
@@ -1120,6 +1233,9 @@ static mrb_bool p_implicit(mrb_state *mrb, mrb_value self, mrb_int argc, const m
 /* ---- the table ---- */
 
 static const fast_def fast_defs[] = {
+  /* formatting: a simple format string in mruby-sprintf's C */
+  {"Kernel", 0, "sprintf", p_format, NULL, -1}, /* format: an alias */
+  {"String", 0, "%", p_str_mod, d_str_mod, -1},
   /* Integer */
   {"Integer", 0, "&", p_int1, NULL, -1},
   {"Integer", 0, "|", p_int1, NULL, -1},
@@ -1215,6 +1331,7 @@ static const fast_def fast_defs[] = {
 
 /* aliases of those, the same method again after the install (MRI's are) */
 static const struct { const char *cls, *alias, *name; } fast_aliases[] = {
+  {"Kernel", "format", "sprintf"},
   {"Array", "slice", "[]"},
   {"Array", "collect", "map"},
   {"Array", "filter", "select"},
@@ -1344,6 +1461,11 @@ void _orb_fast_capture(mrb_state *mrb) {
     mrb_method_t m = mrb_method_search_vm(mrb, &pc, MRB_SYM(arity));
     if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_FUNC_P(m)) proc_arity_builtin = MRB_METHOD_FUNC(m);
   }
+  if (!sprintf_builtin) {
+    struct RClass *kc = mrb->kernel_module;
+    mrb_method_t m = mrb_method_search_vm(mrb, &kc, MRB_SYM(sprintf));
+    if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_FUNC_P(m)) sprintf_builtin = MRB_METHOD_FUNC(m);
+  }
 }
 
 /* the argument spec of a method as it stands */
@@ -1398,6 +1520,10 @@ void _orb_fast_install(mrb_state *mrb) {
     mrb_bool ours = FALSE;
     for (int n = 0; n < FAST_N; n++) if (MRB_METHOD_FUNC(m) == fast_fns[n]) ours = TRUE;
     if (ours) mrb_alias_method(mrb, c, mrb_intern_cstr(mrb, fast_aliases[i].alias), mrb_intern_cstr(mrb, fast_aliases[i].name));
+  }
+  /* String#%'s C path: mruby-sprintf's C as Kernel.__oruby_csprintf(fmt, *args) */
+  if (sprintf_builtin) {
+    mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_csprintf), sprintf_builtin, MRB_ARGS_ANY());
   }
   _orb_string_install(mrb);
 }

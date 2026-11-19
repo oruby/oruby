@@ -283,3 +283,11 @@ func (mrb *MrbState) StrByteSubseq(str MrbValue, beg, length int) (Value, error)
 func StrBinary(s Value) bool {
 	return C._orb_str_binary_p(s.v) != 0
 }
+
+// StrNewUSASCII returns a new US-ASCII String of s, which must be ASCII
+// only (as MRI's Integer#to_s or Time#to_s results are)
+func (mrb *MrbState) StrNewUSASCII(s string) Value {
+	v := mrb.StrNew(s)
+	C._orb_str_set_us_ascii(v.v)
+	return v
+}

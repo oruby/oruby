@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "9c627760b998c3a9"
+const presymTable = "78fcc8ee8983a544"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -510,6 +510,7 @@ const (
 	Sym___escape_html                           MrbSym = C.MRB_SYM____escape_html                           // "__escape_html"
 	Sym___fixed_length_secure_compare           MrbSym = C.MRB_SYM____fixed_length_secure_compare           // "__fixed_length_secure_compare"
 	Sym___flush                                 MrbSym = C.MRB_SYM____flush                                 // "__flush"
+	Sym___fmt                                   MrbSym = C.MRB_SYM____fmt                                   // "__fmt"
 	Sym___format_float                          MrbSym = C.MRB_SYM____format_float                          // "__format_float"
 	Sym___from_float                            MrbSym = C.MRB_SYM____from_float                            // "__from_float"
 	Sym___group                                 MrbSym = C.MRB_SYM____group                                 // "__group"
@@ -530,6 +531,7 @@ const (
 	Sym___names                                 MrbSym = C.MRB_SYM____names                                 // "__names"
 	Sym___new                                   MrbSym = C.MRB_SYM____new                                   // "__new"
 	Sym___nonblock                              MrbSym = C.MRB_SYM____nonblock                              // "__nonblock"
+	Sym___now                                   MrbSym = C.MRB_SYM____now                                   // "__now"
 	Sym___open                                  MrbSym = C.MRB_SYM____open                                  // "__open"
 	Sym___oruby_backtrace                       MrbSym = C.MRB_SYM____oruby_backtrace                       // "__oruby_backtrace"
 	Sym___oruby_backtrace_locations             MrbSym = C.MRB_SYM____oruby_backtrace_locations             // "__oruby_backtrace_locations"
@@ -541,6 +543,7 @@ const (
 	Sym___oruby_close                           MrbSym = C.MRB_SYM____oruby_close                           // "__oruby_close"
 	Sym___oruby_copy_stream                     MrbSym = C.MRB_SYM____oruby_copy_stream                     // "__oruby_copy_stream"
 	Sym___oruby_crypt                           MrbSym = C.MRB_SYM____oruby_crypt                           // "__oruby_crypt"
+	Sym___oruby_csprintf                        MrbSym = C.MRB_SYM____oruby_csprintf                        // "__oruby_csprintf"
 	Sym___oruby_dead                            MrbSym = C.MRB_SYM____oruby_dead                            // "__oruby_dead"
 	Sym___oruby_deadlock                        MrbSym = C.MRB_SYM____oruby_deadlock                        // "__oruby_deadlock"
 	Sym___oruby_deadlock_error                  MrbSym = C.MRB_SYM____oruby_deadlock_error                  // "__oruby_deadlock_error"

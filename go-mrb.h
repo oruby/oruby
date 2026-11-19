@@ -107,6 +107,7 @@ void _orb_trace_close(mrb_state *mrb);
 void _orb_fast_install(mrb_state *mrb);
 void _orb_string_install(mrb_state *mrb);
 int _orb_str_binary_p(mrb_value s);
+void _orb_str_set_us_ascii(mrb_value s);
 void _orb_fast_close(mrb_state *mrb);
 
 static void set_mrb_injector(mrb_state *mrb) {

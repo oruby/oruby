@@ -101,6 +101,63 @@ func initTZ(mrb *oruby.MrbState, t oruby.RClass) {
 		tm := time.Unix(int64(a.Item(0).Int()), int64(a.Item(1).Int())).In(zoneFor(a.Item(2).Int(), a.Item(3).Int()))
 		return mrb.DataValue(tm)
 	}, mrb.ArgsReq(4))
+	// Time.__now: Time.now in the local zone, as __make(sec, nsec, 1, 0)
+	// builds it (Round(0) drops the monotonic reading __make's times lack)
+	t.DefineClassMethod("__now", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		return mrb.DataValue(time.Now().Round(0).In(localLocation()))
+	}, mrb.ArgsNone())
+	// time.__fmt(kind, digits): to_s (0), inspect (1) or xmlschema(digits)
+	// (2), US-ASCII, for a year in 0..9999 and a whole-minute offset; nil
+	// for the others, which 26_time.rb formats (as it does a timezone
+	// object's or a Rational offset's Time)
+	t.DefineMethod("__fmt", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		a := mrb.GetArgs()
+		kind, digits := a.Item(0).Int(), a.Item(1).Int()
+		tm := getTime(mrb, self)
+		_, off := tm.Zone()
+		if y := tm.Year(); y < 0 || y > 9999 || off%60 != 0 || digits < 0 || digits > 9 {
+			return mrb.NilValue()
+		}
+		b := make([]byte, 0, 48)
+		if kind == 2 {
+			b = tm.AppendFormat(b, "2006-01-02T15:04:05")
+		} else {
+			b = tm.AppendFormat(b, "2006-01-02 15:04:05")
+		}
+		ns := tm.Nanosecond()
+		frac := strconv.AppendInt(make([]byte, 0, 10), int64(ns)+1e9, 10)[1:] // 9 digits
+		switch {
+		case kind == 1 && ns != 0:
+			n := len(frac)
+			for frac[n-1] == '0' {
+				n--
+			}
+			b = append(append(b, '.'), frac[:n]...)
+		case kind == 2 && digits > 0:
+			b = append(append(b, '.'), frac[:digits]...)
+		}
+		switch {
+		case timeKind(tm) == 0 && kind == 2:
+			b = append(b, 'Z')
+		case timeKind(tm) == 0:
+			b = append(b, " UTC"...)
+		default:
+			if kind != 2 {
+				b = append(b, ' ')
+			}
+			sign := byte('+')
+			if off < 0 {
+				sign, off = '-', -off
+			}
+			h, m := off/3600, off/60%60
+			b = append(b, sign, byte('0'+h/10), byte('0'+h%10))
+			if kind == 2 {
+				b = append(b, ':')
+			}
+			b = append(b, byte('0'+m/10), byte('0'+m%10))
+		}
+		return mrb.StrNewUSASCII(string(b))
+	}, mrb.ArgsReq(2))
 	// Time.__civil(y, mon, d, h, mi, s, nsec, mode, off[, isdst]): wall time in a zone
 	t.DefineClassMethod("__civil", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		a := mrb.GetArgs()

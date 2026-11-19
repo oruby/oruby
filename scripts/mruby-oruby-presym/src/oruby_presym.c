@@ -412,6 +412,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__escape_html");
   (void)mrb_intern_lit(mrb, "__fixed_length_secure_compare");
   (void)mrb_intern_lit(mrb, "__flush");
+  (void)mrb_intern_lit(mrb, "__fmt");
   (void)mrb_intern_lit(mrb, "__format_float");
   (void)mrb_intern_lit(mrb, "__from_float");
   (void)mrb_intern_lit(mrb, "__group");
@@ -433,6 +434,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__new");
   (void)mrb_intern_lit(mrb, "__nonblock");
   (void)mrb_intern_lit(mrb, "__nonblock?");
+  (void)mrb_intern_lit(mrb, "__now");
   (void)mrb_intern_lit(mrb, "__open");
   (void)mrb_intern_lit(mrb, "__oruby_backtrace");
   (void)mrb_intern_lit(mrb, "__oruby_backtrace_locations");
@@ -445,6 +447,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_close");
   (void)mrb_intern_lit(mrb, "__oruby_copy_stream");
   (void)mrb_intern_lit(mrb, "__oruby_crypt");
+  (void)mrb_intern_lit(mrb, "__oruby_csprintf");
   (void)mrb_intern_lit(mrb, "__oruby_dead");
   (void)mrb_intern_lit(mrb, "__oruby_deadlock");
   (void)mrb_intern_lit(mrb, "__oruby_deadlock_error");

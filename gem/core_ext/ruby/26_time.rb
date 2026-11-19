@@ -253,6 +253,8 @@ class Time
     end
 
     def now(**kw)
+      # the common call in Go (gem/time); a subclass or in: is built here
+      return __now if kw.empty? && Time.equal?(self)
       __kw(kw, [:in])
       z = kw[:in]
       p = __current_parts
@@ -573,32 +575,38 @@ class Time
   end
   private :__round
 
-  def __offset_str(colon = true)
+  # MRI's offsets: inspect shows an offset's seconds, to_s and xmlschema drop them
+  def __offset_str(colon = true, secs = true)
     off = utc_offset
     sign = off < 0 ? "-" : "+"
     off = off.abs
     h, m, s = off / 3600, off / 60 % 60, off % 60
     str = format("%s%02d%s%02d", sign, h, colon ? ":" : "", m)
-    str += format("%s%02d", colon ? ":" : "", s) if s != 0
+    str += format("%s%02d", colon ? ":" : "", s) if secs && s != 0
     str
   end
   private :__offset_str
 
   alias isdst dst?
 
+  # the common Time formatted in Go (gem/time __fmt); a timezone object's,
+  # a Rational offset's or a sub-nanosecond one here
   def inspect
-    __oruby_inspect.force_encoding(Encoding::US_ASCII)
+    (!@__tz && !@__roff && !@__subsec && __fmt(1, 0)) || __oruby_inspect.force_encoding(Encoding::US_ASCII)
   end
 
   def to_s
-    __oruby_to_s.force_encoding(Encoding::US_ASCII)
+    (!@__tz && !@__roff && __fmt(0, 0)) || __oruby_to_s.force_encoding(Encoding::US_ASCII)
   end
 
   def __oruby_inspect
     p = __parts
     base = strftime("%Y-%m-%d %H:%M:%S")
     ns = p[1]
-    if ns != 0
+    sub = @__subsec
+    if Rational === sub && (sub * 1_000_000_000).denominator != 1
+      base += " #{sub}" # MRI's time_inspect: a fraction of a nanosecond as the Rational
+    elsif ns != 0
       frac = format("%09d", ns).sub(/0+\z/, "")
       base += "." + frac
     end
@@ -606,7 +614,7 @@ class Time
   end
 
   def __oruby_to_s
-    strftime("%Y-%m-%d %H:%M:%S ") + (utc? ? "UTC" : __offset_str(false))
+    strftime("%Y-%m-%d %H:%M:%S ") + (utc? ? "UTC" : __offset_str(false, false))
   end
   private :__oruby_inspect, :__oruby_to_s
 
@@ -619,10 +627,12 @@ class Time
   end
 
   def xmlschema(fraction_digits = 0)
-    fd = Kernel.__to_int(fraction_digits)
+    fd = Integer === fraction_digits ? fraction_digits : Kernel.__to_int(fraction_digits)
+    r = !@__tz && !@__roff && __fmt(2, fd)
+    return r if r
     s = strftime("%Y-%m-%dT%H:%M:%S")
     s += "." + format("%09d", nsec)[0, fd] + ("0" * [fd - 9, 0].max) if fd > 0
-    s + (utc? ? "Z" : __offset_str(true))
+    (s + (utc? ? "Z" : __offset_str(true, false))).force_encoding(Encoding::US_ASCII)
   end
   alias iso8601 xmlschema
 end
