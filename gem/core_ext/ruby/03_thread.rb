@@ -217,9 +217,24 @@ class Thread
           Thread.__oruby_started
           Fiber.current.__send__(:__oruby_storage_set, storage) if storage
           Thread.__oruby_interrupt
+          TracePoint.__oruby_thread_event(:thread_begin) if $__oruby_tp_threads
           @__oruby_value = block.call(*args)
         rescue Exception => e
           __oruby_died(e)
+        ensure
+          # the Mutexes it holds are released as it ends (their fibers
+          # unblocked from here), and its scheduler is closed, running what
+          # it still has, as MRI's
+          TracePoint.__oruby_thread_event(:thread_end) if $__oruby_tp_threads
+          Thread.__oruby_release_held
+          Thread.__oruby_drain if $__oruby_fiber_sched
+          if instance_variable_get(:@__oruby_scheduler)
+            begin
+              Fiber.set_scheduler(nil)
+            rescue Exception => e
+              __oruby_died(e)
+            end
+          end
         end
       end
     end
@@ -276,7 +291,16 @@ class Thread
     end
     ::Kernel.raise ThreadError, "Target thread must not be current thread" if equal?(Thread.current)
     ::Kernel.raise ThreadError, "Target thread must not be main thread" if equal?(Thread.main)
-    return nil unless __oruby_join(limit)
+    r = __oruby_join(limit)
+    if :__oruby_block.equal?(r)
+      # a non-blocking fiber joins through its scheduler: block(thread,
+      # limit), unblocked when the thread is dead
+      Fiber.__oruby_sched.block(self, limit && limit.to_f)
+      __oruby_unjoin
+      return nil if limit && alive?
+      r = Fiber.blocking { __oruby_join(limit) }
+    end
+    return nil unless r
     e = @__oruby_exception
     # re-raised as it is: the joiner's $! is not its cause
     ::Kernel.raise e, cause: e.cause if e && !(SystemExit === e)

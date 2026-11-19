@@ -29,6 +29,18 @@ func init() {
 		threadClass.DefineClassMethod("__oruby_stop", threadStop, mrb.ArgsNone())
 		threadClass.DefineClassMethod("__oruby_interrupt_taken", threadInterruptTaken, mrb.ArgsReq(1))
 		threadClass.DefineClassMethod("__oruby_ignore_deadlock", threadIgnoreDeadlock, mrb.ArgsReq(1))
+		threadClass.DefineClassMethod("__oruby_release_held", threadReleaseHeld, mrb.ArgsNone())
+		threadClass.DefineClassMethod("__oruby_unblocks", threadUnblocks, mrb.ArgsNone())
+		threadClass.DefineMethod("__oruby_unjoin", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			if t := mrb.ThreadOf(self); t != nil {
+				mrb.ThreadUnjoinFiber(t, mrb.CurrentFiber())
+			}
+			return oruby.Nil
+		}, mrb.ArgsNone())
+		threadClass.DefineClassMethod("__oruby_scheduler_flag", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+			mrb.SetFiberScheduler(mrb.GetArgsFirst().Bool())
+			return oruby.Nil
+		}, mrb.ArgsReq(1))
 		threadClass.DefineClassMethod("__oruby_deadlock_error", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 			v, err := mrb.ObjNew(fatalClass(mrb), mrb.StrNew("No live threads left. Deadlock?"))
 			if err != nil {
@@ -192,6 +204,14 @@ func threadJoin(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := mrb.ThreadOf(self)
 	if t == nil {
 		return oruby.True
+	}
+	// a non-blocking fiber joins through its scheduler: block(thread,
+	// limit), unblock(thread, fiber) when the thread ends
+	// (the Ruby side calls block(thread, limit) on :__oruby_block)
+	if sched := mrb.FiberScheduler(); !sched.IsNil() && t.Status() != oruby.ThreadDead {
+		mrb.ThreadUnjoinFiber(t, mrb.CurrentFiber())
+		mrb.ThreadJoinFiber(t, sched)
+		return mrb.Intern("__oruby_block").Value()
 	}
 	d := time.Duration(-1)
 	if lim := mrb.GetArgsFirst(); !lim.IsNil() {

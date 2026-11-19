@@ -85,6 +85,8 @@ type MrbState struct {
 	rubyErrors        map[*RubyError]struct{}
 	sched             *threadSched // Ruby threads (thread.go); nil until the first Thread.new
 	threadFinishHooks []func(t *Thread)
+	mainFiberSched    bool  // the main thread has a Fiber scheduler (before the first Thread.new)
+	pendingUnblocks   Value // scheduler unblocks for the Ruby side (thread.go DeferUnblock)
 }
 
 // coreMu serializes writes to go-mrb.c's process-wide tables (virtual
@@ -130,6 +132,8 @@ func NewCore() (*MrbState, error) {
 		make(map[*RubyError]struct{}),
 		nil,
 		nil,
+		false,
+		Nil,
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
@@ -150,7 +154,7 @@ func NewCore() (*MrbState, error) {
 	if mrb.ClassDefined("NoMatchingPatternError") {
 		mrb.DefineClass("NoMatchingPatternKeyError", mrb.ClassGet("NoMatchingPatternError"))
 	}
-	mrb.Eval(`
+	mrb.evalInternal(`
 class SystemExit < Exception
   attr_reader :status
   def initialize(status = 0, msg = "SystemExit")
@@ -297,7 +301,7 @@ module Kernel
       raise TypeError, "no implicit conversion of #{c} into Hash" unless ::Kernel.__responds?(obj, :to_hash)
       h = obj.__send__(:to_hash)
       return h if Hash === h
-      raise TypeError, "can't convert #{c} to Hash (#{c}#to_hash gives #{::Kernel.__cname(h)})"
+      raise TypeError, "can't convert #{c} into Hash (#{c}#to_hash gives #{::Kernel.__cname(h)})"
     end
 
     def __oruby_masgn(site, _)
@@ -655,6 +659,7 @@ func (mrb *MrbState) Close() {
 		mrb.signalRelease()
 		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
+		C._orb_trace_close(mrb.p) // TracePoint's slot (go-trace.c)
 
 		removeStateIndex(idx)
 
@@ -1071,6 +1076,17 @@ func (mrb *MrbState) Run(code string, args ...interface{}) RValue {
 	}
 	ret, _ := mrb.Eval(code)
 	return ret
+}
+
+// evalInternal runs oruby's own Ruby code: its frames are shown, as MRI
+// shows its core methods, at the code that called them (go-backtrace.c)
+func (mrb *MrbState) evalInternal(code string) (RValue, error) {
+	cxt := mrb.MrbCcontextNew()
+	cxt.SetCaptureErrors(true)
+	cxt.Filename("<internal:oruby>")
+	defer cxt.Free()
+	value, err := mrb.LoadStringCxt(code, cxt)
+	return RValue{value.v, mrb}, err
 }
 
 // Eval evaluates code string and returns calculated result

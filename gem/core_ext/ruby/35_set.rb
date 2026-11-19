@@ -85,7 +85,10 @@ class Set
   def include?(o)
     return @__cbi.include?(o) if @__cbi
     return true if __orig_include?(o)
-    return false if String === o || Symbol === o || Integer === o || Float === o || true.equal?(o) || false.equal?(o) || nil.equal?(o)
+    # mruby's Set asks the member (member.eql?(o)); MRI asks o. They differ
+    # only for an o with an eql? of its own (singleton), which is looked for
+    # among the members with its hash
+    return false if o.__oruby_singleton_class_or_nil.nil?
     oh = o.hash
     __orig_to_a.any? { |e| e.hash == oh && o.eql?(e) }
   end

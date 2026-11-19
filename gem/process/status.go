@@ -88,6 +88,16 @@ func initStatus(mProc oruby.RClass) {
 	mrb := mProc.Mrb()
 	cProcessStatus := mProc.DefineClassUnder("Status", mrb.ObjectClass())
 	mrb.DefineGoClassUnder(mProc, "Status", &status{})
+	// Process::Status.wait's status when there is no child (MRI's pid -1)
+	cProcessStatus.DefineClassMethod("__oruby_nochild", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		return mrb.Value(&status{Pid: -1, IsExited: true, IsSucess: true})
+	}, mrb.ArgsNone())
+	// $? = status, for a wait through a Fiber scheduler (core_ext)
+	mrb.DefineModuleFunction(mProc, "__oruby_set_status", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		v := mrb.GetArgsFirst()
+		mrb.SetGV("$?", v)
+		return v
+	}, mrb.ArgsReq(1))
 	cProcessStatus.UndefClassMethod("new")
 	cProcessStatus.DefineAlias("==", "equal")
 	cProcessStatus.DefineAlias("&", "bit_and")

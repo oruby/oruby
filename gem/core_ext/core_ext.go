@@ -129,6 +129,7 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 
 		initMathGamma(mrb)
 		initNumconv(mrb)
+		initFloatRound(mrb)
 
 		entries, err := fs.ReadDir(rubyFiles, "ruby")
 		if err != nil {

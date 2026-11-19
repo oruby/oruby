@@ -64,6 +64,9 @@ type Thread struct {
 	started atomic.Bool // its body runs: interrupts may be delivered
 	intr    atomic.Bool // an interrupt was posted (Thread#raise, #kill)
 
+	fiberSched   bool        // a Fiber scheduler is set (Fiber.set_scheduler)
+	fiberJoiners []fiberWait // non-blocking fibers joining it (unblocked when it ends)
+
 	// guarded by threadSched.mu
 	status   int
 	sleepers bool            // counted in threadSched.sleepers
@@ -103,6 +106,7 @@ func (mrb *MrbState) threadsInit(mainObj Value) *threadSched {
 	main := &Thread{mrb: mrb, st: st, obj: mainObj, keep: keep, main: true, vs: mrb.mainVM(),
 		gvl: make(chan struct{}, 1), done: make(chan struct{})}
 	main.started.Store(true)
+	main.fiberSched = mrb.mainFiberSched
 	mrb.IVSet(mainObj, mrb.Intern("__oruby_owner"), Value{owner})
 	mrb.IVSet(mainObj, mrb.Intern("__oruby_keep"), keep)
 	s.main, s.cur = main, main
@@ -252,6 +256,14 @@ func (mrb *MrbState) threadFinish(t *Thread) {
 	s.mu.Unlock()
 	close(t.done)
 	t.vs.release()
+	// fibers joining it through their scheduler, now that it is dead:
+	// unblock(thread, fiber)
+	for _, j := range t.fiberJoiners {
+		if _, err := mrb.Funcall(j.sched, mrb.Intern("unblock"), j.thread, j.fiber); err != nil {
+			mrb.ExcClear()
+		}
+	}
+	t.fiberJoiners = nil
 
 	// the state still has t's part: the next thread to take the GVL loads
 	// its own, and frees t's then
@@ -814,4 +826,98 @@ func chanReady(ch <-chan struct{}) bool {
 	default:
 		return false
 	}
+}
+
+// fiberWait is a non-blocking fiber waiting through its Fiber scheduler
+type fiberWait struct {
+	fiber, sched, thread Value // thread: the joining fiber's
+}
+
+// SetFiberScheduler records whether the running thread has a Fiber
+// scheduler (Fiber.set_scheduler): blocking operations ask for it only then
+func (mrb *MrbState) SetFiberScheduler(on bool) {
+	if t := mrb.CurrentThread(); t != nil {
+		t.fiberSched = on
+		return
+	}
+	mrb.mainFiberSched = on
+}
+
+// FiberScheduler is the scheduler a blocking operation of the current fiber
+// goes through (Fiber.current_scheduler): Nil without one, or for a
+// blocking fiber
+func (mrb *MrbState) FiberScheduler() Value {
+	on := mrb.mainFiberSched
+	if t := mrb.CurrentThread(); t != nil {
+		on = t.fiberSched
+	}
+	if !on || !mrb.ClassDefinedID(Sym_Fiber) {
+		return Nil
+	}
+	v, err := mrb.Funcall(mrb.ClassGetID(Sym_Fiber).Value(), mrb.Intern("__oruby_sched"))
+	if err != nil {
+		mrb.ExcClear()
+		return Nil
+	}
+	return v
+}
+
+// CurrentFiber is Fiber.current
+func (mrb *MrbState) CurrentFiber() Value {
+	v, err := mrb.Funcall(mrb.ClassGetID(Sym_Fiber).Value(), mrb.Intern("current"))
+	if err != nil {
+		mrb.ExcClear()
+		return Nil
+	}
+	return v
+}
+
+// DeferUnblock queues sched.unblock(blocker, fiber) for the Ruby side to
+// call (TakeUnblocks): a scheduler's unblock may switch fibers, which a
+// fiber cannot do across a Go method's frame
+func (mrb *MrbState) DeferUnblock(sched, blocker, fiber Value) {
+	if mrb.pendingUnblocks.IsNil() {
+		mrb.pendingUnblocks = mrb.AryNew().Value()
+		mrb.GCRegister(mrb.pendingUnblocks)
+	}
+	mrb.AryPush(mrb.pendingUnblocks, mrb.AryNewFromValues(sched, blocker, fiber))
+}
+
+// TakeUnblocks: the queued unblocks, as [scheduler, blocker, fiber] triples
+func (mrb *MrbState) TakeUnblocks() Value {
+	if mrb.pendingUnblocks.IsNil() || RArrayLen(mrb.pendingUnblocks) == 0 {
+		return Nil
+	}
+	out := mrb.Call(mrb.pendingUnblocks, "dup")
+	mrb.Call(mrb.pendingUnblocks, "clear")
+	return out
+}
+
+// ThreadUnjoinFiber drops fiber from t's joiners (its join timed out)
+func (mrb *MrbState) ThreadUnjoinFiber(t *Thread, fiber Value) {
+	for i, j := range t.fiberJoiners {
+		if j.fiber.Pointer() == fiber.Pointer() {
+			t.fiberJoiners = append(t.fiberJoiners[:i], t.fiberJoiners[i+1:]...)
+			return
+		}
+	}
+}
+
+// ThreadJoinFiber registers the current non-blocking fiber, waiting through
+// sched for t to end: when it does, sched.unblock(t, fiber) is called. The
+// fiber and scheduler are kept on t's object for the GC.
+func (mrb *MrbState) ThreadJoinFiber(t *Thread, sched Value) {
+	f := mrb.CurrentFiber()
+	joiner := Nil
+	if c := mrb.CurrentThread(); c != nil {
+		joiner = c.obj
+	}
+	t.fiberJoiners = append(t.fiberJoiners, fiberWait{f, sched, joiner})
+	keep := mrb.IVGet(t.obj, mrb.Intern("__oruby_joiners"))
+	if keep.IsNil() {
+		keep = mrb.AryNew().Value()
+		mrb.IVSet(t.obj, mrb.Intern("__oruby_joiners"), keep)
+	}
+	mrb.AryPush(keep, f)
+	mrb.AryPush(keep, sched)
 }

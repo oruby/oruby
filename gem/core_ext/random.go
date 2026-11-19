@@ -3,6 +3,7 @@ package core_ext
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"math"
 
 	"github.com/oruby/oruby"
 )
@@ -111,6 +112,31 @@ func (mt *mt19937) real() float64 {
 	return (float64(a)*67108864.0 + float64(b)) * (1.0 / 9007199254740992.0)
 }
 
+// limited is MRI's limited_rand: uniform in 0..limit, drawing 32-bit words
+// from the most significant one and starting over as soon as the value
+// passes limit (so a seeded sequence is MRI's)
+func (mt *mt19937) limited(limit uint64) uint64 {
+	if limit == 0 {
+		return 0
+	}
+	mask := limit
+	for _, sh := range []uint{1, 2, 4, 8, 16, 32} {
+		mask |= mask >> sh
+	}
+retry:
+	val := uint64(0)
+	for i := 1; i >= 0; i-- {
+		if (mask>>(uint(i)*32))&0xffffffff != 0 {
+			val |= uint64(mt.int32()) << (uint(i) * 32)
+			val &= mask
+			if limit < val {
+				goto retry
+			}
+		}
+	}
+	return val
+}
+
 func (mt *mt19937) bytes(n int) []byte {
 	out := make([]byte, n)
 	i := 0
@@ -168,6 +194,16 @@ func initRandom(mrb *oruby.MrbState) {
 		return oruby.Int64(int64(mt.int32()))
 	}, oruby.ArgsNone())
 
+	// MTState#limited(n): 0..n, n < 2**63
+	mrb.DefineMethod(mtCls, "limited", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		mt := mrb.Data(self).(*mt19937)
+		return oruby.Int64(int64(mt.limited(uint64(mrb.GetArgsFirst().Int64()))))
+	}, oruby.ArgsReq(1))
+
+	// Kernel#rand for the common arguments (none, nil, a Fixnum) on
+	// Random::DEFAULT's state; the others go to 40_random.rb's
+	mrb.DefineModuleFunction(mrb.KernelModule(), "rand", kernelRand, oruby.ArgsAny())
+
 	mrb.DefineMethod(mtCls, "real", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		mt := mrb.Data(self).(*mt19937)
 		return mrb.FloatValue(mt.real())
@@ -198,4 +234,46 @@ func initRandom(mrb *oruby.MrbState) {
 		*dst = *src
 		return self
 	}, oruby.ArgsReq(1))
+}
+
+// defaultMT is the state of Random.default (nil before 40_random.rb ran)
+func defaultMT(mrb *oruby.MrbState) *mt19937 {
+	def := mrb.IVGet(mrb.ClassGetID(oruby.Sym_Random).Value(), oruby.IvSym___default)
+	if def.IsNil() {
+		return nil
+	}
+	mt, _ := mrb.Data(mrb.IVGet(def, oruby.IvSym___mt)).(*mt19937)
+	return mt
+}
+
+func kernelRand(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	if args.Len() <= 1 {
+		if mt := defaultMT(mrb); mt != nil {
+			if args.Len() == 0 || args.Item(0).IsNil() {
+				return mrb.FloatValue(mt.real())
+			}
+			if v := args.Item(0); v.Type() == oruby.MrbTTFixnum {
+				n := v.Int64()
+				if n < 0 && n != math.MinInt64 {
+					n = -n
+				}
+				switch {
+				case n == 0:
+					return mrb.FloatValue(mt.real())
+				case n > 0:
+					return oruby.Int64(int64(mt.limited(uint64(n - 1))))
+				}
+			}
+		}
+	}
+	call := make([]interface{}, 0, args.Len())
+	for _, a := range args.Slice() {
+		call = append(call, a)
+	}
+	v, err := mrb.Funcall(mrb.KernelModule().Value(), oruby.Sym___oruby_rand_slow, call...)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return v
 }

@@ -112,11 +112,53 @@ class IO
   end
 
   def wait_readable(timeout = nil)
+    if $__oruby_fiber_sched && (s = Fiber.__oruby_sched)
+      return __oruby_sched_wait_event(s, READABLE, timeout) ? self : nil
+    end
     IO.select([self], nil, nil, timeout) ? self : nil
   end
 
   def wait_writable(timeout = nil)
+    if $__oruby_fiber_sched && (s = Fiber.__oruby_sched)
+      return __oruby_sched_wait_event(s, WRITABLE, timeout) ? self : nil
+    end
     IO.select(nil, [self], nil, timeout) ? self : nil
+  end
+
+  # the events of mask a non-blocking fiber's scheduler reports for self
+  # (io_wait(self, mask, timeout)); nil when none
+  def __oruby_sched_wait_event(s, mask, timeout)
+    raise IOError, "closed stream" if closed?
+    r = __oruby_sched_io_wait(s, mask, timeout, nil)
+    return nil unless r
+    return r if true.equal?(r)
+    r & mask == 0 ? nil : (r & mask)
+  end
+
+  # io_wait(self, events, timeout) through the Fiber scheduler s. The fibers
+  # waiting are known to #close (which interrupts them); nil from it raises
+  # EAGAIN (syscall given) and false IO::TimeoutError
+  def __oruby_sched_io_wait(s, events, timeout, syscall)
+    ws = (@__oruby_io_waiters ||= [])
+    f = Fiber.current
+    ws << [f, s]
+    begin
+      r = s.io_wait(self, events, timeout)
+    ensure
+      ws.delete_if { |x| x[0].equal?(f) }
+      if ws.empty? && (c = @__oruby_closer)
+        @__oruby_closer = nil
+        c[1].unblock(self, c[0])
+      end
+    end
+    raise IOError, "stream closed in another thread" if @__oruby_closing || closed?
+    if syscall
+      raise Errno::EAGAIN, syscall if r.nil?
+      if false.equal?(r)
+        raise IO::TimeoutError, "Timed out waiting for IO to become #{events & READABLE != 0 ? 'readable' : 'writable'}!"
+      end
+    end
+    r
   end
 
   def wait_priority(timeout = nil)
@@ -128,6 +170,9 @@ class IO
     if args.size == 2 && Integer === args[0] && (Numeric === args[1] || args[1].nil?)
       events, timeout = args
       raise ArgumentError, "Events must be positive integer!" if events <= 0
+      if $__oruby_fiber_sched && (s = Fiber.__oruby_sched)
+        return __oruby_sched_wait_event(s, events, timeout)
+      end
       r = events & READABLE != 0 ? [self] : nil
       w = events & WRITABLE != 0 ? [self] : nil
       res = IO.select(r, w, nil, timeout)
@@ -152,6 +197,9 @@ class IO
       end
     end
     events = READABLE if events == 0
+    if $__oruby_fiber_sched && (s = Fiber.__oruby_sched)
+      return __oruby_sched_wait_event(s, events, timeout) ? self : nil
+    end
     r = events & READABLE != 0 ? [self] : nil
     w = events & WRITABLE != 0 ? [self] : nil
     res = IO.select(r, w, nil, timeout)

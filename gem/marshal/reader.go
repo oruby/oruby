@@ -979,6 +979,10 @@ func (r *reader) objectRecord(partial bool) (oruby.Value, error) {
 				if err := mrb.SetExcMessage(v, val); err != nil {
 					return oruby.Nil, err
 				}
+				if val.IsNil() {
+					// core_ext's mark of an exception without a message
+					_ = mrb.IVSet(v, mrb.Intern("@__nil_mesg"), oruby.True)
+				}
 				continue
 			case "bt":
 				if err := mrb.SetExcBacktrace(v, val); err != nil {

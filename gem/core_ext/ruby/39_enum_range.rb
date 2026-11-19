@@ -4,7 +4,7 @@ module Enumerable
   def compact
     out = []
     each do |*x|
-      v = x.size <= 1 ? x[0] : x
+      v = x.__svalue
       out << v unless v.nil?
     end
     out
@@ -128,7 +128,7 @@ module Enumerable
     out = []
     if block
       each do |*x|
-        v = x.size <= 1 ? x[0] : x
+        v = x.__svalue
         k = yield(*x)
         h = k.hash
         list = buckets[h]
@@ -142,7 +142,7 @@ module Enumerable
       end
     else
       each do |*x|
-        v = x.size <= 1 ? x[0] : x
+        v = x.__svalue
         h = v.hash
         list = buckets[h]
         if list.nil?
@@ -161,7 +161,7 @@ module Enumerable
     return to_enum(:each_with_index, *args) { respond_to?(:size) ? size : nil } unless block
     i = 0
     each(*args) do |*x|
-      yield(x.size <= 1 ? x[0] : x, i)
+      yield(x.__svalue, i)
       i += 1
     end
     self
@@ -300,7 +300,7 @@ module Enumerable
   def to_a(*args)
     out = []
     each(*args) do |*x|
-      out << (x.size <= 1 ? x[0] : x)
+      out << (x.__svalue)
       nil
     end
     out
@@ -313,7 +313,7 @@ module Enumerable
       elem = if block
                yield(*x)
              else
-               x.size <= 1 ? x[0] : x
+               x.__svalue
              end
       elem = Kernel.__implicit(elem, Array) if !(Array === elem) && elem.respond_to?(:to_ary)
       raise TypeError, "wrong element type #{Kernel.__cname(elem)} (expected array)" unless Array === elem
@@ -326,7 +326,7 @@ module Enumerable
   def each_entry(*args, &block)
     return to_enum(:each_entry, *args) { respond_to?(:size) ? size : nil } unless block
     each(*args) do |*x|
-      yield(x.size <= 1 ? x[0] : x)
+      yield(x.__svalue)
     end
     self
   end
@@ -421,7 +421,7 @@ module Enumerable
     out = []
     each do |*x|
       break unless yield(*x)
-      out << (x.size <= 1 ? x[0] : x)
+      out << (x.__svalue)
     end
     out
   end
@@ -514,6 +514,12 @@ module Enumerable
   end
 
   def sum(init = 0, &block)
+    # MRI's int_range_sum: an Integer Range without a block, in closed form
+    if !block && Range === self && Integer === (b = self.begin) && Integer === (e = self.end) && !(Float === init)
+      e -= 1 if exclude_end?
+      return init if e < b
+      return init + (e - b + 1) * (b + e) / 2
+    end
     acc = init
     comp = 0.0
     using_kahan = Float === acc
@@ -893,15 +899,19 @@ end
 if defined?(Method)
   class Method
     alias __orig_method_to_proc to_proc
+    # a lambda of the method's arity; Proc#source_location and #parameters
+    # (37_matchdata_symbol.rb) report the method's
     def to_proc
       m = self
-      case arity
-      when 0 then lambda { |&b| m.call(&b) }
-      when 1 then lambda { |a, &b| m.call(a, &b) }
-      when 2 then lambda { |a, x, &b| m.call(a, x, &b) }
-      when 3 then lambda { |a, x, y, &b| m.call(a, x, y, &b) }
-      else __orig_method_to_proc
-      end
+      pr = case arity
+           when 0 then lambda { |&b| m.call(&b) }
+           when 1 then lambda { |a, &b| m.call(a, &b) }
+           when 2 then lambda { |a, x, &b| m.call(a, x, &b) }
+           when 3 then lambda { |a, x, y, &b| m.call(a, x, y, &b) }
+           else return __orig_method_to_proc
+           end
+      pr.instance_variable_set(:@__oruby_method, m)
+      pr
     end
   end
 end

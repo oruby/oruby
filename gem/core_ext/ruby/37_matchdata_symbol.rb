@@ -6,7 +6,7 @@ if Object.const_defined?(:MatchData)
       undef_method :allocate if method_defined?(:allocate)
     end
     # DefineGoClass exposes Go's IsEqual as #equal?, which shadows BasicObject#equal?
-    undef_method :equal? if instance_methods(false).include?(:equal?)
+    remove_method :equal? if instance_methods(false).include?(:equal?)
 
     private def __apply_enc(s)
       return s unless String === s
@@ -214,17 +214,22 @@ class Symbol
     s.valid_encoding? ? Encoding::UTF_8 : Encoding::BINARY
   end
 
+  # one frozen String per Symbol, in its encoding, for to_s and name alike
+  # (MRI 4.1 returns the same object)
   def to_s
-    s = __orig_sym_to_s
-    e = encoding
-    s = s.dup.force_encoding(e) unless s.encoding == e
-    s.freeze
+    Symbol.__sym_names[self] ||= begin
+      s = __orig_sym_to_s
+      e = encoding
+      if e.equal?(Encoding::US_ASCII)
+        s = s.dup.__send__(:__encoding_us_ascii!)
+      elsif !s.encoding.equal?(e)
+        s = s.dup.force_encoding(e)
+      end
+      s.freeze
+    end
   end
   alias id2name to_s
-
-  def name
-    Symbol.__sym_names[self] ||= to_s
-  end
+  alias name to_s
 
   alias === ==
 
@@ -290,16 +295,21 @@ class Symbol
     __orig_sym_inspect
   end
 
+  # Symbol#to_proc as MRI's: a lambda calling the public method on its first
+  # argument ("no receiver given" without one). Kernel#public_send is bound
+  # only for an object that is not a Kernel (a BasicObject). Proc#arity,
+  # #parameters and #source_location tell these lambdas by their location.
   PUB_SEND = Kernel.instance_method(:public_send)
   def to_proc
     mid = self
-    pr = ->(*args, **opts, &block) do
-      raise ArgumentError, "no receiver given" if args.empty?
-      obj = args.shift
-      opts.empty? ? PUB_SEND.bind_call(obj, mid, *args, &block) : PUB_SEND.bind_call(obj, mid, *args, **opts, &block)
+    ->(obj = (no_recv = true; nil), *args, **opts, &block) do
+      ::Kernel.raise ArgumentError, "no receiver given" if no_recv
+      if Kernel === obj
+        opts.empty? ? obj.public_send(mid, *args, &block) : obj.public_send(mid, *args, **opts, &block)
+      else
+        opts.empty? ? PUB_SEND.bind_call(obj, mid, *args, &block) : PUB_SEND.bind_call(obj, mid, *args, **opts, &block)
+      end
     end
-    pr.instance_variable_set(:@__sym_to_proc, true)
-    pr
   end
 end
 
@@ -376,21 +386,33 @@ class String
 end
 
 class Proc
+  # a lambda made by Symbol#to_proc: its body is the one literal there
+  def __oruby_sym_proc?
+    loc = __orig_proc_source_location
+    return false unless loc
+    @@__oruby_sym_proc_loc ||= :to_s.to_proc.__orig_proc_source_location
+    loc == @@__oruby_sym_proc_loc
+  end
+
   alias __orig_proc_arity arity
   def arity
-    return -2 if @__sym_to_proc
+    return -2 if __oruby_sym_proc?
     __orig_proc_arity
   end
 
   alias __orig_proc_parameters parameters
   def parameters(*args, **kw)
-    return [[:req], [:rest]] if @__sym_to_proc
+    return [[:req], [:rest]] if __oruby_sym_proc?
+    m = @__oruby_method
+    return m.parameters if m
     kw.empty? ? __orig_proc_parameters(*args) : __orig_proc_parameters(*args, **kw)
   end
 
   alias __orig_proc_source_location source_location
   def source_location
-    return nil if @__sym_to_proc
+    return nil if __oruby_sym_proc?
+    m = @__oruby_method
+    return m.source_location if m
     __orig_proc_source_location
   end
 end

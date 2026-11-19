@@ -102,7 +102,7 @@ class Enumerator
   def each_with_object(object, &block)
     return to_enum(:each_with_object, object) { size } unless block
     __enumerator_block_call do |*i|
-      block.call(i.size <= 1 ? i[0] : i, object)
+      block.call(i.__svalue, object)
     end
     object
   end
@@ -214,7 +214,7 @@ class Enumerator
     def select(&block)
       raise ArgumentError, "tried to call lazy select without a block" unless block
       Lazy.new(self, nil) do |yielder, *v|
-        val = v.size <= 1 ? v[0] : v
+        val = v.__svalue
         yielder.yield(val) if block.call(val)
       end
     end
@@ -224,7 +224,7 @@ class Enumerator
     def reject(&block)
       raise ArgumentError, "tried to call lazy reject without a block" unless block
       Lazy.new(self, nil) do |yielder, *v|
-        val = v.size <= 1 ? v[0] : v
+        val = v.__svalue
         yielder.yield(val) unless block.call(val)
       end
     end
@@ -232,7 +232,7 @@ class Enumerator
     def filter_map(&block)
       raise ArgumentError, "tried to call lazy filter_map without a block" unless block
       Lazy.new(self, nil) do |yielder, *v|
-        val = v.size <= 1 ? v[0] : v
+        val = v.__svalue
         res = block.call(val)
         yielder.yield(res) if res
       end
@@ -240,7 +240,7 @@ class Enumerator
 
     def compact
       Lazy.new(self, nil) do |yielder, *v|
-        val = v.size <= 1 ? v[0] : v
+        val = v.__svalue
         yielder.yield(val) unless val.nil?
       end
     end
@@ -248,12 +248,12 @@ class Enumerator
     def grep(pattern, &block)
       if block
         Lazy.new(self, nil) do |yielder, *v|
-          val = v.size <= 1 ? v[0] : v
+          val = v.__svalue
           yielder.yield(block.call(val)) if pattern === val
         end
       else
         Lazy.new(self, nil) do |yielder, *v|
-          val = v.size <= 1 ? v[0] : v
+          val = v.__svalue
           yielder.yield(val) if pattern === val
         end
       end
@@ -262,12 +262,12 @@ class Enumerator
     def grep_v(pattern, &block)
       if block
         Lazy.new(self, nil) do |yielder, *v|
-          val = v.size <= 1 ? v[0] : v
+          val = v.__svalue
           yielder.yield(block.call(val)) unless pattern === val
         end
       else
         Lazy.new(self, nil) do |yielder, *v|
-          val = v.size <= 1 ? v[0] : v
+          val = v.__svalue
           yielder.yield(val) unless pattern === val
         end
       end
@@ -313,7 +313,7 @@ class Enumerator
         remain = n
         begin
           src.each do |*v|
-            val = v.size <= 1 ? v[0] : v
+            val = v.__svalue
             yielder.yield(val)
             remain -= 1
             break if remain <= 0
@@ -327,7 +327,7 @@ class Enumerator
     def take_while(&block)
       raise ArgumentError, "tried to call lazy take_while without a block" unless block
       Lazy.new(self, nil) do |yielder, *v|
-        val = v.size <= 1 ? v[0] : v
+        val = v.__svalue
         raise StopIteration unless block.call(*v)
         yielder.yield(val)
       end
@@ -349,7 +349,7 @@ class Enumerator
             if dropped < n
               dropped += 1
             else
-              val = v.size <= 1 ? v[0] : v
+              val = v.__svalue
               yielder.yield(val)
             end
           end
@@ -366,7 +366,7 @@ class Enumerator
         dropping = true
         begin
           src.each do |*v|
-            val = v.size <= 1 ? v[0] : v
+            val = v.__svalue
             if dropping
               next if block.call(*v)
               dropping = false
@@ -385,7 +385,7 @@ class Enumerator
         buckets = {}
         begin
           src.each do |*v|
-            val = v.size <= 1 ? v[0] : v
+            val = v.__svalue
             k = block ? block.call(val) : val
             h = k.hash
             list = buckets[h]
@@ -411,7 +411,7 @@ class Enumerator
         idx = off
         begin
           src.each do |*v|
-            val = v.size <= 1 ? v[0] : v
+            val = v.__svalue
             if block
               block.call(val, idx)
               yielder.yield(val)
@@ -450,7 +450,7 @@ class Enumerator
         iters = coerced.map { |kind, obj| kind == :ary ? [:ary, obj] : [:enum, obj.to_enum(:each)] }
         idx = 0
         each do |*v|
-          val = v.size <= 1 ? v[0] : v
+          val = v.__svalue
           row = [val]
           iters.each do |kind, obj|
             if kind == :ary
@@ -471,7 +471,7 @@ class Enumerator
         idx = 0
         begin
           src.each do |*v|
-            val = v.size <= 1 ? v[0] : v
+            val = v.__svalue
             row = [val]
             iters.each do |kind, obj|
               if kind == :ary
@@ -512,7 +512,7 @@ class Enumerator
         has_prev = false
         begin
           src.each do |*v|
-            val = v.size <= 1 ? v[0] : v
+            val = v.__svalue
             key = block.call(val)
             if key.nil? || key == :_separator
               if has_prev

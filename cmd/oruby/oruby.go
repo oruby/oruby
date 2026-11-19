@@ -728,6 +728,10 @@ func run() int {
 
 	c.Filename(cmdline)
 	mrb.SetMainScript(cmdline)
+	// a program not read from a file is kept for #source_range (core_ext)
+	if src != nil && (cmdline == "-e" || cmdline == "-") && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_keep_main_source")) {
+		mrb.Call(mrb.KernelModule().Value(), "__oruby_keep_main_source", cmdline, string(src))
+	}
 	var v oruby.Value
 	switch {
 	case src == nil:

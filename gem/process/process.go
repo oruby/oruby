@@ -40,6 +40,17 @@ func (procData *processData) getRunner(pid int) *cmdRunner {
 	return nil
 }
 
+// forget drops the runner of pid, a child reaped by wait(2) itself: its
+// exec.Cmd can no longer wait for it
+func (procData *processData) forget(pid int) {
+	if pid <= 0 {
+		return
+	}
+	procData.Lock()
+	delete(procData.runners, pid)
+	procData.Unlock()
+}
+
 func init() {
 	oruby.Gem("process", func(mrb *oruby.MrbState) interface{} {
 		// Require thread, ignore if it is not included in gems
@@ -374,37 +385,29 @@ func procWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	pid := pidV.Int()
 	flags := flagsV.Int()
 
-	// Pid of process
-	if pid > 0 {
+	// a child spawned here, waited for without flags (exec.Cmd ignores
+	// WNOHANG and the like)
+	if pid > 0 && flags == 0 {
 		runner := procData.getRunner(pid)
 		if runner != nil {
 			ret, _ := runner.Wait(runner.cmd.Process.Pid, flags)
-			procData.Lock()
-			delete(procData.runners, pid)
-			procData.Unlock()
+			procData.forget(pid)
 			return ret
 		}
 	}
 
-	// Any child
-	if pid == -1 {
-		procData.Lock()
-		for pid, runner := range procData.runners {
-			if runner.cmd.ProcessState != nil {
-				continue
-			}
-			delete(procData.runners, pid)
-			procData.Unlock()
-
-			ret, _ := runner.Wait(pid, flags)
-			return ret
-		}
-		procData.Unlock()
-	}
-
-	// Pid not in runners
+	// any child (pid -1), one of a process group (0, < -1), or with flags:
+	// wait(2), whichever child it is
 	lastState := &status{Pid: pid}
 	ret, err := blockingWait(mrb, pid, flags, lastState)
+	if err == nil {
+		procData.forget(ret)
+	}
+	if err == nil && ret == 0 {
+		// WNOHANG and the child runs: nil, and $? is cleared (MRI)
+		mrb.SetGV("$?", mrb.NilValue())
+		return mrb.NilValue()
+	}
 	mrb.SetGV("$?", mrb.Value(lastState))
 
 	if err != nil {
@@ -443,14 +446,24 @@ func procWait2(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ret := mrb.NilValue()
 	var state *status
 
-	runner := procData.getRunner(pid)
-	if runner != nil {
-		ret, state = runner.Wait(pid, flags.Int())
+	if pid > 0 && flags.Int() == 0 {
+		if runner := procData.getRunner(pid); runner != nil {
+			ret, state = runner.Wait(pid, 0)
+			procData.forget(pid)
+		}
 	}
 
 	if ret.IsNil() {
 		state = &status{Pid: pid}
 		result, err := blockingWait(mrb, pid, flags.Int(), state)
+		if err == nil {
+			procData.forget(result)
+		}
+		if err == nil && result == 0 {
+			// WNOHANG and the child runs: nil, and $? is cleared (MRI)
+			mrb.SetGV("$?", mrb.NilValue())
+			return mrb.NilValue()
+		}
 		mrb.SetGV("$?", mrb.Value(state))
 		if err != nil {
 			return waitError(mrb, err)

@@ -279,6 +279,12 @@ class Float
 
   alias __orig_flt_round round
   def round(ndigits = 0, half: nil)
+    # the common cases: round half up to an Integer in the Fixnum range (C),
+    # to ndigits decimals (Go, floatround.go)
+    if half.nil? && Integer === ndigits
+      return __orig_flt_round if ndigits == 0 && abs < 4.0e18
+      return __oruby_dec_round(ndigits, :up) if ndigits > 0 && ndigits <= 350 && finite?
+    end
     mode = Kernel.__check_half(half)
     ndigits = Kernel.__to_int(ndigits)
     if ndigits <= 0
@@ -302,107 +308,20 @@ class Float
     end
     return self if nan? || infinite?
     return self if ndigits > 350
-    # MRI Floats with ndigits > 0 round the shortest decimal representation (to_s)
-    s = __orig_flt_to_s
-    neg = s.start_with?("-")
-    body = neg ? s[1, s.length - 1] : s
-    if (eidx = body.index("e")) || (eidx = body.index("E"))
-      mant_str = body[0, eidx]
-      exp = body[eidx + 1, body.length - eidx - 1].to_i
-    else
-      mant_str = body
-      exp = 0
-    end
-    if (didx = mant_str.index("."))
-      int_part = mant_str[0, didx]
-      frac_part = mant_str[didx + 1, mant_str.length - didx - 1]
-    else
-      int_part = mant_str
-      frac_part = ""
-    end
-    digits = int_part + frac_part
-    dot = int_part.length + exp
-    keep = dot + ndigits
-    return self if keep >= digits.length
-    return (neg ? -0.0 : 0.0) if keep < 0
-    head = keep == 0 ? 0 : digits[0, keep].to_i
-    d_next = digits.getbyte(keep) - 48
-    tail_nz = false
-    i = keep + 1
-    len = digits.length
-    while i < len
-      if digits.getbyte(i) != 48
-        tail_nz = true
-        break
-      end
-      i += 1
-    end
-    round_up =
-      if d_next > 5
-        true
-      elsif d_next < 5
-        false
-      elsif tail_nz
-        true
-      else
-        mode == :up || (mode == :even && head.odd?)
-      end
-    head += 1 if round_up
-    "#{neg ? '-' : ''}#{head}e#{-ndigits}".to_f
+    # MRI rounds the shortest decimal representation (to_s): gem/core_ext's
+    # floatround.go
+    __oruby_dec_round(ndigits, mode)
   end
-
-  def __dec_floor_ceil(ndigits, is_ceil)
-    s = __orig_flt_to_s
-    neg = s.start_with?("-")
-    body = neg ? s[1, s.length - 1] : s
-    if (eidx = body.index("e")) || (eidx = body.index("E"))
-      mant_str = body[0, eidx]
-      exp = body[eidx + 1, body.length - eidx - 1].to_i
-    else
-      mant_str = body
-      exp = 0
-    end
-    if (didx = mant_str.index("."))
-      int_part = mant_str[0, didx]
-      frac_part = mant_str[didx + 1, mant_str.length - didx - 1]
-    else
-      int_part = mant_str
-      frac_part = ""
-    end
-    digits = int_part + frac_part
-    dot = int_part.length + exp
-    keep = dot + ndigits
-    return self if keep >= digits.length
-    start = keep < 0 ? 0 : keep
-    any_nz = false
-    i = start
-    len = digits.length
-    while i < len
-      if digits.getbyte(i) != 48
-        any_nz = true
-        break
-      end
-      i += 1
-    end
-    head = keep <= 0 ? 0 : digits[0, keep].to_i
-    if is_ceil
-      head += 1 if !neg && any_nz
-    else
-      head += 1 if neg && any_nz
-    end
-    return 0.0 if head == 0
-    "#{neg ? '-' : ''}#{head}e#{-ndigits}".to_f
-  end
-  private :__dec_floor_ceil
 
   alias __orig_flt_floor floor
   def floor(ndigits = 0)
+    return __orig_flt_floor if Integer === ndigits && ndigits == 0
     ndigits = Kernel.__to_int(ndigits)
     return __orig_flt_floor if ndigits == 0
     return self if ndigits > 0 && (nan? || infinite?)
     raise FloatDomainError, to_s if nan? || infinite?
     return self if ndigits > 350
-    return __dec_floor_ceil(ndigits, false) if ndigits > 0
+    return __oruby_dec_floor_ceil(ndigits, false) if ndigits > 0
     n, d = Kernel.__float_num_den(self)
     s = 10 ** (-ndigits)
     n.div(d * s) * s
@@ -410,12 +329,13 @@ class Float
 
   alias __orig_flt_ceil ceil
   def ceil(ndigits = 0)
+    return __orig_flt_ceil if Integer === ndigits && ndigits == 0
     ndigits = Kernel.__to_int(ndigits)
     return __orig_flt_ceil if ndigits == 0
     return self if ndigits > 0 && (nan? || infinite?)
     raise FloatDomainError, to_s if nan? || infinite?
     return self if ndigits > 350
-    return __dec_floor_ceil(ndigits, true) if ndigits > 0
+    return __oruby_dec_floor_ceil(ndigits, true) if ndigits > 0
     n, d = Kernel.__float_num_den(self)
     s = 10 ** (-ndigits)
     -((-n).div(d * s)) * s
@@ -450,11 +370,7 @@ class Float
     __orig_flt_cmp(other)
   end
 
-  alias __orig_flt_to_s to_s
-  def to_s
-    __orig_flt_to_s.force_encoding(Encoding::US_ASCII)
-  end
-  alias inspect to_s
+  # Float#to_s and #inspect are US-ASCII (go-mrb.c's install_num_to_s)
 end
 
 class Integer
@@ -509,11 +425,7 @@ class Integer
     no_len ? __orig_int_aref(idx) : __orig_int_aref(idx, len)
   end
 
-  alias __orig_int_eq ==
-  def ==(other)
-    return __orig_int_eq(other) if Integer === other || Float === other
-    other.respond_to?(:==) ? !!(other == self) : false
-  end
+  # Integer#== is go-mrb.c's num_eq (MRI's num_equal), a builtin for the VM
   alias === ==
 
   alias __orig_int_cmp <=>
@@ -712,11 +624,7 @@ class Integer
     __orig_int_downto(limit, &block)
   end
 
-  alias __orig_int_to_s to_s
-  def to_s(base = 10)
-    __orig_int_to_s(base).force_encoding(Encoding::US_ASCII)
-  end
-  alias inspect to_s
+  # Integer#to_s and #inspect are US-ASCII (go-mrb.c's install_num_to_s)
 
   alias __orig_int_chr chr
   def chr(enc = (no_enc = true; nil))

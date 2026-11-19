@@ -124,7 +124,11 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if hasMultiAssign(src) || hasRegexpEncFlag(src) {
 		return true
 	}
-	for _, k := range []string{"**nil", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
+	if hasArrayKwHash(src) {
+		return true
+	}
+	// "**": **obj (ORB_KWSPLAT)
+	for _, k := range []string{"**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
 		"__ENCODING__", "frozen_string_literal", "coding"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
@@ -150,6 +154,9 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 type edit struct {
 	start, end int
 	build      func(r *rewriter) string
+	seq        int  // order added
+	closer     bool // inserted after a span (addAfter)
+	from       int  // a closer's span start
 }
 
 type rewriter struct {
@@ -265,6 +272,36 @@ func hasMultiAssign(src []byte) bool {
 				if len(rhs) > 0 && rhs[0] != '[' && rhs[0] != '*' && bytes.IndexByte(rhs, ',') < 0 {
 					return true
 				}
+			}
+		}
+	}
+	return false
+}
+
+// hasArrayKwHash: a line where a "[" is followed, before its "]", by a
+// "=>" or a "label: " (ORB_ARRAY_KWHASH, [a, k: v])
+func hasArrayKwHash(src []byte) bool {
+	for len(src) > 0 {
+		line := src
+		if i := bytes.IndexByte(src, '\n'); i >= 0 {
+			line, src = src[:i], src[i+1:]
+		} else {
+			src = nil
+		}
+		open := bytes.IndexByte(line, '[')
+		if open < 0 {
+			continue
+		}
+		rest := line[open+1:]
+		if c := bytes.IndexByte(rest, ']'); c >= 0 {
+			rest = rest[:c]
+		}
+		if bytes.Contains(rest, []byte("=>")) {
+			return true
+		}
+		for i := 1; i+1 < len(rest); i++ {
+			if rest[i] == ':' && rest[i+1] == ' ' && rest[i-1] != ':' && rest[i-1] != ' ' {
+				return true
 			}
 		}
 	}
@@ -447,7 +484,7 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 				return "::Kernel.__oruby_end__(" + strconv.FormatUint(id, 10) + ") {"
 			})
 		case C.ORB_FROZEN_STRING:
-			r.add(e[0], e[0], func(*rewriter) string { return ".-@" })
+			r.addAfter(s[0], e[0], func(*rewriter) string { return ".-@" })
 		case C.ORB_MASGN_VALUE:
 			// a, b = v -> __oruby_masgn(id, (a, b = __oruby_to_ary(id, (v)))):
 			// the value is converted, the expression still returns v. The
@@ -455,23 +492,23 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			id := strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
 			r.add(s[1], s[1], func(*rewriter) string { return "::Kernel.__oruby_masgn(" + id + ", (" })
 			r.add(s[0], s[0], func(*rewriter) string { return "::Kernel.__oruby_to_ary(" + id + ", (" })
-			r.add(e[0], e[0], func(*rewriter) string { return "))" })
-			r.add(e[1], e[1], func(*rewriter) string { return "))" })
+			r.addAfter(s[0], e[0], func(*rewriter) string { return "))" })
+			r.addAfter(s[1], e[1], func(*rewriter) string { return "))" })
 		case C.ORB_ARRAY_KWHASH:
 			r.add(s[0], s[0], func(*rewriter) string { return "{" })
-			r.add(e[0], e[0], func(*rewriter) string { return "}" })
+			r.addAfter(s[0], e[0], func(*rewriter) string { return "}" })
 		case C.ORB_KWSPLAT:
 			r.add(s[0], s[0], func(*rewriter) string { return "::Kernel.__oruby_kwsplat((" })
-			r.add(e[0], e[0], func(*rewriter) string { return "))" })
+			r.addAfter(s[0], e[0], func(*rewriter) string { return "))" })
 		case C.ORB_LITERAL_ENCODING:
 			// MRI tags a literal with its source encoding; \u escapes make it
 			// UTF-8, which is oruby's default already
 			switch {
 			case rc.flags&1 != 0:
 			case rc.flags&2 != 0:
-				r.add(e[0], e[0], func(*rewriter) string { return ".force_encoding(::Encoding::BINARY)" })
+				r.addAfter(s[0], e[0], func(*rewriter) string { return ".force_encoding(::Encoding::BINARY)" })
 			default:
-				r.add(e[0], e[0], func(*rewriter) string { return `.force_encoding(::Encoding.find("` + encName + `"))` })
+				r.addAfter(s[0], e[0], func(*rewriter) string { return `.force_encoding(::Encoding.find("` + encName + `"))` })
 			}
 		case C.ORB_SOURCE_ENCODING:
 			if encName != "" && encName != "UTF-8" {
@@ -524,6 +561,16 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		if (ea.start == ea.end) != (eb.start == eb.end) {
 			return ea.start == ea.end
 		}
+		if ea.start == ea.end {
+			// what ends here before what starts here; the inner end first
+			if ea.closer != eb.closer {
+				return ea.closer
+			}
+			if ea.closer && ea.from != eb.from {
+				return ea.from > eb.from
+			}
+			return ea.seq < eb.seq
+		}
 		return ea.end > eb.end
 	})
 	return []byte(r.render(0, len(src)))
@@ -533,7 +580,17 @@ func (r *rewriter) add(s, e int, build func(r *rewriter) string) {
 	if s < 0 || e < s {
 		return
 	}
-	r.edits = append(r.edits, edit{s, e, build})
+	r.edits = append(r.edits, edit{s, e, build, len(r.edits), false, 0})
+}
+
+// addAfter inserts at pos, the end of the span from..pos, the end of a
+// construct wrapping it; of those ending at one position the inner one (the
+// later start) is closed first, those of one span in the order added
+func (r *rewriter) addAfter(from, pos int, build func(r *rewriter) string) {
+	if pos < 0 {
+		return
+	}
+	r.edits = append(r.edits, edit{pos, pos, build, len(r.edits), true, from})
 }
 
 // PreprocessRuby is PreprocessRubyBytes for strings.

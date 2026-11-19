@@ -14,8 +14,8 @@ import (
 type rqueue struct {
 	closed      bool
 	max         int // SizedQueue's limit; 0: none
-	popWaiters  []*oruby.Waiter
-	pushWaiters []*oruby.Waiter
+	popWaiters  []*waiter
+	pushWaiters []*waiter
 }
 
 type condvar struct {
@@ -30,10 +30,10 @@ const ivarItems = "__oruby_items"
 func initQueues(mrb *oruby.MrbState, threadClass oruby.RClass) {
 	queueClass := mrb.DefineGoClass("Queue", newQueue)
 	mrb.ConstSet(threadClass, mrb.Intern("Queue"), queueClass.Value())
-	queueClass.DefineMethod("__oruby_push", queuePush, mrb.ArgsReq(3))
-	queueClass.DefineMethod("__oruby_pop", queuePop, mrb.ArgsReq(2))
+	queueClass.DefineMethod("__oruby_push", queuePush, mrb.ArgsArg(3, 1))
+	queueClass.DefineMethod("__oruby_pop", queuePop, mrb.ArgsArg(2, 1))
 	queueClass.DefineMethod("__oruby_max", queueMax, mrb.ArgsReq(1))
-	queueClass.DefineMethod("close", queueClose, mrb.ArgsNone())
+	queueClass.DefineMethod("__oruby_close", queueClose, mrb.ArgsNone())
 	queueClass.DefineMethod("closed?", queueClosed, mrb.ArgsNone())
 	queueClass.DefineMethod("num_waiting", queueNumWaiting, mrb.ArgsNone())
 	queueClass.DefineMethod("__oruby_items", queueItems, mrb.ArgsNone())
@@ -72,30 +72,6 @@ func items(mrb *oruby.MrbState, self oruby.Value) oruby.Value {
 	return a
 }
 
-func wakeFirst(ws *[]*oruby.Waiter) {
-	if len(*ws) > 0 {
-		w := (*ws)[0]
-		*ws = (*ws)[1:]
-		w.Wake()
-	}
-}
-
-func wakeAll(ws *[]*oruby.Waiter) {
-	for _, w := range *ws {
-		w.Wake()
-	}
-	*ws = nil
-}
-
-func drop(ws *[]*oruby.Waiter, ch *oruby.Waiter) {
-	for i, w := range *ws {
-		if w == ch {
-			*ws = append((*ws)[:i], (*ws)[i+1:]...)
-			return
-		}
-	}
-}
-
 // timeoutArg: nil none (-1), else seconds
 func timeoutArg(v oruby.Value) time.Duration {
 	if v.IsNil() {
@@ -117,13 +93,17 @@ func timeoutArg(v oruby.Value) time.Duration {
 func queuePop(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	nonBlock, d := args.Item(0).Bool(), timeoutArg(args.Item(1))
+	again := args.Len() > 2 && args.Item(2).Bool() // after the scheduler's block
 	q := queueData(mrb, self)
 	ary := items(mrb, self)
 	deadline := time.Now().Add(d)
+	if again {
+		dropFiber(&q.popWaiters, mrb.CurrentFiber())
+	}
 	for {
 		if oruby.RArrayLen(ary) > 0 {
 			v := mrb.AryShift(ary)
-			wakeFirst(&q.pushWaiters)
+			wakeFirstOf(mrb, &q.pushWaiters, self)
 			return v
 		}
 		if nonBlock {
@@ -138,10 +118,21 @@ func queuePop(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				return oruby.Nil
 			}
 		}
-		w := mrb.NewWaiter()
-		q.popWaiters = append(q.popWaiters, w)
-		_, err := mrb.ThreadWait(w.C(), left, d < 0)
-		drop(&q.popWaiters, w)
+		// a non-blocking fiber waits through its scheduler: the Ruby side
+		// calls block(queue, timeout) and asks again
+		sched := mrb.FiberScheduler()
+		if !sched.IsNil() && again && d >= 0 {
+			return oruby.Nil // the scheduler's timed block ran out
+		}
+		e := newWaiter(mrb, sched)
+		q.popWaiters = append(q.popWaiters, e)
+		keepFibers(mrb, self, q.popWaiters, q.pushWaiters)
+		if e.w == nil {
+			return mrb.Intern("__oruby_block").Value()
+		}
+		err := e.wait(mrb, self, oruby.Nil, left, d < 0)
+		dropWaiter(&q.popWaiters, e)
+		keepFibers(mrb, self, q.popWaiters, q.pushWaiters)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -153,16 +144,20 @@ func queuePop(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func queuePush(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
 	obj, nonBlock, d := args.Item(0), args.Item(1).Bool(), timeoutArg(args.Item(2))
+	again := args.Len() > 3 && args.Item(3).Bool() // after the scheduler's block
 	q := queueData(mrb, self)
 	ary := items(mrb, self)
 	deadline := time.Now().Add(d)
+	if again {
+		dropFiber(&q.pushWaiters, mrb.CurrentFiber())
+	}
 	for {
 		if q.closed {
 			return mrb.Raise(mrb.ClassGet("ClosedQueueError"), "queue closed")
 		}
 		if q.max == 0 || oruby.RArrayLen(ary) < q.max {
 			mrb.AryPush(ary, obj)
-			wakeFirst(&q.popWaiters)
+			wakeFirstOf(mrb, &q.popWaiters, self)
 			return self
 		}
 		if nonBlock {
@@ -174,10 +169,21 @@ func queuePush(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				return oruby.Nil
 			}
 		}
-		w := mrb.NewWaiter()
-		q.pushWaiters = append(q.pushWaiters, w)
-		_, err := mrb.ThreadWait(w.C(), left, d < 0)
-		drop(&q.pushWaiters, w)
+		// a non-blocking fiber waits through its scheduler: the Ruby side
+		// calls block(queue, timeout) and asks again
+		sched := mrb.FiberScheduler()
+		if !sched.IsNil() && again && d >= 0 {
+			return oruby.Nil // the scheduler's timed block ran out
+		}
+		e := newWaiter(mrb, sched)
+		q.pushWaiters = append(q.pushWaiters, e)
+		keepFibers(mrb, self, q.popWaiters, q.pushWaiters)
+		if e.w == nil {
+			return mrb.Intern("__oruby_block").Value()
+		}
+		err := e.wait(mrb, self, oruby.Nil, left, d < 0)
+		dropWaiter(&q.pushWaiters, e)
+		keepFibers(mrb, self, q.popWaiters, q.pushWaiters)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -191,22 +197,22 @@ func queueMax(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	grow := n > q.max
 	q.max = n
 	if grow {
-		wakeAll(&q.pushWaiters)
+		wakeAllOf(mrb, &q.pushWaiters, self)
 	}
 	return mrb.FixnumValue(n)
 }
 
 // Queue#__oruby_space: a pusher waits no more (after #clear, #pop)
 func queueSpace(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	wakeAll(&queueData(mrb, self).pushWaiters)
+	wakeAllOf(mrb, &queueData(mrb, self).pushWaiters, self)
 	return oruby.Nil
 }
 
 func queueClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	q := queueData(mrb, self)
 	q.closed = true
-	wakeAll(&q.popWaiters)
-	wakeAll(&q.pushWaiters)
+	wakeAllOf(mrb, &q.popWaiters, self)
+	wakeAllOf(mrb, &q.pushWaiters, self)
 	return self
 }
 

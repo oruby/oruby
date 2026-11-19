@@ -94,6 +94,7 @@ class Socket < BasicSocket
     Socket::Constants.constants.each do |c|
       s = c.to_s
       next unless s.start_with?(prefix)
+      next if s.end_with?("_LOCAL") # MRI names AF_UNIX/PF_UNIX, not their aliases
       next if exclude.any? { |e| s.start_with?(e) }
       return s[prefix.size..-1] if Socket::Constants.const_get(c) == value
     end
@@ -207,6 +208,20 @@ class BasicSocket < IO
   def __wrap_fd(fd)
     __io_initialize(fd, "r+")
     __init_socket
+  end
+
+  # accept(2) -> [fd, sockaddr]; a non-blocking fiber waits through its
+  # Fiber scheduler's io_wait(self, IO::READABLE, nil) while none is pending
+  def __accept_fd
+    s = $__oruby_fiber_sched && Fiber.__oruby_sched
+    return Socket.__accept(__fd, false) unless s
+    loop do
+      begin
+        return Socket.__accept(__fd, true)
+      rescue IO::WaitReadable
+      end
+      __oruby_sched_io_wait(s, IO::READABLE, nil, "accept(2)")
+    end
   end
 
   def do_not_reverse_lookup
@@ -500,16 +515,41 @@ class TCPSocket < IPSocket
           Socket.__setsockopt(fd, Socket::SOL_SOCKET, Socket::SO_REUSEADDR, [1].pack("i"))
           Socket.__bind(fd, l[3])
         end
+        if (sched = $__oruby_fiber_sched && Fiber.__oruby_sched)
+          __wrap_fd(fd)
+          wrapped = true
+          __connect_sched(sched, fd, sa, connect_timeout)
+          return
+        end
         __connect_timeout(fd, sa, connect_timeout)
         __wrap_fd(fd)
         return
-      rescue SystemCallError, IO::TimeoutError => e
-        last_err = e
+      rescue IO::TimeoutError, IOError
+        raise if wrapped
         Socket.__close_fd(fd) if fd
+        raise
+      rescue SystemCallError => e
+        last_err = e
+        if wrapped
+          close unless closed?
+          wrapped = false
+        elsif fd
+          Socket.__close_fd(fd)
+        end
       end
     end
     raise last_err if last_err
     raise SocketError, "no address"
+  end
+
+  # connect(2) of a non-blocking fiber: io_wait(self, READABLE | WRITABLE,
+  # timeout) while it is in progress, then its SO_ERROR
+  def __connect_sched(sched, fd, sa, timeout)
+    Socket.__connect(fd, sa, true)
+  rescue IO::WaitWritable
+    __oruby_sched_io_wait(sched, IO::READABLE | IO::WRITABLE, timeout, "connect(2)")
+    err = Socket.__getsockopt(fd, Socket::SOL_SOCKET, Socket::SO_ERROR).unpack1("i")
+    raise SystemCallError.new("connect(2)", err) if err != 0
   end
 
   def __connect_timeout(fd, sa, timeout)
@@ -573,7 +613,7 @@ class TCPServer < TCPSocket
   end
 
   def accept
-    fd, _ = Socket.__accept(__fd, false)
+    fd, _ = __accept_fd
     TCPSocket.for_fd(fd)
   end
 
@@ -589,7 +629,7 @@ class TCPServer < TCPSocket
   end
 
   def sysaccept
-    Socket.__accept(__fd, false)[0]
+    __accept_fd[0]
   end
 
   def listen(backlog)
@@ -718,7 +758,7 @@ class UNIXServer < UNIXSocket
   end
 
   def accept
-    fd, _ = Socket.__accept(__fd, false)
+    fd, _ = __accept_fd
     UNIXSocket.for_fd(fd)
   end
 
@@ -734,7 +774,7 @@ class UNIXServer < UNIXSocket
   end
 
   def sysaccept
-    Socket.__accept(__fd, false)[0]
+    __accept_fd[0]
   end
 
   def listen(backlog)
@@ -801,7 +841,7 @@ class Socket < BasicSocket
   end
 
   def accept
-    fd, sa = Socket.__accept(__fd, false)
+    fd, sa = __accept_fd
     __accepted(fd, sa)
   end
 
@@ -816,7 +856,7 @@ class Socket < BasicSocket
   end
 
   def sysaccept
-    fd, sa = Socket.__accept(__fd, false)
+    fd, sa = __accept_fd
     [fd, Addrinfo.new(sa, Socket.__sa_family(sa), __socktype, 0)]
   end
 
@@ -1688,4 +1728,31 @@ end
 
 class << UNIXSocket
   alias_method :socketpair, :pair
+end
+
+# A non-blocking fiber resolves a host name through its Fiber scheduler's
+# address_resolve(hostname) when it has one; only the numeric addresses it
+# gives are kept
+class << Socket
+  alias __go_getaddrinfo __getaddrinfo
+  def __getaddrinfo(host, service, family, socktype, protocol, flags)
+    if $__oruby_fiber_sched && host.is_a?(String) && !host.empty? && (s = Fiber.__oruby_sched) &&
+       s.respond_to?(:address_resolve)
+      num = flags | Socket::AI_NUMERICHOST
+      begin
+        return __go_getaddrinfo(host, service, family, socktype, protocol, num)
+      rescue SocketError
+      end
+      out = []
+      Array(s.address_resolve(host)).each do |a|
+        out.concat(__go_getaddrinfo(a, service, family, socktype, protocol, num))
+      rescue SocketError
+      end
+      if out.empty?
+        raise Socket::ResolutionError.new("getaddrinfo: nodename nor servname provided, or not known", Socket::EAI_NONAME)
+      end
+      return out
+    end
+    __go_getaddrinfo(host, service, family, socktype, protocol, flags)
+  end
 end

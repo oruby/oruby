@@ -103,6 +103,8 @@ static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const m
   }
 }
 
+void _orb_trace_close(mrb_state *mrb);
+
 static void set_mrb_injector(mrb_state *mrb) {
 	/* the request hook of go-signal.c gives way: the injector polls too */
 	if (!mrb->code_fetch_hook || _orb_vm_hooked(mrb)) {

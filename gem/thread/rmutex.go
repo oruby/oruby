@@ -16,7 +16,7 @@ type rmutex struct {
 	locked  bool
 	owner   oruby.Value   // the Fiber holding the lock; also kept in ivarOwner for the GC
 	thread  *oruby.Thread // the thread of that Fiber (nil before the first Thread.new)
-	waiters []*oruby.Waiter
+	waiters []*waiter
 	self    oruby.Value // the Mutex object, while it is held by a thread
 }
 
@@ -73,8 +73,10 @@ func (rm *rmutex) take(mrb *oruby.MrbState, self, owner oruby.Value) {
 	}
 }
 
-// tryLock takes the lock when it is free; err for MRI's deadlocks
-func (rm *rmutex) tryLock(mrb *oruby.MrbState, self, cur oruby.Value) (bool, error) {
+// tryLock takes the lock when it is free; err for MRI's deadlocks. sched:
+// the current fiber waits through its scheduler, which a fiber of the
+// thread holding it can then unblock (no deadlock)
+func (rm *rmutex) tryLock(mrb *oruby.MrbState, self, cur, sched oruby.Value) (bool, error) {
 	if !rm.locked {
 		rm.take(mrb, self, cur)
 		return true, nil
@@ -82,36 +84,55 @@ func (rm *rmutex) tryLock(mrb *oruby.MrbState, self, cur oruby.Value) (bool, err
 	if rm.owner.Pointer() == cur.Pointer() {
 		return false, oruby.EThreadError("deadlock; recursive locking")
 	}
-	if rm.thread == mrb.CurrentThread() {
+	if sched.IsNil() && rm.thread == mrb.CurrentThread() {
 		return false, oruby.EThreadError("deadlock; lock already owned by another fiber belonging to the same thread")
 	}
 	return false, nil
 }
 
-func (rm *rmutex) lock(mrb *oruby.MrbState, self oruby.Value) error {
-	cur := currentFiber(mrb)
+// lockWait waits until the lock is free and takes it. uninterruptible: an
+// interrupt (kill, raise) that comes meanwhile is returned once the lock is
+// taken, so ensure clauses see it held (Mutex#sleep's relock)
+func (rm *rmutex) lockWait(mrb *oruby.MrbState, self, cur oruby.Value, uninterruptible bool) error {
+	var pending error
+	var pendingExc *oruby.RException
+	dropFiber(&rm.waiters, cur) // its waiter from the last attempt
 	for {
-		ok, err := rm.tryLock(mrb, self, cur)
+		sched := mrb.FiberScheduler()
+		ok, err := rm.tryLock(mrb, self, cur, sched)
 		if ok || err != nil {
-			return err
+			if err != nil {
+				return err
+			}
+			if pendingExc != nil {
+				mrb.RaiseObj(pendingExc.Value())
+			}
+			return pending
 		}
-		w := mrb.NewWaiter()
-		rm.waiters = append(rm.waiters, w)
-		_, err = mrb.ThreadWait(w.C(), -1, true)
-		rm.dropWaiter(w)
+		e := newWaiter(mrb, sched)
+		rm.waiters = append(rm.waiters, e)
+		keepFibers(mrb, self, rm.waiters)
+		if e.w == nil {
+			return errBlock // waits in the scheduler; registered until it asks again
+		}
+		err = e.wait(mrb, self, oruby.Nil, -1, true)
+		dropWaiter(&rm.waiters, e)
+		keepFibers(mrb, self, rm.waiters)
 		if err != nil {
-			return err
+			if !uninterruptible {
+				return err
+			}
+			if pending == nil {
+				pending = err
+				pendingExc = mrb.Exc()
+			}
+			mrb.ExcClear()
 		}
 	}
 }
 
-func (rm *rmutex) dropWaiter(ch *oruby.Waiter) {
-	for i, w := range rm.waiters {
-		if w == ch {
-			rm.waiters = append(rm.waiters[:i], rm.waiters[i+1:]...)
-			return
-		}
-	}
+func (rm *rmutex) lock(mrb *oruby.MrbState, self oruby.Value) error {
+	return rm.lockWait(mrb, self, currentFiber(mrb), false)
 }
 
 // release frees the lock and wakes the first waiter
@@ -122,42 +143,14 @@ func (rm *rmutex) release(mrb *oruby.MrbState, self oruby.Value) {
 		delete(h, rm)
 	}
 	rm.self = oruby.Nil
-	if len(rm.waiters) > 0 {
-		w := rm.waiters[0]
-		rm.waiters = rm.waiters[1:]
-		w.Wake()
-	}
+	wakeFirstOf(mrb, &rm.waiters, self)
 }
 
 // relock reacquires the mutex at the end of Mutex#sleep before any pending
 // interrupt (kill/raise) unwinds the thread, so ensure clauses see the
 // mutex locked by cur, as in MRI
 func (rm *rmutex) relock(mrb *oruby.MrbState, self, cur oruby.Value) error {
-	var pending error
-	var pendingExc *oruby.RException
-	for {
-		ok, err := rm.tryLock(mrb, self, cur)
-		if ok || err != nil {
-			if err != nil {
-				return err
-			}
-			if pendingExc != nil {
-				mrb.RaiseObj(pendingExc.Value())
-			}
-			return pending
-		}
-		w := mrb.NewWaiter()
-		rm.waiters = append(rm.waiters, w)
-		_, err = mrb.ThreadWait(w.C(), -1, true)
-		rm.dropWaiter(w)
-		if err != nil {
-			if pending == nil {
-				pending = err
-				pendingExc = mrb.Exc()
-			}
-			mrb.ExcClear()
-		}
-	}
+	return rm.lockWait(mrb, self, cur, true)
 }
 
 func (rm *rmutex) unlock(mrb *oruby.MrbState, self oruby.Value) error {
@@ -174,9 +167,26 @@ func (rm *rmutex) unlock(mrb *oruby.MrbState, self oruby.Value) error {
 // Mutex#lock -> self
 func mutexLock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err := mutexData(mrb, self).lock(mrb, self); err != nil {
+		if err == errBlock {
+			return mrb.Intern("__oruby_block").Value()
+		}
 		return mrb.RaiseError(err)
 	}
 	return self
+}
+
+// Thread.__oruby_release_held: the Mutexes the current thread holds are
+// released as it ends (from its Ruby side, so their unblocks run there)
+func threadReleaseHeld(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	if t := mrb.CurrentThread(); t != nil {
+		releaseHeld(mrb, t)
+	}
+	return oruby.Nil
+}
+
+// Thread.__oruby_unblocks: the scheduler unblocks queued meanwhile
+func threadUnblocks(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mrb.TakeUnblocks()
 }
 
 // Mutex#unlock -> self
@@ -190,7 +200,7 @@ func mutexUnlock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 // Mutex#try_lock -> true or false
 func mutexTryLock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	rm := mutexData(mrb, self)
-	ok, _ := rm.tryLock(mrb, self, currentFiber(mrb))
+	ok, _ := rm.tryLock(mrb, self, currentFiber(mrb), oruby.Nil)
 	return oruby.Bool(ok)
 }
 

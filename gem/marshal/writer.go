@@ -184,7 +184,9 @@ func (w *writer) ivars(v oruby.Value) []ivar {
 	str := v.Type() == oruby.MrbTTString
 	w.mrb.IVForEach(v, func(name oruby.MrbSym, val oruby.Value) bool {
 		n := w.mrb.SymName(name)
-		if strings.HasPrefix(n, "@") {
+		if n == "@__nil_mesg" {
+			// core_ext's mark of an exception made without a message
+		} else if strings.HasPrefix(n, "@") {
 			list = append(list, ivar{name, val})
 		} else if str && !strings.HasPrefix(n, "__") {
 			plain = append(plain, ivar{name, val})
@@ -604,8 +606,12 @@ func (w *writer) exception(v oruby.Value, limit int) error {
 	if err := w.class('o', v, true); err != nil {
 		return err
 	}
+	mesg := w.mrb.ExcMessage(v)
+	if w.mrb.IVGet(v, w.mrb.Intern("@__nil_mesg")).Bool() {
+		mesg = oruby.Nil // made without a message: MRI dumps nil
+	}
 	list := []ivar{
-		{w.mrb.Intern("mesg"), w.mrb.ExcMessage(v)},
+		{w.mrb.Intern("mesg"), mesg},
 		{w.mrb.Intern("bt"), w.mrb.ExcBacktrace(v)},
 	}
 	if c := w.mrb.IVGet(v, w.mrb.Intern("cause")); !c.IsNil() {

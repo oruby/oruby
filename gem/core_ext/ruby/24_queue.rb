@@ -21,7 +21,9 @@ class Queue
   private :initialize
 
   def push(obj)
-    __oruby_push(obj, false, nil)
+    r = __oruby_push(obj, false, nil)
+    Thread.__oruby_drain if $__oruby_fiber_sched
+    r
   end
   alias << push
   alias enq push
@@ -31,7 +33,15 @@ class Queue
       raise ArgumentError, "can't set a timeout if non_block is enabled" if non_block
       timeout = Queue.__timeout(timeout)
     end
-    __oruby_pop(non_block, timeout)
+    Thread.__oruby_drain if $__oruby_fiber_sched
+    r = __oruby_pop(non_block, timeout)
+    # a non-blocking fiber waits through its scheduler, then asks again
+    while :__oruby_block.equal?(r)
+      Fiber.__oruby_sched.block(self, timeout)
+      r = __oruby_pop(non_block, timeout, true)
+    end
+    Thread.__oruby_drain if $__oruby_fiber_sched
+    r
   end
   alias shift pop
   alias deq pop
@@ -41,6 +51,13 @@ class Queue
     t.to_f
   end
 
+  # waiters woken here (fibers through their scheduler's unblock) go on
+  def close
+    __oruby_close
+    Thread.__oruby_drain if $__oruby_fiber_sched
+    self
+  end
+
   def empty? = __oruby_items.empty?
   def size = __oruby_items.size
   alias length size
@@ -48,6 +65,7 @@ class Queue
   def clear
     __oruby_items.clear
     __oruby_space
+    Thread.__oruby_drain if $__oruby_fiber_sched
     self
   end
 
@@ -77,6 +95,8 @@ class SizedQueue
     raise ArgumentError, "queue size must be positive" if n <= 0
     @__max = n
     __oruby_max(n)
+    Thread.__oruby_drain if $__oruby_fiber_sched
+    n
   end
 
   def push(obj, non_block = false, timeout: nil)
@@ -84,7 +104,13 @@ class SizedQueue
       raise ArgumentError, "can't set a timeout if non_block is enabled" if non_block
       timeout = Queue.__timeout(timeout)
     end
-    __oruby_push(obj, non_block, timeout)
+    r = __oruby_push(obj, non_block, timeout)
+    while :__oruby_block.equal?(r)
+      Fiber.__oruby_sched.block(self, timeout)
+      r = __oruby_push(obj, non_block, timeout, true)
+    end
+    Thread.__oruby_drain if $__oruby_fiber_sched
+    r
   end
   alias << push
   alias enq push

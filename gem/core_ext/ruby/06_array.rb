@@ -414,6 +414,7 @@ class Array
         start = 0 if start < 0
         count = len.nil? ? (size - start) : len
         return self if count <= 0
+        raise ArgumentError, "argument too big" if start + count > 1152921504606846975 # MRI's ARY_MAX_SIZE
         (start...(start + count)).each { |i| self[i] = yield(i) }
       end
     else
@@ -446,6 +447,7 @@ class Array
         start = 0 if start < 0
         count = len.nil? ? (size - start) : len
         return self if count <= 0
+        raise ArgumentError, "argument too big" if start + count > 1152921504606846975 # MRI's ARY_MAX_SIZE
         (start...(start + count)).each { |i| self[i] = filler }
       end
     end

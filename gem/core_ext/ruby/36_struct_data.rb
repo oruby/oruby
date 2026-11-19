@@ -21,11 +21,13 @@ class Struct
       __setup_struct_class(sub) unless sub.superclass == Struct
     end
 
+    # instances have every member (nil) even when an initialize does not
+    # call super, as MRI's are allocated
     def __setup_struct_class(c)
+      n = (c.members.size rescue 0)
       c.define_singleton_method(:new) do |*args, **kw, &blk|
         obj = allocate
-        mems = (self.members rescue nil)
-        obj[mems.size - 1] = nil if mems && !mems.empty?
+        obj[n - 1] = nil if n > 0
         if kw.empty?
           obj.__send__(:initialize, *args, &blk)
         else

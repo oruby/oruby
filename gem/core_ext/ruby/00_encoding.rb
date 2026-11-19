@@ -355,8 +355,14 @@ class String
   alias __mrb_valid_encoding? valid_encoding?
   alias __mrb_b b
 
+  # a string go-mrb.c marked US-ASCII (Integer#to_s and the like, without an
+  # instance variable) is US-ASCII while it holds ASCII only and UTF-8 once
+  # it does not, as MRI's compatible concatenation makes it; force_encoding
+  # keeps the binary flag and the tag
   def encoding
-    __encoding_binary? ? (__encoding_tag || Encoding::BINARY) : Encoding::UTF_8
+    return __encoding_tag || Encoding::BINARY if __encoding_binary?
+    return ascii_only? ? Encoding::US_ASCII : Encoding::UTF_8 if __encoding_us_ascii?
+    Encoding::UTF_8
   end
 
   def force_encoding(enc)

@@ -93,6 +93,8 @@ class Random
   private def __rand_int(limit)
     n = limit - 1
     return 0 if n == 0
+    # MRI's limited_rand in Go (random.go)
+    return @__mt.limited(n) if n < 0x7fff_ffff_ffff_ffff
     bl = n.bit_length
     if bl <= 32
       mask = (1 << bl) - 1
@@ -218,7 +220,8 @@ module Kernel
   end
   module_function :srand
 
-  def rand(max = (no_max = true; nil))
+  # Kernel#rand is random.go's for no argument, nil and a Fixnum; the rest
+  def __oruby_rand_slow(max = (no_max = true; nil))
     return Random.rand if no_max
     if max.nil? || (Numeric === max && !(Range === max) && max == 0)
       return Random.rand
@@ -235,5 +238,5 @@ module Kernel
     end
     Random.rand(max)
   end
-  module_function :rand
+  module_function :__oruby_rand_slow
 end

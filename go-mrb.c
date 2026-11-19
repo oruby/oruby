@@ -215,20 +215,70 @@ static mrb_bool src_contains(const char *s, mrb_int len, const char *pat) {
   return FALSE;
 }
 
+void _orb_keep_source(mrb_state *mrb, mrb_value file, mrb_int line, mrb_value src);
+void _orb_trace_script(mrb_state *mrb, mrb_value src);
+
+/* MRI names the code eval runs without a file "(eval at FILE:LINE)", the
+   Ruby code calling it */
+static mrb_value eval_default_file(mrb_state *mrb) {
+  mrb_callinfo *ci = mrb->c->ci;
+  for (mrb_callinfo *p = ci - 1; p >= mrb->c->cibase; p--) {
+    const struct RProc *pr = p->proc;
+    if (!pr || MRB_PROC_CFUNC_P(pr) || !pr->body.irep || !p->pc) continue;
+    uint32_t off = (uint32_t)(p->pc - pr->body.irep->iseq);
+    if (off > 0) off--;
+    int32_t line = 0;
+    const char *file = NULL;
+    if (!mrb_debug_get_position(mrb, pr->body.irep, off, &line, &file) || !file) continue;
+    if (strncmp(file, "mrblib/", 7) == 0 || strncmp(file, "mrbgems/", 8) == 0 ||
+        strncmp(file, "<internal:", 10) == 0) continue;
+    return mrb_format(mrb, "(eval at %s:%d)", file, (int)line);
+  }
+  return mrb_nil_value();
+}
+
 static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
-  if (mrb_get_argc(mrb) > 0) {
+  mrb_int argc = mrb_get_argc(mrb);
+  if (argc > 0) {
     mrb_value *argv = (mrb_value *)mrb_get_argv(mrb);
     if (mrb_string_p(argv[0])) {
+      /* eval(src, binding, file, line), the others (src, file, line) */
+      mrb_int fi = which <= 1 ? 2 : 1;
+      mrb_callinfo *ci = mrb->c->ci;
+      mrb_value deffile = mrb_nil_value();
+      /* not with a block, whose arity error counts the arguments given */
+      if (argc <= fi && ci->n < 15 && !ci->kw && mrb_nil_p(ci->stack[argc + 1])) deffile = eval_default_file(mrb);
+      /* kept for #source_range (go-srcrange.c) */
+      mrb_value file = argc > fi ? argv[fi] : deffile;
+      mrb_int line = (argc > fi + 1 && mrb_integer_p(argv[fi + 1])) ? mrb_integer(argv[fi + 1]) : 1;
+      _orb_keep_source(mrb, file, line, argv[0]);
+      _orb_trace_script(mrb, argv[0]);
       const char *s = RSTRING_PTR(argv[0]);
       mrb_int len = RSTRING_LEN(argv[0]);
       if (src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
-          src_contains(s, len, "**nil") || src_contains(s, len, "..") ||
+          src_contains(s, len, "**") || src_contains(s, len, "=>") ||
+          src_contains(s, len, ": ") || src_contains(s, len, "..") ||
           src_contains(s, len, "&.") || src_contains(s, len, "BEGIN") ||
           src_contains(s, len, "END") || src_contains(s, len, "__ENCODING__") ||
           src_contains(s, len, "frozen_string_literal") ||
           src_contains(s, len, "||=") || src_contains(s, len, "&&=") ||
           src_contains(s, len, "::") || src_contains(s, len, "$") || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
+      }
+      if (!mrb_nil_p(deffile)) {
+        /* the file argument added: the arguments are passed packed (n = 15:
+           an Array at stack[1], the block at stack[2]), which needs no more
+           stack */
+        mrb_value args[4];
+        mrb_int n = 0;
+        for (mrb_int i = 0; i < argc && n < 4; i++) args[n++] = argv[i];
+        while (n < fi) args[n++] = mrb_nil_value();
+        args[n++] = deffile;
+        args[n++] = mrb_fixnum_value(1);
+        mrb_value blk = ci->stack[argc + 1];
+        ci->stack[1] = mrb_ary_new_from_values(mrb, n, args);
+        ci->stack[2] = blk;
+        ci->n = 15;
       }
     }
   }
@@ -863,8 +913,110 @@ static mrb_value complex_oruby_new_m(mrb_state *mrb, mrb_value self) {
   return mrb_complex_new_value(mrb, r, i);
 }
 
+/* Integer#== and Float#== as MRI's num_equal: an operand that is not a
+   number is asked (obj == num). They are C methods recorded as the builtins
+   of the OP_EQ guard (as class.c's bop_arm records mruby's own), so the VM
+   keeps comparing numbers inline and compiled code keeps its integer and
+   float specialization; a later redefinition still disarms the guard. The
+   VM sends == here only for an operand it does not compare itself. */
+static mrb_func_t num_eq_orig[2];
+
+static mrb_value
+num_eq(mrb_state *mrb, mrb_value self, int i)
+{
+  mrb_value other = mrb_get_arg1(mrb);
+  if (mrb_integer_p(other) || mrb_float_p(other) ||
+      mrb_obj_is_kind_of(mrb, other, mrb->integer_class) ||
+      mrb_obj_is_kind_of(mrb, other, mrb->float_class)) {
+    return num_eq_orig[i](mrb, self);
+  }
+  if (!mrb_respond_to(mrb, other, MRB_OPSYM(eq))) return mrb_false_value();
+  return mrb_bool_value(mrb_test(mrb_funcall_argv(mrb, other, MRB_OPSYM(eq), 1, &self)));
+}
+
+static mrb_value int_eq_m(mrb_state *mrb, mrb_value self) { return num_eq(mrb, self, 0); }
+static mrb_value flo_eq_m(mrb_state *mrb, mrb_value self) { return num_eq(mrb, self, 1); }
+
+static void
+install_num_eq(mrb_state *mrb)
+{
+  struct RClass *classes[2] = {mrb->integer_class, mrb->float_class};
+  mrb_func_t fns[2] = {int_eq_m, flo_eq_m};
+  int slots[2] = {MRB_BOP_EQ, MRB_BOP_COUNT + MRB_BOP_EQ};
+  for (int i = 0; i < 2; i++) {
+    struct RClass *c = classes[i];
+    mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_OPSYM(eq));
+    if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m) || MRB_METHOD_CFUNC(m) == fns[i]) continue;
+    num_eq_orig[i] = MRB_METHOD_CFUNC(m);
+    mrb_define_method_id(mrb, classes[i], MRB_OPSYM(eq), fns[i], MRB_ARGS_REQ(1));
+    c = classes[i];
+    mrb->bop_builtin[slots[i]] = mrb_method_search_vm(mrb, &c, MRB_OPSYM(eq));
+    mrb->bop_redefined &= ~(1u << slots[i]);
+  }
+}
+
+/* US-ASCII without an instance variable: mruby's encoding field has two
+   bits and uses 0 (UTF-8) and 1 (binary); 2 marks a string made US-ASCII
+   (core_ext's String#encoding: US-ASCII while its bytes are ASCII, UTF-8
+   once they are not, as MRI's compatibility gives). mruby reads it as its
+   default encoding, which for ASCII bytes is the same. */
+#define ORB_STR_ENCODING_US_ASCII 2
+
+static mrb_value
+str_enc_us_ascii_p(mrb_state *mrb, mrb_value self)
+{
+  return mrb_bool_value(RSTR_ENCODING(mrb_str_ptr(self)) == ORB_STR_ENCODING_US_ASCII);
+}
+
+static mrb_value
+str_enc_us_ascii_set(mrb_state *mrb, mrb_value self)
+{
+  RSTR_ENCODING_SET(mrb_str_ptr(self), ORB_STR_ENCODING_US_ASCII);
+  return self;
+}
+
+/* Integer#to_s / #inspect and Float#to_s / #inspect give US-ASCII strings,
+   as MRI */
+static mrb_func_t num_to_s_orig[4];
+
+static mrb_value
+us_ascii_str(mrb_state *mrb, mrb_value s)
+{
+  if (mrb_string_p(s)) RSTR_ENCODING_SET(mrb_str_ptr(s), ORB_STR_ENCODING_US_ASCII);
+  return s;
+}
+
+static mrb_value int_to_s_w(mrb_state *mrb, mrb_value self) { return us_ascii_str(mrb, num_to_s_orig[0](mrb, self)); }
+static mrb_value int_inspect_w(mrb_state *mrb, mrb_value self) { return us_ascii_str(mrb, num_to_s_orig[1](mrb, self)); }
+static mrb_value flo_to_s_w(mrb_state *mrb, mrb_value self) { return us_ascii_str(mrb, num_to_s_orig[2](mrb, self)); }
+static mrb_value flo_inspect_w(mrb_state *mrb, mrb_value self) { return us_ascii_str(mrb, num_to_s_orig[3](mrb, self)); }
+
+static void
+install_num_to_s(mrb_state *mrb)
+{
+  struct RClass *classes[4] = {mrb->integer_class, mrb->integer_class, mrb->float_class, mrb->float_class};
+  mrb_sym mids[4] = {MRB_SYM(to_s), MRB_SYM(inspect), MRB_SYM(to_s), MRB_SYM(inspect)};
+  mrb_func_t ws[4] = {int_to_s_w, int_inspect_w, flo_to_s_w, flo_inspect_w};
+  /* inspect is an alias of to_s, as in MRI: only to_s is wrapped */
+  for (int i = 0; i < 4; i += 2) {
+    struct RClass *c = classes[i];
+    mrb_method_t m = mrb_method_search_vm(mrb, &c, mids[i]);
+    if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m) || MRB_METHOD_CFUNC(m) == ws[i]) continue;
+    num_to_s_orig[i] = MRB_METHOD_CFUNC(m);
+    mrb_method_t w = m;  /* the original's flags, aspec and visibility */
+    w.as.func = ws[i];
+    mrb_define_method_raw(mrb, classes[i], mids[i], w);
+    mrb_alias_method(mrb, classes[i], mids[i + 1], mids[i]);
+  }
+}
+
 /* runs under coreMu (mruby.go): it fills the process-wide tables */
+void _orb_srcrange_init(mrb_state *mrb);
+void _orb_trace_init(mrb_state *mrb);
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  install_num_eq(mrb);
+  install_num_to_s(mrb);
   _mrb_wrap_string_encoding(mrb);
   gv_init_checked(mrb);
   wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
@@ -886,12 +1038,16 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   }
   mrb_define_method(mrb, mrb->eException_class, "set_backtrace", exc_set_backtrace_m, MRB_ARGS_REQ(1));
   _orb_bt_init(mrb);
+  _orb_srcrange_init(mrb);
+  _orb_trace_init(mrb);
   mrb_define_class_method(mrb, mrb->symbol_class, "all_symbols", sym_all_symbols_m, MRB_ARGS_NONE());
   if (mrb_class_defined(mrb, "Complex")) {
     mrb_define_class_method(mrb, mrb_class_get(mrb, "Complex"), "__oruby_new__", complex_oruby_new_m, MRB_ARGS_REQ(2));
   }
   mrb_define_private_method(mrb, mrb->module_class, "__alias_from_object", mod_alias_from_object, MRB_ARGS_REQ(2));
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_binary?", str_enc_binary_p, MRB_ARGS_NONE());
+  mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii?", str_enc_us_ascii_p, MRB_ARGS_NONE());
+  mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii!", str_enc_us_ascii_set, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag", str_enc_tag, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag=", str_enc_tag_set, MRB_ARGS_REQ(1));
 

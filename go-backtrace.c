@@ -335,8 +335,13 @@ static mrb_value errinfo_holder(mrb_state *mrb) {
   return mrb_obj_value(mrb->kernel_module);
 }
 
+void _orb_trace_raise(mrb_state *mrb, struct RObject *exc);
+
 static mrb_value errinfo_get(mrb_state *mrb) {
-  if (mrb->exc && mrb->exc->tt == MRB_TT_EXCEPTION) _orb_bt_keep(mrb, mrb_obj_value(mrb->exc));
+  if (mrb->exc && mrb->exc->tt == MRB_TT_EXCEPTION) {
+    _orb_bt_keep(mrb, mrb_obj_value(mrb->exc));
+    _orb_trace_raise(mrb, mrb->exc); /* TracePoint's :raise (go-trace.c) */
+  }
   return mrb_iv_get(mrb, errinfo_holder(mrb), MRB_SYM(__oruby_errinfo__));
 }
 
@@ -447,6 +452,8 @@ static struct RClass *bt_location_class(mrb_state *mrb) {
   return mrb_class_get_under_id(mrb, backtrace, MRB_SYM(Location));
 }
 
+mrb_value _orb_insn_site(mrb_state *mrb, const mrb_irep *irep, uint32_t idx);
+
 static mrb_value bt_location(mrb_state *mrb, struct RClass *cls, const bt_frame *f) {
   struct RObject *loc = MRB_OBJ_ALLOC(mrb, MRB_TT_OBJECT, cls);
   mrb_value label = bt_full_label(mrb, f);
@@ -459,6 +466,12 @@ static mrb_value bt_location(mrb_state *mrb, struct RClass *cls, const bt_frame 
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__base_label__), bt_base_label(mrb, f));
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__to_s__), bt_string_at(mrb, file, line, label));
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__abs__), mrb_bool_value(!f->eval && !f->internal && file));
+  /* the instruction the frame was at, for #source_range (go-srcrange.c) */
+  {
+    mrb_value site = _orb_insn_site(mrb, f->irep, f->idx);
+    if (mrb_array_p(site)) mrb_ary_push(mrb, site, mrb_bool_value(f->eval));
+    mrb_obj_iv_set_force(mrb, loc, mrb_intern_lit(mrb, "@__oruby_site"), site);
+  }
   return mrb_obj_value(loc);
 }
 

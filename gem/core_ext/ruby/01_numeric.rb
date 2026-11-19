@@ -1,17 +1,6 @@
 class Float
   alias to_int to_i
-
-  alias __orig_eq ==
-  def ==(other)
-    return true if equal?(other)
-    if other.is_a?(Float) || other.is_a?(Integer)
-      __orig_eq(other)
-    elsif other.respond_to?(:==)
-      other == self
-    else
-      false
-    end
-  end
+  # Float#== is go-mrb.c's num_eq (MRI's num_equal), a builtin for the VM
 end
 
 class Range

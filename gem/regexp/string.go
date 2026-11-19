@@ -756,7 +756,8 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 		if all {
 			// an enumerator without a size, as MRI
 			e := mrb.Call(self, "to_enum", mrb.Intern(name), pattern)
-			_ = mrb.IVSet(e, mrb.Intern("@size_block"), oruby.Nil)
+			// a size block that answers nil (a nil one means "none set")
+			_ = mrb.IVSet(e, mrb.Intern("@size_block"), mrb.ProcNewCFunc(func(*oruby.MrbState, oruby.Value) oruby.MrbValue { return oruby.Nil }).Value())
 			return e, false
 		}
 		return mrb.Raise(mrb.EArgumentError(), "wrong number of arguments (given 1, expected 2)"), false
