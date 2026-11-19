@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "fde4f3f3c3ef27ea"
+const presymTable = "4e8f466d93aea7b0"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -36,9 +36,11 @@ const (
 	GvSym_stderr                       MrbSym = C.MRB_GVSYM__stderr                       // "$stderr"
 	GvSym_stdin                        MrbSym = C.MRB_GVSYM__stdin                        // "$stdin"
 	GvSym_stdout                       MrbSym = C.MRB_GVSYM__stdout                       // "$stdout"
+	IvSym___cbi                        MrbSym = C.MRB_IVSYM____cbi                        // "@__cbi"
 	IvSym___default                    MrbSym = C.MRB_IVSYM____default                    // "@__default"
 	IvSym___i                          MrbSym = C.MRB_IVSYM____i                          // "@__i"
 	IvSym___isolated_worker_result     MrbSym = C.MRB_IVSYM____isolated_worker_result     // "@__isolated_worker_result"
+	IvSym___iter                       MrbSym = C.MRB_IVSYM____iter                       // "@__iter"
 	IvSym___main_thread                MrbSym = C.MRB_IVSYM____main_thread                // "@__main_thread"
 	IvSym___mt                         MrbSym = C.MRB_IVSYM____mt                         // "@__mt"
 	IvSym___nil_mesg                   MrbSym = C.MRB_IVSYM____nil_mesg                   // "@__nil_mesg"
@@ -523,6 +525,9 @@ const (
 	Sym___oruby_rbuf                   MrbSym = C.MRB_SYM____oruby_rbuf                   // "__oruby_rbuf"
 	Sym___oruby_reentry                MrbSym = C.MRB_SYM____oruby_reentry                // "__oruby_reentry"
 	Sym___oruby_release_held           MrbSym = C.MRB_SYM____oruby_release_held           // "__oruby_release_held"
+	Sym___oruby_relit                  MrbSym = C.MRB_SYM____oruby_relit                  // "__oruby_relit"
+	Sym___oruby_relit_set              MrbSym = C.MRB_SYM____oruby_relit_set              // "__oruby_relit_set"
+	Sym___oruby_relits                 MrbSym = C.MRB_SYM____oruby_relits                 // "__oruby_relits"
 	Sym___oruby_reopen_io              MrbSym = C.MRB_SYM____oruby_reopen_io              // "__oruby_reopen_io"
 	Sym___oruby_reopen_path            MrbSym = C.MRB_SYM____oruby_reopen_path            // "__oruby_reopen_path"
 	Sym___oruby_root_fiber             MrbSym = C.MRB_SYM____oruby_root_fiber             // "__oruby_root_fiber"
@@ -534,6 +539,7 @@ const (
 	Sym___oruby_signal__               MrbSym = C.MRB_SYM____oruby_signal__               // "__oruby_signal__"
 	Sym___oruby_singleton_class_or_nil MrbSym = C.MRB_SYM____oruby_singleton_class_or_nil // "__oruby_singleton_class_or_nil"
 	Sym___oruby_slow_hash              MrbSym = C.MRB_SYM____oruby_slow_hash              // "__oruby_slow_hash"
+	Sym___oruby_slow_join              MrbSym = C.MRB_SYM____oruby_slow_join              // "__oruby_slow_join"
 	Sym___oruby_slow_new               MrbSym = C.MRB_SYM____oruby_slow_new               // "__oruby_slow_new"
 	Sym___oruby_slow_to_proc           MrbSym = C.MRB_SYM____oruby_slow_to_proc           // "__oruby_slow_to_proc"
 	Sym___oruby_space                  MrbSym = C.MRB_SYM____oruby_space                  // "__oruby_space"

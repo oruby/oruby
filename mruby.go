@@ -218,11 +218,15 @@ module Kernel
       end
     end
 
+    def __oruby_gv_cname(o)
+      o.nil? ? "nil" : (o == true || o == false) ? o.to_s : ::Kernel.instance_method(:class).bind_call(o).to_s
+    end
+
     # the value a special global variable stores, as MRI's setter checks and
     # converts it (go-mrb.c's virtual globals call this on every assignment)
     def __oruby_gvcheck(name, v)
       # self-contained: a state without core_ext has the checks too
-      cname = ->(o) { o.nil? ? "nil" : (o == true || o == false) ? o.to_s : ::Kernel.instance_method(:class).bind_call(o).to_s }
+      cname = method(:__oruby_gv_cname)
       case name
       when :"$/", :"$-0", :"$\\", :"$,"
         raise TypeError, "value of #{name} must be String" unless v.nil? || String === v
@@ -291,6 +295,23 @@ module Kernel
       return a if Array === a
       c = ::Kernel.__cname(obj)
       raise TypeError, "can't convert #{c} to Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
+    end
+
+    # a nested target's value, as MRI destructures it: an Array, by #to_ary,
+    # or the object itself as the only element
+    def __oruby_ary_of(obj)
+      return obj if Array === obj
+      return [obj] unless ::Kernel.__responds?(obj, :to_ary)
+      a = obj.__send__(:to_ary)
+      return [obj] if a.nil?
+      return a if Array === a
+      c = ::Kernel.__cname(obj)
+      raise TypeError, "can't convert #{c} to Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
+    end
+
+    # [**h]: the Hash as the element, none when it is empty
+    def __oruby_kwsplat_ary(h)
+      h.empty? ? [] : [h]
     end
 
     # **obj: a Hash as is, nil as no keywords, anything else by #to_hash
@@ -377,7 +398,9 @@ end
 		if args.Len() == 0 {
 			return mrb.NilValue()
 		}
-		return mrb.StringValue(PreprocessRuby(args.Item(0).String()))
+		// eval'd code: its regexp literals are made as it is compiled
+		out := PreprocessRubyWith([]byte(args.Item(0).String()), &PreprocessOptions{NoRegexpLiterals: true})
+		return mrb.StringValue(string(out))
 	}, mrb.ArgsReq(1))
 	// $. reads ARGF's last line number in MRI: 0 before any line is read
 	if mrb.GetGV("$.").IsNil() {

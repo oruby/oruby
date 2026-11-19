@@ -27,8 +27,12 @@ enum {
   ORB_LITERAL_ENCODING,   // s0: literal in non-UTF-8 source; flags 1: \u (UTF-8), 2: binary
   ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment
   ORB_KWSPLAT,            // s0: the value of **value in a call or Hash literal
-  ORB_ARRAY_KWHASH,       // s0: a brace-less Hash at the end of an Array literal
+  ORB_ARRAY_KWHASH,       // s0: a brace-less Hash at the end of an Array literal; flags 1: only **splats (dropped when empty)
   ORB_REGEXP_ENC,         // s0: /..#{x}../n with only an encoding flag (flags: its letter); parts follow as ORB_LIST_ITEM (flags 1: literal text)
+  ORB_REGEXP_LITERAL,     // s0: a regexp literal without interpolation (one object per site, as MRI's)
+  ORB_MASGN_CPATH,        // s0: a constant path target of a multiple assignment, s1: the assignment
+  ORB_FOR_CPATH,          // s0: a constant path target of a for loop, s1: (zero width) where its body starts
+  ORB_MASGN_NESTED,       // s0: a nested target (a, b) of a multiple assignment, s1: the assignment, s2: inside its parentheses
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the
@@ -36,6 +40,7 @@ enum {
 typedef struct {
   int frozen;
   const char *encoding;
+  int no_regexp_literals; // eval'd code: its literals are made as it is compiled
 } orb_scan_opts;
 
 #define ORB_SPANS 5

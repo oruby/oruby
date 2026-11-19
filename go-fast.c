@@ -505,10 +505,95 @@ static mrb_value d_ary_sum(mrb_state *mrb, mrb_value self) {
   return v;
 }
 
-/* ---- String / Symbol ---- */
-
 #define ORB_ENC_UTF8 0
 #define ORB_ENC_BINARY 1
+#define RSTR_SET_ENCODING_FLAG_FOR(s, e) RSTR_ENCODING_SET(mrb_str_ptr(s), (e))
+static mrb_bool str_tagged(mrb_state *mrb, mrb_value s);
+static mrb_bool ascii_only(mrb_value s);
+
+/* Array#+ of two Arrays */
+static mrb_bool p_ary_plus(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 1 && mrb_array_p(argv[0]) && mrb_obj_class(mrb, self) == mrb->array_class;
+}
+
+/* Array#join of Strings, Integers, Symbols, nil, true and false, by a String
+   or no separator: MRI's (array.c rb_ary_join). The result is US-ASCII,
+   takes the encoding of a String first element, and that of the first
+   non-ASCII piece after ASCII-only ones; two non-ASCII encodings, $, set,
+   Floats, nested Arrays and other objects go to core_ext's Ruby. */
+static mrb_bool join_piece_p(mrb_state *mrb, mrb_value v) {
+  switch (mrb_type(v)) {
+  case MRB_TT_FALSE: case MRB_TT_TRUE: case MRB_TT_INTEGER: case MRB_TT_SYMBOL:
+    return TRUE;
+  case MRB_TT_STRING:
+    return !str_tagged(mrb, v);
+  default:
+    return FALSE;
+  }
+}
+static mrb_bool p_ary_join(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  if (!mrb_nil_p(blk) || argc > 1) return FALSE;
+  if (argc == 1) {
+    if (!mrb_string_p(argv[0]) || str_tagged(mrb, argv[0])) return FALSE;
+  }
+  else if (!mrb_nil_p(mrb_gv_get(mrb, mrb_intern_lit(mrb, "$,")))) {
+    return FALSE;
+  }
+  for (mrb_int i = 0; i < RARRAY_LEN(self); i++) if (!join_piece_p(mrb, RARRAY_PTR(self)[i])) return FALSE;
+  return TRUE;
+}
+#define ORB_ENC_US_ASCII 2
+static mrb_value d_ary_join(mrb_state *mrb, mrb_value self) {
+  mrb_value sep = mrb_get_argc(mrb) == 1 ? mrb_get_argv(mrb)[0] : mrb_nil_value();
+  mrb_int len = RARRAY_LEN(self);
+  mrb_value out = mrb_str_new_capa(mrb, len * 4);
+  int enc = ORB_ENC_US_ASCII;
+  mrb_bool ascii = TRUE; /* the result so far */
+  int ai = mrb_gc_arena_save(mrb);
+  for (mrb_int i = 0; i < len && i < RARRAY_LEN(self); i++) {
+    mrb_value e = RARRAY_PTR(self)[i];
+    for (int part = 0; part < 2; part++) {
+      mrb_value piece;
+      if (part == 0) {
+        if (i == 0 || mrb_nil_p(sep)) continue;
+        piece = sep;
+      }
+      else {
+        switch (mrb_type(e)) {
+        case MRB_TT_STRING: piece = e; break;
+        case MRB_TT_INTEGER: piece = mrb_integer_to_str(mrb, e, 10); break;
+        case MRB_TT_SYMBOL: piece = mrb_sym_str(mrb, mrb_symbol(e)); break;
+        case MRB_TT_TRUE: piece = mrb_str_new_lit(mrb, "true"); break;
+        case MRB_TT_FALSE:
+          if (mrb_nil_p(e)) continue;
+          piece = mrb_str_new_lit(mrb, "false");
+          break;
+        default: return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_slow_join), 1, sep);
+        }
+      }
+      int penc = RSTR_ENCODING(mrb_str_ptr(piece));
+      mrb_bool pascii = ascii_only(piece);
+      if (i == 0 && part == 1 && mrb_string_p(e)) {
+        enc = penc;
+      }
+      else if (!pascii) {
+        if (ascii) enc = penc;
+        else if (penc != enc && !(penc != ORB_ENC_BINARY && enc != ORB_ENC_BINARY)) {
+          return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_slow_join), 1, sep);
+        }
+      }
+      ascii = ascii && pascii;
+      mrb_str_cat(mrb, out, RSTRING_PTR(piece), RSTRING_LEN(piece));
+      mrb_gc_arena_restore(mrb, ai);
+    }
+  }
+  /* US-ASCII with non-ASCII bytes is UTF-8 (both are flag 0 or 2 here) */
+  if (enc == ORB_ENC_US_ASCII && !ascii) enc = ORB_ENC_UTF8;
+  RSTR_SET_ENCODING_FLAG_FOR(out, enc);
+  return out;
+}
+
+/* ---- String / Symbol ---- */
 
 static mrb_bool str_tagged(mrb_state *mrb, mrb_value s) {
   /* an encoding other than UTF-8, BINARY or US-ASCII: a binary string with
@@ -588,6 +673,22 @@ static mrb_bool p_str_index(mrb_state *mrb, mrb_value self, mrb_int argc, const 
   return argc == 1 || mrb_integer_p(argv[1]);
 }
 
+/* String#[]=(i, str) of an ASCII String: one character replaced, as the
+   builtin does, the encodings agreeing */
+static mrb_bool p_str_aset(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  if (argc != 2 || !mrb_nil_p(blk) || !mrb_integer_p(argv[0]) || !mrb_string_p(argv[1])) return FALSE;
+  if (mrb_frozen_p(mrb_basic_ptr(self)) || str_tagged(mrb, self) || str_tagged(mrb, argv[1])) return FALSE;
+  if (!ascii_only(self)) return FALSE;
+  mrb_int i = mrb_integer(argv[0]), n = RSTRING_LEN(self);
+  if (i < -n || i >= n) return FALSE;
+  return RSTR_ENCODING(mrb_str_ptr(self)) == RSTR_ENCODING(mrb_str_ptr(argv[1])) || ascii_only(argv[1]);
+}
+
+/* String#upcase and the like without options */
+static mrb_bool p_str_case(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 0 && mrb_nil_p(blk);
+}
+
 /* String#to_sym: an encoding a Symbol need not record (core_ext keeps the
    others in Symbol.__sym_encodings) */
 static mrb_bool p_str_to_sym(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
@@ -606,7 +707,7 @@ static mrb_bool p_sym_inspect(mrb_state *mrb, mrb_value self, mrb_int argc, cons
   for (mrb_int i = 0; i < len; i++) if ((unsigned char)s[i] & 0x80) return FALSE;
   if (len == 2 && (memcmp(s, "&&", 2) == 0 || memcmp(s, "||", 2) == 0)) return FALSE;
   if (len >= 2 && (s[len - 1] == '?' || s[len - 1] == '!') && ((s[0] >= 'A' && s[0] <= 'Z') || s[0] == '_')) return FALSE;
-  mrb_value tbl = mrb_iv_get(mrb, mrb_obj_value(mrb->symbol_class), mrb_intern_lit(mrb, "@__sym_encodings"));
+  mrb_value tbl = mrb_iv_get(mrb, mrb_obj_value(mrb->symbol_class), MRB_IVSYM(__sym_encodings));
   if (mrb_hash_p(tbl) && !mrb_hash_empty_p(mrb, tbl) && mrb_hash_key_p(mrb, tbl, self)) return FALSE;
   return TRUE;
 }
@@ -654,7 +755,7 @@ static mrb_value symproc_call(mrb_state *mrb, mrb_value self) {
       }
     }
   }
-  mrb_value lam = mrb_funcall_id(mrb, sym, mrb_intern_lit(mrb, "__oruby_slow_to_proc"), 0);
+  mrb_value lam = mrb_funcall_id(mrb, sym, MRB_SYM(__oruby_slow_to_proc), 0);
   if (!mrb_proc_p(lam)) mrb_raise(mrb, E_TYPE_ERROR, "Symbol#to_proc");
   ci = mrb->c->ci;
   /* the lambda takes its block from the block slot: a yield leaves none */
@@ -664,7 +765,7 @@ static mrb_value symproc_call(mrb_state *mrb, mrb_value self) {
 
 static mrb_value d_sym_to_proc(mrb_state *mrb, mrb_value self) {
   mrb_value sc = mrb_obj_value(mrb->symbol_class);
-  mrb_sym iv = mrb_intern_lit(mrb, "__oruby_sym_procs");
+  mrb_sym iv = MRB_SYM(__oruby_sym_procs);
   mrb_value cache = mrb_iv_get(mrb, sc, iv);
   if (!mrb_hash_p(cache)) {
     cache = mrb_hash_new(mrb);
@@ -698,7 +799,7 @@ static mrb_value d_proc_arity(mrb_state *mrb, mrb_value self) {
   if (symproc_p(p)) return mrb_fixnum_value(-2);
   if (!MRB_PROC_CFUNC_P(p) && p->body.irep) {
     mrb_value pc = mrb_obj_value(mrb->proc_class);
-    mrb_sym iv = mrb_intern_lit(mrb, "__oruby_symproc");
+    mrb_sym iv = MRB_SYM(__oruby_symproc);
     mrb_value sample = mrb_iv_get(mrb, pc, iv);
     if (!mrb_proc_p(sample)) {
       sample = mrb_funcall_id(mrb, mrb_symbol_value(MRB_SYM(to_s)), MRB_SYM(to_proc), 0);
@@ -773,7 +874,7 @@ static mrb_value hash_filter(mrb_state *mrb, mrb_value self, mrb_bool keep) {
   mrb_value keys = mrb_hash_keys(mrb, self), vals = mrb_hash_values(mrb, self);
   mrb_value out = mrb_hash_new(mrb);
   if (mrb_hash_ptr(self)->flags & MRB_HASH_COMPARE_BY_IDENTITY) {
-    mrb_funcall_id(mrb, out, mrb_intern_lit(mrb, "compare_by_identity"), 0);
+    mrb_funcall_id(mrb, out, MRB_SYM(compare_by_identity), 0);
   }
   int ai = mrb_gc_arena_save(mrb);
   for (mrb_int i = 0; i < RARRAY_LEN(keys); i++) {
@@ -829,7 +930,7 @@ static int64_t elem_hash(mrb_state *mrb, mrb_value e) {
 
 static mrb_value hash_result(mrb_state *mrb, hash_stack *st, uint64_t h, mrb_bool cycle) {
   st->depth--;
-  if (cycle) return st->depth > 0 ? mrb_symbol_value(mrb_intern_lit(mrb, "cycle")) : mrb_fixnum_value(0);
+  if (cycle) return st->depth > 0 ? mrb_symbol_value(MRB_SYM(cycle)) : mrb_fixnum_value(0);
   return mrb_fixnum_value((mrb_int)h);
 }
 
@@ -838,7 +939,7 @@ static mrb_value seq_hash(mrb_state *mrb, mrb_value self, mrb_value vals, uint64
   hash_stack *st = hash_stack_of(mrb);
   if (!st || st->depth >= HASH_DEPTH) return mrb_funcall_id(mrb, self, slow, 0);
   for (int i = 0; i < st->depth; i++) {
-    if (st->objs[i] == mrb_ptr(self)) return mrb_symbol_value(mrb_intern_lit(mrb, "cycle"));
+    if (st->objs[i] == mrb_ptr(self)) return mrb_symbol_value(MRB_SYM(cycle));
   }
   st->objs[st->depth++] = mrb_ptr(self);
   mrb_bool cycle = FALSE;
@@ -862,7 +963,7 @@ static mrb_value seq_hash(mrb_state *mrb, mrb_value self, mrb_value vals, uint64
 }
 
 static mrb_value d_ary_hash(mrb_state *mrb, mrb_value self) {
-  return seq_hash(mrb, self, self, (uint64_t)RARRAY_LEN(self) & HASH_MASK, mrb_intern_lit(mrb, "__oruby_slow_hash"));
+  return seq_hash(mrb, self, self, (uint64_t)RARRAY_LEN(self) & HASH_MASK, MRB_SYM(__oruby_slow_hash));
 }
 
 static mrb_value d_struct_hash(mrb_state *mrb, mrb_value self) {
@@ -870,15 +971,15 @@ static mrb_value d_struct_hash(mrb_state *mrb, mrb_value self) {
   mrb_value ch = mrb_funcall_id(mrb, cls, MRB_SYM(hash), 0);
   uint64_t h = mrb_integer_p(ch) ? ((uint64_t)mrb_integer(ch) & HASH_MASK) : 0;
   mrb_value vals = mrb_funcall_id(mrb, self, MRB_SYM(values), 0);
-  if (!mrb_array_p(vals)) return mrb_funcall_id(mrb, self, mrb_intern_lit(mrb, "__oruby_slow_hash"), 0);
-  return seq_hash(mrb, self, vals, h, mrb_intern_lit(mrb, "__oruby_slow_hash"));
+  if (!mrb_array_p(vals)) return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_slow_hash), 0);
+  return seq_hash(mrb, self, vals, h, MRB_SYM(__oruby_slow_hash));
 }
 
 static mrb_value d_hash_hash(mrb_state *mrb, mrb_value self) {
   hash_stack *st = hash_stack_of(mrb);
-  if (!st || st->depth >= HASH_DEPTH) return mrb_funcall_id(mrb, self, mrb_intern_lit(mrb, "__oruby_slow_hash"), 0);
+  if (!st || st->depth >= HASH_DEPTH) return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_slow_hash), 0);
   for (int i = 0; i < st->depth; i++) {
-    if (st->objs[i] == mrb_ptr(self)) return mrb_symbol_value(mrb_intern_lit(mrb, "cycle"));
+    if (st->objs[i] == mrb_ptr(self)) return mrb_symbol_value(MRB_SYM(cycle));
   }
   st->objs[st->depth++] = mrb_ptr(self);
   mrb_value keys = mrb_hash_keys(mrb, self), vals = mrb_hash_values(mrb, self);
@@ -917,7 +1018,7 @@ static mrb_value struct_new_c(mrb_state *mrb, mrb_value klass) {
   mrb_callinfo *ci = mrb->c->ci;
   if (ci->kw) {
     struct RClass *sc = mrb_class(mrb, klass);
-    mrb_method_t m = mrb_method_search_vm(mrb, &sc, mrb_intern_lit(mrb, "__oruby_slow_new"));
+    mrb_method_t m = mrb_method_search_vm(mrb, &sc, MRB_SYM(__oruby_slow_new));
     if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_FUNC_P(m)) mrb_raise(mrb, E_NOTIMP_ERROR, "Struct.new");
     ci->u.target_class = sc;
     return mrb_exec_irep(mrb, klass, MRB_METHOD_PROC(m));
@@ -934,7 +1035,7 @@ static mrb_value struct_new_c(mrb_state *mrb, mrb_value klass) {
   mrb_value blk = ci_blk(ci);
   mrb_value args = mrb_ary_new_from_values(mrb, argc, mrb_get_argv(mrb));
   mrb_value obj = mrb_funcall_id(mrb, klass, MRB_SYM(allocate), 0);
-  mrb_value n = mrb_iv_get(mrb, klass, mrb_intern_lit(mrb, "__oruby_nmembers"));
+  mrb_value n = mrb_iv_get(mrb, klass, MRB_SYM(__oruby_nmembers));
   if (mrb_integer_p(n) && mrb_integer(n) > 0) {
     mrb_value av[2] = {mrb_fixnum_value(mrb_integer(n) - 1), mrb_nil_value()};
     mrb_funcall_argv(mrb, obj, MRB_OPSYM(aset), 2, av);
@@ -959,8 +1060,8 @@ static mrb_value struct_fast_new_m(mrb_state *mrb, mrb_value self) {
   struct RClass *owner = sc;
   mrb_method_t cur = mrb_method_search_vm(mrb, &owner, MRB_SYM(new));
   if (MRB_METHOD_UNDEF_P(cur) || (MRB_METHOD_FUNC_P(cur) && MRB_METHOD_FUNC(cur) == struct_new_c)) return mrb_nil_value();
-  mrb_define_method_raw(mrb, sc, mrb_intern_lit(mrb, "__oruby_slow_new"), cur);
-  mrb_iv_set(mrb, klass, mrb_intern_lit(mrb, "__oruby_nmembers"), mrb_fixnum_value(n));
+  mrb_define_method_raw(mrb, sc, MRB_SYM(__oruby_slow_new), cur);
+  mrb_iv_set(mrb, klass, MRB_SYM(__oruby_nmembers), mrb_fixnum_value(n));
   mrb_define_method(mrb, sc, "new", struct_new_c, MRB_ARGS_ANY());
   mrb_alias_method(mrb, sc, MRB_OPSYM(aref), MRB_SYM(new));
   return mrb_true_value();
@@ -973,6 +1074,36 @@ static mrb_value d_struct_each(mrb_state *mrb, mrb_value self) {
   if (!mrb_array_p(vals)) return mrb_nil_value();
   for (mrb_int i = 0; i < RARRAY_LEN(vals); i++) mrb_yield(mrb, blk, RARRAY_PTR(vals)[i]);
   return self;
+}
+
+/* ---- Set ----
+   35_set.rb keeps a compare_by_identity Set in a Hash (@__cbi), counts the
+   iterations running (@__iter) and asks MRI's way round for a member with an
+   eql? of its own; without those, mruby-set's C answers as that Ruby does */
+
+static mrb_bool set_plain(mrb_state *mrb, mrb_value self) {
+  return !mrb_test(mrb_iv_get(mrb, self, MRB_IVSYM(__cbi)));
+}
+static mrb_bool set_idle(mrb_state *mrb, mrb_value self) {
+  mrb_value it = mrb_iv_get(mrb, self, MRB_IVSYM(__iter));
+  return mrb_nil_p(it) || (mrb_integer_p(it) && mrb_integer(it) <= 0);
+}
+static mrb_bool no_singleton(mrb_value o) {
+  if (mrb_immediate_p(o)) return TRUE;
+  struct RClass *c = mrb_basic_ptr(o)->c;
+  return !c || c->tt != MRB_TT_SCLASS;
+}
+static mrb_bool p_set_read(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 0 && mrb_nil_p(blk) && set_plain(mrb, self);
+}
+static mrb_bool p_set_include(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 1 && mrb_nil_p(blk) && no_singleton(argv[0]) && set_plain(mrb, self);
+}
+static mrb_bool p_set_add(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 1 && mrb_nil_p(blk) && !mrb_frozen_p(mrb_basic_ptr(self)) && set_plain(mrb, self) && set_idle(mrb, self);
+}
+static mrb_bool p_set_delete(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 1 && mrb_nil_p(blk) && !mrb_frozen_p(mrb_basic_ptr(self)) && set_plain(mrb, self);
 }
 
 /* ---- Kernel helpers of core_ext ---- */
@@ -1022,6 +1153,10 @@ static const fast_def fast_defs[] = {
   {"Array", 0, "[]", p_ary_aref, NULL, MRB_IDX_OP_ARY_AREF},
   {"Array", 0, "[]=", p_ary_aset, NULL, MRB_IDX_OP_ARY_ASET},
   {"Array", 0, "each", p_blk0, d_ary_each, -1},
+  {"Array", 0, "+", p_ary_plus, NULL, -1},
+  {"Array", 0, "first", p_none, NULL, -1},
+  {"Array", 0, "last", p_none, NULL, -1},
+  {"Array", 0, "join", p_ary_join, d_ary_join, -1},
   {"Array", 0, "map", p_blk0_proc, d_ary_map, -1},
   {"Array", 0, "select", p_blk0, d_ary_select, -1},
   {"Array", 0, "reject", p_blk0, d_ary_reject, -1},
@@ -1040,6 +1175,11 @@ static const fast_def fast_defs[] = {
   {"String", 0, "byteindex", p_str_index, NULL, -1},
   {"String", 0, "byterindex", p_str_index, NULL, -1},
   {"String", 0, "start_with?", p_str_affix, d_str_start_with, -1},
+  {"String", 0, "[]=", p_str_aset, NULL, -1},
+  {"String", 0, "upcase", p_str_case, NULL, -1},
+  {"String", 0, "downcase", p_str_case, NULL, -1},
+  {"String", 0, "capitalize", p_str_case, NULL, -1},
+  {"String", 0, "swapcase", p_str_case, NULL, -1},
   {"String", 0, "end_with?", p_str_affix, d_str_end_with, -1},
   {"String", 0, "to_sym", p_str_to_sym, NULL, -1},
   {"Symbol", 0, "inspect", p_sym_inspect, NULL, -1},
@@ -1059,6 +1199,14 @@ static const fast_def fast_defs[] = {
   {"Array", 0, "hash", p_none, d_ary_hash, -1},
   {"Struct", 0, "hash", p_none, d_struct_hash, -1},
   {"Struct", 0, "each", p_blk0, d_struct_each, -1},
+  /* Set */
+  {"Set", 0, "include?", p_set_include, NULL, -1},
+  {"Set", 0, "add", p_set_add, NULL, -1},
+  {"Set", 0, "add?", p_set_add, NULL, -1},
+  {"Set", 0, "delete", p_set_delete, NULL, -1},
+  {"Set", 0, "size", p_set_read, NULL, -1},
+  {"Set", 0, "empty?", p_set_read, NULL, -1},
+  {"Set", 0, "to_a", p_set_read, NULL, -1},
   /* core_ext's own helpers */
   {"Kernel", 1, "__to_int", p_to_int, d_arg0, -1},
   {"Kernel", 1, "__implicit", p_implicit, d_arg0, -1},
@@ -1072,6 +1220,10 @@ static const struct { const char *cls, *alias, *name; } fast_aliases[] = {
   {"Array", "filter", "select"},
   {"Array", "detect", "find"},
   {"Array", "reduce", "inject"},
+  {"Set", "member?", "include?"},
+  {"Set", "===", "include?"},
+  {"Set", "<<", "add"},
+  {"Set", "length", "size"},
   {"String", "slice", "[]"},
   {"Float", "modulo", "%"},
   {"String", "intern", "to_sym"},
@@ -1276,7 +1428,7 @@ static mrb_value imp_call(mrb_state *mrb, mrb_value self, int slot) {
     if (d->t[i] == IMP_INT ? int_p(a) : mrb_string_p(a)) continue;
     struct RClass *k = d->t[i] == IMP_INT ? mrb->integer_class : mrb->string_class;
     mrb_value cv[2] = {a, mrb_obj_value(k)};
-    mrb_value c = mrb_funcall_argv(mrb, mrb_obj_value(mrb->kernel_module), mrb_intern_lit(mrb, "__check_implicit"), 2, cv);
+    mrb_value c = mrb_funcall_argv(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__check_implicit), 2, cv);
     /* the stack may have moved */
     if (!mrb_nil_p(c)) ((mrb_value *)mrb_get_argv(mrb))[i] = c;
   }
@@ -1364,7 +1516,34 @@ static mrb_value mod_implicit_c(mrb_state *mrb, mrb_value self) {
   return mrb_true_value();
 }
 
+/* Kernel.__oruby_relit(id) / __oruby_relit_set(id, re): the Regexp of a
+   literal site (prism.go's ORB_REGEXP_LITERAL), made once */
+static mrb_value relit_table(mrb_state *mrb) {
+  mrb_value k = mrb_obj_value(mrb->kernel_module);
+  mrb_sym iv = MRB_SYM(__oruby_relits);
+  mrb_value t = mrb_iv_get(mrb, k, iv);
+  if (!mrb_hash_p(t)) {
+    t = mrb_hash_new(mrb);
+    mrb_iv_set(mrb, k, iv, t);
+  }
+  return t;
+}
+static mrb_value relit_m(mrb_state *mrb, mrb_value self) {
+  mrb_int id;
+  mrb_get_args(mrb, "i", &id);
+  return mrb_hash_get(mrb, relit_table(mrb), mrb_fixnum_value(id));
+}
+static mrb_value relit_set_m(mrb_state *mrb, mrb_value self) {
+  mrb_int id;
+  mrb_value re;
+  mrb_get_args(mrb, "io", &id, &re);
+  mrb_hash_set(mrb, relit_table(mrb), mrb_fixnum_value(id), re);
+  return re;
+}
+
 void _orb_fast_init(mrb_state *mrb) {
+  mrb_define_module_function(mrb, mrb->kernel_module, "__oruby_relit", relit_m, MRB_ARGS_REQ(1));
+  mrb_define_module_function(mrb, mrb->kernel_module, "__oruby_relit_set", relit_set_m, MRB_ARGS_REQ(2));
   if (mrb_class_defined(mrb, "Struct")) {
     mrb_define_class_method(mrb, mrb_class_get(mrb, "Struct"), "__oruby_fast_new", struct_fast_new_m, MRB_ARGS_REQ(2));
   }

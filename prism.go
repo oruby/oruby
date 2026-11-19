@@ -68,6 +68,9 @@ type PreprocessOptions struct {
 	// SourceEncoding is the encoding of source without a magic comment
 	// (the main script under -K); empty means UTF-8
 	SourceEncoding string
+	// NoRegexpLiterals: eval'd code, whose regexp literals are made as it is
+	// compiled (no per-site object, ORB_REGEXP_LITERAL)
+	NoRegexpLiterals bool
 }
 
 // frozenStringDefault is --enable/--disable-frozen-string-literal: -1 unset
@@ -92,6 +95,9 @@ func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 	var n, errs C.int
 	var so C.orb_scan_opts
 	so.frozen = C.int(atomic.LoadInt32(&frozenStringDefault))
+	if opts != nil && opts.NoRegexpLiterals {
+		so.no_regexp_literals = 1
+	}
 	if opts != nil && opts.SourceEncoding != "" {
 		cs := C.CString(opts.SourceEncoding)
 		defer C.free(unsafe.Pointer(cs))
@@ -122,6 +128,10 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 		return true
 	}
 	if hasMultiAssign(src) || hasRegexpEncFlag(src) {
+		return true
+	}
+	// a regexp literal (ORB_REGEXP_LITERAL)
+	if (opts == nil || !opts.NoRegexpLiterals) && (bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
 	if hasArrayKwHash(src) {
@@ -155,8 +165,9 @@ type edit struct {
 	start, end int
 	build      func(r *rewriter) string
 	seq        int  // order added
-	closer     bool // inserted after a span (addAfter)
+	closer     bool // inserted after a span (addAfter, addWrap)
 	from       int  // a closer's span start
+	wrap       bool // a closer of addWrap (its opener at from)
 }
 
 type rewriter struct {
@@ -278,6 +289,23 @@ func hasMultiAssign(src []byte) bool {
 	return false
 }
 
+// masgnPost: the assignments that follow a multiple assignment whose
+// targets mruby cannot assign itself (constant paths, nested targets that
+// need #to_ary); the expression is still the assignment's value
+type masgnPost struct {
+	posts []func(*rewriter) string
+}
+
+func (w *masgnPost) closer(v string) func(*rewriter) string {
+	return func(r *rewriter) string {
+		parts := make([]string, len(w.posts))
+		for i, p := range w.posts {
+			parts[i] = p(r)
+		}
+		return "); " + strings.Join(parts, "; ") + "; " + v + ")"
+	}
+}
+
 // hasArrayKwHash: a line where a "[" is followed, before its "]", by a
 // "=>" or a "label: " (ORB_ARRAY_KWHASH, [a, k: v])
 func hasArrayKwHash(src []byte) bool {
@@ -358,7 +386,7 @@ func PreprocessRubyBytes(src []byte) []byte {
 	return PreprocessRubyWith(src, nil)
 }
 
-var endSiteCounter, masgnSiteCounter uint64
+var endSiteCounter, masgnSiteCounter, regexpSiteCounter uint64
 
 // PreprocessRubyWith is PreprocessRubyBytes with per-source options
 func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
@@ -381,6 +409,7 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			}
 		}
 	}
+	cpathWraps := map[[2]int]*masgnPost{} // an assignment's writes after it (ORB_MASGN_CPATH, _NESTED)
 	for i := 0; i < len(recs); i++ {
 		rc := recs[i]
 		s, e := rc.s, rc.e
@@ -490,16 +519,71 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			// the value is converted, the expression still returns v. The
 			// inserts are zero-width, so the code inside is rewritten as usual
 			id := strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
-			r.add(s[1], s[1], func(*rewriter) string { return "::Kernel.__oruby_masgn(" + id + ", (" })
-			r.add(s[0], s[0], func(*rewriter) string { return "::Kernel.__oruby_to_ary(" + id + ", (" })
-			r.addAfter(s[0], e[0], func(*rewriter) string { return "))" })
-			r.addAfter(s[1], e[1], func(*rewriter) string { return "))" })
+			r.addWrap(s[1], e[1], func(*rewriter) string { return "::Kernel.__oruby_masgn(" + id + ", (" },
+				func(*rewriter) string { return "))" })
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_to_ary(" + id + ", (" },
+				func(*rewriter) string { return "))" })
+		case C.ORB_MASGN_NESTED:
+			// (a, b), c = obj, 1: the nested target gets a local, destructured
+			// with #to_ary after the assignment
+			id := strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+			tmp := "__oruby_mt" + id
+			inner := s[2]
+			innerEnd := e[2]
+			r.add(s[0], e[0], func(*rewriter) string { return tmp })
+			post := func(r *rewriter) string {
+				return r.render(inner, innerEnd) + " = ::Kernel.__oruby_ary_of(" + tmp + ")"
+			}
+			key := [2]int{s[1], e[1]}
+			if w, ok := cpathWraps[key]; ok {
+				w.posts = append(w.posts, post)
+				break
+			}
+			w := &masgnPost{posts: []func(*rewriter) string{post}}
+			cpathWraps[key] = w
+			v := "__oruby_cpv" + id
+			r.addWrap(s[1], e[1], func(*rewriter) string { return "(" + v + " = (" }, w.closer(v))
+		case C.ORB_MASGN_CPATH, C.ORB_FOR_CPATH:
+			// A::B, c = v (and for A::B in v): mruby's code generator
+			// rejects a constant path target, so it is a local and the
+			// constant is assigned from it after the assignment (at the start
+			// of the loop body)
+			id := strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+			tmp := "__oruby_cpt" + id
+			target := r.text(s[0], e[0])
+			r.add(s[0], e[0], func(*rewriter) string { return tmp })
+			if rc.kind == C.ORB_FOR_CPATH {
+				r.add(s[1], s[1], func(*rewriter) string { return "; " + target + " = " + tmp + "; " })
+				break
+			}
+			post := func(*rewriter) string { return target + " = " + tmp }
+			key := [2]int{s[1], e[1]}
+			if w, ok := cpathWraps[key]; ok {
+				w.posts = append(w.posts, post)
+				break
+			}
+			w := &masgnPost{posts: []func(*rewriter) string{post}}
+			cpathWraps[key] = w
+			v := "__oruby_cpv" + id
+			r.addWrap(s[1], e[1], func(*rewriter) string { return "(" + v + " = (" }, w.closer(v))
 		case C.ORB_ARRAY_KWHASH:
-			r.add(s[0], s[0], func(*rewriter) string { return "{" })
-			r.addAfter(s[0], e[0], func(*rewriter) string { return "}" })
+			if rc.flags&1 != 0 {
+				// [**h]: [] for an empty h, as MRI
+				r.addWrap(s[0], e[0], func(*rewriter) string { return "*::Kernel.__oruby_kwsplat_ary({" },
+					func(*rewriter) string { return "})" })
+				break
+			}
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "{" }, func(*rewriter) string { return "}" })
+		case C.ORB_REGEXP_LITERAL:
+			// one Regexp per literal, as MRI's (mruby compiles a literal each
+			// time it is evaluated): made the first time, then cached per site
+			id := strconv.FormatUint(atomic.AddUint64(&regexpSiteCounter, 1), 10)
+			r.addWrap(s[0], e[0], func(*rewriter) string {
+				return "(::Kernel.__oruby_relit(" + id + ") || ::Kernel.__oruby_relit_set(" + id + ", "
+			}, func(*rewriter) string { return "))" })
 		case C.ORB_KWSPLAT:
-			r.add(s[0], s[0], func(*rewriter) string { return "::Kernel.__oruby_kwsplat((" })
-			r.addAfter(s[0], e[0], func(*rewriter) string { return "))" })
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_kwsplat((" },
+				func(*rewriter) string { return "))" })
 		case C.ORB_LITERAL_ENCODING:
 			// MRI tags a literal with its source encoding; \u escapes make it
 			// UTF-8, which is oruby's default already
@@ -569,6 +653,12 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			if ea.closer && ea.from != eb.from {
 				return ea.from > eb.from
 			}
+			if ea.closer && ea.wrap != eb.wrap {
+				return !ea.wrap // a span's suffixes, then its wrappers
+			}
+			if ea.closer && ea.wrap {
+				return ea.seq > eb.seq // the inner wrapper first
+			}
 			return ea.seq < eb.seq
 		}
 		return ea.end > eb.end
@@ -580,7 +670,17 @@ func (r *rewriter) add(s, e int, build func(r *rewriter) string) {
 	if s < 0 || e < s {
 		return
 	}
-	r.edits = append(r.edits, edit{s, e, build, len(r.edits), false, 0})
+	r.edits = append(r.edits, edit{s, e, build, len(r.edits), false, 0, false})
+}
+
+// addWrap puts open before the span s..e and close after it; of wrappers of
+// one span the one added last is the inner one
+func (r *rewriter) addWrap(s, e int, open, close func(r *rewriter) string) {
+	if s < 0 || e < s {
+		return
+	}
+	r.edits = append(r.edits, edit{s, s, open, len(r.edits), false, 0, false})
+	r.edits = append(r.edits, edit{e, e, close, len(r.edits), true, s, true})
 }
 
 // addAfter inserts at pos, the end of the span from..pos, the end of a
@@ -590,7 +690,7 @@ func (r *rewriter) addAfter(from, pos int, build func(r *rewriter) string) {
 	if pos < 0 {
 		return
 	}
-	r.edits = append(r.edits, edit{pos, pos, build, len(r.edits), true, from})
+	r.edits = append(r.edits, edit{pos, pos, build, len(r.edits), true, from, false})
 }
 
 // PreprocessRuby is PreprocessRubyBytes for strings.

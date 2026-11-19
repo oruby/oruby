@@ -547,14 +547,14 @@ func byteIndex(s string, pos int) (int, bool) {
 }
 
 func setLastMatch(mrb *oruby.MrbState, matchData oruby.Value) {
-	regexpClass := mrb.ClassGet("Regexp")
+	regexpClass := mrb.ClassGetID(oruby.Sym_Regexp)
 	_ = mrb.IVSet(regexpClass, oruby.IvSym_last_match, matchData)
 	mrb.GVSet(mrb.Intern("$~"), matchData)
 }
 
 func newMatchValue(mrb *oruby.MrbState, re *Regexp, s string, result []int) oruby.Value {
 	m := NewMatchData(re, s, result, 0)
-	return mrb.NewInstance("MatchData", m).Value()
+	return mrb.DataWrapInterface(mrb.ClassGetID(oruby.Sym_MatchData), m).Value()
 }
 
 // doMatch matches at byte offset pos and sets $~; returns nil value on no match

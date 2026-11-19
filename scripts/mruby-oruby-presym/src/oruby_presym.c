@@ -69,9 +69,11 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, ">=");
   (void)mrb_intern_lit(mrb, ">>");
   (void)mrb_intern_lit(mrb, "@@current");
+  (void)mrb_intern_lit(mrb, "@__cbi");
   (void)mrb_intern_lit(mrb, "@__default");
   (void)mrb_intern_lit(mrb, "@__i");
   (void)mrb_intern_lit(mrb, "@__isolated_worker_result");
+  (void)mrb_intern_lit(mrb, "@__iter");
   (void)mrb_intern_lit(mrb, "@__main_thread");
   (void)mrb_intern_lit(mrb, "@__mt");
   (void)mrb_intern_lit(mrb, "@__nil_mesg");
@@ -451,6 +453,9 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_readable?");
   (void)mrb_intern_lit(mrb, "__oruby_reentry");
   (void)mrb_intern_lit(mrb, "__oruby_release_held");
+  (void)mrb_intern_lit(mrb, "__oruby_relit");
+  (void)mrb_intern_lit(mrb, "__oruby_relit_set");
+  (void)mrb_intern_lit(mrb, "__oruby_relits");
   (void)mrb_intern_lit(mrb, "__oruby_reopen_io");
   (void)mrb_intern_lit(mrb, "__oruby_reopen_path");
   (void)mrb_intern_lit(mrb, "__oruby_root_fiber");
@@ -462,6 +467,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_signal__");
   (void)mrb_intern_lit(mrb, "__oruby_singleton_class_or_nil");
   (void)mrb_intern_lit(mrb, "__oruby_slow_hash");
+  (void)mrb_intern_lit(mrb, "__oruby_slow_join");
   (void)mrb_intern_lit(mrb, "__oruby_slow_new");
   (void)mrb_intern_lit(mrb, "__oruby_slow_to_proc");
   (void)mrb_intern_lit(mrb, "__oruby_space");

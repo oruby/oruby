@@ -241,6 +241,8 @@ static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value 
     else {
       if (!ci->mid) continue;
       raw++;
+      /* MRI's C const_missing leaves no frame (go-mrb.c wraps mruby's) */
+      if (ci->mid == MRB_SYM(const_missing)) continue;
       /* an oruby helper (__oruby_*) that core_ext's Ruby calls is part of
          the method that calls it: Fiber.yield's __oruby_yield */
       if (i > 0 && pos[i-1].valid && pos[i-1].internal &&

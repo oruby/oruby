@@ -16,6 +16,8 @@ typedef struct {
   int n, cap;
   bool frozen; /* frozen_string_literal: true for this source */
   bool nonutf8; /* source encoding other than UTF-8: literals are tagged */
+  bool relits;  /* regexp literals get a per-site object (ORB_REGEXP_LITERAL) */
+  const pm_node_t *keep_re; /* the literal of a named-capture =~ (assigns locals) */
 } orb_scan;
 
 static orb_rec *
@@ -72,6 +74,52 @@ cpath_write(orb_scan *sc, int kind, const pm_node_t *node, const pm_constant_pat
 }
 
 static pm_visit_result_t visit(const pm_node_t *node, void *data);
+
+/* the nested targets ((a, b)) in t, outer ones first */
+static void
+nested_targets(orb_scan *sc, const pm_node_t *t, int32_t s1, int32_t e1)
+{
+  if (!t || PM_NODE_TYPE(t) != PM_MULTI_TARGET_NODE) return;
+  const pm_multi_target_node_t *mt = (const pm_multi_target_node_t *)t;
+  if (mt->lparen_loc.length == 0) return;
+  orb_rec *r = add(sc, ORB_MASGN_NESTED);
+  span(r, 0, t);
+  r->s[1] = s1;
+  r->e[1] = e1;
+  r->s[2] = (int32_t)(mt->lparen_loc.start + mt->lparen_loc.length);
+  r->e[2] = (int32_t)mt->rparen_loc.start;
+  for (size_t i = 0; i < mt->lefts.size; i++) nested_targets(sc, mt->lefts.nodes[i], s1, e1);
+  for (size_t i = 0; i < mt->rights.size; i++) nested_targets(sc, mt->rights.nodes[i], s1, e1);
+}
+
+/* the constant path targets (A::B) among t's targets: mruby's code
+   generator rejects them in a multiple assignment and a for loop */
+static void
+cpath_targets(orb_scan *sc, const pm_node_t *t, int kind, int32_t s1, int32_t e1)
+{
+  if (!t) return;
+  switch (PM_NODE_TYPE(t)) {
+  case PM_CONSTANT_PATH_TARGET_NODE: {
+    orb_rec *r = add(sc, kind);
+    span(r, 0, t);
+    r->s[1] = s1;
+    r->e[1] = e1;
+    break;
+  }
+  case PM_MULTI_TARGET_NODE: {
+    const pm_multi_target_node_t *m = (const pm_multi_target_node_t *)t;
+    for (size_t i = 0; i < m->lefts.size; i++) cpath_targets(sc, m->lefts.nodes[i], kind, s1, e1);
+    cpath_targets(sc, m->rest, kind, s1, e1);
+    for (size_t i = 0; i < m->rights.size; i++) cpath_targets(sc, m->rights.nodes[i], kind, s1, e1);
+    break;
+  }
+  case PM_SPLAT_NODE:
+    cpath_targets(sc, ((const pm_splat_node_t *)t)->expression, kind, s1, e1);
+    break;
+  default:
+    break;
+  }
+}
 
 static void
 visit_child(const pm_node_t *node, void *data)
@@ -160,6 +208,10 @@ visit(const pm_node_t *node, void *data)
       span(r, 0, f->index);
       span(r, 1, f->collection);
       lspan(r, 2, f->do_keyword_loc);
+    }
+    {
+      int32_t at = f->statements ? (int32_t)f->statements->base.location.start : (int32_t)f->end_keyword_loc.start;
+      cpath_targets(sc, f->index, ORB_FOR_CPATH, at, at);
     }
     break;
   }
@@ -288,14 +340,46 @@ visit(const pm_node_t *node, void *data)
       span(r, 0, v);
       span(r, 1, node);
     }
+    {
+      const pm_multi_write_node_t *m = (const pm_multi_write_node_t *)node;
+      int32_t s1 = (int32_t)node->location.start, e1 = (int32_t)(node->location.start + node->location.length);
+      /* (a, b), c = obj, 1: MRI converts a nested target's value with
+         #to_ary, mruby does not; nested targets are assigned after, outer
+         ones first, then the constant paths among them */
+      for (size_t i = 0; i < m->lefts.size; i++) nested_targets(sc, m->lefts.nodes[i], s1, e1);
+      for (size_t i = 0; i < m->rights.size; i++) nested_targets(sc, m->rights.nodes[i], s1, e1);
+      for (size_t i = 0; i < m->lefts.size; i++) cpath_targets(sc, m->lefts.nodes[i], ORB_MASGN_CPATH, s1, e1);
+      cpath_targets(sc, m->rest, ORB_MASGN_CPATH, s1, e1);
+      for (size_t i = 0; i < m->rights.size; i++) cpath_targets(sc, m->rights.nodes[i], ORB_MASGN_CPATH, s1, e1);
+    }
     break;
   }
+
+  case PM_MATCH_WRITE_NODE: {
+    /* /(?<name>..)/ =~ s assigns the captures to locals: mruby does that for
+       a literal receiver only, so the literal stays */
+    const pm_call_node_t *call = ((const pm_match_write_node_t *)node)->call;
+    if (call) sc->keep_re = call->receiver;
+    break;
+  }
+  case PM_REGULAR_EXPRESSION_NODE:
+    if (sc->relits && node != sc->keep_re) {
+      r = add(sc, ORB_REGEXP_LITERAL);
+      span(r, 0, node);
+    }
+    break;
   case PM_ARRAY_NODE: {
     // [a, k: v]: mruby's code generator drops a brace-less trailing Hash
     const pm_node_list_t *el = &((const pm_array_node_t *)node)->elements;
     if (el->size > 0 && PM_NODE_TYPE(el->nodes[el->size - 1]) == PM_KEYWORD_HASH_NODE) {
+      const pm_keyword_hash_node_t *kh = (const pm_keyword_hash_node_t *)el->nodes[el->size - 1];
       r = add(sc, ORB_ARRAY_KWHASH);
       span(r, 0, el->nodes[el->size - 1]);
+      /* [**h]: no element at all when h is empty, as MRI's */
+      r->flags = 1;
+      for (size_t i = 0; i < kh->elements.size; i++) {
+        if (PM_NODE_TYPE(kh->elements.nodes[i]) != PM_ASSOC_SPLAT_NODE) r->flags = 0;
+      }
     }
     break;
   }
@@ -372,6 +456,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
     encname[encname_len - 1] = 0;
   }
   sc.frozen = pm_parser_frozen_string_literal(parser) > 0;
+  sc.relits = !(opts && opts->no_regexp_literals);
   {
     const char *en = pm_parser_encoding_name(parser);
     sc.nonutf8 = en && strcmp(en, "UTF-8") != 0;

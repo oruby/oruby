@@ -91,7 +91,42 @@ func NewRegexpError(msg string) error { return &RegexpError{msg} }
 
 // compileRuby compiles a Ruby regexp: RE2 when the pattern can be expressed
 // exactly, otherwise the registered fallback engine.
+// compiled: the engine of each (source, options) compiled so far (engines are
+// immutable and safe for concurrent use); every Regexp gets its own struct
+type compiledKey struct {
+	source  string
+	options int
+}
+type compiledRe struct {
+	re2          *goregexp.Regexp
+	engine       Engine
+	startContext bool
+}
+
+var (
+	compiled      sync.Map // compiledKey -> *compiledRe
+	compiledCount atomic.Int32
+)
+
+const compiledMax = 4096 // patterns built at run time do not grow it forever
+
+// compileRuby compiles a Ruby regexp, once per (source, options): a regexp
+// literal is compiled each time it is evaluated
 func compileRuby(source string, options int) (*Regexp, error) {
+	key := compiledKey{source, options}
+	if c, ok := compiled.Load(key); ok {
+		cr := c.(*compiledRe)
+		return &Regexp{source: source, options: options, re2: cr.re2, engine: cr.engine, startContext: cr.startContext}, nil
+	}
+	r, err := compileRubyNew(source, options)
+	if err == nil && compiledCount.Load() < compiledMax {
+		compiled.Store(key, &compiledRe{r.re2, r.engine, r.startContext})
+		compiledCount.Add(1)
+	}
+	return r, err
+}
+
+func compileRubyNew(source string, options int) (*Regexp, error) {
 	tr, err := translate(source, options, targetRE2)
 	if err == nil {
 		re, cerr := goregexp.Compile(tr.pattern)

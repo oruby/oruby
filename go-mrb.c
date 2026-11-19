@@ -677,10 +677,25 @@ static mrb_value gv_slot_get(mrb_state *mrb, int i) {
   return mrb_hash_get(mrb, gv_storage(mrb), mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i])));
 }
 
+/* the values a checked global takes as they are, without
+   Kernel.__oruby_gvcheck (every regexp match sets $~, every gets $.) */
+static mrb_bool gv_plain_value(mrb_state *mrb, const char *canon, mrb_value v) {
+  if (strcmp(canon, "$~") == 0) {
+    if (mrb_nil_p(v)) return TRUE;
+    if (!mrb_class_defined_id(mrb, MRB_SYM(MatchData))) return FALSE;
+    return mrb_obj_class(mrb, v) == mrb_class_get_id(mrb, MRB_SYM(MatchData));
+  }
+  if (strcmp(canon, "$.") == 0) return mrb_integer_p(v);
+  if (strcmp(canon, "$VERBOSE") == 0) return mrb_nil_p(v) || mrb_true_p(v) || mrb_false_p(v);
+  if (strcmp(canon, "$0") == 0) return mrb_string_p(v);
+  if (strcmp(canon, "$\\") == 0 || strcmp(canon, "$,") == 0 || strcmp(canon, "$;") == 0) return mrb_nil_p(v);
+  return FALSE;
+}
+
 static void gv_slot_set(mrb_state *mrb, int i, mrb_value v) {
   mrb_value kernel = mrb_obj_value(mrb->kernel_module);
   mrb_value name = mrb_symbol_value(mrb_intern_cstr(mrb, gv_names[i]));
-  if (gv_kinds[i] != 2) {
+  if (gv_kinds[i] != 2 && !gv_plain_value(mrb, gv_canon[i], v)) {
     mrb_sym check = MRB_SYM(__oruby_gvcheck);
     /* until core_ext defines the checks, the startup values are stored as is */
     if (mrb_respond_to(mrb, kernel, check)) v = mrb_funcall_id(mrb, kernel, check, 2, name, v);
@@ -891,6 +906,11 @@ static void gv_init_checked(mrb_state *mrb) {
 
 void _orb_bt_init(mrb_state *mrb);
 
+/* the string has mruby's binary flag (BINARY, or a tagged encoding) */
+int _orb_str_binary_p(mrb_value s) {
+  return mrb_string_p(s) && RSTR_ENCODING(mrb_str_ptr(s)) == 1;
+}
+
 static mrb_value sym_all_symbols_m(mrb_state *mrb, mrb_value self) {
   mrb_sym presym_max = mrb_presym_max();
   mrb_value ary = mrb_ary_new_capa(mrb, presym_max + mrb->symidx);
@@ -1017,6 +1037,45 @@ void _orb_trace_init(mrb_state *mrb);
 void _orb_fast_capture(mrb_state *mrb);
 void _orb_fast_init(mrb_state *mrb);
 
+/* Module#const_missing for a constant another thread's autoload is
+   loading: mruby's lookup does not wait for it (the autoload's `loading`
+   flag makes the constant missing), MRI's does. The thread passes until the
+   load is done and looks the constant up again: the constant, or the
+   autoload tried here too when that load raised. A load in this thread
+   (an autoload referencing its own constant) is not waited for. */
+#include <stdatomic.h>
+mrb_bool mrb_autoload_p(mrb_value v);
+struct orb_autoload { mrb_bool loading; mrb_int len; char path[]; }; /* mruby's struct autoload (variable.c) */
+extern _Atomic int orb_threads_active;
+static mrb_func_t const_missing_orig;
+
+static mrb_bool requiring_here(mrb_state *mrb, const char *path, mrb_int len) {
+  for (mrb_callinfo *ci = mrb->c->ci; ci > mrb->c->cibase; ci--) {
+    if (ci->mid != MRB_SYM(require) || ci->n < 1 || ci->n >= 15) continue;
+    mrb_value a = ci->stack[1];
+    if (mrb_string_p(a) && RSTRING_LEN(a) == len && memcmp(RSTRING_PTR(a), path, len) == 0) return TRUE;
+  }
+  return FALSE;
+}
+
+static mrb_value const_missing_w(mrb_state *mrb, mrb_value mod) {
+  if (atomic_load(&orb_threads_active) && (mrb_class_p(mod) || mrb_module_p(mod)) && mrb_get_argc(mrb) == 1 &&
+      mrb_symbol_p(mrb_get_argv(mrb)[0]) && mrb_class_defined_id(mrb, MRB_SYM(Thread))) {
+    mrb_sym sym = mrb_symbol(mrb_get_argv(mrb)[0]);
+    mrb_value v = mrb_iv_get(mrb, mod, sym);
+    mrb_bool waited = FALSE;
+    while (mrb_autoload_p(v)) {
+      struct orb_autoload *al = (struct orb_autoload *)DATA_PTR(v);
+      if (!al->loading || requiring_here(mrb, al->path, al->len)) break;
+      mrb_funcall_id(mrb, mrb_obj_value(mrb_class_get_id(mrb, MRB_SYM(Thread))), MRB_SYM(pass), 0);
+      v = mrb_iv_get(mrb, mod, sym);
+      waited = TRUE;
+    }
+    if (waited) return mrb_const_get(mrb, mod, sym);
+  }
+  return const_missing_orig(mrb, mod);
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
   _orb_fast_init(mrb);
   install_num_eq(mrb);
@@ -1024,6 +1083,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   _mrb_wrap_string_encoding(mrb);
   gv_init_checked(mrb);
   wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
+  wrap_cfunc(mrb, mrb->module_class, "const_missing", const_missing_w, &const_missing_orig);
   wrap_eval_methods(mrb);
   {
     /* redefined rather than wrapped: the arity check must admit 3 */

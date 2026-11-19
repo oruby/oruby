@@ -521,6 +521,9 @@ type replacer func(md oruby.Value, m *MatchData) (string, oruby.Value, oruby.Mrb
 
 // strEnc is v's Encoding, Nil for UTF-8 (the common case, without a call)
 func strEnc(mrb *oruby.MrbState, v oruby.Value) oruby.Value {
+	if v.Type() == oruby.MrbTTString && !oruby.StrBinary(v) {
+		return oruby.Nil // UTF-8 (or US-ASCII, as compatible here)
+	}
 	if bin, err := mrb.Funcall(v, oruby.SymQ___encoding_binary); err == nil && bin.Bool() {
 		if e, err := mrb.Funcall(v, oruby.Sym_encoding); err == nil {
 			return e.Value()
@@ -600,6 +603,11 @@ func valueEnc(mrb *oruby.MrbState, v oruby.Value, s string) oruby.Value {
 	return strEnc(mrb, v)
 }
 
+// needsMatch: the replacer looks at each match's MatchData (a block sees $~)
+func needsMatch(replace, block oruby.Value) bool {
+	return !block.IsNil() || replace.Type() == oruby.MrbTTHash
+}
+
 func makeReplacer(mrb *oruby.MrbState, self, replace, block, selfEnc oruby.Value) (replacer, oruby.MrbValue) {
 	switch {
 	case !block.IsNil():
@@ -650,7 +658,7 @@ func makeReplacer(mrb *oruby.MrbState, self, replace, block, selfEnc oruby.Value
 }
 
 // substitute replaces the first (all=false) or every match of re in s
-func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replacer, selfEnc oruby.Value) (oruby.MrbValue, bool, oruby.MrbValue) {
+func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replacer, selfEnc oruby.Value, eachMatch bool) (oruby.MrbValue, bool, oruby.MrbValue) {
 	var matches [][]int
 	if all {
 		var err error
@@ -669,11 +677,17 @@ func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replace
 		return b.result(mrb), false, nil
 	}
 	last := 0
-	var md oruby.Value
+	md := oruby.Nil
+	enc := encName(mrb, selfEnc)
+	var data *MatchData
 	for _, m := range matches {
-		data := NewMatchData(re, s, m, 0)
-		data.enc = encName(mrb, selfEnc)
-		md = mrb.NewInstance("MatchData", data).Value()
+		data = NewMatchData(re, s, m, 0)
+		data.enc = enc
+		// a MatchData object for each match only when the replacement sees
+		// it; $~ is the last one
+		if eachMatch {
+			md = mrb.DataWrapInterface(mrb.ClassGetID(oruby.Sym_MatchData), data).Value()
+		}
 		repl, enc, exc := rep(md, data)
 		if exc != nil {
 			return nil, false, exc
@@ -688,6 +702,9 @@ func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replace
 	}
 	if exc := b.add(mrb, s[last:], selfEnc); exc != nil {
 		return nil, false, exc
+	}
+	if !eachMatch {
+		md = mrb.DataWrapInterface(mrb.ClassGetID(oruby.Sym_MatchData), data).Value()
 	}
 	setLastMatch(mrb, md)
 	return b.result(mrb), true, nil
@@ -738,7 +755,7 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 		ret, _ := mrb.FuncallWithBlock(self, mrb.Intern(old), pattern, replace, block)
 		return ret, false
 	}
-	if mrb.RespondTo(self, oruby.SymQ_valid_encoding) {
+	if oruby.StrBinary(self) && mrb.RespondTo(self, oruby.SymQ_valid_encoding) || !oruby.StrBinary(self) && !utf8.ValidString(rstr(self)) {
 		if valid := mrb.Call(self, "valid_encoding?"); !valid.IsNil() && !valid.Bool() {
 			enc := mrb.Call(self, "encoding")
 			encName := "UTF-8"
@@ -771,7 +788,7 @@ func doSubst(mrb *oruby.MrbState, self oruby.Value, all bool, name string) (orub
 	if exc != nil {
 		return exc, false
 	}
-	res, matched, exc := substitute(mrb, r, mrb.String(self), all, rep, selfEnc)
+	res, matched, exc := substitute(mrb, r, mrb.String(self), all, rep, selfEnc, needsMatch(replace, blk))
 	if exc != nil {
 		return exc, false
 	}

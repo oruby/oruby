@@ -276,3 +276,10 @@ func (mrb *MrbState) StrByteSubseq(str MrbValue, beg, length int) (Value, error)
 	}
 	return Value{result}, nil
 }
+
+// StrBinary reports whether s has mruby's binary encoding flag (BINARY, or
+// an encoding core_ext tags it with); a String without it is UTF-8 or
+// US-ASCII
+func StrBinary(s Value) bool {
+	return C._orb_str_binary_p(s.v) != 0
+}
