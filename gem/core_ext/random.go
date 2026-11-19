@@ -3,7 +3,9 @@ package core_ext
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"io"
 	"math"
+	randv2 "math/rand/v2"
 	"sync"
 
 	"github.com/oruby/oruby"
@@ -171,12 +173,19 @@ func initRandom(mrb *oruby.MrbState) {
 		}
 		buf := make([]byte, n)
 		if n > 0 {
-			if _, err := rand.Read(buf); err != nil {
+			if _, err := io.ReadFull(rand.Reader, buf); err != nil {
 				return mrb.RaiseError(err)
 			}
 		}
 		return mrb.StrNew(string(buf))
 	}, oruby.ArgsReq(1))
+
+	mrb.DefineClassMethod(rnd, "__boot_seed", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		var buf [16]byte
+		binary.LittleEndian.PutUint64(buf[0:8], randv2.Uint64())
+		binary.LittleEndian.PutUint64(buf[8:16], randv2.Uint64())
+		return mrb.StrNew(string(buf[:]))
+	}, oruby.ArgsNone())
 
 	mrb.DefineMethod(mtCls, "seed_words", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		mt := mrb.Data(self).(*mt19937)

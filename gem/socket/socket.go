@@ -79,6 +79,26 @@ func init() {
 			return mrb.NilValue()
 		})
 		rb.LoadRuby(mrb, "socket.rb", socketRb)
+		initIfaddrs(mrb, sock)
+		bs.DefineMethod("timeout", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			return mrb.GetIV(self, "@__timeout")
+		}, mrb.ArgsNone())
+		bs.DefineMethod("timeout=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			v := mrb.GetArgsFirst()
+			if !v.IsNil() && !v.IsInt() && !v.IsFloat() {
+				if mrb.RespondTo(v, oruby.Sym_to_f) {
+					fv, err := mrb.Funcall(v, oruby.Sym_to_f)
+					if err != nil {
+						return mrb.RaiseError(err)
+					}
+					v = fv.Value()
+				} else {
+					return rb.TypeError(mrb, errors.New("can't convert timeout into Float"))
+				}
+			}
+			mrb.SetIV(self, "@__timeout", v)
+			return v
+		}, mrb.ArgsReq(1))
 		return nil
 	})
 }
@@ -291,6 +311,20 @@ func packIn(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	return binStr(mrb, sockaddrToBytes(sa))
 }
 
+func formatIPv6(addr [16]byte) string {
+	v4mapped := true
+	for i := 0; i < 10; i++ {
+		if addr[i] != 0 {
+			v4mapped = false
+			break
+		}
+	}
+	if v4mapped && addr[10] == 0xff && addr[11] == 0xff {
+		return "::ffff:" + net.IP(addr[12:16]).String()
+	}
+	return net.IP(addr[:]).String()
+}
+
 func unpackIn(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	sa, exc := saArg(mrb, mrb.GetArgsFirst())
 	if exc != nil {
@@ -300,7 +334,7 @@ func unpackIn(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	case *syscall.SockaddrInet4:
 		return mrb.Value([]interface{}{a.Port, net.IP(a.Addr[:]).String()})
 	case *syscall.SockaddrInet6:
-		return mrb.Value([]interface{}{a.Port, net.IP(a.Addr[:]).String()})
+		return mrb.Value([]interface{}{a.Port, formatIPv6(a.Addr)})
 	}
 	return rb.Raise(mrb, "ArgumentError", "not an AF_INET/AF_INET6 sockaddr")
 }
@@ -761,22 +795,25 @@ func sysGetaddrinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 
 func sysGetnameinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs().Slice()
-	sa, exc := saArg(mrb, a[0])
-	if exc != nil {
-		return exc
+	b, err := rb.Bytes(mrb, a[0])
+	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	sa, err := bytesToSockaddr(b)
+	if err != nil {
+		return resErr(mrb, "getnameinfo: "+err.Error(), eaiFamily)
 	}
 	flags := int(a[1].Int64())
-	var ip net.IP
+	var host string
 	var port int
 	switch s := sa.(type) {
 	case *syscall.SockaddrInet4:
-		ip, port = net.IP(s.Addr[:]), s.Port
+		host, port = net.IP(s.Addr[:]).String(), s.Port
 	case *syscall.SockaddrInet6:
-		ip, port = net.IP(s.Addr[:]), s.Port
+		host, port = formatIPv6(s.Addr), s.Port
 	default:
 		return resErr(mrb, "getnameinfo: ai_family not supported", eaiFamily)
 	}
-	host := ip.String()
 	if flags&niNumericHost == 0 {
 		var names []string
 		var err error

@@ -185,7 +185,16 @@ class Random
 
   private_constant :MTState
   remove_const(:DEFAULT) if const_defined?(:DEFAULT, false)
-  @__default = Random.new
+  @__default = begin
+    b = __boot_seed
+    val = 0
+    i = 15
+    while i >= 0
+      val = (val << 8) | b.getbyte(i)
+      i -= 1
+    end
+    Random.new(val)
+  end
 
   class << self
     def default

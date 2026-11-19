@@ -66,6 +66,7 @@ func init() {
 		mod.DefineClassMethod("__random_bytes", randomBytes, mrb.ArgsReq(1))
 		mod.DefineClassMethod("__fixed_length_secure_compare", fixedLengthSecureCompare, mrb.ArgsReq(2))
 		mod.DefineClassMethod("__secure_compare", secureCompare, mrb.ArgsReq(2))
+		initOpenSSLGo(mrb, mod)
 		rb.LoadRuby(mrb, "openssl.rb", opensslRb)
 		return nil
 	})
@@ -335,5 +336,12 @@ func secureCompare(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	}
 	ha := sha256.Sum256(a)
 	hb := sha256.Sum256(b)
-	return mrb.BoolValue(subtle.ConstantTimeCompare(ha[:], hb[:]) == 1)
+	if subtle.ConstantTimeCompare(ha[:], hb[:]) != 1 {
+		return mrb.FalseValue()
+	}
+	eq, err := mrb.Funcall(args[0], mrb.Intern("=="), args[1])
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return mrb.BoolValue(eq.Bool())
 }

@@ -817,7 +817,20 @@ class Socket < BasicSocket
   end
 
   def connect(addr)
-    Socket.__connect(__fd, Socket.__sockaddr(addr), false)
+    sa = Socket.__sockaddr(addr)
+    t = timeout
+    if t
+      case connect_nonblock(sa, exception: false)
+      when :wait_writable
+        unless wait_writable(t)
+          raise IO::TimeoutError, "Connect timed out!"
+        end
+        err = getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int
+        raise SystemCallError.new("connect(2)", err) if err != 0
+      end
+      return 0
+    end
+    Socket.__connect(__fd, sa, false)
   end
 
   def connect_nonblock(addr, exception: true)
@@ -1045,7 +1058,9 @@ class Socket < BasicSocket
           sock = ai.connect(timeout: connect_timeout || open_timeout)
         end
         break
-      rescue SystemCallError, IO::TimeoutError => e
+      rescue IO::TimeoutError
+        last = Errno::ETIMEDOUT.new("user specified timeout")
+      rescue SystemCallError => e
         last = e
       end
     end

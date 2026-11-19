@@ -46,7 +46,13 @@ module OpenSSL
     attr_reader :name
 
     def initialize(name, data = nil)
-      @name = name.to_s.upcase.delete("-")
+      if OpenSSL::Digest === name
+        @name = name.name
+      elsif String === name
+        @name = name.upcase.delete("-")
+      else
+        raise TypeError, "wrong argument type #{name.class} (expected String or OpenSSL::Digest)"
+      end
       @impl = Digest.__impl(@name).new
       @impl.update(data) if data
     end
