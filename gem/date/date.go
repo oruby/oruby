@@ -308,6 +308,7 @@ var (
 	reEU    = regexp.MustCompile(`(?i)'?(\d+)[^-\d\s]*\s*` + monPat + `[^-\d\s']*(?:\s*(?:\s*,\s*)?(c(?:e|\.e\.)|b(?:ce|\.c\.e\.)|a(?:d|\.d\.)|b(?:c|\.c\.))?\s*('?-?\d+(?:(?:st|nd|rd|th)\b)?))?`)
 	reUS    = regexp.MustCompile(`(?i)\b` + monPat + `[^-\d\s']*\s*('?-?\d+)[^-\d\s']*(?:\s*,?\s*(c(?:e|\.e\.)|b(?:ce|\.c\.e\.)|a(?:d|\.d\.)|b(?:c|\.c\.))?\s*('?-?\d+))?`)
 	reISO   = regexp.MustCompile(`('?[-+]?\d+)-(\d+)-('?-?\d+)`)
+	reJIS   = regexp.MustCompile(`(?i)\b([mtshr])(\d+)\.(\d+)\.(\d+)`) // a Japanese era: H31.04.30
 	reVMS1  = regexp.MustCompile(`(?i)('?-?\d+(?:st|nd|rd|th)?)[-/.]` + monPat + `[^\s-/.]*[-/.]('?-?\d+(?:st|nd|rd|th)?)`)
 	reVMS2  = regexp.MustCompile(`(?i)\b` + monPat + `[^\s-/.]*[-/.]('?-?\d+(?:st|nd|rd|th)?)(?:[-/.]('?-?\d+))?`)
 	reSla   = regexp.MustCompile(`('?-?\d+)/\s*('?\d+)(?:\D\s*('?-?\d+))?`)
@@ -581,6 +582,12 @@ func parseDate(str string, comp bool) parsed {
 	}):
 	case matchApply(&s, reISO, func(m []int, t string) {
 		setS3E(p, sub(t, m, 1), sub(t, m, 2), sub(t, m, 3))
+	}):
+	case matchApply(&s, reJIS, func(m []int, t string) {
+		// MRI's parse_jis: the era's year 0 (Meiji 1867, Taisho 1911, Showa
+		// 1925, Heisei 1988, Reiwa 2018) plus the year
+		base := map[byte]int64{'m': 1867, 't': 1911, 's': 1925, 'h': 1988, 'r': 2018}[strings.ToLower(sub(t, m, 1))[0]]
+		setYMD(p, strconv.FormatInt(base+atoi(sub(t, m, 2)), 10), sub(t, m, 3), sub(t, m, 4), false)
 	}):
 	case matchApply(&s, reSlaM, func(m []int, t string) {
 		setYMD(p, sub(t, m, 3), sub(t, m, 2), sub(t, m, 1), false)

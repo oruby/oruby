@@ -1,14 +1,28 @@
 package time
 
 import (
+	_ "embed"
 	"math"
 	"time"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 )
 
+// Ruby 4.1's lib/time.rb (Time.parse, strptime, rfc3339, #rfc2822, #httpdate)
+//
+//go:embed time.rb
+var timeRb []byte
+
 func init() {
-	oruby.Gem("time", func(mrb *oruby.MrbState) interface{} {
+	// require "time" is MRI's time.rb over the core Time ("time/core", which
+	// core_ext loads at startup)
+	oruby.LazyGem("time", func(mrb *oruby.MrbState) interface{} {
+		mrb.Require("time/core")
+		rb.LoadRuby(mrb, "time.rb", timeRb)
+		return nil
+	})
+	oruby.Gem("time/core", func(mrb *oruby.MrbState) interface{} {
 		t := mrb.DefineClass("Time", mrb.ObjectClass())
 		t.RegisterGoClass(&time.Time{})
 		t.AttachType(time.Time{})

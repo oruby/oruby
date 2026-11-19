@@ -217,19 +217,21 @@ func timeToI(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return oruby.Int64(t.Unix())
 }
 
+// seconds plus the fraction, as MRI's to_f (and without UnixNano, which
+// overflows after 2262)
 func timeToF(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
-	return mrb.FloatValue(float64(t.UnixNano() / 1.e09))
+	return mrb.FloatValue(float64(t.Unix()) + float64(t.Nanosecond())/1e9)
 }
 
 func timeUsec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
-	return oruby.Int64((t.UnixNano() - t.Unix()*1.e09) / 1000)
+	return oruby.Int64(int64(t.Nanosecond() / 1000))
 }
 
 func timeNsec(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
-	return oruby.Int64(t.UnixNano() - t.Unix()*1.e09)
+	return oruby.Int64(int64(t.Nanosecond()))
 }
 
 func timeUtc(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

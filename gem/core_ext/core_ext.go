@@ -100,7 +100,7 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 
 	oruby.Gem("core_ext", func(mrb *oruby.MrbState) interface{} {
 		// Ruby extensions below reopen classes defined by these gems
-		for _, dep := range []string{"io", "io/file", "regexp", "time", "thread", "process"} {
+		for _, dep := range []string{"io", "io/file", "regexp", "time/core", "thread", "process"} {
 			mrb.Resolve(dep)
 		}
 		initFormat(mrb)

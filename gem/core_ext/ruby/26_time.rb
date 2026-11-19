@@ -192,12 +192,15 @@ class Time
         ns = nsec
         sub = subsec
       end
-      raise ArgumentError, "mon out of range" unless (1..12).include?(mon)
-      raise ArgumentError, "argument out of range" unless (1..31).include?(d)
-      raise ArgumentError, "argument out of range" unless (0..24).include?(h)
-      raise ArgumentError, "argument out of range" unless (0..59).include?(mi)
-      raise ArgumentError, "argument out of range" unless (0..60).include?(sec)
-      raise ArgumentError, "argument out of range" if h == 24 && (mi != 0 || sec != 0)
+      # MRI's messages: a field that is negative or does not fit its bits
+      # (mon 4, mday and hour 5, min and sec 6) is "argument out of range",
+      # one that fits but is invalid is named
+      raise ArgumentError, (0..15).include?(mon) ? "mon out of range" : "argument out of range" unless (1..12).include?(mon)
+      raise ArgumentError, d == 0 ? "mday out of range" : "argument out of range" unless (1..31).include?(d)
+      raise ArgumentError, (0..31).include?(h) ? "hour out of range" : "argument out of range" unless (0..24).include?(h)
+      raise ArgumentError, (0..63).include?(mi) ? "min out of range" : "argument out of range" unless (0..59).include?(mi)
+      raise ArgumentError, (0..63).include?(sec) ? "sec out of range" : "argument out of range" unless (0..60).include?(sec)
+      raise ArgumentError, mi != 0 ? "min out of range" : "sec out of range" if h == 24 && (mi != 0 || sec != 0)
       int_off = Rational === off ? off.round : off
       t = klass.allocate
       raw = Time.__civil(y, mon, d, h, mi, sec, ns, mode, int_off, isdst)
@@ -268,6 +271,11 @@ class Time
     end
 
     def at(time, subsec = (no_sub = true; nil), unit = :microsecond, **kw)
+      # Time.at(an Integer) in Go; anything else is built here
+      if no_sub && Integer === time && kw.empty? && Time.equal?(self)
+        t = __at_i(time)
+        return t if t
+      end
       __kw(kw, [:in])
       z = kw[:in]
       sub = nil
@@ -325,6 +333,11 @@ class Time
     end
 
     def utc(*args)
+      # all Integer fields in range: Go; the others converted or refused here
+      if Time.equal?(self) && args.size <= 7
+        t = __civil_i(0, *args)
+        return t if t
+      end
       y, mon, d, h, mi, s, us, _isdst = __civil_args(args)
       s, ns = __usec_args(s, us)
       __from_civil(self, y, mon, d, h, mi, s, 0, 0, ns)
@@ -332,6 +345,10 @@ class Time
     alias gm utc
 
     def local(*args)
+      if Time.equal?(self) && args.size <= 7
+        t = __civil_i(1, *args)
+        return t if t
+      end
       y, mon, d, h, mi, s, us, isdst = __civil_args(args)
       s, ns = __usec_args(s, us)
       __from_civil(self, y, mon, d, h, mi, s, 1, 0, ns, isdst)
@@ -356,6 +373,11 @@ class Time
     precision = kw.fetch(:precision, 9)
     raise ArgumentError, "timezone argument given as positional and keyword arguments" if zone && z
     zone ||= z
+    # Time.new(y, mon, d, h, mi, s) of Integers in range: Go
+    if !no_year && zone.nil? && kw.empty? && Integer === year && !@__tz && !@__roff && !@__subsec &&
+       __civil_set(year, mon, day, hour, min, sec)
+      return self
+    end
     if no_year
       p = Time.__current_parts
       mode, off = Time.__zone(zone, self.class)
@@ -395,16 +417,13 @@ class Time
   end
   private :__tz, :__tz=, :__roff, :__roff=, :__subsec, :__subsec=
 
-  def __ns = __parts[1]
-  def __sec_i = __parts[0]
+  # __sec_i, __ns, __kind and the rest of the fast paths are gem/time's (Go)
 
   def utc_offset = @__roff || __parts[3]
   alias gmt_offset utc_offset
   alias gmtoff utc_offset
 
-  def utc?
-    __parts[2] == 0
-  end
+  # utc? is gem/time's (Go)
   alias gmt? utc?
 
   def zone
@@ -436,22 +455,20 @@ class Time
   end
 
   def utc
-    p = __parts
-    return self if p[2] == 0
+    return self if __kind == 0
     @__tz = nil
     @__roff = nil
-    __set(Time.__make(p[0], p[1], 0, 0))
+    __utc!
   end
   alias gmtime utc
 
-  def getutc = dup.utc
+  # a plain Time's in Go; a subclass's (dup keeps it) or one with ivars here
+  def getutc = (instance_of?(Time) && !@__tz && !@__roff && !@__subsec && __getutc) || dup.utc
   alias getgm getutc
 
-  def to_i = __parts[0]
+  # to_i, nsec, usec and to_f are gem/time's (Go)
   alias tv_sec to_i
-  def nsec = __parts[1]
   alias tv_nsec nsec
-  def usec = __parts[1] / 1000
   alias tv_usec usec
   def subsec
     return @__subsec if @__subsec
@@ -462,11 +479,6 @@ class Time
   def to_r
     p = __parts
     Rational(p[0]) + subsec
-  end
-
-  def to_f
-    p = __parts
-    p[0] + p[1] / 1e9
   end
 
   # a Time of self's class at another instant, in self's own zone (not the
@@ -487,6 +499,10 @@ class Time
   private :__with
 
   def +(other)
+    if Integer === other && !@__tz && !@__roff && !@__subsec
+      t = __add_i(other)
+      return t if t
+    end
     raise TypeError, "time + time?" if Time === other
     raise TypeError, "can't convert #{Kernel.__cname(other)} into an exact number" if other.nil? || String === other
     d = Numeric === other ? other : Kernel.__implicit(other, Integer)
@@ -501,15 +517,12 @@ class Time
   end
 
   def -(other)
-    p = __parts
     if Time === other
+      # MRI rounds the exact difference once: Go's __diff in nanoseconds;
+      # sub-nanosecond times go exact
+      return __diff(other) unless @__subsec || other.__send__(:__subsec)
+      p = __parts
       q = other.__parts
-      # MRI rounds the exact difference once. In whole nanoseconds below
-      # 2**53 one Float division does that; sub-nanosecond times go exact.
-      unless @__subsec || other.__send__(:__subsec)
-        d = (p[0] - q[0]) * 1_000_000_000 + (p[1] - q[1])
-        return d / 1e9 if d < 9_007_199_254_740_992 && d > -9_007_199_254_740_992
-      end
       return (Rational(p[0] - q[0]) + (subsec - other.subsec)).to_f
     end
     raise TypeError, "can't convert #{Kernel.__cname(other)} into an exact number" if other.nil? || String === other
@@ -528,29 +541,24 @@ class Time
       return 1 if r < 0
       return 0
     end
-    a = __parts
-    b = other.__parts
-    c = a[0] <=> b[0]
-    return c unless c == 0
-    if @__subsec || other.__send__(:__subsec)
-      subsec <=> other.subsec
-    else
-      a[1] <=> b[1]
-    end
+    # by seconds and nanoseconds (Go); a tie of those by the sub-nanosecond part
+    c = __cmp(other)
+    return c unless c == 0 && (@__subsec || other.__send__(:__subsec))
+    subsec <=> other.subsec
   end
 
   def ==(other)
-    Time === other && (self <=> other) == 0
+    return false unless Time === other
+    c = __cmp(other)
+    return c == 0 unless c == 0 && (@__subsec || other.__send__(:__subsec))
+    subsec == other.subsec
   end
 
   def eql?(other)
     Time === other && (self <=> other) == 0
   end
 
-  def hash
-    p = __parts
-    [p[0], p[1]].hash
-  end
+  def hash = __hash
 
   def round(ndigits = 0) = __round(ndigits, :round)
   def floor(ndigits = 0) = __round(ndigits, :floor)
