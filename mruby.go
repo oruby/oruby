@@ -660,6 +660,7 @@ func (mrb *MrbState) Close() {
 		idx := int(C._mrb_get_idx(mrb.p))
 		C.mrb_close(mrb.p)
 		C._orb_trace_close(mrb.p) // TracePoint's slot (go-trace.c)
+		C._orb_fast_close(mrb.p)  // go-fast.c's per-state symbols
 
 		removeStateIndex(idx)
 
@@ -1076,6 +1077,14 @@ func (mrb *MrbState) Run(code string, args ...interface{}) RValue {
 	}
 	ret, _ := mrb.Eval(code)
 	return ret
+}
+
+// InstallFastPaths puts go-fast.c's C methods in place of the Ruby
+// definitions core_ext gives hot core methods; each answers the common case
+// in C and calls the Ruby definition (kept as __oruby_slow_<name>) for the
+// rest. Called once core_ext's Ruby is loaded.
+func (mrb *MrbState) InstallFastPaths() {
+	C._orb_fast_install(mrb.p)
 }
 
 // evalInternal runs oruby's own Ruby code: its frames are shown, as MRI

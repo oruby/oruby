@@ -36,6 +36,8 @@ class Struct
         obj
       end
       c.singleton_class.__send__(:alias_method, :[], :new)
+      # the same in C (go-fast.c) for calls without keywords
+      Struct.__oruby_fast_new(c, n)
     end
   end
 

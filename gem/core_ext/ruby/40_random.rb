@@ -200,7 +200,8 @@ class Random
       old = @__default.seed
       s = no_seed ? self.new_seed : __coerce_seed(seed_val)
       @__default.instance_variable_set(:@__seed, s)
-      @__default.instance_variable_set(:@__mt, Random::MTState.new.seed_words(__seed_words(s)))
+      # reseeded in place: random.go keeps the default generator
+      @__default.instance_variable_get(:@__mt).seed_words(__seed_words(s))
       old
     end
 

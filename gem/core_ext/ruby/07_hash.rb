@@ -45,7 +45,9 @@ class Hash
   alias __orig_init_copy initialize_copy
   def initialize_copy(other)
     __orig_init_copy(other)
-    @__ruby2_keywords = nil
+    # a copy is no ruby2_keywords Hash (only cleared when set: an ivar table
+    # on every copy makes go-fast.c's merge take the slow path)
+    remove_instance_variable(:@__ruby2_keywords) if instance_variable_defined?(:@__ruby2_keywords)
     self
   end
   private :initialize_copy

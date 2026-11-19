@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"math"
+	"sync"
 
 	"github.com/oruby/oruby"
 )
@@ -237,12 +238,22 @@ func initRandom(mrb *oruby.MrbState) {
 }
 
 // defaultMT is the state of Random.default (nil before 40_random.rb ran)
+// defaultMTs: each state's default generator (Random's @__default's
+// @__mt, which srand reseeds in place), looked up once
+var defaultMTs sync.Map
+
 func defaultMT(mrb *oruby.MrbState) *mt19937 {
+	if v, ok := defaultMTs.Load(mrb); ok {
+		return v.(*mt19937)
+	}
 	def := mrb.IVGet(mrb.ClassGetID(oruby.Sym_Random).Value(), oruby.IvSym___default)
 	if def.IsNil() {
 		return nil
 	}
 	mt, _ := mrb.Data(mrb.IVGet(def, oruby.IvSym___mt)).(*mt19937)
+	if mt != nil {
+		defaultMTs.Store(mrb, mt)
+	}
 	return mt
 }
 

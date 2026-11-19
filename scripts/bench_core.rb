@@ -6,9 +6,10 @@
 #   bin/oruby scripts/bench_core.rb        # oruby
 #   ruby scripts/bench_core.rb             # MRI, for reference
 #
-# Seconds per row, oruby on 2026-11-19 (Apple Silicon), for comparison:
-#   int while ==  0.046   Float#round(2) 0.051   Integer#to_s 0.006
-#   rand          0.099   each_with_index 0.045  map(&:to_s)  0.312
+# Seconds per row, oruby on 2026-11-19 (Apple Silicon), after go-fast.c:
+#   int while ==  0.046   Float#round(2) 0.005   Integer#to_s 0.007
+#   rand          0.049   each_with_index 0.010  map(&:to_s)  0.029
+#   range map/select 0.048  hash merge/select 0.034  Array#sum 0.000
 def bm(name)
   t = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   yield

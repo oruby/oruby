@@ -78,6 +78,8 @@ class Module
   # wrapper wherever argument types are known.
   private def __implicit_args(name, *types)
     return unless method_defined?(name) || private_method_defined?(name)
+    # a C method is wrapped in C (go-fast.c): no Ruby frame on its calls
+    return if __oruby_implicit_c(name, types)
     um = instance_method(name)
     vis = if private_method_defined?(name) then :private
           elsif protected_method_defined?(name) then :protected

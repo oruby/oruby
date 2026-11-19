@@ -8,51 +8,8 @@ if Object.const_defined?(:MatchData)
     # DefineGoClass exposes Go's IsEqual as #equal?, which shadows BasicObject#equal?
     remove_method :equal? if instance_methods(false).include?(:equal?)
 
-    private def __apply_enc(s)
-      return s unless String === s
-      e = enc
-      return s if e.nil? || e.empty? || e == "UTF-8"
-      s.force_encoding(Encoding.find(e))
-    rescue ArgumentError
-      s
-    end
-
-    alias __orig_md_string string
-    def string
-      @__frozen_string ||= __apply_enc(__orig_md_string.dup).freeze
-    end
-
-    alias __orig_md_pre_match pre_match
-    def pre_match
-      __apply_enc(__orig_md_pre_match)
-    end
-
-    alias __orig_md_post_match post_match
-    def post_match
-      __apply_enc(__orig_md_post_match)
-    end
-
-    alias __orig_md_to_a to_a
-    def to_a
-      __orig_md_to_a.map { |x| __apply_enc(x) }
-    end
-
-    def captures
-      to_a[1..] || []
-    end
-    alias deconstruct captures
-
-    alias __orig_md_aref []
-    def [](idx, len = (no_len = true; nil))
-      unless no_len
-        return to_a[Kernel.__to_int(idx), Kernel.__to_int(len)]
-      end
-      if Range === idx
-        return to_a[idx]
-      end
-      res = __orig_md_aref(idx)
-      String === res ? __apply_enc(res) : res
-    end
+    # #string, #pre_match, #post_match, #to_a, #captures and #[] give the
+    # subject's encoding in Go (gem/regexp, mdStr)
 
     def values_at(*args)
       arr = to_a

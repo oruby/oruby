@@ -2,6 +2,8 @@ package regexp
 
 import (
 	"fmt"
+
+	"github.com/oruby/oruby"
 )
 
 // MatchData helper struct
@@ -260,4 +262,70 @@ func (m *MatchData) Regexp() *Regexp {
 // hasNames: the regexp has named groups (its numbered ones do not capture)
 func (m *MatchData) hasNames() bool {
 	return len(m.names) > 1 && m.names[1] != ""
+}
+
+// mdStr is s, a part of the subject, in the subject's encoding (as MRI's
+// MatchData strings are): as it is for UTF-8, tagged by force_encoding for
+// another
+func mdStr(mrb *oruby.MrbState, m *MatchData, s string) oruby.Value {
+	v := mrb.StrNew(s)
+	if m.enc == "" || m.enc == "UTF-8" {
+		return v
+	}
+	if enc, err := mrb.Funcall(mrb.ClassGet("Encoding").Value(), mrb.Intern("find"), m.enc); err == nil {
+		if _, err := mrb.Funcall(v, mrb.Intern("force_encoding"), enc); err != nil {
+			mrb.ExcClear()
+		}
+	} else {
+		mrb.ExcClear()
+	}
+	return v
+}
+
+// mdGroup is group i, or nil
+func mdGroup(mrb *oruby.MrbState, m *MatchData, i int) oruby.Value {
+	if s, isNil := m.toString(i); !isNil {
+		return mdStr(mrb, m, s)
+	}
+	return oruby.Nil
+}
+
+func mdToA(mrb *oruby.MrbState, m *MatchData, from int) oruby.Value {
+	n := m.Size()
+	ary := mrb.AryNewCapa(n - from)
+	for i := from; i < n; i++ {
+		ary.Push(mdGroup(mrb, m, i))
+	}
+	return ary.Value()
+}
+
+func matchDataToA(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mdToA(mrb, mrb.Data(self).(*MatchData), 0)
+}
+
+func matchDataCaptures(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	return mdToA(mrb, mrb.Data(self).(*MatchData), 1)
+}
+
+func matchDataPreMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	m := mrb.Data(self).(*MatchData)
+	return mdStr(mrb, m, m.PreMatch())
+}
+
+func matchDataPostMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	m := mrb.Data(self).(*MatchData)
+	return mdStr(mrb, m, m.PostMatch())
+}
+
+// MatchData#string: the subject, frozen, one object per MatchData
+func matchDataString(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	sym := mrb.Intern("__oruby_string")
+	if v := mrb.IVGet(self, sym); !v.IsNil() {
+		return v
+	}
+	m := mrb.Data(self).(*MatchData)
+	v := mdStr(mrb, m, m.s)
+	mrb.Call(v, "freeze")
+	_ = mrb.IVSet(self, sym, v)
+	return v
 }

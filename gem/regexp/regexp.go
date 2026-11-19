@@ -22,6 +22,12 @@ func init() {
 
 		data := mrb.DefineGoClass("MatchData", &MatchData{})
 		data.DefineMethod("[]", matchDataIndex, mrb.ArgsArg(1, 1))
+		data.DefineMethod("to_a", matchDataToA, mrb.ArgsNone())
+		data.DefineMethod("captures", matchDataCaptures, mrb.ArgsNone())
+		data.DefineAlias("deconstruct", "captures")
+		data.DefineMethod("pre_match", matchDataPreMatch, mrb.ArgsNone())
+		data.DefineMethod("post_match", matchDataPostMatch, mrb.ArgsNone())
+		data.DefineMethod("string", matchDataString, mrb.ArgsNone())
 		data.DefineMethod("initialize_copy", matchDataInitCopy, mrb.ArgsReq(1))
 		data.DefineMethod("values_at", matchGoValuesAt, mrb.ArgsAny())
 		data.DefineMethod("regexp", matchDataRegexp, mrb.ArgsNone())
@@ -318,18 +324,9 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 	case oruby.MrbTTString:
 		s = rstr(idx)
 	case oruby.MrbTTRange:
-		a := m.ToA()
-		beg, l, err := mrb.RangeBegLen(idx, len(a), true)
-		if err != nil {
-			return mrb.NilValue()
-		}
-		return mrb.Value(a[beg : beg+l])
+		return mrb.Call(mdToA(mrb, m, 0), "[]", idx)
 	case oruby.MrbTTFixnum:
-		i := oruby.MrbFixnum(idx)
-		if s, isNil := m.toString(i); !isNil {
-			return mrb.StrNew(s)
-		}
-		return mrb.NilValue()
+		return mdGroup(mrb, m, oruby.MrbFixnum(idx))
 	default:
 		if mrb.RespondTo(idx, oruby.Sym_to_int) {
 			toI, err := mrb.Funcall(idx, oruby.Sym_to_int)
@@ -340,10 +337,7 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 				cname := mrb.ClassName(mrb.ObjClass(idx))
 				return mrb.ETypeError().Raisef("can't convert %s to Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(toI.Value()))).Value()
 			}
-			if s, isNil := m.toString(oruby.MrbFixnum(toI.Value())); !isNil {
-				return mrb.StrNew(s)
-			}
-			return mrb.NilValue()
+			return mdGroup(mrb, m, oruby.MrbFixnum(toI.Value()))
 		}
 		return mrb.NilValue()
 	}
@@ -357,7 +351,7 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 		}
 		found = true
 		if str, isNil := m.toString(i); !isNil {
-			result = mrb.StrNew(str)
+			result = mdStr(mrb, m, str)
 		}
 	}
 	if !found {
@@ -366,9 +360,22 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 	return result
 }
 
+// MatchData#[](i) / (name) / (range) / (start, len)
 func matchDataIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	data := mrb.Data(self).(*MatchData)
-	return matchDataGetIndex(mrb, data, mrb.GetArgsFirst())
+	args := mrb.GetArgs()
+	if args.Len() == 2 {
+		start, err := mrb.Funcall(mrb.KernelModule().Value(), mrb.Intern("__to_int"), args.Item(0))
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		n, err := mrb.Funcall(mrb.KernelModule().Value(), mrb.Intern("__to_int"), args.Item(1))
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.Call(mdToA(mrb, data, 0), "[]", start, n)
+	}
+	return matchDataGetIndex(mrb, data, args.Item(0))
 }
 
 func matchDataRegexp(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

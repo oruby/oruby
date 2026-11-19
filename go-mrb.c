@@ -1014,7 +1014,11 @@ install_num_to_s(mrb_state *mrb)
 void _orb_srcrange_init(mrb_state *mrb);
 void _orb_trace_init(mrb_state *mrb);
 
+void _orb_fast_capture(mrb_state *mrb);
+void _orb_fast_init(mrb_state *mrb);
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  _orb_fast_init(mrb);
   install_num_eq(mrb);
   install_num_to_s(mrb);
   _mrb_wrap_string_encoding(mrb);
@@ -1061,6 +1065,9 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
     w.as.func = wrappers[i];
     mrb_define_method_raw(mrb, c, mrb_intern_cstr(mrb, vis_names[i]), w);
   }
+  /* the C functions go-fast.c's front ends call: mruby's, with the wrappers
+     above (string encodings), before core_ext's Ruby replaces them */
+  _orb_fast_capture(mrb);
 }
 
 // Make c's own method mid private (the instance half of a module function).

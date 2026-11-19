@@ -165,6 +165,9 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 				panic(fmt.Sprintf("core_ext error loading %s: %s", path, err))
 			}
 		}
+		// C front ends in place of the hot methods the Ruby above redefines
+		// (go-fast.c): the common case answered in C, the rest in that Ruby
+		mrb.InstallFastPaths()
 		return nil
 	})
 }
