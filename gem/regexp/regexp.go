@@ -546,9 +546,9 @@ func byteIndex(s string, pos int) (int, bool) {
 	return 0, false
 }
 
+// setLastMatch sets $~, which is frame-local (go-mrb.c's svar_set): the
+// caller's, a Go method's frame being passed through
 func setLastMatch(mrb *oruby.MrbState, matchData oruby.Value) {
-	regexpClass := mrb.ClassGetID(oruby.Sym_Regexp)
-	_ = mrb.IVSet(regexpClass, oruby.IvSym_last_match, matchData)
 	mrb.GVSet(mrb.Intern("$~"), matchData)
 }
 
@@ -769,7 +769,7 @@ func regexTryConvert(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexLastMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	matchValue := mrb.IVGet(self, oruby.IvSym_last_match)
+	matchValue := mrb.GVGet(mrb.Intern("$~")) // the caller's (frame-local)
 	m, ok := mrb.Data(matchValue).(*MatchData)
 	if !ok {
 		return mrb.NilValue()

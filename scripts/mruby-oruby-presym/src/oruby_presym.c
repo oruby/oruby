@@ -79,6 +79,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@__nil_mesg");
   (void)mrb_intern_lit(mrb, "@__oruby_path");
   (void)mrb_intern_lit(mrb, "@__oruby_site");
+  (void)mrb_intern_lit(mrb, "@__oruby_svar_root");
   (void)mrb_intern_lit(mrb, "@__oruby_trace_var");
   (void)mrb_intern_lit(mrb, "@__sym_encodings");
   (void)mrb_intern_lit(mrb, "@__t");
@@ -100,7 +101,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@internal_encoding");
   (void)mrb_intern_lit(mrb, "@issuer");
   (void)mrb_intern_lit(mrb, "@issuer_certificate");
-  (void)mrb_intern_lit(mrb, "@last_match");
   (void)mrb_intern_lit(mrb, "@lineno");
   (void)mrb_intern_lit(mrb, "@mode");
   (void)mrb_intern_lit(mrb, "@name");
@@ -456,6 +456,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_clone_unfreeze");
   (void)mrb_intern_lit(mrb, "__oruby_close");
   (void)mrb_intern_lit(mrb, "__oruby_copy_stream");
+  (void)mrb_intern_lit(mrb, "__oruby_core_proc?");
   (void)mrb_intern_lit(mrb, "__oruby_crypt");
   (void)mrb_intern_lit(mrb, "__oruby_csprintf");
   (void)mrb_intern_lit(mrb, "__oruby_dead");
@@ -546,6 +547,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_start");
   (void)mrb_intern_lit(mrb, "__oruby_started");
   (void)mrb_intern_lit(mrb, "__oruby_state");
+  (void)mrb_intern_lit(mrb, "__oruby_status");
   (void)mrb_intern_lit(mrb, "__oruby_stop");
   (void)mrb_intern_lit(mrb, "__oruby_str_to_f");
   (void)mrb_intern_lit(mrb, "__oruby_string");

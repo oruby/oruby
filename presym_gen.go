@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "bce006d5a09cd7aa"
+const presymTable = "72e81caa5a745516"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -46,6 +46,7 @@ const (
 	IvSym___nil_mesg                            MrbSym = C.MRB_IVSYM____nil_mesg                            // "@__nil_mesg"
 	IvSym___oruby_path                          MrbSym = C.MRB_IVSYM____oruby_path                          // "@__oruby_path"
 	IvSym___oruby_site                          MrbSym = C.MRB_IVSYM____oruby_site                          // "@__oruby_site"
+	IvSym___oruby_svar_root                     MrbSym = C.MRB_IVSYM____oruby_svar_root                     // "@__oruby_svar_root"
 	IvSym___oruby_trace_var                     MrbSym = C.MRB_IVSYM____oruby_trace_var                     // "@__oruby_trace_var"
 	IvSym___sym_encodings                       MrbSym = C.MRB_IVSYM____sym_encodings                       // "@__sym_encodings"
 	IvSym___t                                   MrbSym = C.MRB_IVSYM____t                                   // "@__t"
@@ -67,7 +68,6 @@ const (
 	IvSym_internal_encoding                     MrbSym = C.MRB_IVSYM__internal_encoding                     // "@internal_encoding"
 	IvSym_issuer                                MrbSym = C.MRB_IVSYM__issuer                                // "@issuer"
 	IvSym_issuer_certificate                    MrbSym = C.MRB_IVSYM__issuer_certificate                    // "@issuer_certificate"
-	IvSym_last_match                            MrbSym = C.MRB_IVSYM__last_match                            // "@last_match"
 	IvSym_lineno                                MrbSym = C.MRB_IVSYM__lineno                                // "@lineno"
 	IvSym_mode                                  MrbSym = C.MRB_IVSYM__mode                                  // "@mode"
 	IvSym_name                                  MrbSym = C.MRB_IVSYM__name                                  // "@name"
@@ -160,6 +160,7 @@ const (
 	SymQ___encoding_us_ascii                    MrbSym = C.MRB_SYM_Q____encoding_us_ascii                   // "__encoding_us_ascii?"
 	SymQ___nonblock                             MrbSym = C.MRB_SYM_Q____nonblock                            // "__nonblock?"
 	SymQ___oruby_buffered                       MrbSym = C.MRB_SYM_Q____oruby_buffered                      // "__oruby_buffered?"
+	SymQ___oruby_core_proc                      MrbSym = C.MRB_SYM_Q____oruby_core_proc                     // "__oruby_core_proc?"
 	SymQ___oruby_popen_duplex                   MrbSym = C.MRB_SYM_Q____oruby_popen_duplex                  // "__oruby_popen_duplex?"
 	SymQ___oruby_readable                       MrbSym = C.MRB_SYM_Q____oruby_readable                      // "__oruby_readable?"
 	SymQ___oruby_writable                       MrbSym = C.MRB_SYM_Q____oruby_writable                      // "__oruby_writable?"
@@ -640,6 +641,7 @@ const (
 	Sym___oruby_start                           MrbSym = C.MRB_SYM____oruby_start                           // "__oruby_start"
 	Sym___oruby_started                         MrbSym = C.MRB_SYM____oruby_started                         // "__oruby_started"
 	Sym___oruby_state                           MrbSym = C.MRB_SYM____oruby_state                           // "__oruby_state"
+	Sym___oruby_status                          MrbSym = C.MRB_SYM____oruby_status                          // "__oruby_status"
 	Sym___oruby_stop                            MrbSym = C.MRB_SYM____oruby_stop                            // "__oruby_stop"
 	Sym___oruby_str_to_f                        MrbSym = C.MRB_SYM____oruby_str_to_f                        // "__oruby_str_to_f"
 	Sym___oruby_string                          MrbSym = C.MRB_SYM____oruby_string                          // "__oruby_string"

@@ -56,7 +56,13 @@ func load(mrb *oruby.MrbState, name string) {
 func init() {
 	// require names of libraries provided by eagerly loaded oruby gems
 	oruby.LazyGem("stringio", func(mrb *oruby.MrbState) interface{} {
-		load(mrb, "stringio")
+		// MRI's StringIO is C: as <internal:> code its gets sets the
+		// caller's $_ (go-mrb.c svar_start), and backtraces skip its frames
+		src, err := rubyFS.ReadFile("ruby/stringio.rb")
+		if err != nil {
+			panic(err)
+		}
+		rb.LoadRuby(mrb, "<internal:stringio>", src)
 		return nil
 	})
 	oruby.GemAlias("tempfile", "io/file")

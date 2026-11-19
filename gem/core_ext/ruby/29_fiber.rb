@@ -9,11 +9,10 @@ class Fiber
   kill_request = Object.new.freeze
   kill_tag = Object.new.freeze
 
-  # mruby's status word, from its inspect: created, running, suspended,
-  # "suspended by resuming" (resumed another fiber), transferred, terminated
+  # __oruby_status (go-mrb.c) is mruby's status word, its inspect's: created,
+  # resumed, suspended, "suspended by resuming" (resumed another fiber),
+  # terminated
   alias_method :__oruby_inspect, :inspect
-  define_method(:__oruby_status) { __oruby_inspect[/\(([^()]*)\)>\z/, 1] }
-  private :__oruby_status
 
   # a kill that came while the fiber was resuming another: it dies once it
   # runs again
@@ -41,6 +40,9 @@ class Fiber
     instance_variable_set(:@__oruby_location, block.source_location&.join(":"))
     instance_variable_set(:@__oruby_blocking, blocking ? true : false) # also marks a Fiber.new fiber
     instance_variable_set(:@__oruby_thread, Thread.current)
+    # a user block is the fiber's root, with $~ and $_ of its own (MRI's
+    # root_svar; go-mrb.c's svar_start): not Enumerator#next's, written in core
+    instance_variable_set(:@__oruby_svar_root, true) unless ::Kernel.__oruby_core_proc?(block)
     body = proc do |*args|
       catch(kill_tag) do
         throw kill_tag if kill_request.equal?(args[0]) # killed before it started

@@ -26,7 +26,8 @@ func initString(mrb *oruby.MrbState) {
 		}
 		str.DefineMethod(m.name, m.f, mrb.ArgsArg(1, 1))
 	}
-	defer rb.LoadRuby(mrb, "string_ext.rb", stringExtRb)
+	// core String methods: <internal:> frames pass $~ through to the caller
+	defer rb.LoadRuby(mrb, "<internal:regexp/string_ext>", stringExtRb)
 
 	str.DefineMethod("=~", stringMatchEqual, mrb.ArgsReq(1))
 	str.DefineMethod("match", stringMatch, mrb.ArgsArg(1, 1)+mrb.ArgsBlock())

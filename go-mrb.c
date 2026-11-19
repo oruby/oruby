@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "go-mrb.h"
+#include <mruby/proc.h>
+#include <mruby/debug.h>
+#include <mruby/internal.h>
 
 // Go-C-Go proxy callback functions
 // ret values are allocated on C side
@@ -678,13 +681,8 @@ static mrb_value gv_slot_get(mrb_state *mrb, int i) {
 }
 
 /* the values a checked global takes as they are, without
-   Kernel.__oruby_gvcheck (every regexp match sets $~, every gets $.) */
+   Kernel.__oruby_gvcheck (every gets sets $.) */
 static mrb_bool gv_plain_value(mrb_state *mrb, const char *canon, mrb_value v) {
-  if (strcmp(canon, "$~") == 0) {
-    if (mrb_nil_p(v)) return TRUE;
-    if (!mrb_class_defined_id(mrb, MRB_SYM(MatchData))) return FALSE;
-    return mrb_obj_class(mrb, v) == mrb_class_get_id(mrb, MRB_SYM(MatchData));
-  }
   if (strcmp(canon, "$.") == 0) return mrb_integer_p(v);
   if (strcmp(canon, "$VERBOSE") == 0) return mrb_nil_p(v) || mrb_true_p(v) || mrb_false_p(v);
   if (strcmp(canon, "$0") == 0) return mrb_string_p(v);
@@ -861,6 +859,8 @@ static const struct { mrb_value (*get)(mrb_state *); void (*set)(mrb_state *, mr
 // slots are used up. It touches only the tables: the caller holds coreMu.
 int _mrb_gv_slot(const char *name, const char *canon, int kind) {
   int i;
+  /* frame-local, not slots (svar_get below); trace_var leaves them alone */
+  if (strcmp(name, "$~") == 0 || strcmp(name, "$_") == 0) return -1;
   for (i = 0; i < gv_n; i++) {
     if (strcmp(gv_names[i], name) == 0) return i;
   }
@@ -893,14 +893,163 @@ mrb_bool _mrb_gv_hook(mrb_state *mrb, const char *name, const char *canon, int k
   return TRUE;
 }
 
+/* ---- $~ and $_: frame-local, as MRI's svar ----
+   mruby keeps them per scope (mrb_vm_svar_get/set, vm.c): a C frame reads
+   and writes through to the Ruby frame below it, a block shares its
+   method's, and a scope that returned keeps them in its env. A frame of
+   core Ruby code (core_ext's <internal:...> files, mrblib, mrbgems) stands
+   for one of MRI's C methods, so it is passed through too: `gets` written in
+   Ruby sets its caller's $_, `Symbol#=~` its caller's $~. */
+#define IREP_SVAR_CHECKED 0x40 /* irep->flags bits mruby leaves unused */
+#define IREP_SVAR_CORE 0x80
+
+static mrb_bool irep_core_p(mrb_state *mrb, const mrb_irep *irep) {
+  /* compiled into libmruby (mrblib, mrbgems), and read-only memory */
+  if (irep->flags & MRB_IREP_NO_FREE) return TRUE;
+  if (irep->flags & IREP_SVAR_CHECKED) return (irep->flags & IREP_SVAR_CORE) != 0;
+  const char *f = mrb_debug_get_filename(mrb, irep, 0);
+  mrb_bool core = f && (strncmp(f, "<internal:", 10) == 0 || strncmp(f, "mrblib/", 7) == 0 ||
+                        strncmp(f, "mrbgems/", 8) == 0);
+  ((mrb_irep *)irep)->flags |= IREP_SVAR_CHECKED | (core ? IREP_SVAR_CORE : 0);
+  return core;
+}
+
+/* the env of the scope a block's locals resolve to (vm.c's svar_scope_env) */
+static struct REnv *svar_home_env(const struct RProc *p) {
+  struct REnv *e = MRB_PROC_ENV(p);
+  if (!e) return NULL;
+  for (;;) {
+    const struct RProc *up = p->upper;
+    if (!up || MRB_PROC_CFUNC_P(up) || (MRB_PROC_SCOPE_P(up) && !MRB_PROC_ENV_P(up))) return e;
+    struct REnv *upenv = MRB_PROC_ENV(up);
+    if (!upenv) return e;
+    p = up;
+    e = upenv;
+  }
+}
+
+/* a context whose body block has the root slot: a thread's, or a fiber that
+   Fiber.new made of a user block (29_fiber.rb marks it); not one of core
+   code's own, such as Enumerator#next's, whose blocks share their scope's */
+static mrb_bool svar_root_context_p(mrb_state *mrb, struct mrb_context *c) {
+  if (c == mrb->root_c) return TRUE;
+  if (!c->fib) return FALSE;
+  return mrb_test(mrb_iv_get(mrb, mrb_obj_value(c->fib), MRB_IVSYM(__oruby_svar_root)));
+}
+
+/* Kernel.__oruby_core_proc?(pr): whether pr is a block of core code */
+static mrb_value core_proc_p_m(mrb_state *mrb, mrb_value self) {
+  mrb_value pr = mrb_get_arg1(mrb);
+  if (!mrb_proc_p(pr)) return mrb_false_value();
+  const struct RProc *p = mrb_proc_ptr(pr);
+  return mrb_bool_value(MRB_PROC_CFUNC_P(p) || irep_core_p(mrb, p->body.irep));
+}
+
+/* The frame to resolve from: the nearest Ruby frame that is not core code.
+   *moved: resolution must start there rather than at mrb->c->ci (where C
+   frames alone are passed through), because core frames lie above it, or
+   because it is a block of a scope on another context: a Thread's or
+   Fiber's body, which (core_ext wrapping it in a block of its own) has the
+   context's root slot, as MRI's thread and fiber root_svar. */
+static mrb_callinfo *svar_start(mrb_state *mrb, mrb_bool *moved) {
+  struct mrb_context *c = mrb->c;
+  mrb_callinfo *ci = c->ci;
+  *moved = FALSE;
+  for (; ci > c->cibase; ci--) {
+    const struct RProc *p = ci->proc;
+    if (!p || MRB_PROC_CFUNC_P(p)) continue;
+    if (irep_core_p(mrb, p->body.irep)) {
+      *moved = TRUE;
+      continue;
+    }
+    if (!(MRB_PROC_SCOPE_P(p) && !MRB_PROC_ENV_P(p))) {
+      /* a scope still standing on another context's stack; one that
+         returned keeps its container in the env, which vm.c reads */
+      struct REnv *e = svar_home_env(p);
+      if (e && MRB_ENV_ONSTACK_P(e) && e->cxt != c && svar_root_context_p(mrb, c)) {
+        *moved = TRUE;
+        return c->cibase;
+      }
+    }
+    return ci;
+  }
+  return ci;
+}
+
+static mrb_value svar_get(mrb_state *mrb, enum mrb_svar_index key) {
+  mrb_bool moved;
+  mrb_callinfo *start = svar_start(mrb, &moved);
+  if (!moved) return mrb_vm_svar_get(mrb, key);
+  mrb_callinfo *saved = mrb->c->ci;
+  mrb->c->ci = start; /* a read allocates nothing */
+  mrb_value v = mrb_vm_svar_get(mrb, key);
+  mrb->c->ci = saved;
+  return v;
+}
+
+static void svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v) {
+  mrb_bool moved;
+  mrb_callinfo *start = svar_start(mrb, &moved);
+  if (!moved) {
+    mrb_vm_svar_set(mrb, key, v);
+    return;
+  }
+  /* A first write allocates the scope's container. With ci lowered the GC
+     would not mark the frames above it, so none may run meanwhile. */
+  mrb_callinfo *saved = mrb->c->ci;
+  mrb_bool gc_off = mrb->gc.disabled;
+  mrb->gc.disabled = TRUE;
+  mrb->c->ci = start;
+  mrb_vm_svar_set(mrb, key, v);
+  mrb->c->ci = saved;
+  mrb->gc.disabled = gc_off;
+}
+
+static mrb_value backref_get(mrb_state *mrb) { return svar_get(mrb, MRB_SVAR_BACKREF); }
+
+static void backref_set(mrb_state *mrb, mrb_value v) {
+  if (!mrb_nil_p(v)) {
+    mrb_bool md = mrb_class_defined_id(mrb, MRB_SYM(MatchData)) &&
+                  mrb_obj_is_kind_of(mrb, v, mrb_class_get_id(mrb, MRB_SYM(MatchData)));
+    mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+    if (!md && mrb_respond_to(mrb, kernel, MRB_SYM(__oruby_gvcheck))) {
+      /* its TypeError for anything but a MatchData */
+      v = mrb_funcall_id(mrb, kernel, MRB_SYM(__oruby_gvcheck), 2, mrb_symbol_value(mrb_intern_lit(mrb, "$~")), v);
+    }
+  }
+  svar_set(mrb, MRB_SVAR_BACKREF, v);
+}
+
+static mrb_value lastline_get(mrb_state *mrb) { return svar_get(mrb, MRB_SVAR_LASTLINE); }
+static void lastline_set(mrb_state *mrb, mrb_value v) { svar_set(mrb, MRB_SVAR_LASTLINE, v); }
+
+/* Fiber#__oruby_status: mruby's status word (its inspect's), for
+   29_fiber.rb, which parsed it out of #inspect with a regexp */
+static mrb_value fiber_status_m(mrb_state *mrb, mrb_value self) {
+  const struct RFiber *f = (const struct RFiber *)mrb_ptr(self);
+  if (!f->cxt) return mrb_funcall_id(mrb, self, MRB_SYM(inspect), 0); /* its "uninitialized" error */
+  const char *st;
+  switch (f->cxt->status) {
+  case MRB_FIBER_CREATED: st = "created"; break;
+  case MRB_FIBER_RUNNING: st = "resumed"; break;
+  case MRB_FIBER_RESUMED: st = "suspended by resuming"; break;
+  case MRB_FIBER_SUSPENDED: case MRB_FIBER_TRANSFERRED: st = "suspended"; break;
+  case MRB_FIBER_TERMINATED: st = "terminated"; break;
+  default: st = "UNKNOWN STATUS (BUG)"; break;
+  }
+  return mrb_str_new_cstr(mrb, st);
+}
+
 static void gv_init_checked(mrb_state *mrb) {
   static const char *pairs[][2] = {
     {"$/", "$/"}, {"$-0", "$/"}, {"$\\", "$\\"}, {"$,", "$,"}, {"$;", "$;"}, {"$-F", "$;"},
     {"$.", "$."}, {"$stdout", "$stdout"}, {"$>", "$stdout"}, {"$stderr", "$stderr"},
     {"$VERBOSE", "$VERBOSE"}, {"$-v", "$VERBOSE"}, {"$-w", "$VERBOSE"},
-    {"$0", "$0"}, {"$PROGRAM_NAME", "$0"}, {"$~", "$~"}, {NULL, NULL}
+    {"$0", "$0"}, {"$PROGRAM_NAME", "$0"}, {NULL, NULL}
   };
   for (int i = 0; pairs[i][0]; i++) _mrb_gv_hook(mrb, pairs[i][0], pairs[i][1], 1);
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$~"), backref_get, backref_set);
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$_"), lastline_get, lastline_set);
   _mrb_gv_hook(mrb, "$@", "$@", 3);
 }
 
@@ -1117,6 +1266,10 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_binary?", str_enc_binary_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii?", str_enc_us_ascii_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii!", str_enc_us_ascii_set, MRB_ARGS_NONE());
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_core_proc), core_proc_p_m, MRB_ARGS_REQ(1));
+  if (mrb_class_defined_id(mrb, MRB_SYM(Fiber))) {
+    mrb_define_private_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Fiber)), MRB_SYM(__oruby_status), fiber_status_m, MRB_ARGS_NONE());
+  }
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag", str_enc_tag, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_tag=", str_enc_tag_set, MRB_ARGS_REQ(1));
 
