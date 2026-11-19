@@ -155,7 +155,12 @@ typedef struct {
 } cset_t;
 
 static void cset_init(cset_t *cs) {
-  memset(cs, 0, sizeof(*cs));
+  /* ranges[] is only read below nrange */
+  cs->neg = FALSE;
+  memset(cs->ascii, 0, sizeof(cs->ascii));
+  cs->extra = NULL;
+  cs->nrange = 0;
+  cs->cap_extra = 0;
 }
 
 static void cset_free(mrb_state *mrb, cset_t *cs) {
@@ -231,9 +236,37 @@ static inline int next_cp(const uint8_t *p, mrb_int len, mrb_bool single_byte, u
   return n;
 }
 
-/* Parse a selector string into cs. Returns FALSE (and sets err_lo/err_hi) on invalid range. */
-static mrb_bool cset_parse(mrb_state *mrb, cset_t *cs, const uint8_t *p, mrb_int len, mrb_bool single_byte,
-                           uint32_t *err_lo, uint32_t *err_hi) {
+/* MRI's messages for a bad selector or tr spec */
+static void raise_bad_range(mrb_state *mrb, uint32_t lo, uint32_t hi, mrb_bool single_byte) {
+  char a[4], b[4];
+  size_t na = 1, nb = 1;
+  if (single_byte) {
+    a[0] = (char)lo;
+    b[0] = (char)hi;
+  } else {
+    na = (size_t)utf8_encode_one(lo, a);
+    nb = (size_t)utf8_encode_one(hi, b);
+  }
+  mrb_raisef(mrb, E_ARGUMENT_ERROR, "invalid range \"%l-%l\" in string transliteration", a, na, b, nb);
+}
+
+static void raise_invalid_utf8(mrb_state *mrb) {
+  mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid byte sequence in UTF-8");
+}
+
+/* TRUE when cp (from next_cp) is a broken byte that MRI raises on: only for a
+   real UTF-8 string, as other multibyte encodings (tagged) are not decoded here */
+static mrb_bool broken_self_p(mrb_state *mrb, mrb_value self, uint32_t cp) {
+  return (cp & 0x80000000u) && mrb_nil_p(mrb_iv_get(mrb, self, MRB_SYM(__encoding)));
+}
+
+#define CSET_OK 0
+#define CSET_BAD_RANGE 1
+#define CSET_BAD_BYTE 2
+
+/* Parse a selector string into cs. Returns CSET_OK, or an error code (err_lo/err_hi set for a bad range). */
+static int cset_parse(mrb_state *mrb, cset_t *cs, const uint8_t *p, mrb_int len, mrb_bool single_byte,
+                      uint32_t *err_lo, uint32_t *err_hi) {
   cset_init(cs);
   mrb_int i = 0;
   if (len > 1 && p[0] == '^') {
@@ -247,7 +280,7 @@ static mrb_bool cset_parse(mrb_state *mrb, cset_t *cs, const uint8_t *p, mrb_int
       i++;
     }
     n1 = next_cp(p + i, len - i, single_byte, &c1);
-    if (c1 & 0x80000000u) return FALSE;
+    if (c1 & 0x80000000u) return CSET_BAD_BYTE;
     i += n1;
     if (i < len && p[i] == '-' && i + 1 < len) {
       i++; /* skip '-' */
@@ -256,19 +289,19 @@ static mrb_bool cset_parse(mrb_state *mrb, cset_t *cs, const uint8_t *p, mrb_int
       }
       uint32_t c2;
       int n2 = next_cp(p + i, len - i, single_byte, &c2);
-      if (c2 & 0x80000000u) return FALSE;
+      if (c2 & 0x80000000u) return CSET_BAD_BYTE;
       i += n2;
       if (c1 > c2) {
         *err_lo = c1;
         *err_hi = c2;
-        return FALSE;
+        return CSET_BAD_RANGE;
       }
       cset_add_range(mrb, cs, c1, c2, single_byte);
     } else {
       cset_add_range(mrb, cs, c1, c1, single_byte);
     }
   }
-  return TRUE;
+  return CSET_OK;
 }
 
 /* Build intersection of k selector arguments; checks #to_str & encoding compatibility.
@@ -291,7 +324,9 @@ static void cset_group_free(mrb_state *mrb, cset_group_t *g) {
 }
 
 static void cset_group_build(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, cset_group_t *g) {
-  memset(g, 0, sizeof(*g));
+  /* not memset: inline_sets alone is 4 KB; each set is initialised by cset_parse */
+  g->sets = NULL;
+  g->count = 0;
   g->single_byte = str_is_binary_enc(mrb, self);
   /* First convert all args and check encoding compatibility BEFORE allocating C memory */
   mrb_value coerced_buf[MAX_INLINE_SETS];
@@ -312,26 +347,28 @@ static void cset_group_build(mrb_state *mrb, mrb_value self, mrb_int argc, const
   } else {
     g->sets = (cset_t *)mrb_malloc(mrb, sizeof(cset_t) * argc);
   }
-  g->count = (int)argc;
-  for (int i = 0; i < g->count; i++) cset_init(&g->sets[i]);
-  for (int i = 0; i < g->count; i++) {
+  for (int i = 0; i < (int)argc; i++) {
     uint32_t elo = 0, ehi = 0;
-    if (!cset_parse(mrb, &g->sets[i], (const uint8_t *)RSTRING_PTR(coerced[i]), RSTRING_LEN(coerced[i]),
-                    g->single_byte, &elo, &ehi)) {
+    g->count = i + 1; /* sets[0..i] are initialised (cset_parse starts with cset_init) */
+    int rc = cset_parse(mrb, &g->sets[i], (const uint8_t *)RSTRING_PTR(coerced[i]), RSTRING_LEN(coerced[i]),
+                        g->single_byte, &elo, &ehi);
+    if (rc != CSET_OK) {
+      mrb_bool sb = g->single_byte;
       cset_group_free(mrb, g);
-      mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid range in string transliteration");
+      if (rc == CSET_BAD_RANGE) raise_bad_range(mrb, elo, ehi, sb);
+      raise_invalid_utf8(mrb);
     }
   }
+  /* the intersection of the sets' byte tables (cset_match below lim) */
   uint32_t lim = g->single_byte ? 256 : 128;
-  for (uint32_t b = 0; b < lim; b++) {
-    uint8_t ok = 1;
-    for (int i = 0; i < g->count; i++) {
-      if (!cset_match(&g->sets[i], b, g->single_byte)) {
-        ok = 0;
-        break;
-      }
+  for (int i = 0; i < g->count; i++) {
+    const cset_t *cs = &g->sets[i];
+    uint8_t flip = cs->neg ? 1 : 0;
+    if (i == 0) {
+      for (uint32_t b = 0; b < lim; b++) g->ascii_mask[b] = (cs->ascii[b] != 0) ^ flip;
+    } else {
+      for (uint32_t b = 0; b < lim; b++) g->ascii_mask[b] &= (cs->ascii[b] != 0) ^ flip;
     }
-    g->ascii_mask[b] = ok;
   }
 }
 
@@ -367,6 +404,10 @@ static mrb_value str_count_m(mrb_state *mrb, mrb_value self) {
     while (i < len) {
       uint32_t cp;
       int n = next_cp(p + i, len - i, FALSE, &cp);
+      if (broken_self_p(mrb, self, cp)) {
+        cset_group_free(mrb, &g);
+        raise_invalid_utf8(mrb);
+      }
       if (cset_group_match(&g, cp)) cnt++;
       i += n;
     }
@@ -406,6 +447,10 @@ static mrb_value str_delete_impl(mrb_state *mrb, mrb_value self, mrb_bool bang) 
     while (i < len) {
       uint32_t cp;
       int n = next_cp(p + i, len - i, FALSE, &cp);
+      if (broken_self_p(mrb, self, cp)) {
+        cset_group_free(mrb, &g);
+        raise_invalid_utf8(mrb);
+      }
       if (cset_group_match(&g, cp)) {
         if (i > seg) mrb_str_cat(mrb, out, (const char *)(p + seg), i - seg);
         seg = i + n;
@@ -466,6 +511,10 @@ static mrb_value str_squeeze_impl(mrb_state *mrb, mrb_value self, mrb_bool bang)
     while (i < len) {
       uint32_t cp;
       int n = next_cp(p + i, len - i, FALSE, &cp);
+      if (broken_self_p(mrb, self, cp)) {
+        if (has_set) cset_group_free(mrb, &g);
+        raise_invalid_utf8(mrb);
+      }
       if (cp == prev && (!has_set || cset_group_match(&g, cp))) {
         modified = TRUE;
         i += n;
@@ -493,43 +542,75 @@ static mrb_value str_squeeze_bang_m(mrb_state *mrb, mrb_value self) { return str
 
 /* ---- String#tr / #tr! / #tr_s / #tr_s! ---- */
 
-/* Expand a tr spec string into a flat codepoint sequence (for small/medium specs).
-   Uses a GC-managed mrb_str_new_capa as backing byte buffer of uint32_t so exceptions never leak. */
-static mrb_value tr_expand_spec(mrb_state *mrb, const uint8_t *p, mrb_int len, mrb_bool single_byte,
-                                mrb_bool *neg_out, mrb_int *count_out) {
+/* A tr spec as ranges in order: the expanded sequence is the concatenation of
+   [lo..hi], and off is the index of lo in it. Kept as ranges so a wide range
+   ("\u0080-\u{10ffff}") costs nothing to expand or to search. */
+typedef struct {
+  uint32_t lo, hi;
+  mrb_int off;
+} tr_rng_t;
+
+typedef struct {
+  const tr_rng_t *r;
+  mrb_int n;     /* ranges */
+  mrb_int total; /* characters */
+} tr_spec_t;
+
+/* Parse p into ranges, stored in a GC-managed String (so a raise leaks nothing);
+   a leading '^' (of a spec longer than 1) negates when allow_neg */
+static mrb_value tr_parse(mrb_state *mrb, const uint8_t *p, mrb_int len, mrb_bool single_byte, mrb_bool allow_neg,
+                          mrb_bool *neg_out, tr_spec_t *spec) {
   mrb_int i = 0;
-  *neg_out = FALSE;
-  if (len > 1 && p[0] == '^') {
+  if (neg_out) *neg_out = FALSE;
+  if (allow_neg && len > 1 && p[0] == '^') {
     *neg_out = TRUE;
     i = 1;
   }
-  mrb_value buf = mrb_str_new_capa(mrb, (len + 4) * (mrb_int)sizeof(uint32_t));
-  mrb_int cnt = 0;
+  mrb_value buf = mrb_str_new_capa(mrb, (len + 1) * (mrb_int)sizeof(tr_rng_t));
+  tr_rng_t *r = (tr_rng_t *)RSTRING_PTR(buf);
+  mrb_int n = 0, total = 0;
   while (i < len) {
-    uint32_t c1;
+    uint32_t c1, c2;
     if (p[i] == '\\' && i + 1 < len) i++;
     i += next_cp(p + i, len - i, single_byte, &c1);
-    if (c1 & 0x80000000u) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid byte sequence in UTF-8");
+    if (c1 & 0x80000000u) raise_invalid_utf8(mrb);
+    c2 = c1;
     if (i < len && p[i] == '-' && i + 1 < len) {
       i++;
       if (p[i] == '\\' && i + 1 < len) i++;
-      uint32_t c2;
       i += next_cp(p + i, len - i, single_byte, &c2);
-      if (c2 & 0x80000000u) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid byte sequence in UTF-8");
-      if (c1 > c2) {
-        mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid range in string transliteration");
-      }
-      for (uint32_t c = c1; c <= c2; c++) {
-        mrb_str_cat(mrb, buf, (const char *)&c, sizeof(uint32_t));
-        cnt++;
-      }
-    } else {
-      mrb_str_cat(mrb, buf, (const char *)&c1, sizeof(uint32_t));
-      cnt++;
+      if (c2 & 0x80000000u) raise_invalid_utf8(mrb);
+      if (c1 > c2) raise_bad_range(mrb, c1, c2, single_byte);
     }
+    /* one range per spec element at most, and len >= elements: buf is big enough */
+    r[n].lo = c1;
+    r[n].hi = c2;
+    r[n].off = total;
+    total += (mrb_int)(c2 - c1) + 1;
+    n++;
   }
-  *count_out = cnt;
+  spec->r = (const tr_rng_t *)RSTRING_PTR(buf);
+  spec->n = n;
+  spec->total = total;
   return buf;
+}
+
+/* index of cp's last occurrence in the expanded spec, or -1 */
+static inline mrb_int tr_index(const tr_spec_t *s, uint32_t cp) {
+  for (mrb_int j = s->n - 1; j >= 0; j--) {
+    if (cp >= s->r[j].lo && cp <= s->r[j].hi) return s->r[j].off + (mrb_int)(cp - s->r[j].lo);
+  }
+  return -1;
+}
+
+/* the idx'th character of the expanded spec; past its end, its last */
+static inline uint32_t tr_nth(const tr_spec_t *s, mrb_int idx) {
+  if (idx >= s->total) return s->r[s->n - 1].hi;
+  for (mrb_int j = 0; j < s->n; j++) {
+    mrb_int end = s->r[j].off + (mrb_int)(s->r[j].hi - s->r[j].lo) + 1;
+    if (idx < end) return s->r[j].lo + (uint32_t)(idx - s->r[j].off);
+  }
+  return s->r[s->n - 1].hi;
 }
 
 /* Fixed code unit width for UTF-16/UTF-32 in hash-form tr; 0 means UTF-8 / variable / 1-byte */
@@ -688,38 +769,15 @@ static mrb_value str_tr_impl(mrb_state *mrb, mrb_value self, mrb_bool squeeze, m
 
   mrb_bool single_byte = str_is_binary_enc(mrb, self);
   mrb_bool neg = FALSE;
-  mrb_int fcnt = 0, tcnt = 0;
-  mrb_value fbuf = tr_expand_spec(mrb, (const uint8_t *)RSTRING_PTR(from_v), RSTRING_LEN(from_v), single_byte, &neg, &fcnt);
-  mrb_bool tneg_unused = FALSE;
+  tr_spec_t fs, ts;
+  mrb_value fbuf = tr_parse(mrb, (const uint8_t *)RSTRING_PTR(from_v), RSTRING_LEN(from_v), single_byte, TRUE, &neg, &fs);
   /* to_str does NOT treat leading '^' as negation */
-  mrb_value tbuf = mrb_str_new_capa(mrb, (RSTRING_LEN(to_v) + 4) * (mrb_int)sizeof(uint32_t));
-  {
-    const uint8_t *tp = (const uint8_t *)RSTRING_PTR(to_v);
-    mrb_int tlen = RSTRING_LEN(to_v);
-    mrb_int ti = 0;
-    while (ti < tlen) {
-      uint32_t c1;
-      if (tp[ti] == '\\' && ti + 1 < tlen) ti++;
-      ti += next_cp(tp + ti, tlen - ti, single_byte, &c1);
-      if (c1 & 0x80000000u) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid byte sequence in UTF-8");
-      if (ti < tlen && tp[ti] == '-' && ti + 1 < tlen) {
-        ti++;
-        if (tp[ti] == '\\' && ti + 1 < tlen) ti++;
-        uint32_t c2;
-        ti += next_cp(tp + ti, tlen - ti, single_byte, &c2);
-        if (c2 & 0x80000000u) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid byte sequence in UTF-8");
-        if (c1 > c2) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid range in string transliteration");
-        for (uint32_t c = c1; c <= c2; c++) {
-          mrb_str_cat(mrb, tbuf, (const char *)&c, sizeof(uint32_t));
-          tcnt++;
-        }
-      } else {
-        mrb_str_cat(mrb, tbuf, (const char *)&c1, sizeof(uint32_t));
-        tcnt++;
-      }
-    }
-    (void)tneg_unused;
-  }
+  mrb_value tbuf = tr_parse(mrb, (const uint8_t *)RSTRING_PTR(to_v), RSTRING_LEN(to_v), single_byte, FALSE, NULL, &ts);
+  (void)fbuf; /* fs and ts point into these; the GC arena keeps them alive */
+  (void)tbuf;
+  mrb_int fcnt = fs.total, tcnt = ts.total;
+  /* a negated spec maps everything to the last character of to_str */
+  uint32_t tlast = tcnt > 0 ? tr_nth(&ts, tcnt - 1) : 0;
 
   const uint8_t *p = (const uint8_t *)RSTRING_PTR(self);
   mrb_int len = RSTRING_LEN(self);
@@ -738,8 +796,6 @@ static mrb_value str_tr_impl(mrb_state *mrb, mrb_value self, mrb_bool squeeze, m
     return dup;
   }
 
-  const uint32_t *fcps = (const uint32_t *)RSTRING_PTR(fbuf);
-  const uint32_t *tcps = (const uint32_t *)RSTRING_PTR(tbuf);
   mrb_value out = mrb_str_new_capa(mrb, len);
   mrb_bool modified = FALSE;
   mrb_bool last_tr = FALSE;
@@ -749,14 +805,8 @@ static mrb_value str_tr_impl(mrb_state *mrb, mrb_value self, mrb_bool squeeze, m
   while (i < len) {
     uint32_t cp;
     int n = next_cp(p + i, len - i, single_byte, &cp);
-    if (cp & 0x80000000u) mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid byte sequence in UTF-8");
-    mrb_int match_idx = -1;
-    for (mrb_int j = fcnt - 1; j >= 0; j--) {
-      if (fcps[j] == cp) {
-        match_idx = j;
-        break;
-      }
-    }
+    if (cp & 0x80000000u) raise_invalid_utf8(mrb);
+    mrb_int match_idx = tr_index(&fs, cp);
     mrb_bool matched = neg ? (match_idx < 0) : (match_idx >= 0);
     if (matched) {
       if (tcnt == 0) {
@@ -764,13 +814,8 @@ static mrb_value str_tr_impl(mrb_state *mrb, mrb_value self, mrb_bool squeeze, m
         i += n;
         continue;
       }
-      uint32_t repl;
-      if (neg) {
-        repl = tcps[tcnt - 1];
-      } else {
-        repl = match_idx < tcnt ? tcps[match_idx] : tcps[tcnt - 1];
-      }
-      if (repl != cp) modified = TRUE;
+      uint32_t repl = neg ? tlast : tr_nth(&ts, match_idx);
+      modified = TRUE; /* MRI: tr! returns self when a character matched, even unchanged */
       if (squeeze && last_tr && repl == last_cp) {
         modified = TRUE;
         i += n;
@@ -821,6 +866,31 @@ static inline mrb_bool is_ascii_ws(uint8_t c, mrb_bool allow_nul) {
   return c == ' ' || (c >= '\t' && c <= '\r') || (allow_nul && c == '\0');
 }
 
+/* code-unit width of a UTF-16LE/BE or UTF-32LE/BE string (0 for any other),
+   from its tag's @name: one ivar lookup for an untagged string */
+static int str_unit_width(mrb_state *mrb, mrb_value s, mrb_bool *be) {
+  mrb_value tag = mrb_iv_get(mrb, s, MRB_SYM(__encoding));
+  if (mrb_nil_p(tag) || !mrb_obj_ptr(tag)) return 0;
+  mrb_value nv = mrb_iv_get(mrb, tag, MRB_IVSYM(name));
+  if (!mrb_string_p(nv) || RSTRING_LEN(nv) != 8) return 0;
+  const char *n = RSTRING_PTR(nv);
+  if (memcmp(n, "UTF-", 4) != 0) return 0;
+  int w = memcmp(n + 4, "16", 2) == 0 ? 2 : memcmp(n + 4, "32", 2) == 0 ? 4 : 0;
+  if (n[6] == 'B' && n[7] == 'E') *be = TRUE;
+  else if (n[6] == 'L' && n[7] == 'E') *be = FALSE;
+  else return 0;
+  return w;
+}
+
+/* strip's whitespace (with NUL) as one UTF-16/32 code unit */
+static inline mrb_bool unit_ws(const uint8_t *p, int w, mrb_bool be) {
+  uint32_t v;
+  if (w == 2) v = be ? ((uint32_t)p[0] << 8 | p[1]) : ((uint32_t)p[1] << 8 | p[0]);
+  else v = be ? ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3])
+              : ((uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0]);
+  return v == ' ' || v == 0 || (v >= '\t' && v <= '\r');
+}
+
 static mrb_value str_strip_impl(mrb_state *mrb, mrb_value self, mrb_bool left, mrb_bool right, mrb_bool bang) {
   mrb_int argc = mrb_get_argc(mrb);
   const mrb_value *argv = mrb_get_argv(mrb);
@@ -831,7 +901,13 @@ static mrb_value str_strip_impl(mrb_state *mrb, mrb_value self, mrb_bool left, m
   mrb_int beg = 0, end = len;
   mrb_bool single_byte = str_is_binary_enc(mrb, self);
 
-  if (argc == 0) {
+  mrb_bool be = FALSE;
+  int uw = argc == 0 ? str_unit_width(mrb, self, &be) : 0;
+  if (uw && len % uw == 0) {
+    /* UTF-16/32: whole code units, never the bytes of one */
+    if (left) while (beg < end && unit_ws(p + beg, uw, be)) beg += uw;
+    if (right) while (end > beg && unit_ws(p + end - uw, uw, be)) end -= uw;
+  } else if (argc == 0) {
     if (left) {
       while (beg < end && is_ascii_ws(p[beg], TRUE)) beg++;
       /* MRI: lstrip! raises ArgumentError if first non-space byte is invalid UTF-8 */
@@ -1023,6 +1099,12 @@ static mrb_func_t orig_byterindex;
 
 static mrb_value str_byteidx_wrap(mrb_state *mrb, mrb_value self, mrb_func_t orig) {
   mrb_int argc = mrb_get_argc(mrb);
+  const mrb_value *av = mrb_get_argv(mrb);
+  /* the common case needs no conversion or check: a String of the same encoding */
+  if (argc >= 1 && argc <= 2 && mrb_string_p(av[0]) && (argc == 1 || mrb_integer_p(av[1])) &&
+      str_enc_fast_same(mrb, self, av[0])) {
+    return orig(mrb, self);
+  }
   if (argc >= 1) {
     mrb_value pat = mrb_get_argv(mrb)[0];
     struct RClass *re_cls = mrb_class_defined(mrb, "Regexp") ? mrb_class_get(mrb, "Regexp") : NULL;

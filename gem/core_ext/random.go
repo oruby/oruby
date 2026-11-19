@@ -211,6 +211,39 @@ func initRandom(mrb *oruby.MrbState) {
 		return oruby.Int64(int64(mt.limited(uint64(mrb.GetArgsFirst().Int64()))))
 	}, oruby.ArgsReq(1))
 
+	// Random.__shuffle(ary, rng, bang): Array#shuffle(!) for a Random
+	// generator, which MRI drives directly (try_get_rnd): rng nil or the
+	// Random class is Random::DEFAULT, an instance its own state. nil for
+	// any other rng, whose #rand 06_array.rb calls.
+	rndClass := rnd
+	mrb.DefineClassMethod(rnd, "__shuffle", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs()
+		a, rng, bang := args.Item(0), args.Item(1), args.Item(2).Bool()
+		var mt *mt19937
+		switch {
+		case rng.IsNil() || rng == rndClass.Value():
+			mt = defaultMT(mrb)
+		case mrb.ObjIsKindOf(rng, rndClass):
+			mt, _ = mrb.Data(mrb.IVGet(rng, oruby.IvSym___mt)).(*mt19937)
+		}
+		if mt == nil {
+			return mrb.NilValue()
+		}
+		var ra oruby.RArray
+		var err error
+		if bang {
+			ra, err = mrb.EnsureArrayType(a)
+		} else {
+			ra, err = mrb.AryDup(a) // a plain Array, as MRI's shuffle returns
+		}
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		mrb.AryModify(ra)
+		shuffleMT(mt, oruby.RArraySlice(ra.Value()))
+		return ra
+	}, oruby.ArgsReq(3))
+
 	// Kernel#rand for the common arguments (none, nil, a Fixnum) on
 	// Random::DEFAULT's state; the others go to 40_random.rb's
 	mrb.DefineModuleFunction(mrb.KernelModule(), "rand", kernelRand, oruby.ArgsAny())
@@ -293,6 +326,16 @@ func defaultMT(mrb *oruby.MrbState) *mt19937 {
 		defaultMTs.Store(mrb, mt)
 	}
 	return mt
+}
+
+// shuffleMT is MRI's rb_ary_shuffle_bang: from the end, j = limited(i-1),
+// swap. Swapping adds no new references, so no write barrier is needed.
+func shuffleMT(mt *mt19937, s []oruby.Value) {
+	for i := len(s); i > 1; {
+		j := mt.limited(uint64(i - 1))
+		i--
+		s[i], s[j] = s[j], s[i]
+	}
 }
 
 func kernelRand(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "96fcd8d8798da4a1"
+const presymTable = "9c627760b998c3a9"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -464,6 +464,7 @@ const (
 	Sym_UID                                     MrbSym = C.MRB_SYM__UID                                     // "UID"
 	Sym_UNIVERSALSTRING                         MrbSym = C.MRB_SYM__UNIVERSALSTRING                         // "UNIVERSALSTRING"
 	Sym_URI                                     MrbSym = C.MRB_SYM__URI                                     // "URI"
+	Sym_US_ASCII                                MrbSym = C.MRB_SYM__US_ASCII                                // "US_ASCII"
 	Sym_UTCTIME                                 MrbSym = C.MRB_SYM__UTCTIME                                 // "UTCTIME"
 	Sym_UTF8STRING                              MrbSym = C.MRB_SYM__UTF8STRING                              // "UTF8STRING"
 	Sym_VERSION                                 MrbSym = C.MRB_SYM__VERSION                                 // "VERSION"
@@ -665,6 +666,7 @@ const (
 	Sym___set_header                            MrbSym = C.MRB_SYM____set_header                            // "__set_header"
 	Sym___set_replacement                       MrbSym = C.MRB_SYM____set_replacement                       // "__set_replacement"
 	Sym___setup                                 MrbSym = C.MRB_SYM____setup                                 // "__setup"
+	Sym___shuffle                               MrbSym = C.MRB_SYM____shuffle                               // "__shuffle"
 	Sym___spawn                                 MrbSym = C.MRB_SYM____spawn                                 // "__spawn"
 	Sym___split                                 MrbSym = C.MRB_SYM____split                                 // "__split"
 	Sym___state                                 MrbSym = C.MRB_SYM____state                                 // "__state"

@@ -927,7 +927,11 @@ class Array
   end
 
   alias __orig_shuffle shuffle
+  # a Random generator (none, Random itself or an instance) is driven
+  # directly, as MRI does, by Random.__shuffle (random.go); another rng
+  # object gets #rand(i) calls
   def shuffle(*args)
+    return Random.__shuffle(self, nil, false) if args.empty?
     opts = {}
     if args.last.is_a?(Hash)
       opts = args.pop
@@ -935,15 +939,26 @@ class Array
       opts = args.pop.to_hash
     end
     rng = opts[:random]
+    # MRI calls no #rand for fewer than two elements
+    return Array.new(self) if size < 2
     if rng
       raise NoMethodError, "undefined method 'rand' for #{rng}" unless rng.respond_to?(:rand)
     end
-    len = size
-    return [] if len == 0
-    res = Array.new(self)
-    i = len
+    Random.__shuffle(self, rng, false) || __shuffle_by(Array.new(self), rng)
+  end
+
+  def shuffle!(*args)
+    raise FrozenError.new("can't modify frozen Array: #{inspect}", receiver: self) if frozen?
+    return Random.__shuffle(self, nil, true) if args.empty?
+    self.replace(shuffle(*args))
+    self
+  end
+
+  # MRI's rb_ary_shuffle_bang with rng#rand(i) for a non-Random rng
+  private def __shuffle_by(res, rng)
+    i = res.size
     while i > 1
-      r = rng ? rng.rand(i) : Random.rand(i)
+      r = rng.rand(i)
       r = Array.__coerce_to_int(r) unless r.is_a?(Integer)
       raise RangeError, "random value #{r} out of bounds" if r < 0 || r >= i
       i -= 1
@@ -952,12 +967,6 @@ class Array
       res[r] = tmp
     end
     res
-  end
-
-  def shuffle!(*args)
-    raise FrozenError, "can't modify frozen Array" if frozen?
-    self.replace(shuffle(*args))
-    self
   end
 
   alias __orig_reverse reverse

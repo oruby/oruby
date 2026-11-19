@@ -212,6 +212,9 @@ class String
   end
 
   def self.__ascii_case(s, m)
+    # tr's arguments are UTF-8, which a UTF-16/32 string cannot take
+    enc = s.encoding
+    return __ascii_case(s.encode(Encoding::UTF_8), m).encode(enc) unless enc.ascii_compatible?
     case m
     when :downcase then s.tr("A-Z", "a-z")
     when :upcase then s.tr("a-z", "A-Z")

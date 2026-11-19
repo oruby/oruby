@@ -749,7 +749,12 @@ func bdSqrt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func bdToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s := mrb.StrNew(get(mrb, self).toS(mrb.GetArgsFirst().String()))
-	return mrb.Call(s, "force_encoding", mrb.StrNew("US-ASCII"))
+	// US-ASCII as MRI's; the Encoding object skips Encoding.find by name
+	enc := mrb.EncodingClass().ConstGet("US_ASCII")
+	if _, err := mrb.Funcall(s, oruby.Sym_force_encoding, enc); err != nil {
+		return mrb.RaiseError(err)
+	}
+	return s
 }
 
 func bdFromFloat(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {

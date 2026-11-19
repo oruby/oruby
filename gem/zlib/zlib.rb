@@ -602,6 +602,11 @@ module Zlib
     def gets(*args, **kw)
       __check_closed
       line = @buf.gets(*args, **kw)
+      # paragraph mode: StringIO keeps the whole run of newlines after a
+      # paragraph, zlib's gzfile_getline keeps two and skips the rest
+      if line && "" == args[0] && line.end_with?("\n\n\n")
+        line = line.sub(/\n+\z/, "\n\n")
+      end
       @lineno += 1 if line
       $_ = line
       line

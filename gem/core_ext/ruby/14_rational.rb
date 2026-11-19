@@ -61,7 +61,9 @@ class Rational
     when Rational then [other, self]
     when Float then [other, to_f]
     when Complex
-      other.imaginary == 0 ? [other.real.to_r, self] : [other, Complex(self)]
+      # MRI's k_exact_zero_p: 0.0i keeps the Complex
+      im = other.imaginary
+      (Integer === im || Rational === im) && im == 0 ? [other.real.to_r, self] : [other, Complex(self, 0)]
     else raise TypeError, "#{other.class} can't be coerced into Rational"
     end
   end

@@ -502,7 +502,13 @@ class Time
     p = __parts
     if Time === other
       q = other.__parts
-      return (p[0] - q[0]) + (subsec - other.subsec).to_f
+      # MRI rounds the exact difference once. In whole nanoseconds below
+      # 2**53 one Float division does that; sub-nanosecond times go exact.
+      unless @__subsec || other.__send__(:__subsec)
+        d = (p[0] - q[0]) * 1_000_000_000 + (p[1] - q[1])
+        return d / 1e9 if d < 9_007_199_254_740_992 && d > -9_007_199_254_740_992
+      end
+      return (Rational(p[0] - q[0]) + (subsec - other.subsec)).to_f
     end
     raise TypeError, "can't convert #{Kernel.__cname(other)} into an exact number" if other.nil? || String === other
     d = Numeric === other ? other : Kernel.__implicit(other, Integer)

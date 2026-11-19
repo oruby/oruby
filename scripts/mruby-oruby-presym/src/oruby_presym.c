@@ -359,6 +359,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "UID");
   (void)mrb_intern_lit(mrb, "UNIVERSALSTRING");
   (void)mrb_intern_lit(mrb, "URI");
+  (void)mrb_intern_lit(mrb, "US_ASCII");
   (void)mrb_intern_lit(mrb, "UTCTIME");
   (void)mrb_intern_lit(mrb, "UTF8STRING");
   (void)mrb_intern_lit(mrb, "VERSION");
@@ -573,6 +574,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__set_header");
   (void)mrb_intern_lit(mrb, "__set_replacement");
   (void)mrb_intern_lit(mrb, "__setup");
+  (void)mrb_intern_lit(mrb, "__shuffle");
   (void)mrb_intern_lit(mrb, "__spawn");
   (void)mrb_intern_lit(mrb, "__split");
   (void)mrb_intern_lit(mrb, "__state");
