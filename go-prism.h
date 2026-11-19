@@ -33,6 +33,7 @@ enum {
   ORB_MASGN_CPATH,        // s0: a constant path target of a multiple assignment, s1: the assignment
   ORB_FOR_CPATH,          // s0: a constant path target of a for loop, s1: (zero width) where its body starts
   ORB_MASGN_NESTED,       // s0: a nested target (a, b) of a multiple assignment, s1: the assignment, s2: inside its parentheses
+  ORB_IT_BLOCK,           // s0: (zero width) just after the opening of a block or lambda whose parameter is `it`
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

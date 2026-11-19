@@ -215,6 +215,24 @@ visit(const pm_node_t *node, void *data)
     }
     break;
   }
+  case PM_BLOCK_NODE: case PM_LAMBDA_NODE: {
+    // a block of `it`: mruby gives its parameter no name, so it is marked
+    // by a hidden local for Binding#implicit_parameters (go-mrb.c)
+    const pm_node_t *params;
+    pm_location_t open;
+    if (PM_NODE_TYPE(node) == PM_BLOCK_NODE) {
+      params = ((const pm_block_node_t *)node)->parameters;
+      open = ((const pm_block_node_t *)node)->opening_loc;
+    } else {
+      params = ((const pm_lambda_node_t *)node)->parameters;
+      open = ((const pm_lambda_node_t *)node)->opening_loc;
+    }
+    if (params && PM_NODE_TYPE(params) == PM_IT_PARAMETERS_NODE && open.length > 0) {
+      r = add(sc, ORB_IT_BLOCK);
+      r->s[0] = r->e[0] = (int32_t)(open.start + open.length);
+    }
+    break;
+  }
   case PM_PRE_EXECUTION_NODE: {
     const pm_pre_execution_node_t *p = (const pm_pre_execution_node_t *)node;
     r = add(sc, ORB_BEGIN_BLOCK);

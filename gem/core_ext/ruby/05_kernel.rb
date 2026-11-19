@@ -1,23 +1,34 @@
 module Kernel
   def warn(*messages, uplevel: nil, category: nil)
-    # Warning.warn(msg) resolves here when Warning is the receiver
-    return Warning::Base.instance_method(:warn).bind_call(self, *messages, category: category) if equal?(Warning) && defined?(Warning::Base)
     return nil if $VERBOSE.nil?
     msgs = messages.flatten
     return nil if msgs.empty?
     unless uplevel.nil?
       uplevel = Kernel.__to_int(uplevel)
       raise ArgumentError, "negative level (#{uplevel})" if uplevel < 0
-      loc = (caller(uplevel + 1, 1) || [])[0]
-      loc = loc.sub(/:in .*$/, "") if loc
-      msgs[0] = "#{loc || 'warning'}: warning: #{msgs[0]}"
+      # MRI's: frames of core methods written in Ruby (<internal:...>) do
+      # not count
+      locs = (caller_locations(1) || []).reject { |l| (l.path || "").start_with?("<internal:") }
+      l = locs[uplevel]
+      msgs[0] = l ? "#{l.path}:#{l.lineno}: warning: #{msgs[0]}" : "warning: #{msgs[0]}"
     end
-    category = category.to_sym unless category.nil? || Symbol === category
+    unless category.nil? || Symbol === category
+      unless Kernel.__responds?(category, :to_sym)
+        raise TypeError, "no implicit conversion of #{Kernel.__cname(category)} into Symbol"
+      end
+      category = category.to_sym
+    end
+    # a category turned off (Warning[:deprecated] = false) prints nothing
+    return nil if category && Warning::CATEGORIES.include?(category) && !Warning[category]
     str = msgs.map { |m| s = m.to_s; s.end_with?("\n") ? s : s + "\n" }.join("")
-    if Warning.method(:warn).parameters.any? { |t, _| t == :key || t == :keyreq || t == :keyrest }
-      Warning.warn(str, category: category)
-    else
+    # Kernel#warn bound to Warning itself writes, as MRI's, rather than recurse
+    return $stderr.write(str) && nil if equal?(Warning)
+    # MRI's rb_warn_category: a Warning.warn of arity 1 gets the message
+    # alone, any other the category too
+    if Warning.method(:warn).arity == 1
       Warning.warn(str)
+    else
+      Warning.warn(str, category: category)
     end
     nil
   end

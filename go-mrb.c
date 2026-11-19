@@ -2,6 +2,7 @@
 #include <string.h>
 #include "go-mrb.h"
 #include <mruby/proc.h>
+#include <mruby/opcode.h>
 #include <mruby/debug.h>
 #include <mruby/internal.h>
 
@@ -1023,6 +1024,300 @@ static void backref_set(mrb_state *mrb, mrb_value v) {
 static mrb_value lastline_get(mrb_state *mrb) { return svar_get(mrb, MRB_SVAR_LASTLINE); }
 static void lastline_set(mrb_state *mrb, mrb_value v) { svar_set(mrb, MRB_SVAR_LASTLINE, v); }
 
+/* ---- Module#const_source_location's records ----
+   mruby calls Module#const_added for each constant defined (mrb_const_set,
+   autoload). This one records where: the nearest Ruby frame of user code,
+   read through Module#const_set or #autoload and core Ruby frames. A
+   constant a C or Go method defines (Go gems' classes on require, mruby's
+   own) records nothing and answers [], as MRI's from C. The records are a
+   hidden ivar of the module: { name => [file, line] }. */
+/* MRI's two warnings for a constant assigned again, unless $VERBOSE is nil */
+static void const_redefined_warn(mrb_state *mrb, mrb_value mod, mrb_sym name, const char *file, int32_t line, mrb_value prev) {
+  if (mrb_nil_p(mrb_gv_get(mrb, mrb_intern_lit(mrb, "$VERBOSE")))) return;
+  if (!mrb_class_defined_id(mrb, MRB_SYM(Warning))) return;
+  mrb_value w = mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(Warning)));
+  mrb_value msg = mrb_format(mrb, "%s:%d: warning: already initialized constant ", file, (int)line);
+  if (mrb_class_ptr(mod) != mrb->object_class) {
+    mrb_str_cat_str(mrb, msg, mrb_obj_as_string(mrb, mod));
+    mrb_str_cat_lit(mrb, msg, "::");
+  }
+  mrb_str_cat_str(mrb, msg, mrb_sym_str(mrb, name));
+  mrb_str_cat_lit(mrb, msg, "\n");
+  mrb_funcall_id(mrb, w, MRB_SYM(warn), 1, msg);
+  msg = mrb_format(mrb, "%v:%v: warning: previous definition of %n was here\n", RARRAY_PTR(prev)[0], RARRAY_PTR(prev)[1], name);
+  mrb_funcall_id(mrb, w, MRB_SYM(warn), 1, msg);
+}
+
+static mrb_value mod_const_added_m(mrb_state *mrb, mrb_value mod) {
+  mrb_sym name = mrb_obj_to_sym(mrb, mrb_get_arg1(mrb));
+  struct mrb_context *c = mrb->c;
+  mrb_bool autoload = FALSE;
+  for (mrb_callinfo *ci = c->ci - 1; ci >= c->cibase; ci--) {
+    const struct RProc *p = ci->proc;
+    if (!p || MRB_PROC_CFUNC_P(p)) {
+      if (ci->mid == MRB_SYM(autoload)) autoload = TRUE;
+      if (ci->mid == MRB_SYM(const_set) || ci->mid == MRB_SYM(autoload)) continue;
+      return mrb_nil_value();
+    }
+    const mrb_irep *irep = p->body.irep;
+    if (irep_core_p(mrb, irep)) continue;
+    if (!irep->debug_info || !ci->pc) return mrb_nil_value();
+    int32_t line;
+    const char *file;
+    if (!mrb_debug_get_position(mrb, irep, (uint32_t)(&ci->pc[-1] - irep->iseq), &line, &file) || !file) {
+      return mrb_nil_value();
+    }
+    mrb_value h = mrb_iv_get(mrb, mod, MRB_SYM(__oruby_csl));
+    if (!mrb_hash_p(h)) {
+      h = mrb_hash_new(mrb);
+      mrb_iv_set(mrb, mod, MRB_SYM(__oruby_csl), h);
+    }
+    /* [file, line, from autoload, value]: an autoload's real definition is
+       no redefinition, nor is the same object set again by the same
+       statement (a gem's Go code naming the class its Ruby defined) */
+    /* the raw slot: mrb_const_get would load an autoload's file */
+    mrb_value cur = mrb_iv_get(mrb, mod, name);
+    mrb_value prev = mrb_hash_get(mrb, h, mrb_symbol_value(name));
+    if (!autoload && mrb_array_p(prev) && RARRAY_LEN(prev) == 4 && !mrb_test(RARRAY_PTR(prev)[2])) {
+      mrb_bool same = mrb_obj_eq(mrb, RARRAY_PTR(prev)[3], cur) && mrb_integer(RARRAY_PTR(prev)[1]) == line &&
+                      strcmp(RSTRING_PTR(RARRAY_PTR(prev)[0]), file) == 0;
+      if (!same) const_redefined_warn(mrb, mod, name, file, line, prev);
+    }
+    mrb_value rec[4] = {mrb_str_new_cstr(mrb, file), mrb_fixnum_value(line), mrb_bool_value(autoload), cur};
+    mrb_hash_set(mrb, h, mrb_symbol_value(name), mrb_ary_new_from_values(mrb, 4, rec));
+    return mrb_nil_value();
+  }
+  return mrb_nil_value();
+}
+
+/* Module#__oruby_const_location(sym): the record ([file, line], a copy) or nil */
+static mrb_value mod_const_location_m(mrb_state *mrb, mrb_value mod) {
+  mrb_value h = mrb_iv_get(mrb, mod, MRB_SYM(__oruby_csl));
+  if (!mrb_hash_p(h)) return mrb_nil_value();
+  mrb_value loc = mrb_hash_get(mrb, h, mrb_get_arg1(mrb));
+  return mrb_array_p(loc) ? mrb_ary_new_from_values(mrb, 2, RARRAY_PTR(loc)) : mrb_nil_value();
+}
+
+/* Module#remove_const drops the record too (const_source_location counts a
+   record as a definition while an autoload is loading) */
+static mrb_func_t remove_const_orig;
+static mrb_value remove_const_w(mrb_state *mrb, mrb_value mod) {
+  mrb_value v = remove_const_orig(mrb, mod);
+  mrb_value h = mrb_iv_get(mrb, mod, MRB_SYM(__oruby_csl));
+  if (mrb_hash_p(h)) {
+    mrb_value name = mrb_get_argv(mrb)[0];
+    if (mrb_string_p(name)) name = mrb_symbol_value(mrb_intern_str(mrb, name));
+    mrb_hash_delete_key(mrb, h, name);
+  }
+  return v;
+}
+
+/* ---- implicit block parameters (it, _1.._9) and hidden locals ----
+   mruby names _1.._9 as locals and leaves `it` unnamed (its register 1);
+   the Prism rewriter (ORB_IT_BLOCK) marks a block of `it` with the hidden
+   local __oruby_it. MRI lists neither among local_variables, nor oruby's
+   own hidden locals (__oruby_*, the rewriter's temporaries). */
+const struct RProc *mrb_binding_extract_proc(mrb_state *mrb, mrb_value binding);
+struct REnv *mrb_binding_extract_env(mrb_state *mrb, mrb_value binding);
+
+static int numbered_param(mrb_state *mrb, mrb_sym sym) {
+  mrb_int len;
+  const char *n = mrb_sym_name_len(mrb, sym, &len);
+  return (n && len == 2 && n[0] == '_' && n[1] >= '1' && n[1] <= '9') ? n[1] - '0' : 0;
+}
+
+static mrb_bool hidden_local(mrb_state *mrb, mrb_sym sym) {
+  mrb_int len;
+  const char *n = mrb_sym_name_len(mrb, sym, &len);
+  return numbered_param(mrb, sym) || (n && len > 8 && memcmp(n, "__oruby_", 8) == 0);
+}
+
+static mrb_value lvars_filter(mrb_state *mrb, mrb_value ary) {
+  if (!mrb_array_p(ary)) return ary;
+  mrb_value out = mrb_ary_new_capa(mrb, RARRAY_LEN(ary));
+  for (mrb_int i = 0; i < RARRAY_LEN(ary); i++) {
+    mrb_value v = RARRAY_PTR(ary)[i];
+    if (!mrb_symbol_p(v) || !hidden_local(mrb, mrb_symbol(v))) mrb_ary_push(mrb, out, v);
+  }
+  return out;
+}
+
+static mrb_func_t k_lvars_orig, b_lvars_orig;
+static mrb_value k_lvars_w(mrb_state *mrb, mrb_value self) { return lvars_filter(mrb, k_lvars_orig(mrb, self)); }
+static mrb_value b_lvars_w(mrb_state *mrb, mrb_value self) { return lvars_filter(mrb, b_lvars_orig(mrb, self)); }
+
+/* the binding's own scope: past mruby-binding's lvspaces (the procs holding
+   locals that eval added), with that scope's env */
+static const struct RProc *binding_scope(mrb_state *mrb, mrb_value b, struct REnv **ep) {
+  const struct RProc *p = mrb_binding_extract_proc(mrb, b);
+  struct REnv *e = mrb_binding_extract_env(mrb, b);
+  while (p && !MRB_PROC_CFUNC_P(p) && p->body.irep->ilen == 2 && p->body.irep->iseq[0] == OP_RETURN && p->upper) {
+    e = MRB_PROC_ENV(p);
+    p = p->upper;
+  }
+  *ep = e;
+  return p;
+}
+
+/* Binding#__oruby_implicit_params: [:it], [:_1, .., :_n] or [] of its own scope */
+static mrb_value binding_implicit_m(mrb_state *mrb, mrb_value self) {
+  struct REnv *e;
+  const struct RProc *p = binding_scope(mrb, self, &e);
+  mrb_value out = mrb_ary_new(mrb);
+  if (!p || MRB_PROC_CFUNC_P(p) || !p->body.irep->lv) return out;
+  const mrb_irep *irep = p->body.irep;
+  int max = 0;
+  for (int i = 0; i + 1 < irep->nlocals; i++) {
+    mrb_sym sym = irep->lv[i];
+    if (!sym) continue;
+    if (sym == MRB_SYM(__oruby_it)) {
+      mrb_ary_push(mrb, out, mrb_symbol_value(MRB_SYM(it)));
+      return out;
+    }
+    int n = numbered_param(mrb, sym);
+    if (n > max) max = n;
+  }
+  for (int n = 1; n <= max; n++) {
+    char name[3] = {'_', (char)('0' + n), 0};
+    mrb_ary_push(mrb, out, mrb_symbol_value(mrb_intern_cstr(mrb, name)));
+  }
+  return out;
+}
+
+/* Binding#__oruby_it: the value of `it` in its own scope (register 1) */
+static mrb_value binding_it_m(mrb_state *mrb, mrb_value self) {
+  struct REnv *e;
+  binding_scope(mrb, self, &e);
+  if (!e || MRB_ENV_LEN(e) < 2) return mrb_nil_value();
+  return e->stack[1];
+}
+
+/* ---- Method#original_name / UnboundMethod#original_name ----
+   An alias of a Ruby method is a proc holding the original name (mruby's
+   MRB_PROC_ALIAS). Others are kept per class in a hidden table
+   { name => original }: define_method of a Method or UnboundMethod, and
+   alias_method of a C method or of a define_method'd one. */
+static mrb_value orig_table(mrb_state *mrb, struct RClass *c, mrb_bool make) {
+  mrb_value h = mrb_iv_get(mrb, mrb_obj_value(c), MRB_SYM(__oruby_orig));
+  if (!mrb_hash_p(h) && make) {
+    h = mrb_hash_new(mrb);
+    mrb_iv_set(mrb, mrb_obj_value(c), MRB_SYM(__oruby_orig), h);
+  }
+  return h;
+}
+
+/* the original name of method `name` found in `owner`, as a method entry `m` */
+static mrb_sym orig_resolve(mrb_state *mrb, struct RClass *owner, mrb_sym name, mrb_method_t m) {
+  mrb_value h = orig_table(mrb, owner, FALSE);
+  if (mrb_hash_p(h)) {
+    mrb_value o = mrb_hash_get(mrb, h, mrb_symbol_value(name));
+    if (mrb_symbol_p(o)) return mrb_symbol(o);
+  }
+  if (!MRB_METHOD_UNDEF_P(m) && !MRB_METHOD_CFUNC_P(m)) {
+    const struct RProc *p = MRB_METHOD_PROC(m);
+    if (p && MRB_PROC_ALIAS_P(p)) return p->body.mid;
+  }
+  return name;
+}
+
+static mrb_value method_original_name_m(mrb_state *mrb, mrb_value self) {
+  mrb_value name = mrb_iv_get(mrb, self, MRB_SYM(_name));
+  mrb_value owner = mrb_iv_get(mrb, self, MRB_SYM(_owner));
+  mrb_value proc = mrb_iv_get(mrb, self, MRB_SYM(_proc));
+  if (!mrb_symbol_p(name)) return name;
+  mrb_sym n = mrb_symbol(name);
+  if (mrb_proc_p(proc) && MRB_PROC_ALIAS_P(mrb_proc_ptr(proc))) n = mrb_proc_ptr(proc)->body.mid;
+  if (mrb_class_p(owner) || mrb_module_p(owner) || mrb_sclass_p(owner)) {
+    mrb_value h = orig_table(mrb, mrb_class_ptr(owner), FALSE);
+    if (mrb_hash_p(h)) {
+      mrb_value o = mrb_hash_get(mrb, h, mrb_symbol_value(n));
+      if (mrb_symbol_p(o)) n = mrb_symbol(o);
+    }
+  }
+  return mrb_symbol_value(n);
+}
+
+static mrb_func_t define_method_orig, alias_method_orig;
+
+static mrb_value define_method_w(mrb_state *mrb, mrb_value mod) {
+  mrb_int argc = mrb_get_argc(mrb);
+  mrb_value name = argc > 0 ? mrb_get_argv(mrb)[0] : mrb_nil_value();
+  mrb_value body = argc > 1 ? mrb_get_argv(mrb)[1] : mrb_nil_value();
+  mrb_value r = define_method_orig(mrb, mod);
+  if (!mrb_nil_p(body) && mrb_obj_respond_to(mrb, mrb_class(mrb, body), MRB_SYM(original_name)) &&
+      mrb_iv_defined(mrb, body, MRB_SYM(_proc))) {
+    mrb_value orig = method_original_name_m(mrb, body);
+    mrb_sym n = mrb_obj_to_sym(mrb, name);
+    if (mrb_symbol_p(orig) && mrb_symbol(orig) != n) {
+      mrb_hash_set(mrb, orig_table(mrb, mrb_class_ptr(mod), TRUE), mrb_symbol_value(n), orig);
+    }
+  }
+  return r;
+}
+
+static mrb_value alias_method_w(mrb_state *mrb, mrb_value mod) {
+  mrb_int argc = mrb_get_argc(mrb);
+  mrb_value newv = argc > 0 ? mrb_get_argv(mrb)[0] : mrb_nil_value();
+  mrb_value oldv = argc > 1 ? mrb_get_argv(mrb)[1] : mrb_nil_value();
+  mrb_value r = alias_method_orig(mrb, mod);
+  if ((mrb_symbol_p(newv) || mrb_string_p(newv)) && (mrb_symbol_p(oldv) || mrb_string_p(oldv))) {
+    mrb_sym nn = mrb_obj_to_sym(mrb, newv), on = mrb_obj_to_sym(mrb, oldv);
+    struct RClass *owner = mrb_class_ptr(mod);
+    mrb_method_t m = mrb_method_search_vm(mrb, &owner, on);
+    mrb_sym orig = orig_resolve(mrb, owner, on, m);
+    if (orig != nn) mrb_hash_set(mrb, orig_table(mrb, mrb_class_ptr(mod), TRUE), mrb_symbol_value(nn), mrb_symbol_value(orig));
+  }
+  return r;
+}
+
+/* ---- Module#attr: names by #to_str, and the obsolete attr(name, true/false) ----
+   mruby's attr is attr_reader, which takes the visibility from its caller's
+   frame (caller_scope_visibility), so this stays the same C frame: the
+   boolean form calls the reader (and writer) functions with the argument
+   count narrowed to the name. */
+static mrb_func_t attr_orig, attr_writer_fn, attr_reader_orig, attr_writer_orig, attr_accessor_orig;
+
+/* MRI's attribute names: a Symbol, a String, or what #to_str makes one;
+   converted in place (the frame's own arguments). skip_bool: attr's
+   obsolete true/false second argument */
+static void attr_names(mrb_state *mrb, mrb_bool skip_bool) {
+  mrb_int argc = mrb_get_argc(mrb);
+  mrb_value *argv = (mrb_value *)mrb_get_argv(mrb);
+  for (mrb_int i = 0; i < argc; i++) {
+    if (mrb_symbol_p(argv[i]) || mrb_string_p(argv[i])) continue;
+    if (skip_bool && i == 1 && argc == 2 && (mrb_true_p(argv[1]) || mrb_false_p(argv[1]))) continue;
+    if (!mrb_respond_to(mrb, argv[i], MRB_SYM(to_str))) {
+      mrb_raisef(mrb, E_TYPE_ERROR, "%!v is not a symbol nor a string", argv[i]);
+    }
+    mrb_value cv[2] = {argv[i], mrb_obj_value(mrb->string_class)};
+    argv[i] = mrb_funcall_argv(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__implicit), 2, cv);
+  }
+}
+
+static mrb_value attr_reader_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_reader_orig(mrb, mod); }
+static mrb_value attr_writer_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_writer_orig(mrb, mod); }
+static mrb_value attr_accessor_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_accessor_orig(mrb, mod); }
+
+static mrb_value attr_w(mrb_state *mrb, mrb_value mod) {
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_int argc = mrb_get_argc(mrb);
+  attr_names(mrb, TRUE);
+  const mrb_value *argv = mrb_get_argv(mrb);
+  if (argc == 2 && ci->n == 2 && (mrb_true_p(argv[1]) || mrb_false_p(argv[1])) && attr_writer_fn) {
+    mrb_bool writable = mrb_true_p(argv[1]);
+    if (mrb_test(mrb_gv_get(mrb, mrb_intern_lit(mrb, "$VERBOSE"))) && mrb_class_defined_id(mrb, MRB_SYM(Warning))) {
+      mrb_funcall_id(mrb, mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(Warning))), MRB_SYM(warn), 1,
+                     mrb_str_new_lit(mrb, "warning: optional boolean argument is obsoleted\n"));
+    }
+    ci->n = 1;
+    mrb_value names = attr_orig(mrb, mod);
+    if (writable) mrb_ary_concat(mrb, names, attr_writer_fn(mrb, mod));
+    ci->n = 2;
+    return names;
+  }
+  return attr_orig(mrb, mod);
+}
+
 /* Fiber#__oruby_status: mruby's status word (its inspect's), for
    29_fiber.rb, which parsed it out of #inspect with a regexp */
 static mrb_value fiber_status_m(mrb_state *mrb, mrb_value self) {
@@ -1238,6 +1533,31 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   gv_init_checked(mrb);
   wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
   wrap_cfunc(mrb, mrb->module_class, "const_missing", const_missing_w, &const_missing_orig);
+  wrap_cfunc(mrb, mrb->module_class, "remove_const", remove_const_w, &remove_const_orig);
+  wrap_cfunc(mrb, mrb->kernel_module, "local_variables", k_lvars_w, &k_lvars_orig);
+  wrap_cfunc(mrb, mrb->module_class, "define_method", define_method_w, &define_method_orig);
+  {
+    struct RClass *o = mrb->module_class;
+    mrb_method_t m = mrb_method_search_vm(mrb, &o, MRB_SYM(attr_writer));
+    if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_CFUNC_P(m)) attr_writer_fn = MRB_METHOD_CFUNC(m);
+  }
+  wrap_cfunc(mrb, mrb->module_class, "attr", attr_w, &attr_orig);
+  wrap_cfunc(mrb, mrb->module_class, "attr_reader", attr_reader_w, &attr_reader_orig);
+  wrap_cfunc(mrb, mrb->module_class, "attr_writer", attr_writer_w, &attr_writer_orig);
+  wrap_cfunc(mrb, mrb->module_class, "attr_accessor", attr_accessor_w, &attr_accessor_orig);
+  wrap_cfunc(mrb, mrb->module_class, "alias_method", alias_method_w, &alias_method_orig);
+  if (mrb_class_defined_id(mrb, MRB_SYM(Method))) {
+    mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Method)), MRB_SYM(original_name), method_original_name_m, MRB_ARGS_NONE());
+  }
+  if (mrb_class_defined_id(mrb, MRB_SYM(UnboundMethod))) {
+    mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)), MRB_SYM(original_name), method_original_name_m, MRB_ARGS_NONE());
+  }
+  if (mrb_class_defined_id(mrb, MRB_SYM(Binding))) {
+    struct RClass *bc = mrb_class_get_id(mrb, MRB_SYM(Binding));
+    wrap_cfunc(mrb, bc, "local_variables", b_lvars_w, &b_lvars_orig);
+    mrb_define_private_method_id(mrb, bc, MRB_SYM(__oruby_implicit_params), binding_implicit_m, MRB_ARGS_NONE());
+    mrb_define_private_method_id(mrb, bc, MRB_SYM(__oruby_it), binding_it_m, MRB_ARGS_NONE());
+  }
   wrap_eval_methods(mrb);
   {
     /* redefined rather than wrapped: the arity check must admit 3 */
@@ -1267,6 +1587,8 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii?", str_enc_us_ascii_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii!", str_enc_us_ascii_set, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_core_proc), core_proc_p_m, MRB_ARGS_REQ(1));
+  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(const_added), mod_const_added_m, MRB_ARGS_REQ(1));
+  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_location), mod_const_location_m, MRB_ARGS_REQ(1));
   if (mrb_class_defined_id(mrb, MRB_SYM(Fiber))) {
     mrb_define_private_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Fiber)), MRB_SYM(__oruby_status), fiber_status_m, MRB_ARGS_NONE());
   }

@@ -121,6 +121,19 @@ func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 	return recs, enc, errs == 0
 }
 
+// hasBareIt: `it` as a word (a block's implicit parameter, ORB_IT_BLOCK)
+func hasBareIt(src []byte) bool {
+	ident := func(c byte) bool {
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+	}
+	for i := 0; i+1 < len(src); i++ {
+		if src[i] == 'i' && src[i+1] == 't' && (i == 0 || !ident(src[i-1])) && (i+2 == len(src) || !ident(src[i+2])) {
+			return true
+		}
+	}
+	return false
+}
+
 // mayNeedRewrite is a cheap filter before parsing: every rewrite site
 // contains one of these
 func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
@@ -134,7 +147,7 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if (opts == nil || !opts.NoRegexpLiterals) && (bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
-	if hasArrayKwHash(src) {
+	if hasArrayKwHash(src) || hasBareIt(src) {
 		return true
 	}
 	// "**": **obj (ORB_KWSPLAT)
@@ -543,6 +556,9 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			cpathWraps[key] = w
 			v := "__oruby_cpv" + id
 			r.addWrap(s[1], e[1], func(*rewriter) string { return "(" + v + " = (" }, w.closer(v))
+		case C.ORB_IT_BLOCK:
+			// dead code: the local exists in the block's table, the line never runs
+			r.add(s[0], s[0], func(*rewriter) string { return " __oruby_it = nil if false;" })
 		case C.ORB_MASGN_CPATH, C.ORB_FOR_CPATH:
 			// A::B, c = v (and for A::B in v): mruby's code generator
 			// rejects a constant path target, so it is a local and the

@@ -1,5 +1,5 @@
 module Warning
-  CATEGORIES = [:deprecated, :experimental, :performance].freeze
+  CATEGORIES = [:deprecated, :experimental, :performance, :strict_unused_block].freeze
 
   module Base
     def warn(msg, category: nil)
@@ -28,7 +28,7 @@ module Warning
       $VERBOSE ? true : false
     when :experimental
       true
-    when :performance
+    when :performance, :strict_unused_block
       false
     end
   end

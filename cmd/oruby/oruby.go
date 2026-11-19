@@ -726,6 +726,15 @@ func run() int {
 		}
 	}
 
+	if o.dashN || o.dashP {
+		// MRI's -n/-p Kernel#chomp, #chop, #sub and #gsub on $_: core code
+		// (<internal:...>), so $_ is the caller's (go-mrb.c's svar_start)
+		dc := mrb.MrbCcontextNew()
+		dc.Filename("<internal:dash_n>")
+		_, _ = mrb.LoadBytesCxt([]byte(dashNMethods), dc)
+		dc.Free()
+	}
+
 	c.Filename(cmdline)
 	mrb.SetMainScript(cmdline)
 	// a program not read from a file is kept for #source_range (core_ext)
@@ -774,6 +783,16 @@ func readAll(f *os.File) ([]byte, error) {
 	_, err := b.ReadFrom(f)
 	return b.Bytes(), err
 }
+
+// dashNMethods are the Kernel methods MRI's -n and -p define, on $_
+const dashNMethods = `module Kernel
+  def chomp(*args) = ($_ = args.empty? ? $_.chomp($/) : $_.chomp(*args))
+  def chop = ($_ = $_.chop)
+  def sub(*args, &blk) = ($_ = $_.sub(*args, &blk))
+  def gsub(*args, &blk) = ($_ = $_.gsub(*args, &blk))
+  module_function :chomp, :chop, :sub, :gsub
+end
+`
 
 // loopWrap puts the program in -n/-p's `while gets` loop; BEGIN blocks are
 // moved before the loop, so they run once

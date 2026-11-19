@@ -9,8 +9,22 @@ end
 class Module
   private def ruby2_keywords(*names)
     names.each do |name|
-      sym = Symbol === name ? name : Kernel.__implicit(name, String).to_sym
+      sym = case name
+            when Symbol then name
+            when String then name.to_sym
+            else raise TypeError, "#{name.inspect} is not a symbol nor a string"
+            end
       orig = instance_method(sym)
+      # MRI's: only a method taking *args, without keywords or arguments
+      # after the splat, gets the flag
+      params = orig.parameters
+      rest = params.index { |t, _| t == :rest }
+      if rest.nil? || params.any? { |t, _| t == :key || t == :keyreq || t == :keyrest || t == :nokey } ||
+         params[(rest + 1)..].any? { |t, _| t == :req || t == :opt }
+        warn "Skipping set of ruby2_keywords flag for #{sym} (method accepts keywords or post arguments " \
+             "or method does not accept argument splat)", uplevel: 0
+        next
+      end
       priv = private_method_defined?(sym)
       prot = protected_method_defined?(sym)
       define_method(sym) do |*args, **kw, &blk|

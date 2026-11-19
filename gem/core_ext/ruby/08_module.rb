@@ -125,3 +125,40 @@ module Kernel
     Object.autoload(name, Module.__oruby_relative_path(path, caller_locations(1, 1)[0]))
   end
 end
+
+class Module
+  # Where a constant was defined: [file, line], [] for one defined in C or
+  # Go, nil when the search finds none. go-mrb.c's const_added records it.
+  def const_source_location(name, inherit = true)
+    name = Kernel.__implicit(name, String) unless Symbol === name || String === name
+    mod = self
+    if Symbol === name
+      sym = Module.__oruby_const_name(name.to_s)
+    else
+      path = name
+      if path.start_with?("::")
+        mod = Object
+        path = path[2..]
+      end
+      parts = path.split("::", -1)
+      raise NameError, "wrong constant name #{name}" if parts.empty? || parts.include?("")
+      sym = Module.__oruby_const_name(parts.pop, name)
+      parts.each { |pt| mod = mod.const_get(Module.__oruby_const_name(pt, name), inherit) }
+    end
+    list = inherit ? mod.ancestors : [mod]
+    # a module's search ends at the top level, as a class's does through Object
+    list += Object.ancestors if inherit && !(Class === mod)
+    list.each do |m|
+      return m.__send__(:__oruby_const_location, sym) || [] if m.const_defined?(sym, false)
+      # an autoload whose file is loading: mruby's const_defined? is false
+      loc = m.__send__(:__oruby_const_location, sym)
+      return loc if loc
+    end
+    nil
+  end
+
+  def self.__oruby_const_name(s, full = s)
+    raise NameError.new("wrong constant name #{full}", full) unless s.match?(/\A[A-Z]\w*\z/)
+    s.to_sym
+  end
+end
