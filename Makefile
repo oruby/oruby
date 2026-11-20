@@ -65,6 +65,7 @@ test:
 	(cd gem/yaml && go test)
 	(cd gem/transcode && go test)
 	(cd gem/zlib && go test)
+	(cd gem/zlibgo && go test)
 
 # tools/gensym: the names oruby looks up become presyms (the mruby-oruby-presym
 # gem), then Go constants for them (presym_gen.go) from the built table

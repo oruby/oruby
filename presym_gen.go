@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "c3a22c8c35015607"
+const presymTable = "27d4a1b3c713095d"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -506,11 +506,14 @@ const (
 	Sym_Warning                                 MrbSym = C.MRB_SYM__Warning                                 // "Warning"
 	Sym_X509                                    MrbSym = C.MRB_SYM__X509                                    // "X509"
 	Sym_YAML                                    MrbSym = C.MRB_SYM__YAML                                    // "YAML"
+	Sym_ZLIB_VERSION                            MrbSym = C.MRB_SYM__ZLIB_VERSION                            // "ZLIB_VERSION"
 	Sym_ZStream                                 MrbSym = C.MRB_SYM__ZStream                                 // "ZStream"
 	Sym_Zlib                                    MrbSym = C.MRB_SYM__Zlib                                    // "Zlib"
+	Sym_ZlibGo                                  MrbSym = C.MRB_SYM__ZlibGo                                  // "ZlibGo"
 	Sym___abs__                                 MrbSym = C.MRB_SYM____abs__                                 // "__abs__"
 	Sym___add_i                                 MrbSym = C.MRB_SYM____add_i                                 // "__add_i"
 	Sym___adler32                               MrbSym = C.MRB_SYM____adler32                               // "__adler32"
+	Sym___adler32_combine                       MrbSym = C.MRB_SYM____adler32_combine                       // "__adler32_combine"
 	Sym___alias_from_object                     MrbSym = C.MRB_SYM____alias_from_object                     // "__alias_from_object"
 	Sym___aot_dispatch__                        MrbSym = C.MRB_SYM____aot_dispatch__                        // "__aot_dispatch__"
 	Sym___at                                    MrbSym = C.MRB_SYM____at                                    // "__at"
@@ -533,7 +536,9 @@ const (
 	Sym___cmp                                   MrbSym = C.MRB_SYM____cmp                                   // "__cmp"
 	Sym___connect                               MrbSym = C.MRB_SYM____connect                               // "__connect"
 	Sym___convert                               MrbSym = C.MRB_SYM____convert                               // "__convert"
+	Sym___copy_deflate                          MrbSym = C.MRB_SYM____copy_deflate                          // "__copy_deflate"
 	Sym___crc32                                 MrbSym = C.MRB_SYM____crc32                                 // "__crc32"
+	Sym___crc32_combine                         MrbSym = C.MRB_SYM____crc32_combine                         // "__crc32_combine"
 	Sym___deflate_init                          MrbSym = C.MRB_SYM____deflate_init                          // "__deflate_init"
 	Sym___diff                                  MrbSym = C.MRB_SYM____diff                                  // "__diff"
 	Sym___encoding                              MrbSym = C.MRB_SYM____encoding                              // "__encoding"
@@ -718,6 +723,7 @@ const (
 	Sym___oruby_wakeup                          MrbSym = C.MRB_SYM____oruby_wakeup                          // "__oruby_wakeup"
 	Sym___oruby_warn_here                       MrbSym = C.MRB_SYM____oruby_warn_here                       // "__oruby_warn_here"
 	Sym___owners__                              MrbSym = C.MRB_SYM____owners__                              // "__owners__"
+	Sym___params                                MrbSym = C.MRB_SYM____params                                // "__params"
 	Sym___parts                                 MrbSym = C.MRB_SYM____parts                                 // "__parts"
 	Sym___path                                  MrbSym = C.MRB_SYM____path                                  // "__path"
 	Sym___path__                                MrbSym = C.MRB_SYM____path__                                // "__path__"
@@ -741,6 +747,7 @@ const (
 	Sym___sec_i                                 MrbSym = C.MRB_SYM____sec_i                                 // "__sec_i"
 	Sym___secure_compare                        MrbSym = C.MRB_SYM____secure_compare                        // "__secure_compare"
 	Sym___set                                   MrbSym = C.MRB_SYM____set                                   // "__set"
+	Sym___set_avail_out                         MrbSym = C.MRB_SYM____set_avail_out                         // "__set_avail_out"
 	Sym___set_dictionary                        MrbSym = C.MRB_SYM____set_dictionary                        // "__set_dictionary"
 	Sym___set_header                            MrbSym = C.MRB_SYM____set_header                            // "__set_header"
 	Sym___set_replacement                       MrbSym = C.MRB_SYM____set_replacement                       // "__set_replacement"
@@ -749,6 +756,8 @@ const (
 	Sym___spawn                                 MrbSym = C.MRB_SYM____spawn                                 // "__spawn"
 	Sym___split                                 MrbSym = C.MRB_SYM____split                                 // "__split"
 	Sym___state                                 MrbSym = C.MRB_SYM____state                                 // "__state"
+	Sym___sync                                  MrbSym = C.MRB_SYM____sync                                  // "__sync"
+	Sym___sync_point                            MrbSym = C.MRB_SYM____sync_point                            // "__sync_point"
 	Sym___systmpdir                             MrbSym = C.MRB_SYM____systmpdir                             // "__systmpdir"
 	Sym___take                                  MrbSym = C.MRB_SYM____take                                  // "__take"
 	Sym___take_unused                           MrbSym = C.MRB_SYM____take_unused                           // "__take_unused"

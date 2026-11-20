@@ -68,10 +68,41 @@ func TestInflatePresetDictionary(t *testing.T) {
 	`)
 }
 
+func TestDeflateCopiesNativeStream(t *testing.T) {
+	testZlib(t, `
+		stream = Zlib::Deflate.new
+		stream.avail_out = 10
+		stream << "prefix "
+		available = stream.avail_out
+		copy = stream.dup
+		stream << "one"
+		original = stream.finish
+		stream.close
+		copy.params(Zlib::BEST_SPEED, Zlib::HUFFMAN_ONLY)
+		copy << "two"
+		available == 8 &&
+			Zlib.inflate(original) == "prefix one" &&
+			Zlib.inflate(copy.finish) == "prefix two"
+	`)
+}
+
+func TestNativeChecksums(t *testing.T) {
+	testZlib(t, `
+		Zlib.adler32(nil, 42) == 1 &&
+			Zlib.adler32("", -1) == 917518 &&
+			Zlib.crc32(nil, 42) == 0 &&
+			Zlib.adler32_combine(Zlib.adler32("foo"), Zlib.adler32("bar"), 3) == Zlib.adler32("foobar") &&
+			Zlib.crc32_combine(Zlib.crc32("foo"), Zlib.crc32("bar"), 3) == Zlib.crc32("foobar")
+	`)
+}
+
 func testZlib(t *testing.T, src string) {
 	t.Helper()
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
+	if _, err := mrb.Resolve("zlib"); err != nil {
+		t.Fatal(err)
+	}
 	got, err := mrb.Eval(src)
 	if err != nil {
 		t.Fatal(err)

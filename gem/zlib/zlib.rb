@@ -1,6 +1,5 @@
 module Zlib
   VERSION = "3.2.1"
-  ZLIB_VERSION = "1.3.1"
 
   NO_COMPRESSION = 0
   BEST_SPEED = 1
@@ -77,14 +76,22 @@ module Zlib
     v
   end
 
-  def self.adler32(str = nil, adler = 1)
-    return adler if str.nil?
-    __adler32(__str(str), __ulong(adler))
+  def self.adler32(str = nil, adler = nil)
+    seed = adler.nil? ? 1 : __ulong(adler)
+    str.nil? ? 1 : __adler32(__str(str), seed)
   end
 
-  def self.crc32(str = nil, crc = 0)
-    return crc if str.nil?
-    __crc32(__str(str), __ulong(crc))
+  def self.crc32(str = nil, crc = nil)
+    seed = crc.nil? ? 0 : __ulong(crc)
+    str.nil? ? 0 : __crc32(__str(str), seed)
+  end
+
+  def self.adler32_combine(first, second, length)
+    __adler32_combine(__ulong(first), __ulong(second), Kernel.__to_int(length))
+  end
+
+  def self.crc32_combine(first, second, length)
+    __crc32_combine(__ulong(first), __ulong(second), Kernel.__to_int(length))
   end
 
   # NUM2ULONG: a negative value wraps, one past unsigned long is a
@@ -128,7 +135,7 @@ module Zlib
 
     def close
       __check_open
-      __reset
+      __close
       @pending = "".b
       @closed = true
       nil
@@ -149,28 +156,34 @@ module Zlib
 
     def data_type
       __check_open
-      Zlib::BINARY
+      __state[5]
     end
 
     def avail_in
-      0
+      @closed ? 0 : __state[3]
     end
 
     def avail_out
-      0
+      @closed ? 0 : __state[6]
     end
 
     def avail_out=(size)
       __check_open
+      size = Kernel.__to_int(size) unless Integer === size
+      unless (-2**31...2**32).cover?(size)
+        raise RangeError, "integer #{size} too big to convert to 'unsigned int'"
+      end
+      __set_avail_out(size & 0xFFFFFFFF)
       size
     end
 
     def flush_next_in
-      "".b
+      @closed ? "".b : __take_unused
     end
 
     def flush_next_out
       return "".b if @closed
+      @pending << __take
       __drain
     end
 
@@ -183,6 +196,7 @@ module Zlib
     def __drain
       out = @pending
       @pending = "".b
+      __set_avail_out(0)
       out
     end
 
@@ -234,42 +248,44 @@ module Zlib
     end
 
     def initialize_copy(other)
-      raise NotImplementedError, "Zlib::Deflate#dup is not supported"
+      __copy_deflate(other)
+      @pending = @pending.dup
+      self
     end
 
     def deflate(src, flush = NO_FLUSH, &block)
       __check_open
       flush = __flush_mode(flush, NO_FLUSH)
-      __write(Zlib.__str(src)) unless src.nil?
-      __flush(src.nil? ? FINISH : flush)
+      if src.nil?
+        __write("".b, FINISH) unless finished?
+      else
+        __write(Zlib.__str(src), flush)
+      end
       @pending << __take
       __hand_out(nil, block)
     end
 
     def <<(src)
       __check_open
-      src.nil? ? __flush(FINISH) : __write(Zlib.__str(src))
+      if src.nil?
+        __write("".b, FINISH) unless finished?
+      else
+        __write(Zlib.__str(src), NO_FLUSH)
+      end
       self
     end
 
     def flush(flush = SYNC_FLUSH, &block)
       __check_open
-      __flush(__flush_mode(flush, SYNC_FLUSH))
+      mode = __flush_mode(flush, SYNC_FLUSH)
+      __write("".b, mode) unless mode == NO_FLUSH || finished?
       @pending << __take
       __hand_out(nil, block)
     end
 
     def params(level, strategy)
       __check_open
-      level = Zlib.__int(level)
-      strategy = Zlib.__int(strategy)
-      unless (DEFAULT_COMPRESSION..BEST_COMPRESSION).cover?(level) &&
-             (DEFAULT_STRATEGY..FIXED).cover?(strategy)
-        raise Zlib::StreamError, "stream error"
-      end
-      # Go's compressor fixes its level and strategy when the writer is created.
-      __flush(SYNC_FLUSH)
-      nil
+      __params(Zlib.__int(level), Zlib.__int(strategy))
     end
 
     def set_dictionary(dict)
@@ -281,12 +297,6 @@ module Zlib
 
     def finish(&block)
       flush(FINISH, &block)
-    end
-
-    def flush_next_out
-      return "".b if closed?
-      @pending << __take
-      super
     end
 
     private
@@ -375,15 +385,13 @@ module Zlib
     end
 
     def sync(str)
-      false
+      __check_open
+      __sync(Zlib.__str(str))
     end
 
     def sync_point?
-      false
-    end
-
-    def unused
-      __state[3]
+      __check_open
+      __sync_point
     end
 
     private
@@ -391,30 +399,33 @@ module Zlib
     # inflates src (nil: what input there is): a call that makes no
     # progress on an unfinished stream is zlib's Z_BUF_ERROR
     def __run(src)
-      out = __inflate_bytes(src.nil? ? "".b : src)
+      __inflate_bytes(src.nil? ? "".b : src, src.nil? ? FINISH : NO_FLUSH)
+      out = __take
       raise Zlib::BufError, "buffer error" if src.nil? && out.empty? && !finished?
       @pending << out
     end
 
     # Z_FINISH: the stream must end with the input it has
     def __run_finish
-      @pending << __inflate_bytes("".b)
+      unless finished?
+        __inflate_bytes("".b, FINISH)
+        @pending << __take
+      end
       raise Zlib::BufError, "buffer error" unless finished?
     end
 
-    def __inflate_bytes(src)
-      __write(src)
+    def __inflate_bytes(src, mode)
+      __write(src, mode)
     rescue Zlib::NeedDict
       dict = @dictionaries[adler]
       raise unless dict
       __set_dictionary(dict)
-      __write("".b)
+      __write("".b, mode)
     end
 
     def __take_leftover
       return unless finished?
-      u = __take_unused
-      @pending << u if u
+      @pending << __take_unused
     end
   end
 

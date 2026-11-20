@@ -1,549 +1,301 @@
-// Package zlib implements Ruby's zlib library over Go compress/flate,
-// compress/zlib and compress/gzip. Go keeps the streams (Zlib::Deflate,
-// Zlib::Inflate, gzip members); zlib.rb builds the Ruby API on top.
+// Package zlib provides Ruby's Zlib API over the vendored native zlib library.
 package zlib
 
 import (
 	"bytes"
-	"compress/flate"
-	"compress/gzip"
-	"compress/zlib"
 	_ "embed"
-	stdbinary "encoding/binary"
-	"errors"
-	"hash/crc32"
-	"io"
-	"time"
+	"encoding/binary"
+	"fmt"
+	"math"
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/zlib/internal/native"
 )
 
 //go:embed zlib.rb
 var zlibRb []byte
 
 func init() {
-	oruby.Gem("zlib", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("zlib", func(mrb *oruby.MrbState) interface{} {
 		mod := mrb.DefineModule("Zlib")
-		mod.DefineClassMethod("__adler32", zlibAdler32, mrb.ArgsReq(2))
-		mod.DefineClassMethod("__crc32", zlibCrc32, mrb.ArgsReq(2))
-		mod.DefineClassMethod("adler32_combine", zlibAdler32Combine, mrb.ArgsReq(3))
-		mod.DefineClassMethod("crc32_combine", zlibCrc32Combine, mrb.ArgsReq(3))
-		mod.DefineClassMethod("crc_table", zlibCrcTable, mrb.ArgsNone())
-		mod.DefineClassMethod("__gunzip", zlibGunzipMember, mrb.ArgsReq(1))
+		mrb.ConstSet(mod, oruby.Sym_ZLIB_VERSION, mrb.StrNew(native.Version()))
+		mod.DefineClassMethod("__adler32", checksum(native.Adler32), mrb.ArgsReq(2))
+		mod.DefineClassMethod("__crc32", checksum(native.CRC32), mrb.ArgsReq(2))
+		mod.DefineClassMethod("__adler32_combine", combine(native.Adler32Combine), mrb.ArgsReq(3))
+		mod.DefineClassMethod("__crc32_combine", combine(native.CRC32Combine), mrb.ArgsReq(3))
+		mod.DefineClassMethod("crc_table", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+			return mrb.Value(native.CRCTable())
+		}, mrb.ArgsNone())
+		mod.DefineClassMethod("__gunzip", gunzipMember, mrb.ArgsReq(1))
 
 		zs := rb.DataClass(mrb.DefineClassUnder(mod, "ZStream", mrb.ObjectClass()))
 		zs.DefineMethod("__deflate_init", deflateInit, mrb.ArgsReq(4))
 		zs.DefineMethod("__inflate_init", inflateInit, mrb.ArgsReq(1))
-		zs.DefineMethod("__write", streamWrite, mrb.ArgsReq(1))
-		zs.DefineMethod("__flush", streamFlush, mrb.ArgsReq(1))
+		zs.DefineMethod("__write", streamWrite, mrb.ArgsReq(2))
 		zs.DefineMethod("__take", streamTake, mrb.ArgsNone())
-		zs.DefineMethod("__set_dictionary", streamSetDict, mrb.ArgsReq(1))
+		zs.DefineMethod("__take_unused", streamTakeInput, mrb.ArgsNone())
+		zs.DefineMethod("__set_dictionary", streamSetDictionary, mrb.ArgsReq(1))
 		zs.DefineMethod("__set_header", streamSetHeader, mrb.ArgsReq(3))
+		zs.DefineMethod("__set_avail_out", streamSetAvailOut, mrb.ArgsReq(1))
 		zs.DefineMethod("__state", streamState, mrb.ArgsNone())
 		zs.DefineMethod("__reset", streamReset, mrb.ArgsNone())
-		zs.DefineMethod("__take_unused", streamTakeUnused, mrb.ArgsNone())
+		zs.DefineMethod("__close", streamClose, mrb.ArgsNone())
+		zs.DefineMethod("__copy_deflate", streamCopyDeflate, mrb.ArgsReq(1))
+		zs.DefineMethod("__params", streamParams, mrb.ArgsReq(2))
+		zs.DefineMethod("__sync", streamSync, mrb.ArgsReq(1))
+		zs.DefineMethod("__sync_point", streamSyncPoint, mrb.ArgsNone())
 		rb.LoadRuby(mrb, "zlib.rb", zlibRb)
 		return nil
 	})
 }
 
-// -- checksums ------------------------------------------------------------------
-
-func zlibAdler32(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
-	a := mrb.GetArgs().Slice()
-	data, err := rb.Bytes(mrb, a[0])
-	if err != nil {
-		return rb.TypeError(mrb, err)
-	}
-	return mrb.FixnumValue(int(adlerUpdate(uint32(a[1].Int64()), data)))
-}
-
-func adlerUpdate(adler uint32, p []byte) uint32 {
-	const mod = 65521
-	s1, s2 := adler&0xffff, adler>>16
-	for _, b := range p {
-		s1 = (s1 + uint32(b)) % mod
-		s2 = (s2 + s1) % mod
-	}
-	return s2<<16 | s1
-}
-
-func zlibCrc32(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
-	a := mrb.GetArgs().Slice()
-	data, err := rb.Bytes(mrb, a[0])
-	if err != nil {
-		return rb.TypeError(mrb, err)
-	}
-	return mrb.FixnumValue(int(crc32.Update(uint32(a[1].Int64()), crc32.IEEETable, data)))
-}
-
-func zlibAdler32Combine(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
-	a := mrb.GetArgs().Slice()
-	const base = uint64(65521)
-	adler1, adler2, len2 := uint64(a[0].Int64()), uint64(a[1].Int64()), uint64(a[2].Int64())
-	rem := len2 % base
-	sum1 := adler1 & 0xffff
-	sum2 := (rem * sum1) % base
-	sum1 += (adler2 & 0xffff) + base - 1
-	sum2 += ((adler1 >> 16) & 0xffff) + ((adler2 >> 16) & 0xffff) + base - rem
-	if sum1 >= base {
-		sum1 -= base
-	}
-	if sum1 >= base {
-		sum1 -= base
-	}
-	if sum2 >= base<<1 {
-		sum2 -= base << 1
-	}
-	if sum2 >= base {
-		sum2 -= base
-	}
-	return mrb.FixnumValue(int(sum1 | sum2<<16))
-}
-
-func gf2Times(mat []uint32, vec uint32) uint32 {
-	var sum uint32
-	for i := 0; vec != 0; i, vec = i+1, vec>>1 {
-		if vec&1 != 0 {
-			sum ^= mat[i]
+func checksum(fn func(uint32, []byte) uint32) oruby.MrbFuncT {
+	return func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		a := mrb.GetArgs().Slice()
+		data, err := rb.Bytes(mrb, a[0])
+		if err != nil {
+			return rb.TypeError(mrb, err)
 		}
-	}
-	return sum
-}
-
-func gf2Square(square, mat []uint32) {
-	for n := 0; n < 32; n++ {
-		square[n] = gf2Times(mat, mat[n])
+		return mrb.Uint64Value(uint64(fn(uint32(a[1].Int64()), data)))
 	}
 }
 
-func zlibCrc32Combine(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
-	a := mrb.GetArgs().Slice()
-	crc1, crc2, len2 := uint32(a[0].Int64()), uint32(a[1].Int64()), a[2].Int64()
-	if len2 <= 0 {
-		return mrb.FixnumValue(int(crc1))
-	}
-	even, odd := make([]uint32, 32), make([]uint32, 32)
-	odd[0] = 0xedb88320
-	row := uint32(1)
-	for n := 1; n < 32; n++ {
-		odd[n] = row
-		row <<= 1
-	}
-	gf2Square(even, odd)
-	gf2Square(odd, even)
-	for {
-		gf2Square(even, odd)
-		if len2&1 != 0 {
-			crc1 = gf2Times(even, crc1)
+func combine(fn func(uint32, uint32, int64) uint32) oruby.MrbFuncT {
+	return func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		a := mrb.GetArgs().Slice()
+		length, err := mrb.AsInt64(a[2])
+		if err != nil {
+			return mrb.RaiseError(err)
 		}
-		len2 >>= 1
-		if len2 == 0 {
-			break
-		}
-		gf2Square(odd, even)
-		if len2&1 != 0 {
-			crc1 = gf2Times(odd, crc1)
-		}
-		len2 >>= 1
-		if len2 == 0 {
-			break
-		}
+		return mrb.Uint64Value(uint64(fn(uint32(a[0].Int64()), uint32(a[1].Int64()), length)))
 	}
-	return mrb.FixnumValue(int(crc1 ^ crc2))
-}
-
-func zlibCrcTable(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
-	t := make([]int, 256)
-	for i, v := range crc32.IEEETable {
-		t[i] = int(v)
-	}
-	return mrb.Value(t)
-}
-
-// -- streams --------------------------------------------------------------------
-
-const (
-	modeRaw = iota
-	modeZlib
-	modeGzip
-	modeAuto
-)
-
-const (
-	noFlush = 0
-	finish  = 4
-)
-
-type flusher interface {
-	io.WriteCloser
-	Flush() error
 }
 
 type stream struct {
-	deflate  bool
-	mode     int
-	level    int
-	dict     []byte
-	out      bytes.Buffer
-	w        flusher
-	gzHeader gzip.Header
-	closed   bool // writer closed (finished)
-
-	// inflate
+	codec    *native.Stream
 	in       []byte
+	out      []byte
+	scratch  []byte
+	availOut uint64
 	finished bool
-	unused   []byte
-	totalIn  int
-	totalOut int
-	adler    uint32
-	needDict bool
 }
 
-func wbitsMode(wbits int) int {
-	switch {
-	case wbits < 0:
-		return modeRaw
-	case wbits >= 32:
-		return modeAuto
-	case wbits >= 16:
-		return modeGzip
+const chunkSize = 16384
+
+func (s *stream) run(data []byte, flush int) int {
+	s.addInput(data)
+	for {
+		mode := flush
+		if uint64(len(s.in)) > math.MaxUint32 {
+			mode = native.NoFlush
+		}
+		out := s.outputBuffer()
+		consumed, written, status := s.codec.Step(s.in, out, mode)
+		s.consume(consumed)
+		s.appendOutput(out[:written])
+		switch status {
+		case native.StreamEnd:
+			s.finished = true
+			return status
+		case native.OK, native.BufError:
+			if written < len(out) && (mode == flush || consumed == 0) {
+				return status
+			}
+		default:
+			return status
+		}
 	}
-	return modeZlib
 }
 
-func zerr(mrb *oruby.MrbState, class, msg string) oruby.MrbValue {
-	return rb.Raise(mrb, "Zlib::"+class, "%s", msg)
+func (s *stream) addInput(data []byte) {
+	if len(s.in) == 0 {
+		s.in = data
+	} else {
+		s.in = append(s.in, data...)
+	}
+}
+
+func (s *stream) outputBuffer() []byte {
+	if s.scratch == nil {
+		s.scratch = make([]byte, chunkSize)
+	}
+	if s.availOut == 0 {
+		s.availOut = chunkSize
+		if len(s.out) == 0 {
+			s.availOut = 1024
+		}
+	}
+	return s.scratch[:min(s.availOut, chunkSize)]
+}
+
+func (s *stream) appendOutput(data []byte) {
+	s.out = append(s.out, data...)
+	s.availOut -= uint64(len(data))
+}
+
+func (s *stream) consume(n int) {
+	s.in = s.in[n:]
+	if len(s.in) == 0 {
+		s.in = nil
+	}
+}
+
+func binaryString(mrb *oruby.MrbState, b []byte) oruby.MrbValue {
+	return mrb.Call(mrb.BytesValue(b), "force_encoding", mrb.StrNew("ASCII-8BIT"))
+}
+
+func zerr(mrb *oruby.MrbState, status int, message string) oruby.MrbValue {
+	var class, defaultMessage string
+	switch status {
+	case native.StreamEnd:
+		class, defaultMessage = "StreamEnd", "stream end"
+	case native.NeedDict:
+		class, defaultMessage = "NeedDict", "need dictionary"
+	case native.DataError:
+		class, defaultMessage = "DataError", "data error"
+	case native.StreamError:
+		class, defaultMessage = "StreamError", "stream error"
+	case native.MemError:
+		class, defaultMessage = "MemError", "insufficient memory"
+	case native.BufError:
+		class, defaultMessage = "BufError", "buffer error"
+	case native.VersionError:
+		class, defaultMessage = "VersionError", "incompatible version"
+	default:
+		class, defaultMessage = "Error", fmt.Sprintf("zlib error %d", status)
+	}
+	if message == "" {
+		message = defaultMessage
+	}
+	return rb.Raise(mrb, "Zlib::"+class, "%s", message)
 }
 
 func getStream(mrb *oruby.MrbState, self oruby.Value) (*stream, oruby.MrbValue) {
 	s, ok := rb.Get[*stream](mrb, self)
-	if !ok {
-		return nil, zerr(mrb, "Error", "stream is not ready")
+	if !ok || s.codec == nil {
+		return nil, rb.Raise(mrb, "Zlib::Error", "stream is not ready")
 	}
 	return s, nil
 }
 
-// __deflate_init(level, wbits, memlevel, strategy)
 func deflateInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs().Slice()
-	level := int(a[0].Int64())
-	wbits := int(a[1].Int64())
-	memlevel := int(a[2].Int64())
-	strategy := int(a[3].Int64())
-	if level < -1 || level > 9 || memlevel < 1 || memlevel > 9 || strategy < 0 || strategy > 4 {
-		return zerr(mrb, "StreamError", "stream error")
-	}
-	if !(wbits >= -15 && wbits <= -9 || wbits >= 8 && wbits <= 15 || wbits >= 25 && wbits <= 31) {
-		return zerr(mrb, "StreamError", "stream error")
-	}
-	if strategy == 2 && level != flate.NoCompression {
-		level = flate.HuffmanOnly
-	}
-	s := &stream{deflate: true, mode: wbitsMode(wbits), level: level}
-	s.reset()
-	rb.Set(mrb, self, s)
-	return mrb.NilValue()
+	codec, status := native.NewDeflate(a[0].Int(), a[1].Int(), a[2].Int(), a[3].Int())
+	return attachStream(mrb, self, codec, status)
 }
 
-// __inflate_init(wbits)
 func inflateInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	wbits := int(mrb.GetArgsFirst().Int64())
-	window := wbits
-	if wbits < 0 {
-		window = -wbits
-	} else if wbits <= 47 {
-		window = wbits % 16
+	codec, status := native.NewInflate(mrb.GetArgsFirst().Int())
+	return attachStream(mrb, self, codec, status)
+}
+
+func attachStream(mrb *oruby.MrbState, self oruby.Value, codec *native.Stream, status int) oruby.MrbValue {
+	if status != native.OK {
+		return zerr(mrb, status, "")
 	}
-	if window > 15 || (window < 8 && !(window == 0 && wbits >= 0)) {
-		return zerr(mrb, "StreamError", "stream error")
-	}
-	s := &stream{mode: wbitsMode(wbits)}
-	s.reset()
-	rb.Set(mrb, self, s)
+	rb.Set(mrb, self, &stream{codec: codec})
 	return mrb.NilValue()
 }
 
-func (s *stream) writer() (flusher, error) {
-	if s.w != nil {
-		return s.w, nil
-	}
-	var err error
-	switch s.mode {
-	case modeRaw:
-		if s.dict != nil {
-			s.w, err = flate.NewWriterDict(&s.out, s.level, s.dict)
-		} else {
-			s.w, err = flate.NewWriter(&s.out, s.level)
-		}
-	case modeGzip:
-		var gw *gzip.Writer
-		gw, err = gzip.NewWriterLevel(&s.out, s.level)
-		if err == nil {
-			gw.Header = s.gzHeader
-			s.w = gw
-		}
-	default:
-		if s.dict != nil {
-			s.w, err = zlib.NewWriterLevelDict(&s.out, s.level, s.dict)
-		} else {
-			s.w, err = zlib.NewWriterLevel(&s.out, s.level)
-		}
-	}
-	return s.w, err
-}
-
-func binary(mrb *oruby.MrbState, b []byte) oruby.MrbValue {
-	v := mrb.BytesValue(b)
-	return mrb.Call(v, "force_encoding", mrb.StrNew("ASCII-8BIT"))
-}
-
-// __write(str) -> deflate: nil; inflate: newly produced output
 func streamWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s, exc := getStream(mrb, self)
 	if exc != nil {
 		return exc
 	}
-	data, err := rb.Bytes(mrb, mrb.GetArgsFirst())
+	if s.finished {
+		return zerr(mrb, native.StreamError, "")
+	}
+	a := mrb.GetArgs().Slice()
+	data, err := rb.Bytes(mrb, a[0])
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
-	if s.deflate {
-		if s.closed {
-			return zerr(mrb, "StreamError", "stream error")
-		}
-		starting := s.w == nil
-		w, err := s.writer()
-		if err != nil {
-			return zerr(mrb, "StreamError", err.Error())
-		}
-		if _, err := w.Write(data); err != nil {
-			return zerr(mrb, "StreamError", err.Error())
-		}
-		s.totalIn += len(data)
-		if s.mode == modeGzip {
-			s.adler = crc32.Update(s.adler, crc32.IEEETable, data)
-		} else if s.mode == modeZlib {
-			if starting && s.dict != nil {
-				s.adler = 1
-			}
-			s.adler = adlerUpdate(s.adler, data)
-		}
+	status := s.run(data, a[1].Int())
+	switch status {
+	case native.OK, native.StreamEnd, native.BufError:
 		return mrb.NilValue()
-	}
-	return s.inflate(mrb, data)
-}
-
-func (s *stream) inflate(mrb *oruby.MrbState, data []byte) oruby.MrbValue {
-	if s.finished {
-		s.unused = append(s.unused, data...)
-		return binary(mrb, nil)
-	}
-	s.in = append(s.in, data...)
-	if len(s.in) == 0 {
-		return binary(mrb, nil)
-	}
-	br := bytes.NewReader(s.in)
-	var r io.Reader
-	var err error
-	mode := s.mode
-	if mode == modeAuto {
-		mode = modeZlib
-		if len(s.in) >= 2 && s.in[0] == 0x1f && s.in[1] == 0x8b {
-			mode = modeGzip
-		}
-	}
-	switch mode {
-	case modeRaw:
-		if s.dict != nil {
-			r = flate.NewReaderDict(br, s.dict)
-		} else {
-			r = flate.NewReader(br)
-		}
-	case modeGzip:
-		var gr *gzip.Reader
-		gr, err = gzip.NewReader(br)
-		if err == nil {
-			gr.Multistream(false)
-			r = gr
-		}
 	default:
-		if s.dict != nil {
-			r, err = zlib.NewReaderDict(br, s.dict)
-		} else {
-			r, err = zlib.NewReader(br)
-		}
+		return zerr(mrb, status, s.codec.Message())
 	}
-	if err != nil {
-		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-			s.totalIn = len(s.in) - br.Len()
-			return binary(mrb, nil)
-		}
-		if errors.Is(err, zlib.ErrDictionary) {
-			s.needDict = true
-			s.adler = stdbinary.BigEndian.Uint32(s.in[2:6])
-			return zerr(mrb, "NeedDict", "need dictionary")
-		}
-		return zerr(mrb, "DataError", "incorrect header check")
-	}
-	out, err := io.ReadAll(r)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		if errors.Is(err, zlib.ErrChecksum) || errors.Is(err, gzip.ErrChecksum) {
-			return zerr(mrb, "DataError", "incorrect data check")
-		}
-		return zerr(mrb, "DataError", "invalid compressed data -- format violated")
-	}
-	s.totalIn = len(s.in) - br.Len()
-	if err == nil {
-		s.finished = true
-		s.unused = append([]byte(nil), s.in[s.totalIn:]...)
-		s.in = nil
-	}
-	fresh := out[s.totalOut:]
-	switch mode {
-	case modeZlib:
-		if s.needDict {
-			s.adler = 1
-		}
-		s.adler = adlerUpdate(s.adler, fresh)
-	case modeGzip:
-		if s.totalOut == 0 {
-			s.adler = 0
-		}
-		s.adler = crc32.Update(s.adler, crc32.IEEETable, fresh)
-	}
-	s.needDict = false
-	s.totalOut = len(out)
-	return binary(mrb, fresh)
 }
 
-// __flush(mode): deflate SYNC/FULL flush or FINISH
-func streamFlush(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	s, exc := getStream(mrb, self)
-	if exc != nil {
-		return exc
-	}
-	mode := int(mrb.GetArgsFirst().Int64())
-	if !s.deflate || s.closed || mode == noFlush {
-		return mrb.NilValue()
-	}
-	starting := s.w == nil
-	w, err := s.writer()
-	if err != nil {
-		return zerr(mrb, "StreamError", err.Error())
-	}
-	if mode == finish {
-		err = w.Close()
-		s.closed = true
-	} else {
-		err = w.Flush()
-	}
-	if err != nil {
-		return zerr(mrb, "StreamError", err.Error())
-	}
-	if starting && s.mode == modeZlib && s.dict != nil {
-		s.adler = 1
-	}
-	return mrb.NilValue()
-}
-
-// __take -> pending deflate output
 func streamTake(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s, exc := getStream(mrb, self)
 	if exc != nil {
 		return exc
 	}
-	b := append([]byte(nil), s.out.Bytes()...)
-	s.totalOut += len(b)
-	s.out.Reset()
-	return binary(mrb, b)
+	out := s.out
+	s.out = nil
+	return binaryString(mrb, out)
 }
 
-func streamSetDict(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+func streamTakeInput(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s, exc := getStream(mrb, self)
 	if exc != nil {
 		return exc
 	}
-	d, err := rb.Bytes(mrb, mrb.GetArgsFirst())
+	in := s.in
+	s.in = nil
+	return binaryString(mrb, in)
+}
+
+func streamSetDictionary(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, self)
+	if exc != nil {
+		return exc
+	}
+	dict, err := rb.Bytes(mrb, mrb.GetArgsFirst())
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
-	checksum := adlerUpdate(1, d)
-	if s.deflate {
-		if s.w != nil || s.mode == modeGzip {
-			return zerr(mrb, "StreamError", "stream error")
-		}
-		if s.mode == modeZlib {
-			s.adler = checksum
-			s.totalIn = len(d)
-		}
-	} else if s.mode == modeRaw {
-		if len(s.in) > 0 || s.finished {
-			return zerr(mrb, "StreamError", "stream error")
-		}
-	} else {
-		if !s.needDict {
-			return zerr(mrb, "StreamError", "stream error")
-		}
-		if checksum != s.adler {
-			return zerr(mrb, "DataError", "incorrect dictionary")
-		}
+	if status := s.codec.SetDictionary(dict); status != native.OK {
+		return zerr(mrb, status, "")
 	}
-	s.dict = bytes.Clone(d)
 	return mrb.NilValue()
 }
 
-// __set_header(orig_name, comment, mtime) for gzip deflate streams
 func streamSetHeader(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s, exc := getStream(mrb, self)
 	if exc != nil {
 		return exc
 	}
 	a := mrb.GetArgs().Slice()
+	var name, comment *string
 	if !a[0].IsNil() {
-		s.gzHeader.Name = a[0].String()
+		v := a[0].String()
+		name = &v
 	}
 	if !a[1].IsNil() {
-		s.gzHeader.Comment = a[1].String()
+		v := a[1].String()
+		comment = &v
 	}
-	if !a[2].IsNil() && a[2].Int64() != 0 {
-		s.gzHeader.ModTime = time.Unix(a[2].Int64(), 0)
+	if status := s.codec.SetHeader(name, comment, uint32(a[2].Int64()), 3); status != native.OK {
+		return zerr(mrb, status, "")
 	}
-	s.gzHeader.OS = 3
 	return mrb.NilValue()
 }
 
-// __state -> [total_in, total_out, finished, unused, adler]
+func streamSetAvailOut(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, self)
+	if exc != nil {
+		return exc
+	}
+	s.availOut = uint64(uint32(mrb.GetArgsFirst().Int64()))
+	return mrb.NilValue()
+}
+
+// __state -> total_in, total_out, finished, avail_in, adler, data_type, avail_out
 func streamState(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s, exc := getStream(mrb, self)
 	if exc != nil {
 		return exc
 	}
-	unused := oruby.Nil
-	if len(s.unused) > 0 {
-		unused = binary(mrb, s.unused).Value()
-	}
-	fin := s.finished
-	if s.deflate {
-		fin = s.closed
-	}
-	return mrb.Value([]interface{}{s.totalIn, s.totalOut + s.out.Len(), fin, unused, int(s.adler)})
-}
-
-// __take_unused -> the input after the end of the stream (nil if none),
-// which the stream then no longer holds
-func streamTakeUnused(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	s, exc := getStream(mrb, self)
-	if exc != nil {
-		return exc
-	}
-	if len(s.unused) == 0 {
-		return mrb.NilValue()
-	}
-	u := binary(mrb, s.unused)
-	s.unused = nil
-	return u
+	state := s.codec.State()
+	return mrb.Value([]interface{}{
+		mrb.Uint64Value(state.TotalIn), mrb.Uint64Value(state.TotalOut), s.finished,
+		len(s.in), mrb.Uint64Value(uint64(state.Adler)), state.DataType, mrb.Uint64Value(s.availOut),
+	})
 }
 
 func streamReset(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -551,57 +303,146 @@ func streamReset(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if exc != nil {
 		return exc
 	}
-	s.reset()
+	if status := s.codec.Reset(); status != native.OK {
+		return zerr(mrb, status, "")
+	}
+	*s = stream{codec: s.codec, scratch: s.scratch}
 	return mrb.NilValue()
 }
 
-func (s *stream) reset() {
-	*s = stream{deflate: s.deflate, mode: s.mode, level: s.level, adler: 1}
-	if s.mode == modeGzip || (!s.deflate && s.mode == modeRaw) {
-		s.adler = 0
+func streamClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, self)
+	if exc != nil {
+		return exc
+	}
+	s.codec.Close()
+	*s = stream{}
+	return mrb.NilValue()
+}
+
+func streamCopyDeflate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, mrb.GetArgsFirst())
+	if exc != nil {
+		return exc
+	}
+	codec, status := s.codec.CopyDeflate()
+	if status != native.OK {
+		return zerr(mrb, status, "")
+	}
+	copy := &stream{
+		codec: codec, in: bytes.Clone(s.in), out: bytes.Clone(s.out),
+		availOut: s.availOut, finished: s.finished,
+	}
+	rb.Set(mrb, self, copy)
+	return self
+}
+
+func streamParams(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, self)
+	if exc != nil {
+		return exc
+	}
+	if s.finished {
+		return zerr(mrb, native.StreamError, "")
+	}
+	a := mrb.GetArgs().Slice()
+	for {
+		out := s.outputBuffer()
+		written, status := s.codec.Params(out, a[0].Int(), a[1].Int())
+		s.appendOutput(out[:written])
+		if status == native.OK {
+			return mrb.NilValue()
+		}
+		if status != native.BufError || written != len(out) {
+			return zerr(mrb, status, s.codec.Message())
+		}
 	}
 }
 
-// Zlib.__gunzip(str) -> [data, orig_name, comment, mtime, os, unused, level_flag]
-func zlibGunzipMember(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+func streamSync(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, self)
+	if exc != nil {
+		return exc
+	}
 	data, err := rb.Bytes(mrb, mrb.GetArgsFirst())
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
-	br := bytes.NewReader(data)
-	gr, err := gzip.NewReader(br)
+	s.addInput(data)
+	used, status := s.codec.Sync(s.in)
+	s.consume(used)
+	switch status {
+	case native.OK:
+		return mrb.TrueValue()
+	case native.DataError, native.BufError:
+		return mrb.FalseValue()
+	default:
+		return zerr(mrb, status, s.codec.Message())
+	}
+}
+
+func streamSyncPoint(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, self)
+	if exc != nil {
+		return exc
+	}
+	return mrb.BoolValue(s.codec.SyncPoint())
+}
+
+// gunzipMember decodes one gzip member. zlib validates the entire header and
+// trailer. Read metadata from the validated header to preserve its raw bytes.
+func gunzipMember(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	data, err := rb.Bytes(mrb, mrb.GetArgsFirst())
 	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	if len(data) < 10 || data[0] != 0x1f || data[1] != 0x8b {
 		return rb.Raise(mrb, "Zlib::GzipFile::Error", "not in gzip format")
 	}
-	gr.Multistream(false)
-	out, err := io.ReadAll(gr)
-	if err != nil {
-		switch {
-		case errors.Is(err, gzip.ErrChecksum):
+	codec, status := native.NewInflate(31)
+	if status != native.OK {
+		return zerr(mrb, status, "")
+	}
+	defer codec.Close()
+
+	s := stream{codec: codec}
+	switch status = s.run(data, native.NoFlush); status {
+	case native.StreamEnd:
+	case native.OK, native.BufError:
+		return rb.Raise(mrb, "Zlib::GzipFile::NoFooter", "footer is not found")
+	default:
+		switch message := codec.Message(); message {
+		case "incorrect data check":
 			return rb.Raise(mrb, "Zlib::GzipFile::CRCError", "invalid compressed data -- crc error")
-		case errors.Is(err, io.ErrUnexpectedEOF):
-			return rb.Raise(mrb, "Zlib::GzipFile::NoFooter", "footer is not found")
+		case "incorrect length check":
+			return rb.Raise(mrb, "Zlib::GzipFile::LengthError", "invalid compressed data -- length error")
+		case "unknown compression method", "unknown header flags set", "header crc mismatch":
+			return rb.Raise(mrb, "Zlib::GzipFile::Error", "%s", message)
+		default:
+			return zerr(mrb, status, message)
 		}
-		return rb.Raise(mrb, "Zlib::DataError", "invalid compressed data -- format violated")
 	}
-	var unused interface{}
-	if br.Len() > 0 {
-		unused = binary(mrb, data[len(data)-br.Len():]).Value()
+
+	rest := data[10:]
+	flags := data[3]
+	if flags&4 != 0 {
+		rest = rest[2+int(binary.LittleEndian.Uint16(rest)):]
 	}
-	var mtime int64
-	if !gr.ModTime.IsZero() {
-		mtime = gr.ModTime.Unix()
+	var name, comment, unused interface{}
+	if flags&8 != 0 {
+		var raw []byte
+		raw, rest, _ = bytes.Cut(rest, []byte{0})
+		name = binaryString(mrb, raw).Value()
 	}
-	var name, comment interface{}
-	if gr.Name != "" {
-		name = gr.Name
+	if flags&16 != 0 {
+		raw, _, _ := bytes.Cut(rest, []byte{0})
+		comment = binaryString(mrb, raw).Value()
 	}
-	if gr.Comment != "" {
-		comment = gr.Comment
+	if len(s.in) > 0 {
+		unused = binaryString(mrb, s.in).Value()
 	}
-	level := 0
-	if len(data) > 8 {
-		level = int(data[8])
-	}
-	return mrb.Value([]interface{}{binary(mrb, out).Value(), name, comment, mtime, int(gr.OS), unused, level})
+	return mrb.Value([]interface{}{
+		binaryString(mrb, s.out).Value(), name, comment, int64(binary.LittleEndian.Uint32(data[4:8])),
+		int(data[9]), unused, int(data[8]),
+	})
 }

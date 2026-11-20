@@ -315,10 +315,13 @@ func size(b []byte) C.uint {
 func Version() string { return C.GoString(C.zlibVersion()) }
 
 func Adler32(seed uint32, data []byte) uint32 {
-	if len(data) == 0 {
-		return seed
+	p := bytePtr(data)
+	if p == nil {
+		// A null pointer tells zlib to return the initial checksum.
+		var empty C.Bytef
+		p = &empty
 	}
-	return uint32(C.adler32_z(C.uLong(seed), bytePtr(data), C.z_size_t(len(data))))
+	return uint32(C.adler32_z(C.uLong(seed), p, C.z_size_t(len(data))))
 }
 
 func CRC32(seed uint32, data []byte) uint32 {

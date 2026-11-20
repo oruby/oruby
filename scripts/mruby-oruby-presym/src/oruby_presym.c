@@ -396,14 +396,17 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "Warning");
   (void)mrb_intern_lit(mrb, "X509");
   (void)mrb_intern_lit(mrb, "YAML");
+  (void)mrb_intern_lit(mrb, "ZLIB_VERSION");
   (void)mrb_intern_lit(mrb, "ZStream");
   (void)mrb_intern_lit(mrb, "Zlib");
+  (void)mrb_intern_lit(mrb, "ZlibGo");
   (void)mrb_intern_lit(mrb, "[]");
   (void)mrb_intern_lit(mrb, "[]=");
   (void)mrb_intern_lit(mrb, "^");
   (void)mrb_intern_lit(mrb, "__abs__");
   (void)mrb_intern_lit(mrb, "__add_i");
   (void)mrb_intern_lit(mrb, "__adler32");
+  (void)mrb_intern_lit(mrb, "__adler32_combine");
   (void)mrb_intern_lit(mrb, "__alias_from_object");
   (void)mrb_intern_lit(mrb, "__aot_dispatch__");
   (void)mrb_intern_lit(mrb, "__at");
@@ -426,7 +429,9 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__cmp");
   (void)mrb_intern_lit(mrb, "__connect");
   (void)mrb_intern_lit(mrb, "__convert");
+  (void)mrb_intern_lit(mrb, "__copy_deflate");
   (void)mrb_intern_lit(mrb, "__crc32");
+  (void)mrb_intern_lit(mrb, "__crc32_combine");
   (void)mrb_intern_lit(mrb, "__deflate_init");
   (void)mrb_intern_lit(mrb, "__diff");
   (void)mrb_intern_lit(mrb, "__encoding");
@@ -625,6 +630,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_warn_here");
   (void)mrb_intern_lit(mrb, "__oruby_writable?");
   (void)mrb_intern_lit(mrb, "__owners__");
+  (void)mrb_intern_lit(mrb, "__params");
   (void)mrb_intern_lit(mrb, "__parts");
   (void)mrb_intern_lit(mrb, "__path");
   (void)mrb_intern_lit(mrb, "__path__");
@@ -648,6 +654,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__sec_i");
   (void)mrb_intern_lit(mrb, "__secure_compare");
   (void)mrb_intern_lit(mrb, "__set");
+  (void)mrb_intern_lit(mrb, "__set_avail_out");
   (void)mrb_intern_lit(mrb, "__set_dictionary");
   (void)mrb_intern_lit(mrb, "__set_header");
   (void)mrb_intern_lit(mrb, "__set_replacement");
@@ -656,6 +663,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__spawn");
   (void)mrb_intern_lit(mrb, "__split");
   (void)mrb_intern_lit(mrb, "__state");
+  (void)mrb_intern_lit(mrb, "__sync");
+  (void)mrb_intern_lit(mrb, "__sync_point");
   (void)mrb_intern_lit(mrb, "__systmpdir");
   (void)mrb_intern_lit(mrb, "__take");
   (void)mrb_intern_lit(mrb, "__take_unused");
