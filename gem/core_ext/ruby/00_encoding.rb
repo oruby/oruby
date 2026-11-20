@@ -438,7 +438,30 @@ module Kernel
   def self.__oruby_enc_concat(a, b)
     enc = Encoding.compatible?(a, b)
     return enc if enc
-    name = ->(e) { e.inspect.delete_prefix("#<Encoding:").delete_suffix(">") }
+    name = ->(e) { e.equal?(Encoding::BINARY) ? "BINARY (ASCII-8BIT)" : e.name }
     raise Encoding::CompatibilityError, "incompatible character encodings: #{name.(a.encoding)} and #{name.(b.encoding)}"
+  end
+end
+
+module Kernel
+  # MRI's rb_str_comparable: whether a and b (Strings) can be equal at all
+  def self.__oruby_str_comparable?(a, b)
+    return true if a.empty? || b.empty?
+    e1 = a.encoding
+    e2 = b.encoding
+    return true if e1.equal?(e2)
+    a7 = a.ascii_only?
+    b7 = b.ascii_only?
+    return true if a7 && (b7 || e2.ascii_compatible?)
+    return true if b7 && e1.ascii_compatible?
+    false
+  end
+
+  # String#<=> of the same bytes: equal when comparable, else by the
+  # encodings' order (rb_str_cmp)
+  def self.__oruby_str_enc_cmp(a, b)
+    return 0 if __oruby_str_comparable?(a, b)
+    list = Encoding.list
+    list.index(a.encoding) <=> list.index(b.encoding)
   end
 end

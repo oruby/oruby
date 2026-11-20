@@ -2,7 +2,12 @@
 class String
   alias_method :__re_partition, :partition
   def partition(sep)
-    return __re_partition(sep) unless sep.is_a?(Regexp)
+    unless sep.is_a?(Regexp)
+      r = __re_partition(sep)
+      # the separator as given (MRI's rb_str_dup(sep)), in its own encoding
+      r[1] = sep.dup if String === sep && !r[1].empty?
+      return r
+    end
     m = sep.match(self)
     return [dup, "", ""] unless m
     [m.pre_match, m[0], m.post_match]
@@ -10,7 +15,14 @@ class String
 
   alias_method :__re_rpartition, :rpartition
   def rpartition(sep)
-    return __re_rpartition(sep) unless sep.is_a?(Regexp)
+    unless sep.is_a?(Regexp)
+      r = __re_rpartition(sep)
+      r[1] = sep.dup if String === sep && !r[1].empty?
+      enc = encoding
+      r[0].force_encoding(enc) unless r[0].encoding.equal?(enc)
+      r[2].force_encoding(enc) unless r[2].encoding.equal?(enc)
+      return r
+    end
     i = rindex(sep)
     return ["", "", dup] unless i
     m = $~
@@ -36,6 +48,10 @@ class String
     m = re.match(self)
     return nil unless m
     cap ||= 0
+    if Integer === cap
+      return nil if cap >= m.size || (cap < 0 && cap + m.size <= 0)
+      cap += m.size if cap < 0
+    end
     part = m[cap]
     return nil unless part
     b = m.begin(cap)

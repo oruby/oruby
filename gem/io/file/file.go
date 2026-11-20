@@ -103,7 +103,8 @@ func init() {
 		proxyClassMethodToStat(fileClass, "world_writable?", mrb.ArgsReq(1))
 		proxyClassMethodToStat(fileClass, "writable?", mrb.ArgsReq(1))
 		proxyClassMethodToStat(fileClass, "writable_real?", mrb.ArgsReq(1))
-		proxyClassMethodToStat(fileClass, "zero?", mrb.ArgsReq(1))
+		// zero? is empty? itself (MRI's alias)
+		mrb.DefineAlias(mrb.SingletonClass(fileClass.Value()), "zero?", "empty?")
 
 		mrb.Eval(`
 class File

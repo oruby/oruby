@@ -92,8 +92,19 @@ class Module
         t = types[i]
         a = args[i]
         if t && !nil.equal?(a) && !(t === a)
-          c = Kernel.__check_implicit(a, t)
-          args[i] = c unless nil.equal?(c)
+          if t == Integer && Range === a
+            # a Range of other bounds: each by #to_int (rb_range_beg_len)
+            b = a.begin
+            e = a.end
+            unless (nil.equal?(b) || Integer === b) && (nil.equal?(e) || Integer === e)
+              b = Kernel.__to_int(b) unless nil.equal?(b)
+              e = Kernel.__to_int(e) unless nil.equal?(e)
+              args[i] = Range.new(b, e, a.exclude_end?)
+            end
+          else
+            c = Kernel.__check_implicit(a, t)
+            args[i] = c unless nil.equal?(c)
+          end
         end
         i += 1
       end

@@ -57,7 +57,7 @@ func init() {
 		t.DefineMethod("gmtime", timeUtc, mrb.ArgsNone())
 		t.DefineMethod("hour", timeHour, mrb.ArgsNone())
 		t.DefineMethod("localtime", timeLocaltime, mrb.ArgsNone())
-		t.DefineMethod("mday", timeMday, mrb.ArgsNone())
+		t.DefineMethod("mday", timeDay, mrb.ArgsNone())
 		t.DefineMethod("min", timeMin, mrb.ArgsNone())
 
 		t.DefineMethod("mon", timeMon, mrb.ArgsNone())

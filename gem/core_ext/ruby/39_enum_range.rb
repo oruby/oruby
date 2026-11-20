@@ -901,15 +901,19 @@ if defined?(Method)
     alias __orig_method_to_proc to_proc
     # a lambda of the method's arity; Proc#source_location and #parameters
     # (37_matchdata_symbol.rb) report the method's
+    # The lambda is made in the receiver's context: its binding's receiver
+    # is the method's
     def to_proc
       m = self
-      pr = case arity
-           when 0 then lambda { |&b| m.call(&b) }
-           when 1 then lambda { |a, &b| m.call(a, &b) }
-           when 2 then lambda { |a, x, &b| m.call(a, x, &b) }
-           when 3 then lambda { |a, x, y, &b| m.call(a, x, y, &b) }
-           else return __orig_method_to_proc
-           end
+      pr = receiver.instance_exec do
+        case m.arity
+        when 0 then lambda { |&b| m.call(&b) }
+        when 1 then lambda { |a, &b| m.call(a, &b) }
+        when 2 then lambda { |a, x, &b| m.call(a, x, &b) }
+        when 3 then lambda { |a, x, y, &b| m.call(a, x, y, &b) }
+        else lambda { |*args, **opts, &b| m.call(*args, **opts, &b) }
+        end
+      end
       pr.instance_variable_set(:@__oruby_method, m)
       pr
     end

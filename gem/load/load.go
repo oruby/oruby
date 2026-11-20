@@ -679,11 +679,66 @@ func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
 
 	loadingFilesAdd(mrb, realValue)
 	defer loadingFilesDelete(mrb, realValue)
+	marks := autoloadsOf(mrb, path, real)
 	if err := doLoad(mrb, path); err != nil {
+		autoloadsDone(mrb, marks, false)
 		return loadFailure(mrb, err)
 	}
 	mrb.AryPush(mrb.GVGet(oruby.GvSym_LOADED_FEATURES), mrb.StrNew(path))
+	autoloadsDone(mrb, marks, true)
 	return mrb.TrueValue()
+}
+
+// autoloadsOf marks the pending autoloads whose file is path (required
+// directly, not through the constant) as loading, as MRI's autoload of a
+// feature being required: the constant reads as undefined meanwhile and
+// the autoload is spent once the file is in. Each is [module, name].
+func autoloadsOf(mrb *oruby.MrbState, path, real string) [][2]oruby.Value {
+	reg := mrb.IVGet(mrb.KernelModule().Value(), mrb.Intern("__oruby_autoloads"))
+	if !reg.IsArray() {
+		return nil
+	}
+	var marks [][2]oruby.Value
+	var lp []string
+	n := oruby.RArrayLen(reg)
+	for i := 0; i < n; i++ {
+		e := mrb.AryRef(reg, i)
+		if !e.IsArray() || oruby.RArrayLen(e) != 3 {
+			continue
+		}
+		mod, sym, p := mrb.AryRef(e, 0), mrb.AryRef(e, 1), mrb.String(mrb.AryRef(e, 2))
+		var full string
+		exts := []string{""}
+		if extKind(p) == 0 {
+			exts = []string{".rb"}
+		}
+		if isExplicit(p) {
+			full, _ = findFile(p, exts, nil)
+		} else {
+			if lp == nil {
+				lp = expandedLoadPath(mrb)
+			}
+			full, _ = findFile(p, exts, lp)
+		}
+		if full == "" || (full != path && realpathOf(full) != real) {
+			continue
+		}
+		on, err := mrb.Funcall(mod, mrb.Intern("__oruby_autoload_loading"), sym, true)
+		if err == nil && on.Bool() {
+			marks = append(marks, [2]oruby.Value{mod, sym})
+		}
+	}
+	return marks
+}
+
+func autoloadsDone(mrb *oruby.MrbState, marks [][2]oruby.Value, loaded bool) {
+	// a file that defines the constant replaces the autoload; one that does
+	// not leaves it pending (MRI keeps the name, undefined, which mruby has
+	// no state for)
+	_ = loaded
+	for _, m := range marks {
+		_, _ = mrb.Funcall(m[0], mrb.Intern("__oruby_autoload_loading"), m[1], false)
+	}
 }
 
 // warnCircular is MRI's verbose-only warning for a require of a file that

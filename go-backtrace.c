@@ -338,10 +338,12 @@ static mrb_value errinfo_holder(mrb_state *mrb) {
 }
 
 void _orb_trace_raise(mrb_state *mrb, struct RObject *exc);
+void _orb_frozen_fix(mrb_state *mrb, struct RObject *exc);
 
 static mrb_value errinfo_get(mrb_state *mrb) {
   if (mrb->exc && mrb->exc->tt == MRB_TT_EXCEPTION) {
     _orb_bt_keep(mrb, mrb_obj_value(mrb->exc));
+    _orb_frozen_fix(mrb, mrb->exc);
     _orb_trace_raise(mrb, mrb->exc); /* TracePoint's :raise (go-trace.c) */
   }
   return mrb_iv_get(mrb, errinfo_holder(mrb), MRB_SYM(__oruby_errinfo__));

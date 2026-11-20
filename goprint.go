@@ -38,7 +38,7 @@ func initPrint(mrb *MrbState) interface{} {
 func kernelAtExit(mrb *MrbState, self Value) MrbValue {
 	block := mrb.GetArgsBlock()
 	if block.IsNil() {
-		return mrb.Raise(mrb.EArgumentError(), "tried to create Proc object without a block")
+		return mrb.Raise(mrb.EArgumentError(), "called without a block")
 	}
 
 	listVal := mrb.GetGV("$__at_exit_list__")

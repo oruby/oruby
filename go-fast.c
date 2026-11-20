@@ -669,11 +669,20 @@ static mrb_value d_str_end_with(mrb_state *mrb, mrb_value self) {
   return mrb_false_value();
 }
 
+/* a Range of Integer (or nil) bounds */
+static mrb_bool int_range_p(mrb_value v) {
+  if (!mrb_range_p(v)) return FALSE;
+  struct RRange *r = mrb_range_raw_ptr(v);
+  if (!RANGE_INITIALIZED_P(r)) return FALSE;
+  mrb_value b = RANGE_BEG(r), e = RANGE_END(r);
+  return (mrb_nil_p(b) || mrb_integer_p(b)) && (mrb_nil_p(e) || mrb_integer_p(e));
+}
+
 /* String#[] / #slice: Integer, Range or String arguments (a Regexp goes to
    gem/regexp, another type to the implicit conversion) */
 static mrb_bool p_str_aref(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
   if (!mrb_nil_p(blk)) return FALSE;
-  if (argc == 1) return mrb_integer_p(argv[0]) || mrb_string_p(argv[0]) || mrb_range_p(argv[0]);
+  if (argc == 1) return mrb_integer_p(argv[0]) || mrb_string_p(argv[0]) || int_range_p(argv[0]);
   return argc == 2 && mrb_integer_p(argv[0]) && mrb_integer_p(argv[1]);
 }
 /* String#index and the like: a String, and an Integer offset */
@@ -695,7 +704,8 @@ static mrb_bool p_str_aset(mrb_state *mrb, mrb_value self, mrb_int argc, const m
 
 /* String#upcase and the like without options */
 static mrb_bool p_str_case(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
-  return argc == 0 && mrb_nil_p(blk);
+  /* a tagged string (UTF-16 and the like) maps in Ruby (22_missing.rb) */
+  return argc == 0 && mrb_nil_p(blk) && !str_tagged(mrb, self);
 }
 
 /* ---- Kernel#format / #sprintf, String#% ----
@@ -913,7 +923,8 @@ static mrb_value d_proc_symproc_p(mrb_state *mrb, mrb_value self) {
 
 /* Proc#arity: -2 for a Symbol#to_proc lambda (core_ext's, told by its code) */
 static mrb_bool p_proc_arity(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
-  return argc == 0 && mrb_nil_p(blk);
+  /* a Method#to_proc lambda answers its method's arity (Ruby) */
+  return argc == 0 && mrb_nil_p(blk) && !mrb_iv_defined(mrb, self, MRB_IVSYM(__oruby_method));
 }
 static mrb_func_t proc_arity_builtin;
 static mrb_value d_proc_arity(mrb_state *mrb, mrb_value self) {
@@ -1562,6 +1573,19 @@ static mrb_value imp_call(mrb_state *mrb, mrb_value self, int slot) {
     mrb_value a = mrb_get_argv(mrb)[i];
     if (d->t[i] == IMP_NONE || mrb_nil_p(a)) continue;
     if (d->t[i] == IMP_INT ? int_p(a) : mrb_string_p(a)) continue;
+    if (d->t[i] == IMP_INT && mrb_range_p(a)) {
+      /* a Range of other bounds: each by #to_int (rb_range_beg_len) */
+      struct RRange *r = mrb_range_raw_ptr(a);
+      if (!RANGE_INITIALIZED_P(r)) continue;
+      mrb_value b = RANGE_BEG(r), e = RANGE_END(r);
+      if ((mrb_nil_p(b) || int_p(b)) && (mrb_nil_p(e) || int_p(e))) continue;
+      mrb_value k = mrb_obj_value(mrb->kernel_module);
+      if (!mrb_nil_p(b)) b = mrb_funcall_argv(mrb, k, MRB_SYM(__to_int), 1, &b);
+      if (!mrb_nil_p(e)) e = mrb_funcall_argv(mrb, k, MRB_SYM(__to_int), 1, &e);
+      mrb_value nr = mrb_range_new(mrb, b, e, RANGE_EXCL(r));
+      ((mrb_value *)mrb_get_argv(mrb))[i] = nr;
+      continue;
+    }
     struct RClass *k = d->t[i] == IMP_INT ? mrb->integer_class : mrb->string_class;
     mrb_value cv[2] = {a, mrb_obj_value(k)};
     mrb_value c = mrb_funcall_argv(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__check_implicit), 2, cv);
@@ -1591,6 +1615,12 @@ IW8(0) IW8(1) IW8(2) IW8(3) IW8(4) IW8(5) IW8(6) IW8(7) IW8(8) IW8(9) IW8(10) IW
 #define IR8(b) IR(b, 0), IR(b, 1), IR(b, 2), IR(b, 3), IR(b, 4), IR(b, 5), IR(b, 6), IR(b, 7)
 static const mrb_func_t imp_fns[IMP_MAX] = {IR8(0), IR8(1), IR8(2), IR8(3), IR8(4), IR8(5), IR8(6), IR8(7),
                                             IR8(8), IR8(9), IR8(10), IR8(11)};
+
+/* Proc#__oruby_symproc_sym: the Symbol of a Symbol#to_proc lambda, or nil */
+static mrb_value proc_symproc_sym_m(mrb_state *mrb, mrb_value self) {
+  mrb_sym sym = blk_sym(self);
+  return sym ? mrb_symbol_value(sym) : mrb_nil_value();
+}
 
 /* Module#__oruby_implicit_c(name, types): true when name is a C method now
    wrapped in C; false leaves it to the Ruby wrapper */
@@ -1684,4 +1714,5 @@ void _orb_fast_init(mrb_state *mrb) {
     mrb_define_class_method(mrb, mrb_class_get(mrb, "Struct"), "__oruby_fast_new", struct_fast_new_m, MRB_ARGS_REQ(2));
   }
   mrb_define_private_method(mrb, mrb->module_class, "__oruby_implicit_c", mod_implicit_c, MRB_ARGS_REQ(2));
+  mrb_define_private_method(mrb, mrb->proc_class, "__oruby_symproc_sym", proc_symproc_sym_m, MRB_ARGS_NONE());
 }

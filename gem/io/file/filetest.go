@@ -30,6 +30,7 @@ func initFileTest(mrb *oruby.MrbState) oruby.RClass {
 	proxyClassMethodToStat(f, "world_writable?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(f, "writable?", mrb.ArgsReq(1))
 	proxyClassMethodToStat(f, "writable_real?", mrb.ArgsReq(1))
-	proxyClassMethodToStat(f, "zero?", mrb.ArgsReq(1))
+	// zero? is empty? itself (MRI's alias)
+	mrb.DefineAlias(mrb.SingletonClass(f.Value()), "zero?", "empty?")
 	return f
 }

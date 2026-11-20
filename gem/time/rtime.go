@@ -192,11 +192,6 @@ func timeLocaltime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
-func timeMday(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	t := getTime(mrb, self)
-	return oruby.Integer(t.Day())
-}
-
 func timeMin(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	t := getTime(mrb, self)
 	return oruby.Integer(t.Minute())

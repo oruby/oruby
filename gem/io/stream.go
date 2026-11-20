@@ -1019,10 +1019,6 @@ func ioStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.EArgumentError().Raise("IO object does not support stat")
 }
 
-func ioTell(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return ioPos(mrb, self)
-}
-
 func ioToIo(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }

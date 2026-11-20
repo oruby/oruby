@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -91,6 +92,8 @@ type MrbState struct {
 	// the exit status an at_exit handler decided (RunAtExitHandlers)
 	atExitStatus    int
 	atExitStatusSet bool
+
+	funcIndex map[unsafe.Pointer]int // registerMrbFuncT: a funcval's index
 }
 
 // coreMu serializes writes to go-mrb.c's process-wide tables (virtual
@@ -140,6 +143,7 @@ func NewCore() (*MrbState, error) {
 		Nil,
 		0,
 		false,
+		nil,
 	}
 
 	mrb.matrix[0] = make([]interface{}, 500)
@@ -700,6 +704,7 @@ func (mrb *MrbState) Close() {
 		mrb.hooks = nil
 		mrb.funcs = nil
 		mrb.cfuncs = nil
+		mrb.funcIndex = nil
 		mrb.features = nil
 	}
 }
@@ -2760,6 +2765,14 @@ func (mrb *MrbState) RaiseError(err error) Value {
 	msg := err.Error()
 	if strings.Contains(msg, "file exists") {
 		msg = strings.ReplaceAll(msg, "file exists", "File exists")
+	}
+	if !utf8.ValidString(msg) {
+		// a path of other bytes: a BINARY message, as MRI's
+		s := mrb.StrNew(msg)
+		if _, e := mrb.Funcall(s, Sym_force_encoding, "BINARY"); e == nil {
+			return mrb.RaiseObj(mrb.ExcNewStr(mrb.getErrorKlass(err), s))
+		}
+		mrb.ExcClear()
 	}
 	return mrb.Raise(mrb.getErrorKlass(err), msg)
 }

@@ -438,7 +438,7 @@ func sliceWith(mrb *oruby.MrbState, self oruby.Value, old string) oruby.MrbValue
 	m := mrb.Data(matchData.Value()).(*MatchData)
 	m.enc = encName(mrb, strEnc(mrb, self))
 	if !hasCap {
-		return strOrNil(mrb, m.StringOrNil(0))
+		return mdGroup(mrb, m, 0)
 	}
 	if capture.Type() == oruby.MrbTTFixnum {
 		i := oruby.MrbFixnum(capture)
@@ -866,7 +866,7 @@ func patternRegexp(mrb *oruby.MrbState, v oruby.Value) (*Regexp, oruby.Value, or
 		}
 		return mrb.Data(obj.Value()).(*Regexp), obj.Value(), nil
 	}
-	return nil, oruby.Nil, mrb.Raise(mrb.ETypeError(), "wrong argument type "+mrb.ClassOf(v).Name()+" (expected Regexp)")
+	return nil, oruby.Nil, mrb.ETypeError().Raisef("wrong argument type %s (expected Regexp)", mrb.ClassName(mrb.ObjClass(v)))
 }
 
 func stringIsMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -892,6 +892,21 @@ func stringMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	re, reValue, exc := patternRegexp(mrb, args.Item(0))
 	if exc != nil {
 		return exc
+	}
+	// a Regexp subclass: its own #match (rb_str_match_m calls it)
+	if args.Item(0).Type() == oruby.MrbTTCData && mrb.ObjClass(reValue).Value().Pointer() != mrb.ClassGet("Regexp").Value().Pointer() {
+		vals := []interface{}{self}
+		if args.Len() > 1 {
+			vals = append(vals, args.Item(1))
+		}
+		if !block.IsNil() {
+			vals = append(vals, block)
+		}
+		v, err := mrb.FuncallWithBlock(reValue, mrb.Intern("match"), vals...)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return v
 	}
 	if !matchCheck(mrb, reValue, self) {
 		return mrb.Exc().Value()
@@ -948,6 +963,9 @@ func stringIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 		return mrb.Call(self, "old_index", arg)
 	}
+	if !matchCheck(mrb, arg, self) {
+		return mrb.Exc().Value()
+	}
 	s := rstr(self)
 	pos, ok := byteIndex(s, oruby.MrbFixnum(args.ItemDef(1, mrb.FixnumValue(0))))
 	if !ok {
@@ -969,7 +987,7 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	arg := args.Item(0)
 	r := getRegexp(mrb, arg)
 	if r == nil {
-		return mrb.ETypeError().Raisef("wrong argument type %v (expected Regexp)", mrb.ClassOf(arg).Name())
+		return mrb.ETypeError().Raisef("wrong argument type %s (expected Regexp)", mrb.ClassName(mrb.ObjClass(arg)))
 	}
 
 	s := rstr(self)
@@ -988,8 +1006,10 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	groups := r.numSubexp() > 0
 	var md oruby.Value
+	enc := encName(mrb, strEnc(mrb, self))
 	for _, result := range results {
 		m := NewMatchData(r, s, result, 0)
+		m.enc = enc
 		var item oruby.MrbValue
 		if groups {
 			caps := mrb.AryNew()
@@ -997,12 +1017,12 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 				if c == nil {
 					caps.Push(mrb.NilValue())
 				} else {
-					caps.Push(mrb.StrNew(c.(string)))
+					caps.Push(mdStr(mrb, m, c.(string)))
 				}
 			}
 			item = caps
 		} else {
-			item = mrb.StrNew(s[result[0]:result[1]])
+			item = mdStr(mrb, m, s[result[0]:result[1]])
 		}
 		md = mrb.NewInstance("MatchData", m).Value()
 		if !block.IsNil() {
@@ -1044,9 +1064,15 @@ func reverseSearch(mrb *oruby.MrbState, self oruby.Value, old string, bytes bool
 		}
 		return mrb.Call(self, old, arg)
 	}
+	if !matchCheck(mrb, arg, self) {
+		return mrb.Exc().Value()
+	}
 	s := rstr(self)
 	pos := len(s)
 	if args.Len() > 1 {
+		if args.Item(1).IsNil() {
+			return mrb.ETypeError().Raisef("no implicit conversion from nil to integer")
+		}
 		n := oruby.MrbFixnum(args.Item(1))
 		if bytes {
 			if n < 0 {

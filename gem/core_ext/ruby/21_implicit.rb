@@ -31,6 +31,15 @@ class String
   __implicit_args :rpartition, String
   __implicit_args :delete_prefix, String
   __implicit_args :delete_suffix, String
+  __implicit_args :delete_prefix!, String
+  __implicit_args :delete_suffix!, String
+  __implicit_args :replace, String
+  __implicit_args :prepend, String, String, String, String
+  __implicit_args :scan, String
+  __implicit_args :match, String
+  __implicit_args :match?, String
+  __implicit_args :to_i, Integer
+  __implicit_args :upto, String
 end
 
 class Integer
@@ -53,4 +62,8 @@ class IO
     kw.empty? ? __oruby_initialize(fd, *rest, &block) : __oruby_initialize(fd, *rest, **kw, &block)
   end
   private :initialize
+end
+
+class Module
+  __implicit_args :const_set, String
 end

@@ -54,7 +54,17 @@ class Proc
 
   # BINARY, as MRI's
   alias_method :__oruby_proc_to_s, :to_s
-  def to_s = __oruby_proc_to_s.force_encoding(Encoding::BINARY)
+  # a Symbol#to_proc lambda names its Symbol, a Method#to_proc one has no
+  # source location
+  def to_s
+    s = __oruby_proc_to_s
+    if (sym = __oruby_symproc_sym)
+      s = "#{s[/\A#<Proc:0x\h+/]}(&#{sym.inspect}) (lambda)>"
+    elsif instance_variable_defined?(:@__oruby_method)
+      s = "#{s[/\A#<Proc:0x\h+/]} (lambda)>"
+    end
+    s.force_encoding(Encoding::BINARY)
+  end
   alias inspect to_s
 end
 
@@ -183,14 +193,23 @@ class String
     return [self.dup] if sep.nil? && !empty?
     return [] if empty?
     sep = Kernel.__implicit(sep, String)
+    if __encoding_tag
+      enc = encoding
+      # a dummy wide encoding has no lines; UTF-7 has no converter
+      return [dup] if enc.equal?(Encoding::UTF_16) || enc.equal?(Encoding::UTF_32)
+      raise Encoding::ConverterNotFoundError, "code converter not found (UTF-8 to UTF-7)" if enc.equal?(Encoding::UTF_7)
+    end
     out = []
-    if sep.empty? # paragraph mode
+    if sep.empty? # paragraph mode: up to two newlines, the ones after skipped
       rest = self
-      while (m = /\n\n+/.__match_raw(rest))
+      while (m = /\r?\n\r?\n/.__match_raw(rest))
         out << (chomp ? m.pre_match : m.pre_match + m[0])
         rest = m.post_match
+        if (s = /\A(?:\r?\n)+/.__match_raw(rest))
+          rest = s.post_match
+        end
       end
-      out << (chomp ? rest.chomp : rest) unless rest.empty?
+      out << rest unless rest.empty?
       return out
     end
     pos = 0
@@ -218,7 +237,12 @@ class String
     um = instance_method(m)
     define_method(m) do |*opts|
       String.__case_opts(opts, m)
-      if opts.include?(:ascii)
+      enc = encoding
+      # an ASCII-incompatible encoding (UTF-16/32) maps as UTF-8
+      return encode(Encoding::UTF_8).__send__(m, *opts).encode(enc) unless enc.ascii_compatible? || enc.dummy?
+      if opts.include?(:fold)
+        String.__fold(um.bind_call(self))
+      elsif opts.include?(:ascii)
         String.__ascii_case(self, m)
       elsif opts.include?(:turkic)
         String.__turkic_case(self, m, um)
@@ -230,7 +254,7 @@ class String
     bum = instance_method(bm)
     define_method(bm) do |*opts|
       String.__case_opts(opts, m)
-      if opts.include?(:ascii) || opts.include?(:turkic)
+      if opts.include?(:ascii) || opts.include?(:turkic) || opts.include?(:fold) || !(encoding.ascii_compatible? || encoding.dummy?)
         r = __send__(m, *opts)
         return nil if r == self
         replace(r)
@@ -238,6 +262,21 @@ class String
         bum.bind_call(self)
       end
     end
+  end
+
+  # full case folding beyond downcase (Unicode CaseFolding.txt, status F)
+  FOLD_FULL = {
+    "\u00DF" => "ss", "\u1E9E" => "ss", "\u0149" => "\u02BCn", "\u01F0" => "j\u030C",
+    "\u0390" => "\u03B9\u0308\u0301", "\u03B0" => "\u03C5\u0308\u0301", "\u0587" => "\u0565\u0582",
+    "\u1E96" => "h\u0331", "\u1E97" => "t\u0308", "\u1E98" => "w\u030A", "\u1E99" => "y\u030A",
+    "\u1E9A" => "a\u02BE", "\uFB00" => "ff", "\uFB01" => "fi", "\uFB02" => "fl", "\uFB03" => "ffi",
+    "\uFB04" => "ffl", "\uFB05" => "st", "\uFB06" => "st",
+  }.freeze
+  private_constant :FOLD_FULL
+
+  def self.__fold(s)
+    return s if s.ascii_only?
+    s.gsub(/[\u00DF\u1E9E\u0149\u01F0\u0390\u03B0\u0587\u1E96-\u1E9A\uFB00-\uFB06]/) { |c| FOLD_FULL[c] || c }
   end
 
   def self.__case_opts(opts, m)

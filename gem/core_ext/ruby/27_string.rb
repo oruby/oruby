@@ -334,12 +334,19 @@ class String
 
   def initialize(*args, encoding: nil, capacity: nil)
     raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1
-    __oruby_initialize(*args)
-    if encoding
-      force_encoding(encoding)
-    elsif args.empty?
-      force_encoding(Encoding::BINARY)
+    if args.empty?
+      # no string: self is left as it is; String.new's own empty one is binary
+      if encoding
+        force_encoding(encoding)
+      elsif empty? && !frozen?
+        force_encoding(Encoding::BINARY)
+      end
+      return self
     end
+    str = args[0]
+    str = Kernel.__implicit(str, String) unless String === str
+    __oruby_initialize(str)
+    force_encoding(encoding) if encoding
     self
   end
   private :initialize

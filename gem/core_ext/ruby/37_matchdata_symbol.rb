@@ -356,6 +356,8 @@ class Proc
   alias __orig_proc_arity arity
   def arity
     return -2 if __oruby_sym_proc?
+    m = @__oruby_method
+    return m.arity if m
     __orig_proc_arity
   end
 

@@ -119,7 +119,7 @@ end
 		cIO.DefineMethod("sysread", ioSysread, mrb.ArgsArg(1, 1))
 		cIO.DefineMethod("sysseek", ioSysseek, mrb.ArgsArg(1, 1))
 		cIO.DefineMethod("syswrite", ioSyswrite, mrb.ArgsReq(1))
-		cIO.DefineMethod("tell", ioTell, mrb.ArgsNone())
+		cIO.DefineMethod("tell", ioPos, mrb.ArgsNone())
 		cIO.DefineMethod("to_i", ioFileno, mrb.ArgsNone())
 		cIO.DefineMethod("to_io", ioToIo, mrb.ArgsNone())
 		cIO.DefineMethod("tty?", ioIsTty, mrb.ArgsNone())

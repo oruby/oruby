@@ -77,19 +77,36 @@ func (mrb *MrbState) registerFunc(f interface{}) C.mrb_value {
 	return C.mrb_fixnum_value((C.mrb_int)(idx))
 }
 
+// funcvalOf is the identity of a func value: its funcval. A top-level
+// function has one funcval wherever it is named, a closure one per
+// creation (so closures over different values stay apart).
+func funcvalOf(f MrbFuncT) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&f))
+}
+
+// registerFuncIndex: a function registered again gets its first index, so
+// the methods defined with it are one method definition (Method#== of
+// aliases: Dir.getwd and Dir.pwd)
 func (mrb *MrbState) registerFuncIndex(f interface{}) int {
-	mrb.funcs = append(mrb.funcs, f)
 	if cf, ok := f.(MrbFuncT); ok {
-		mrb.cfuncs = append(mrb.cfuncs, cf)
-	} else {
-		mrb.cfuncs = append(mrb.cfuncs, nil)
+		return mrb.registerMrbFuncT(cf)
 	}
+	mrb.funcs = append(mrb.funcs, f)
+	mrb.cfuncs = append(mrb.cfuncs, nil)
 	return len(mrb.funcs) - 1
 }
 
 func (mrb *MrbState) registerMrbFuncT(f MrbFuncT) int {
+	key := funcvalOf(f)
+	if i, ok := mrb.funcIndex[key]; ok {
+		return i
+	}
 	mrb.funcs = append(mrb.funcs, f)
 	mrb.cfuncs = append(mrb.cfuncs, f)
+	if mrb.funcIndex == nil {
+		mrb.funcIndex = map[unsafe.Pointer]int{}
+	}
+	mrb.funcIndex[key] = len(mrb.cfuncs) - 1
 	return len(mrb.cfuncs) - 1
 }
 
