@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "b2b335ed9ef092c4"
+const presymTable = "11ea818c56e407d6"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -550,7 +550,6 @@ const (
 	Sym___mkdtemp                               MrbSym = C.MRB_SYM____mkdtemp                               // "__mkdtemp"
 	Sym___names                                 MrbSym = C.MRB_SYM____names                                 // "__names"
 	Sym___new                                   MrbSym = C.MRB_SYM____new                                   // "__new"
-	Sym___no_kw_disallow__                      MrbSym = C.MRB_SYM____no_kw_disallow__                      // "__no_kw_disallow__"
 	Sym___nonblock                              MrbSym = C.MRB_SYM____nonblock                              // "__nonblock"
 	Sym___now                                   MrbSym = C.MRB_SYM____now                                   // "__now"
 	Sym___ns                                    MrbSym = C.MRB_SYM____ns                                    // "__ns"
@@ -616,7 +615,6 @@ const (
 	Sym___oruby_new__                           MrbSym = C.MRB_SYM____oruby_new__                           // "__oruby_new__"
 	Sym___oruby_new_regexp                      MrbSym = C.MRB_SYM____oruby_new_regexp                      // "__oruby_new_regexp"
 	Sym___oruby_nmembers                        MrbSym = C.MRB_SYM____oruby_nmembers                        // "__oruby_nmembers"
-	Sym___oruby_noblk                           MrbSym = C.MRB_SYM____oruby_noblk                           // "__oruby_noblk"
 	Sym___oruby_nochild                         MrbSym = C.MRB_SYM____oruby_nochild                         // "__oruby_nochild"
 	Sym___oruby_notify                          MrbSym = C.MRB_SYM____oruby_notify                          // "__oruby_notify"
 	Sym___oruby_nsig__                          MrbSym = C.MRB_SYM____oruby_nsig__                          // "__oruby_nsig__"

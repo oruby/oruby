@@ -48,13 +48,13 @@ class Random
   def initialize(seed = (no_seed = true; nil))
     s = no_seed ? Random.new_seed : Random.__coerce_seed(seed)
     @__seed = s
-    @__mt = Random::MTState.new.seed_words(Random.__seed_words(s))
+    @__mt = MTState.new.seed_words(Random.__seed_words(s))
   end
 
   def initialize_copy(other)
     raise TypeError, "wrong argument type #{other.class} (expected Random)" unless Random === other
     @__seed = other.seed
-    @__mt = Random::MTState.new.copy_from(other.instance_variable_get(:@__mt))
+    @__mt = MTState.new.copy_from(other.instance_variable_get(:@__mt))
     self
   end
 
@@ -85,7 +85,7 @@ class Random
     raise TypeError, "expected Array" unless Array === ary && ary.size == 3
     st, lft, s = ary
     @__seed = s
-    @__mt = Random::MTState.new.restore(st, lft)
+    @__mt = MTState.new.restore(st, lft)
     self
   end
 

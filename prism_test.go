@@ -68,14 +68,9 @@ func TestPreprocessRuby(t *testing.T) {
 			expected: `undef :method1, :method2`,
 		},
 		{
-			name:     "method def with **nil",
+			name:     "method def with **nil (mruby compiles it)",
 			input:    `def no_kw(arg1, **nil, &); inner(&) end`,
-			expected: `def no_kw(arg1, **__no_kw_disallow__, &); ::Kernel.raise(::ArgumentError, "no keywords accepted") unless __no_kw_disallow__.empty?;; inner(&) end`,
-		},
-		{
-			name:     "proc with **nil",
-			input:    `proc { |**nil| :ok }`,
-			expected: `proc { |**__no_kw_disallow__|; ::Kernel.raise(::ArgumentError, "no keywords accepted") unless __no_kw_disallow__.empty?; :ok }`,
+			expected: `def no_kw(arg1, **nil, &); inner(&) end`,
 		},
 		{
 			name:     "comment with alias does not break",

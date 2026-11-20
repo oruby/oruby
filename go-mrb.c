@@ -298,7 +298,7 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, "END") || src_contains(s, len, "__ENCODING__") ||
           src_contains(s, len, "frozen_string_literal") ||
           src_contains(s, len, "||=") || src_contains(s, len, "&&=") ||
-          src_contains(s, len, "::") || src_contains(s, len, "$") || src_contains(s, len, "&nil") ||
+          src_contains(s, len, "::") || src_contains(s, len, "$") ||
           src_bare_it(s, len) || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
@@ -1376,8 +1376,7 @@ static mrb_value attr_w(mrb_state *mrb, mrb_value mod) {
 }
 
 /* ---- Proc#parameters / Method#parameters, as MRI's ----
-   mruby's answers no :keyreq, loses keyword names and shows **nil and &nil
-   by their hidden locals. Registers after self: required, optional, rest,
+   mruby's answers no :keyreq and loses keyword names. Registers after self: required, optional, rest,
    post, the keyword hash (when there are keywords), the block; keyword
    locals are named by the OP_KARG that fills each (OP_KEY_P first for an
    optional one). lambda: -1 the proc's own kind, 0 as a proc, 1 as a lambda. */
@@ -1468,14 +1467,14 @@ static mrb_value orb_params(mrb_state *mrb, mrb_value procv, int lambda) {
     mrb_ary_concat(mrb, out, opts);
   }
   if (kd) {
-    if (kdname == MRB_SYM(__no_kw_disallow__)) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(nokey), 0));
+    /* **nil: mruby's compiler names its dictionary "**nil" */
+    mrb_int kl;
+    const char *kn = kdname ? mrb_sym_name_len(mrb, kdname, &kl) : NULL;
+    if (kn && kl == 5 && memcmp(kn, "**nil", 5) == 0) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(nokey), 0));
     else mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(keyrest), kdname));
   }
-  if (MRB_ASPEC_BLOCK(aspec)) {
-    /* &nil, as the Prism rewriter makes it (ORB_NOBLOCK) */
-    if (blkname == MRB_SYM(__oruby_noblk)) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(noblock), 0));
-    else mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(block), blkname));
-  }
+  if (MRB_ASPEC_BLOCK(aspec)) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(block), blkname));
+  if (MRB_ASPEC_NOBLOCK(aspec)) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(noblock), 0));
 #undef LV
   return out;
 }
@@ -1813,6 +1812,19 @@ static mrb_bool requiring_here(mrb_state *mrb, const char *path, mrb_int len) {
 }
 
 static mrb_value const_missing_w(mrb_state *mrb, mrb_value mod) {
+  /* mruby's Mod::X raises "private constant" only while const_missing is
+     its own; this wrapper says so the same way */
+  if ((mrb_class_p(mod) || mrb_module_p(mod)) && mrb_get_argc(mrb) == 1 && mrb_symbol_p(mrb_get_argv(mrb)[0])) {
+    mrb_sym sym = mrb_symbol(mrb_get_argv(mrb)[0]);
+    for (struct RClass *c = mrb_class_ptr(mod); c; c = c->super) {
+      struct RClass *owner = c->tt == MRB_TT_ICLASS ? c->c : c;
+      if (!mrb_iv_defined(mrb, mrb_obj_value(owner), sym)) continue;
+      if (mrb_const_flags(mrb, owner, sym) & MRB_CONST_PRIVATE) {
+        mrb_name_error(mrb, sym, "private constant %C::%n referenced", owner, sym);
+      }
+      break;
+    }
+  }
   if (atomic_load(&orb_threads_active) && (mrb_class_p(mod) || mrb_module_p(mod)) && mrb_get_argc(mrb) == 1 &&
       mrb_symbol_p(mrb_get_argv(mrb)[0]) && mrb_class_defined_id(mrb, MRB_SYM(Thread))) {
     mrb_sym sym = mrb_symbol(mrb_get_argv(mrb)[0]);

@@ -450,7 +450,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__mkdtemp");
   (void)mrb_intern_lit(mrb, "__names");
   (void)mrb_intern_lit(mrb, "__new");
-  (void)mrb_intern_lit(mrb, "__no_kw_disallow__");
   (void)mrb_intern_lit(mrb, "__nonblock");
   (void)mrb_intern_lit(mrb, "__nonblock?");
   (void)mrb_intern_lit(mrb, "__now");
@@ -520,7 +519,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_new__");
   (void)mrb_intern_lit(mrb, "__oruby_new_regexp");
   (void)mrb_intern_lit(mrb, "__oruby_nmembers");
-  (void)mrb_intern_lit(mrb, "__oruby_noblk");
   (void)mrb_intern_lit(mrb, "__oruby_nochild");
   (void)mrb_intern_lit(mrb, "__oruby_notify");
   (void)mrb_intern_lit(mrb, "__oruby_nsig__");

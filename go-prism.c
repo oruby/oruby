@@ -165,10 +165,6 @@ visit(const pm_node_t *node, void *data)
     }
     break;
   }
-  case PM_NO_KEYWORDS_PARAMETER_NODE:
-    r = add(sc, ORB_NO_KEYWORDS);
-    span(r, 0, node);
-    break;
   case PM_ALIAS_METHOD_NODE: {
     const pm_alias_method_node_t *a = (const pm_alias_method_node_t *)node;
     if (is_dsym(a->new_name) || is_dsym(a->old_name)) {
@@ -230,56 +226,6 @@ visit(const pm_node_t *node, void *data)
     if (params && PM_NODE_TYPE(params) == PM_IT_PARAMETERS_NODE && open.length > 0) {
       r = add(sc, ORB_IT_BLOCK);
       r->s[0] = r->e[0] = (int32_t)(open.start + open.length);
-    }
-    // |&nil|: as a def's (ORB_NOBLOCK), the check after the parameters
-    if (params && PM_NODE_TYPE(params) == PM_BLOCK_PARAMETERS_NODE) {
-      const pm_block_parameters_node_t *bp = (const pm_block_parameters_node_t *)params;
-      /* where the body starts: a block's after its |params|, a lambda's
-         after the { or do that follows its (params) */
-      int32_t body_at = PM_NODE_TYPE(node) == PM_LAMBDA_NODE ? (int32_t)(open.start + open.length)
-                                                              : (int32_t)(bp->closing_loc.start + bp->closing_loc.length);
-      if (bp->parameters && bp->parameters->block && PM_NODE_TYPE(bp->parameters->block) == PM_NO_BLOCK_PARAMETER_NODE &&
-          bp->closing_loc.length > 0) {
-        r = add(sc, ORB_NOBLOCK);
-        span(r, 0, bp->parameters->block);
-        r->s[1] = r->e[1] = body_at;
-      }
-      if (bp->parameters && bp->parameters->keyword_rest &&
-          PM_NODE_TYPE(bp->parameters->keyword_rest) == PM_NO_KEYWORDS_PARAMETER_NODE && bp->closing_loc.length > 0) {
-        r = add(sc, ORB_NOKW);
-        r->s[1] = r->e[1] = body_at;
-      }
-    }
-    break;
-  }
-  case PM_DEF_NODE: {
-    // def m(&nil): mruby's code generator takes the parameter's name from an
-    // unset constant (a random symbol, or an abort); it becomes a hidden
-    // block parameter and MRI's check (prism.go)
-    const pm_def_node_t *d = (const pm_def_node_t *)node;
-    // def m(**nil): MRI's check that no keywords came (the rename is ORB_NO_KEYWORDS)
-    if (d->parameters && d->parameters->keyword_rest &&
-        PM_NODE_TYPE(d->parameters->keyword_rest) == PM_NO_KEYWORDS_PARAMETER_NODE) {
-      if (d->equal_loc.length > 0 && d->body) {
-        r = add(sc, ORB_NOKW);
-        span(r, 2, d->body);
-        r->flags = 1;
-      } else if (d->rparen_loc.length > 0) {
-        r = add(sc, ORB_NOKW);
-        r->s[1] = r->e[1] = (int32_t)(d->rparen_loc.start + d->rparen_loc.length);
-      }
-    }
-    if (d->parameters && d->parameters->block && PM_NODE_TYPE(d->parameters->block) == PM_NO_BLOCK_PARAMETER_NODE) {
-      if (d->equal_loc.length > 0 && d->body) {
-        r = add(sc, ORB_NOBLOCK);
-        span(r, 0, d->parameters->block);
-        span(r, 2, d->body);
-        r->flags = 1;
-      } else if (d->rparen_loc.length > 0) {
-        r = add(sc, ORB_NOBLOCK);
-        span(r, 0, d->parameters->block);
-        r->s[1] = r->e[1] = (int32_t)(d->rparen_loc.start + d->rparen_loc.length);
-      }
     }
     break;
   }

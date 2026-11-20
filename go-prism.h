@@ -8,7 +8,6 @@
 // Rewrite sites found by _oruby_prism_scan (see prism.go)
 enum {
   ORB_LIST_ITEM = 1,      // s0: one name of the preceding ORB_UNDEF_DYNAMIC
-  ORB_NO_KEYWORDS,        // s0: **nil
   ORB_ALIAS_DYNAMIC,      // s0: node, s1: new name, s2: old name
   ORB_UNDEF_DYNAMIC,      // s0: node; names follow as ORB_LIST_ITEM
   ORB_RESCUE_SAFE_NAV,    // s0: reference (a&.b)
@@ -35,8 +34,6 @@ enum {
   ORB_MASGN_NESTED,       // s0: a nested target (a, b) of a multiple assignment, s1: the assignment, s2: inside its parentheses
   ORB_IT_BLOCK,           // s0: (zero width) just after the opening of a block or lambda whose parameter is `it`
   ORB_PARSE_WARN,         // s0: (zero width) the program's first statement, s1: where a parse warning points; flags 1: verbose only; its text is the next of _oruby_prism_scan's msgs
-  ORB_NOKW,               // as ORB_NOBLOCK, for a **nil parameter (renamed by ORB_NO_KEYWORDS): the check only
-  ORB_NOBLOCK,            // s0: an &nil parameter, s1: (zero width) where the body starts; flags 1: s2 an endless def's body, to wrap
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

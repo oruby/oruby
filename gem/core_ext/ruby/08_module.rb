@@ -1,30 +1,3 @@
-class Module
-  # Constant visibility is recorded, but mruby resolves Mod::CONST in C,
-  # so private constants stay accessible.
-  def private_constant(*names)
-    __aot_check_constants(names)
-    (@__private_constants ||= {}).tap { |h| names.each { |n| h[n.to_sym] = true } }
-    nil
-  end
-
-  def public_constant(*names)
-    __aot_check_constants(names)
-    names.each { |n| @__private_constants.delete(n.to_sym) } if @__private_constants
-    nil
-  end
-
-  def deprecate_constant(*names)
-    __aot_check_constants(names)
-    self
-  end
-
-  private def __aot_check_constants(names)
-    names.each do |n|
-      raise NameError.new("constant #{self}::#{n} not defined", n.to_sym) unless const_defined?(n, false)
-    end
-  end
-end
-
 module Kernel
   def fork(*)
     raise NotImplementedError, "fork() function is unimplemented on this machine"

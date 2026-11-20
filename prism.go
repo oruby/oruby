@@ -23,7 +23,6 @@ import (
 // mruby compiles, usually a call to a Kernel helper defined in mruby.go:
 //
 //   - alias/undef with dynamic symbols  -> Kernel.__oruby_alias__/__oruby_undef__
-//   - **nil parameters                  -> **__no_kw_disallow__
 //   - rescue => a&.b, for a&.b in c      -> plain targets plus an assignment
 //   - BEGIN { ... }                      -> begin ... end
 //   - flip-flops                         -> Kernel.__oruby_ff__ with lazy operands
@@ -172,7 +171,7 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 		return true
 	}
 	// "=>" and ": ": a hash literal, whose duplicated keys MRI warns about (ORB_PARSE_WARN)
-	if hasArrayKwHash(src) || hasBareIt(src) || bytes.Contains(src, []byte("&nil")) ||
+	if hasArrayKwHash(src) || hasBareIt(src) ||
 		bytes.Contains(src, []byte("=>")) || bytes.Contains(src, []byte(": ")) {
 		return true
 	}
@@ -455,8 +454,6 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		rc := recs[i]
 		s, e := rc.s, rc.e
 		switch rc.kind {
-		case C.ORB_NO_KEYWORDS:
-			r.add(s[0], e[0], func(*rewriter) string { return "**__no_kw_disallow__" })
 		case C.ORB_ALIAS_DYNAMIC:
 			r.add(s[0], e[0], func(r *rewriter) string {
 				return "::Kernel.__oruby_alias__(self, " + symArg(r.render(s[1], e[1])) + ", " + symArg(r.render(s[2], e[2])) + ")"
@@ -588,26 +585,6 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			line := 1 + bytes.Count(src[:s[1]], []byte("\n"))
 			parseWarns = append(parseWarns, "["+strconv.Itoa(line)+", "+strconv.FormatBool(rc.flags&1 != 0)+", "+rubySingleQuoted(rc.msg)+"]")
 			warnAt = s[0]
-		case C.ORB_NOKW:
-			// **nil: MRI's ArgumentError for keywords given
-			check := `::Kernel.raise(::ArgumentError, "no keywords accepted") unless __no_kw_disallow__.empty?`
-			if rc.flags&1 != 0 {
-				r.addWrap(s[2], e[2], func(*rewriter) string { return "(" + check + "; " },
-					func(*rewriter) string { return ")" })
-			} else {
-				r.add(s[1], s[1], func(*rewriter) string { return "; " + check + ";" })
-			}
-		case C.ORB_NOBLOCK:
-			// &nil: a hidden block parameter (Proc#parameters answers
-			// [:noblock] for it) and MRI's ArgumentError for a block given
-			check := `::Kernel.raise(::ArgumentError, "no block accepted") if __oruby_noblk`
-			r.add(s[0], e[0], func(*rewriter) string { return "&__oruby_noblk" })
-			if rc.flags&1 != 0 {
-				r.addWrap(s[2], e[2], func(*rewriter) string { return "(" + check + "; " },
-					func(*rewriter) string { return ")" })
-			} else {
-				r.add(s[1], s[1], func(*rewriter) string { return "; " + check + ";" })
-			}
 		case C.ORB_IT_BLOCK:
 			// dead code: the local exists in the block's table, the line never runs
 			r.add(s[0], s[0], func(*rewriter) string { return " __oruby_it = nil if false;" })
