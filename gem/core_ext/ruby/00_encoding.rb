@@ -253,7 +253,7 @@ class Encoding
       raise TypeError, "no implicit conversion of #{name.class} into String" unless name.respond_to?(:to_str)
       key = name.to_str
       unless key.is_a?(String)
-        raise TypeError, "can't convert #{name.class} to String (#{name.class}#to_str gives #{key.class})"
+        raise TypeError, "can't convert #{name.class} into String (#{name.class}#to_str gives #{key.class})"
       end
       unless key.encoding.ascii_compatible?
         raise ArgumentError, "invalid encoding name (non ASCII)"

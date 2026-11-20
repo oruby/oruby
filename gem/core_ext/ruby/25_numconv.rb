@@ -163,7 +163,7 @@ module Kernel
       c = Kernel.__cname(arg)
       raise TypeError, "can't convert #{c} into Float" unless Kernel.__responds?(arg, :to_f)
       r = arg.to_f
-      raise TypeError, "can't convert #{c} to Float (#{c}#to_f gives #{Kernel.__cname(r)})" unless Float === r
+      raise TypeError, "can't convert #{c} into Float (#{c}#to_f gives #{Kernel.__cname(r)})" unless Float === r
       r
     rescue StandardError
       raise if exception

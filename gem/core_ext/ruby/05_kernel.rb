@@ -231,7 +231,7 @@ module Kernel
   def self.__oruby_ary_conv(arg, r, meth)
     return r if Array === r
     c = Kernel.__cname(arg)
-    raise TypeError, "can't convert #{c} to Array (#{c}##{meth} gives #{Kernel.__cname(r)})"
+    raise TypeError, "can't convert #{c} into Array (#{c}##{meth} gives #{Kernel.__cname(r)})"
   end
 
   # MRI's Kernel#open: an object with #to_open opens itself (the block gets

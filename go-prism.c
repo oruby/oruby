@@ -227,6 +227,52 @@ visit(const pm_node_t *node, void *data)
       r = add(sc, ORB_IT_BLOCK);
       r->s[0] = r->e[0] = (int32_t)(open.start + open.length);
     }
+    // |a, b| given one object: MRI spreads it by #to_ary, mruby only an
+    // Array; a nested |(a, b)| destructures by #to_ary too (prism.go)
+    if (params && PM_NODE_TYPE(params) == PM_BLOCK_PARAMETERS_NODE) {
+      const pm_block_parameters_node_t *bp = (const pm_block_parameters_node_t *)params;
+      const pm_parameters_node_t *pp = bp->parameters;
+      int lambda = PM_NODE_TYPE(node) == PM_LAMBDA_NODE;
+      int32_t body_at = lambda ? (int32_t)(open.start + open.length)
+                               : (int32_t)(bp->closing_loc.start + bp->closing_loc.length);
+      if (pp && (lambda ? open.length > 0 : bp->closing_loc.length > 0)) {
+        int nested = 0, named_rest = 1;
+        size_t n = pp->requireds.size + pp->posts.size;
+        for (size_t i = 0; i < pp->requireds.size; i++) nested |= PM_NODE_TYPE(pp->requireds.nodes[i]) == PM_MULTI_TARGET_NODE;
+        for (size_t i = 0; i < pp->posts.size; i++) nested |= PM_NODE_TYPE(pp->posts.nodes[i]) == PM_MULTI_TARGET_NODE;
+        if (pp->rest && PM_NODE_TYPE(pp->rest) == PM_REST_PARAMETER_NODE && ((const pm_rest_parameter_node_t *)pp->rest)->name == 0)
+          named_rest = 0;
+        int plain = pp->optionals.size == 0 && pp->keywords.size == 0 && !pp->keyword_rest && named_rest;
+        int spread = !lambda && plain && pp->requireds.size > 0 && (n >= 2 || pp->rest);
+        if (spread || nested) {
+          r = add(sc, ORB_BLOCK_PARAMS);
+          r->s[0] = r->e[0] = body_at;
+          r->flags = spread;
+          for (size_t i = 0; i < pp->requireds.size; i++) {
+            const pm_node_t *p = pp->requireds.nodes[i];
+            orb_rec *it = add(sc, ORB_LIST_ITEM);
+            span(it, 0, p);
+            it->flags = PM_NODE_TYPE(p) == PM_MULTI_TARGET_NODE ? 8 : 0;
+          }
+          if (pp->rest) {
+            orb_rec *it = add(sc, ORB_LIST_ITEM);
+            if (PM_NODE_TYPE(pp->rest) == PM_IMPLICIT_REST_NODE) {
+              it->flags = 3;
+            } else {
+              const pm_rest_parameter_node_t *rp = (const pm_rest_parameter_node_t *)pp->rest;
+              lspan(it, 0, rp->name_loc);
+              it->flags = 1;
+            }
+          }
+          for (size_t i = 0; i < pp->posts.size; i++) {
+            const pm_node_t *p = pp->posts.nodes[i];
+            orb_rec *it = add(sc, ORB_LIST_ITEM);
+            span(it, 0, p);
+            it->flags = 2 | (PM_NODE_TYPE(p) == PM_MULTI_TARGET_NODE ? 8 : 0);
+          }
+        }
+      }
+    }
     break;
   }
   case PM_PRE_EXECUTION_NODE: {

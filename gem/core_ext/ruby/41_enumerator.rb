@@ -438,7 +438,7 @@ class Enumerator
           elsif Array === r
             [:ary, r]
           else
-            raise TypeError, "can't convert #{a.class} to Array (#{a.class}#to_ary gives #{r.class})"
+            raise TypeError, "can't convert #{a.class} into Array (#{a.class}#to_ary gives #{r.class})"
           end
         elsif a.respond_to?(:each)
           [:enum, a]

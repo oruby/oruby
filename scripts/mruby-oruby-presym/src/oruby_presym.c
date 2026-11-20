@@ -463,6 +463,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_block");
   (void)mrb_intern_lit(mrb, "__oruby_body");
   (void)mrb_intern_lit(mrb, "__oruby_bt__");
+  (void)mrb_intern_lit(mrb, "__oruby_bta?");
   (void)mrb_intern_lit(mrb, "__oruby_buffered?");
   (void)mrb_intern_lit(mrb, "__oruby_clone_unfreeze");
   (void)mrb_intern_lit(mrb, "__oruby_close");

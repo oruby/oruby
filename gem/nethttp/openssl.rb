@@ -182,7 +182,7 @@ module OpenSSL
         original = n
         n = n.__send__(:to_int)
         unless n.is_a?(Integer)
-          raise TypeError, "can't convert #{original.class} to Integer (#{original.class}#to_int gives #{n.class})"
+          raise TypeError, "can't convert #{original.class} into Integer (#{original.class}#to_int gives #{n.class})"
         end
       end
       OpenSSL.__random_bytes(n)

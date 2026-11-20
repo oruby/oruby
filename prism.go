@@ -139,6 +139,58 @@ func DataOffset(src []byte) int {
 	return int(C._oruby_prism_data_offset((*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src))))
 }
 
+// hiddenParam is a fresh hidden local for a nested block parameter
+// (ORB_BLOCK_PARAMS); Proc#parameters names none (go-mrb.c param_pair)
+func hiddenParam() string {
+	return "__oruby_bp" + strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+}
+
+// destructureParam appends the statements that destructure the nested
+// parameter inner (the text inside its parentheses) from local from, as MRI
+// does: by #to_ary at each level, a deeper (x, y) through its own hidden local
+func destructureParam(out []string, inner, from string) []string {
+	var parts []string
+	depth, start := 0, 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(inner[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(inner[start:]))
+	var lhs []string
+	var deeper [][2]string
+	splat := false
+	for _, p := range parts {
+		switch {
+		case p == "":
+			lhs = append(lhs, "") // (a, ): the trailing comma
+		case strings.HasPrefix(p, "("):
+			tmp := hiddenParam()
+			deeper = append(deeper, [2]string{strings.TrimSuffix(strings.TrimPrefix(p, "("), ")"), tmp})
+			lhs = append(lhs, tmp)
+		default:
+			splat = splat || strings.HasPrefix(p, "*")
+			lhs = append(lhs, p)
+		}
+	}
+	if len(lhs) == 1 && !splat {
+		lhs = append(lhs, "") // (a): a one-target multiple assignment
+	}
+	out = append(out, strings.Join(lhs, ", ")+" = ::Kernel.__oruby_ary_of("+from+");")
+	for _, d := range deeper {
+		out = destructureParam(out, d[0], d[1])
+	}
+	return out
+}
+
 // rubySingleQuoted is s as a Ruby single-quoted literal
 func rubySingleQuoted(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
@@ -176,7 +228,8 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 		return true
 	}
 	// "**": **obj (ORB_KWSPLAT)
-	for _, k := range []string{"**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
+	// "|", "->": block and lambda parameters (ORB_BLOCK_PARAMS)
+	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
 		"__ENCODING__", "frozen_string_literal", "coding"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
@@ -585,6 +638,64 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			line := 1 + bytes.Count(src[:s[1]], []byte("\n"))
 			parseWarns = append(parseWarns, "["+strconv.Itoa(line)+", "+strconv.FormatBool(rc.flags&1 != 0)+", "+rubySingleQuoted(rc.msg)+"]")
 			warnAt = s[0]
+		case C.ORB_BLOCK_PARAMS:
+			// MRI's block parameters for one object, at the body's start:
+			//   |a, b|      -> a, b = ::Kernel.__oruby_ary_of(a) if !b && ::Kernel.__oruby_bta?(a, b)
+			//   |(a, b), c| -> |__oruby_bpN, c| a, b = ::Kernel.__oruby_ary_of(__oruby_bpN)
+			// The guard is a local test in a frame mruby spread already;
+			// __oruby_bta? (go-mrb.c) passes a frame given one non-Array
+			// object, not a lambda's, and __oruby_ary_of is a, b = obj's #to_ary
+			// as MRI's (ORB_MASGN_NESTED)
+			type param struct {
+				s, e, kind int
+				name       string
+			}
+			var ps []param
+			var nested []string
+			for i+1 < len(recs) && recs[i+1].kind == C.ORB_LIST_ITEM {
+				i++
+				it := recs[i]
+				p := param{s: it.s[0], e: it.e[0], kind: it.flags & 7}
+				if p.kind != 3 {
+					p.name = r.text(p.s, p.e)
+				}
+				if it.flags&8 != 0 && p.e-p.s >= 2 && src[p.s] == '(' && src[p.e-1] == ')' {
+					tmp := hiddenParam()
+					r.add(p.s, p.e, func(*rewriter) string { return tmp })
+					nested = destructureParam(nested, r.text(p.s+1, p.e-1), tmp)
+					p.name = tmp
+				}
+				ps = append(ps, p)
+			}
+			var b strings.Builder
+			if rc.flags&1 != 0 && len(ps) > 0 && ps[0].kind == 0 {
+				var lhs, others, guard []string
+				for _, p := range ps {
+					switch p.kind {
+					case 1:
+						lhs = append(lhs, "*"+p.name)
+						guard = append(guard, p.name+".empty?")
+					case 3:
+						lhs = append(lhs, "")
+					default:
+						lhs = append(lhs, p.name)
+						if len(lhs) > 1 {
+							others = append(others, p.name)
+							guard = append(guard, "!"+p.name)
+						}
+					}
+				}
+				first := ps[0].name
+				guard = append(guard, "::Kernel.__oruby_bta?("+strings.Join(append([]string{first}, others...), ", ")+")")
+				b.WriteString(" " + strings.Join(lhs, ", ") + " = ::Kernel.__oruby_ary_of(" + first + ") if " + strings.Join(guard, " && ") + ";")
+			}
+			for _, n := range nested {
+				b.WriteString(" " + n)
+			}
+			if b.Len() > 0 {
+				text := b.String()
+				r.add(s[0], s[0], func(*rewriter) string { return text })
+			}
 		case C.ORB_IT_BLOCK:
 			// dead code: the local exists in the block's table, the line never runs
 			r.add(s[0], s[0], func(*rewriter) string { return " __oruby_it = nil if false;" })

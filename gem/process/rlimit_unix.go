@@ -51,7 +51,7 @@ func rlimitToInt(mrb *oruby.MrbState, v oruby.Value) (int64, error) {
 	}
 	if !r.IsInteger() {
 		c := rlimitCname(mrb, v)
-		return 0, oruby.ETypeError("can't convert %s to Integer (%s#to_int gives %s)", c, c, rlimitCname(mrb, r.Value()))
+		return 0, oruby.ETypeError("can't convert %s into Integer (%s#to_int gives %s)", c, c, rlimitCname(mrb, r.Value()))
 	}
 	return r.Int64(), nil
 }

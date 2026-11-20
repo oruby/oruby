@@ -136,7 +136,7 @@ class Hash
       res = pr.to_proc
       unless Proc === res
         cname = Kernel.__cname(pr)
-        raise TypeError, "can't convert #{cname} to Proc (#{cname}#to_proc gives #{Kernel.__cname(res)})"
+        raise TypeError, "can't convert #{cname} into Proc (#{cname}#to_proc gives #{Kernel.__cname(res)})"
       end
       pr = res
     end

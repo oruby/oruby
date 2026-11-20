@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "b55ec01e290e5849"
+const presymTable = "69a759c13642d524"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -160,6 +160,7 @@ const (
 	SymQ___encoding_binary                      MrbSym = C.MRB_SYM_Q____encoding_binary                     // "__encoding_binary?"
 	SymQ___encoding_us_ascii                    MrbSym = C.MRB_SYM_Q____encoding_us_ascii                   // "__encoding_us_ascii?"
 	SymQ___nonblock                             MrbSym = C.MRB_SYM_Q____nonblock                            // "__nonblock?"
+	SymQ___oruby_bta                            MrbSym = C.MRB_SYM_Q____oruby_bta                           // "__oruby_bta?"
 	SymQ___oruby_buffered                       MrbSym = C.MRB_SYM_Q____oruby_buffered                      // "__oruby_buffered?"
 	SymQ___oruby_core_proc                      MrbSym = C.MRB_SYM_Q____oruby_core_proc                     // "__oruby_core_proc?"
 	SymQ___oruby_popen_duplex                   MrbSym = C.MRB_SYM_Q____oruby_popen_duplex                  // "__oruby_popen_duplex?"

@@ -247,7 +247,7 @@ module Kernel
             v = v.to_i
           elsif !v.nil? && v.respond_to?(:to_int)
             r = v.to_int
-            raise TypeError, "can't convert #{cname.(v)} to Integer (#{cname.(v)}#to_int gives #{cname.(r)})" unless Integer === r
+            raise TypeError, "can't convert #{cname.(v)} into Integer (#{cname.(v)}#to_int gives #{cname.(r)})" unless Integer === r
             v = r
           else
             raise TypeError, "no implicit conversion of #{cname.(v)} into Integer"
@@ -300,7 +300,7 @@ module Kernel
       return [obj] if a.nil?
       return a if Array === a
       c = ::Kernel.__cname(obj)
-      raise TypeError, "can't convert #{c} to Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
+      raise TypeError, "can't convert #{c} into Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
     end
 
     # a nested target's value, as MRI destructures it: an Array, by #to_ary,
@@ -312,7 +312,7 @@ module Kernel
       return [obj] if a.nil?
       return a if Array === a
       c = ::Kernel.__cname(obj)
-      raise TypeError, "can't convert #{c} to Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
+      raise TypeError, "can't convert #{c} into Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
     end
 
     # [**h]: the Hash as the element, none when it is empty

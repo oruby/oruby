@@ -7,7 +7,7 @@ class << ENV
     if obj.respond_to?(:to_str)
       r = obj.to_str
       return r if String === r
-      raise TypeError, "can't convert #{obj.class} to String (#{obj.class}#to_str gives #{r.class})"
+      raise TypeError, "can't convert #{obj.class} into String (#{obj.class}#to_str gives #{r.class})"
     end
     raise TypeError, "no implicit conversion of #{obj.class} into String"
   end
@@ -17,7 +17,7 @@ class << ENV
     return nil unless obj.respond_to?(:to_str)
     r = obj.to_str
     return r if String === r
-    raise TypeError, "can't convert #{obj.class} to String (#{obj.class}#to_str gives #{r.class})"
+    raise TypeError, "can't convert #{obj.class} into String (#{obj.class}#to_str gives #{r.class})"
   end
 
   private def __coerce_hash(obj)
@@ -25,7 +25,7 @@ class << ENV
     if obj.respond_to?(:to_hash)
       r = obj.to_hash
       return r if Hash === r
-      raise TypeError, "can't convert #{obj.class} to Hash (#{obj.class}#to_hash gives #{r.class})"
+      raise TypeError, "can't convert #{obj.class} into Hash (#{obj.class}#to_hash gives #{r.class})"
     end
     raise TypeError, "no implicit conversion of #{obj.class} into Hash"
   end

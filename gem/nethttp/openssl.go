@@ -377,7 +377,7 @@ func coerceInt64(mrb *oruby.MrbState, v oruby.Value) (int64, error) {
 		if ret.IsInt() {
 			return ret.Int64(), nil
 		}
-		return 0, fmt.Errorf("can't convert %s to Integer (%s#to_int gives %s)",
+		return 0, fmt.Errorf("can't convert %s into Integer (%s#to_int gives %s)",
 			mrb.ClassName(mrb.ClassOf(v)), mrb.ClassName(mrb.ClassOf(v)), mrb.ClassName(mrb.ClassOf(ret)))
 	}
 	return 0, fmt.Errorf("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ClassOf(v)))

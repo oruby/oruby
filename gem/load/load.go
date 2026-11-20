@@ -741,7 +741,7 @@ func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 		return "", err
 	}
 	if !s.IsString() {
-		return "", oruby.ETypeError("can't convert %s to String (%s#to_str gives %s)", cname(v), cname(v), cname(s.Value()))
+		return "", oruby.ETypeError("can't convert %s into String (%s#to_str gives %s)", cname(v), cname(v), cname(s.Value()))
 	}
 	return mrb.String(s), nil
 }

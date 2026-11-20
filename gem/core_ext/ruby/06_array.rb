@@ -80,7 +80,7 @@ class Array
       if val.is_a?(Integer) && (val > 0x7fff_ffff_ffff_ffff || val < -0x8000_0000_0000_0000)
         raise RangeError, "bignum too big to convert into 'long'"
       end
-      raise TypeError, "can't convert #{idx.class} to Integer (#{idx.class}#to_int gives #{val.class})" unless val.is_a?(Integer)
+      raise TypeError, "can't convert #{idx.class} into Integer (#{idx.class}#to_int gives #{val.class})" unless val.is_a?(Integer)
       val
     elsif idx.is_a?(Float)
       begin
@@ -104,7 +104,7 @@ class Array
     return obj if obj.is_a?(String)
     if obj.respond_to?(:to_str)
       val = obj.to_str
-      raise TypeError, "can't convert #{obj.class} to String (#{obj.class}#to_str gives #{val.class})" unless val.is_a?(String)
+      raise TypeError, "can't convert #{obj.class} into String (#{obj.class}#to_str gives #{val.class})" unless val.is_a?(String)
       val
     else
       raise TypeError, "no implicit conversion of #{obj.class} into String"
@@ -134,20 +134,20 @@ class Array
       return nil unless res
       val = item.__send__(:to_ary)
       return nil if val.nil?
-      raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
+      raise TypeError, "can't convert #{item.class} into Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
       val
     elsif __has_custom_method?(item, :respond_to?)
       res = (item.respond_to?(:to_ary, true) rescue false)
       return nil unless res
       val = item.__send__(:to_ary)
       return nil if val.nil?
-      raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
+      raise TypeError, "can't convert #{item.class} into Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
       val
     elsif __has_custom_method?(item, :method_missing)
       begin
         val = item.__send__(:to_ary)
         return nil if val.nil?
-        raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
+        raise TypeError, "can't convert #{item.class} into Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
         val
       rescue NoMethodError => e
         if e.name == :to_ary
@@ -159,7 +159,7 @@ class Array
     elsif (item.respond_to?(:to_ary, true) rescue false)
       val = item.__send__(:to_ary)
       return nil if val.nil?
-      raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
+      raise TypeError, "can't convert #{item.class} into Array (#{item.class}#to_ary gives #{val.class})" unless Array === val
       val
     else
       nil
@@ -857,7 +857,7 @@ class Array
         sub = Array.__check_to_ary(item)
         if sub
           if !(sub.is_a?(Array) rescue false)
-            raise TypeError, "can't convert #{item.class} to Array (#{item.class}#to_ary gives #{sub.class})"
+            raise TypeError, "can't convert #{item.class} into Array (#{item.class}#to_ary gives #{sub.class})"
           else
             modified = true
             raise ArgumentError, "tried to flatten recursive array" if seen.include?(sub.__id__)

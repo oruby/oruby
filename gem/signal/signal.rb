@@ -164,7 +164,7 @@ module Signal
       raise TypeError, "no implicit conversion of #{cname} into Integer" unless !obj.nil? && obj.respond_to?(:to_int)
       r = obj.to_int
       return r if Integer === r
-      raise TypeError, "can't convert #{cname} to Integer (#{cname}#to_int gives #{r.class})"
+      raise TypeError, "can't convert #{cname} into Integer (#{cname}#to_int gives #{r.class})"
     end
 
     def __str(obj)
@@ -172,7 +172,7 @@ module Signal
       return nil if obj.nil? || !obj.respond_to?(:to_str)
       r = obj.to_str
       return r if String === r
-      raise TypeError, "can't convert #{obj.class} to String (#{obj.class}#to_str gives #{r.class})"
+      raise TypeError, "can't convert #{obj.class} into String (#{obj.class}#to_str gives #{r.class})"
     end
 
     # MRI trap_signm

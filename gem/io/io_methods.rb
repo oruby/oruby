@@ -75,7 +75,7 @@ class IO
     end
     return nil if r.nil?
     return r if Array === r
-    raise TypeError, "can't convert #{obj.class} to Array (#{obj.class}#to_ary gives #{r.class})"
+    raise TypeError, "can't convert #{obj.class} into Array (#{obj.class}#to_ary gives #{r.class})"
   end
   private :__oruby_check_ary
 
@@ -230,7 +230,7 @@ class IO
     if ::Kernel.__responds?(x, :to_path)
       path = x.to_path
       unless String === path
-        raise TypeError, "can't convert #{::Kernel.__cname(x)} to String (#{::Kernel.__cname(x)}#to_path gives #{::Kernel.__cname(path)})"
+        raise TypeError, "can't convert #{::Kernel.__cname(x)} into String (#{::Kernel.__cname(x)}#to_path gives #{::Kernel.__cname(path)})"
       end
       return [path, :path]
     end

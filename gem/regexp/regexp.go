@@ -358,7 +358,7 @@ func matchDataGetIndex(mrb *oruby.MrbState, m *MatchData, idx oruby.Value) oruby
 			}
 			if toI.Type() != oruby.MrbTTFixnum {
 				cname := mrb.ClassName(mrb.ObjClass(idx))
-				return mrb.ETypeError().Raisef("can't convert %s to Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(toI.Value()))).Value()
+				return mrb.ETypeError().Raisef("can't convert %s into Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(toI.Value()))).Value()
 			}
 			return mdGroup(mrb, m, oruby.MrbFixnum(toI.Value()))
 		}
@@ -871,7 +871,7 @@ func matchDataPos(f func(m *MatchData, i int) (interface{}, error)) oruby.MrbFun
 				}
 				if v.Type() != oruby.MrbTTFixnum {
 					cname := mrb.ClassName(mrb.ObjClass(arg))
-					return mrb.ETypeError().Raisef("can't convert %s to Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(v.Value())))
+					return mrb.ETypeError().Raisef("can't convert %s into Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(v.Value())))
 				}
 				idx = oruby.MrbFixnum(v.Value())
 			} else {

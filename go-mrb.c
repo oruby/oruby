@@ -306,7 +306,7 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, "END") || src_contains(s, len, "__ENCODING__") ||
           src_contains(s, len, "frozen_string_literal") ||
           src_contains(s, len, "||=") || src_contains(s, len, "&&=") ||
-          src_contains(s, len, "::") || src_contains(s, len, "$") ||
+          src_contains(s, len, "::") || src_contains(s, len, "$") || src_contains(s, len, "|") || src_contains(s, len, "->") ||
           src_bare_it(s, len) || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
@@ -1419,8 +1419,30 @@ mrb_value mrb_proc_parameters(mrb_state *mrb, mrb_value proc);
 static mrb_value param_pair(mrb_state *mrb, mrb_sym kind, mrb_sym name) {
   mrb_value a = mrb_ary_new_capa(mrb, 2);
   mrb_ary_push(mrb, a, mrb_symbol_value(kind));
-  if (name) mrb_ary_push(mrb, a, mrb_symbol_value(name));
+  if (name) {
+    /* a nested (a, b) parameter, a hidden local (prism.go ORB_BLOCK_PARAMS):
+       MRI names none */
+    mrb_int len;
+    const char *s = mrb_sym_name_len(mrb, name, &len);
+    if (!(s && len > 10 && memcmp(s, "__oruby_bp", 10) == 0)) mrb_ary_push(mrb, a, mrb_symbol_value(name));
+  }
   return a;
+}
+
+/* Kernel.__oruby_bta?(first, others...) for ORB_BLOCK_PARAMS (prism.go):
+   whether the block's frame took one object mruby did not spread, so MRI's
+   #to_ary is tried: not a lambda's frame (a strict proc never spreads), its
+   first parameter not an Array, the others nil */
+static mrb_value block_to_ary_p(mrb_state *mrb, mrb_value self) {
+  mrb_int argc;
+  const mrb_value *argv;
+  mrb_get_args(mrb, "*", &argv, &argc);
+  mrb_callinfo *ci = mrb->c->ci;
+  if (argc < 1 || ci <= mrb->c->cibase) return mrb_false_value();
+  const struct RProc *p = ci[-1].proc;
+  if (!p || MRB_PROC_STRICT_P(p) || mrb_array_p(argv[0])) return mrb_false_value();
+  for (mrb_int i = 1; i < argc; i++) if (!mrb_nil_p(argv[i])) return mrb_false_value();
+  return mrb_true_value();
 }
 
 static mrb_value orb_params(mrb_state *mrb, mrb_value procv, int lambda) {
@@ -2011,6 +2033,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii?", str_enc_us_ascii_p, MRB_ARGS_NONE());
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii!", str_enc_us_ascii_set, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_core_proc), core_proc_p_m, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_bta), block_to_ary_p, MRB_ARGS_ANY());
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(const_added), mod_const_added_m, MRB_ARGS_REQ(1));
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_location), mod_const_location_m, MRB_ARGS_REQ(1));
   if (mrb_class_defined_id(mrb, MRB_SYM(Fiber))) {

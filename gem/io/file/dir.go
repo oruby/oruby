@@ -72,7 +72,7 @@ func toInt(mrb *oruby.MrbState, v oruby.Value) (int, error) {
 		if ret.IsInt() {
 			return ret.Int(), nil
 		}
-		return 0, &typeError{msg: fmt.Sprintf("can't convert %s to Integer (%s#to_int gives %s)",
+		return 0, &typeError{msg: fmt.Sprintf("can't convert %s into Integer (%s#to_int gives %s)",
 			mrb.ClassName(mrb.ClassOf(v)), mrb.ClassName(mrb.ClassOf(v)), mrb.ClassName(mrb.ClassOf(ret)))}
 	}
 	return 0, &typeError{msg: fmt.Sprintf("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ClassOf(v)))}

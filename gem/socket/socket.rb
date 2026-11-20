@@ -119,7 +119,7 @@ class Socket < BasicSocket
     if v.respond_to?(:to_str)
       r = v.to_str
       return r if r.is_a?(String)
-      raise TypeError, "can't convert #{v.class} to String (#{v.class}#to_str gives #{r.class})"
+      raise TypeError, "can't convert #{v.class} into String (#{v.class}#to_str gives #{r.class})"
     end
     raise TypeError, "no implicit conversion of #{v.class} into String"
   end

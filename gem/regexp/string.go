@@ -423,7 +423,7 @@ func sliceWith(mrb *oruby.MrbState, self oruby.Value, old string) oruby.MrbValue
 				}
 				if toI.Type() != oruby.MrbTTFixnum {
 					cname := mrb.ClassName(mrb.ObjClass(capture))
-					return mrb.ETypeError().Raisef("can't convert %s to Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(toI.Value())))
+					return mrb.ETypeError().Raisef("can't convert %s into Integer (%s#to_int gives %s)", cname, cname, mrb.ClassName(mrb.ObjClass(toI.Value())))
 				}
 				capture = toI.Value()
 			} else {

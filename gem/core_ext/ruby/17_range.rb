@@ -228,7 +228,7 @@ class Range
       unless String === val
         return false unless val.respond_to?(:to_str)
         v = val.to_str
-        raise TypeError, "can't convert #{val.class} to String (#{val.class}#to_str gives #{v.class})" unless String === v
+        raise TypeError, "can't convert #{val.class} into String (#{val.class}#to_str gives #{v.class})" unless String === v
         val = v
       end
       if b.bytesize == 1 && e.bytesize == 1 && b.ascii_only? && e.ascii_only?
