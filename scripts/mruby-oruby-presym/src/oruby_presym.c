@@ -174,6 +174,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "ConditionVariable");
   (void)mrb_intern_lit(mrb, "Constants");
   (void)mrb_intern_lit(mrb, "Converter");
+  (void)mrb_intern_lit(mrb, "Coverage");
   (void)mrb_intern_lit(mrb, "DB");
   (void)mrb_intern_lit(mrb, "DSYNC");
   (void)mrb_intern_lit(mrb, "Database");
@@ -480,6 +481,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_dstr_enc");
   (void)mrb_intern_lit(mrb, "__oruby_enc_concat");
   (void)mrb_intern_lit(mrb, "__oruby_errinfo__");
+  (void)mrb_intern_lit(mrb, "__oruby_eval");
   (void)mrb_intern_lit(mrb, "__oruby_events=");
   (void)mrb_intern_lit(mrb, "__oruby_expire");
   (void)mrb_intern_lit(mrb, "__oruby_fast_new");
@@ -500,6 +502,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_implicit_params");
   (void)mrb_intern_lit(mrb, "__oruby_init_struct");
   (void)mrb_intern_lit(mrb, "__oruby_install_defaults__");
+  (void)mrb_intern_lit(mrb, "__oruby_instrument");
   (void)mrb_intern_lit(mrb, "__oruby_interrupt");
   (void)mrb_intern_lit(mrb, "__oruby_interrupt_taken");
   (void)mrb_intern_lit(mrb, "__oruby_io_enum");
@@ -539,6 +542,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_push");
   (void)mrb_intern_lit(mrb, "__oruby_rand_slow");
   (void)mrb_intern_lit(mrb, "__oruby_rbuf");
+  (void)mrb_intern_lit(mrb, "__oruby_read");
   (void)mrb_intern_lit(mrb, "__oruby_readable?");
   (void)mrb_intern_lit(mrb, "__oruby_reentry");
   (void)mrb_intern_lit(mrb, "__oruby_release_held");
@@ -549,6 +553,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_reopen_path");
   (void)mrb_intern_lit(mrb, "__oruby_root_fiber");
   (void)mrb_intern_lit(mrb, "__oruby_rpos");
+  (void)mrb_intern_lit(mrb, "__oruby_scan");
   (void)mrb_intern_lit(mrb, "__oruby_sched");
   (void)mrb_intern_lit(mrb, "__oruby_scheduler_flag");
   (void)mrb_intern_lit(mrb, "__oruby_set_status");
@@ -567,6 +572,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_stop");
   (void)mrb_intern_lit(mrb, "__oruby_str_to_f");
   (void)mrb_intern_lit(mrb, "__oruby_string");
+  (void)mrb_intern_lit(mrb, "__oruby_stub");
   (void)mrb_intern_lit(mrb, "__oruby_sym_procs");
   (void)mrb_intern_lit(mrb, "__oruby_symproc");
   (void)mrb_intern_lit(mrb, "__oruby_timeout_start");

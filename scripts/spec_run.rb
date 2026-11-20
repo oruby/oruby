@@ -54,7 +54,7 @@ workers = opts[:jobs].times.map do
       rel = file.delete_prefix("#{suite}/ruby/")
       log = File.join(logs, rel.gsub('/', '__') + '.log')
       started = Time.now
-      pid = Process.spawn({ 'RUBY_EXE' => oruby }, oruby, File.join(suite, 'mspec/bin/mspec-run'), file,
+      pid = Process.spawn({ 'RUBY_EXE' => oruby }, oruby, File.join(suite, 'mspec/bin/mspec-run'), '-B', File.join(root, 'scripts/oruby.mspec'), file,
                           chdir: suite, out: log, err: %i[child out], in: :close, pgroup: true)
       status = nil
       loop do

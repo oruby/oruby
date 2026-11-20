@@ -289,6 +289,14 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
       mrb_int line = (argc > fi + 1 && mrb_integer_p(argv[fi + 1])) ? mrb_integer(argv[fi + 1]) : 1;
       _orb_keep_source(mrb, file, line, argv[0]);
       _orb_trace_script(mrb, argv[0]);
+      /* coverage set up (gem/coverage): the code with its counters */
+      if (mrb_string_p(file) && mrb_class_defined_id(mrb, MRB_SYM(Coverage))) {
+        mrb_value cov = mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(Coverage)));
+        if (mrb_respond_to(mrb, cov, MRB_SYM(__oruby_eval))) {
+          mrb_value cv = mrb_funcall_id(mrb, cov, MRB_SYM(__oruby_eval), 3, argv[0], file, mrb_int_value(mrb, line));
+          if (mrb_string_p(cv)) argv[0] = cv;
+        }
+      }
       const char *s = RSTRING_PTR(argv[0]);
       mrb_int len = RSTRING_LEN(argv[0]);
       if (src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
@@ -1351,9 +1359,21 @@ static void attr_names(mrb_state *mrb, mrb_bool skip_bool) {
   }
 }
 
-static mrb_value attr_reader_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_reader_orig(mrb, mod); }
-static mrb_value attr_writer_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_writer_orig(mrb, mod); }
-static mrb_value attr_accessor_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_accessor_orig(mrb, mod); }
+/* MRI announces each attribute method (method_added, or
+   singleton_method_added for a singleton class); mruby's attr_* answer the
+   names they defined and announce none */
+static mrb_value attr_added(mrb_state *mrb, mrb_value mod, mrb_value names) {
+  if (!mrb_array_p(names)) return names;
+  for (mrb_int i = 0; i < RARRAY_LEN(names); i++) {
+    mrb_value n = RARRAY_PTR(names)[i];
+    if (mrb_symbol_p(n)) mrb_method_added(mrb, mrb_class_ptr(mod), mrb_symbol(n));
+  }
+  return names;
+}
+
+static mrb_value attr_reader_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_added(mrb, mod, attr_reader_orig(mrb, mod)); }
+static mrb_value attr_writer_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_added(mrb, mod, attr_writer_orig(mrb, mod)); }
+static mrb_value attr_accessor_w(mrb_state *mrb, mrb_value mod) { attr_names(mrb, FALSE); return attr_added(mrb, mod, attr_accessor_orig(mrb, mod)); }
 
 static mrb_value attr_w(mrb_state *mrb, mrb_value mod) {
   mrb_callinfo *ci = mrb->c->ci;
@@ -1370,9 +1390,9 @@ static mrb_value attr_w(mrb_state *mrb, mrb_value mod) {
     mrb_value names = attr_orig(mrb, mod);
     if (writable) mrb_ary_concat(mrb, names, attr_writer_fn(mrb, mod));
     ci->n = 2;
-    return names;
+    return attr_added(mrb, mod, names);
   }
-  return attr_orig(mrb, mod);
+  return attr_added(mrb, mod, attr_orig(mrb, mod));
 }
 
 /* ---- Proc#parameters / Method#parameters, as MRI's ----
@@ -1903,6 +1923,24 @@ hash_inspect_w(mrb_state *mrb, mrb_value self)
   return ret;
 }
 
+/* Range: MRI freezes a Range made by Range.new (not a subclass's), and a
+   dup is not frozen; mruby's initialize and initialize_copy freeze both.
+   (A literal is frozen in MRI and not in mruby: that is mruby's
+   mrb_range_new, out of reach here.) */
+static mrb_func_t range_init_orig, range_init_copy_orig;
+
+static mrb_value range_init_w(mrb_state *mrb, mrb_value self) {
+  mrb_value r = range_init_orig(mrb, self);
+  if (mrb_obj_class(mrb, self) != mrb->range_class) mrb_obj_ptr(self)->frozen = 0;
+  return r;
+}
+
+static mrb_value range_init_copy_w(mrb_state *mrb, mrb_value self) {
+  mrb_value r = range_init_copy_orig(mrb, self);
+  mrb_obj_ptr(self)->frozen = 0;  /* Kernel#clone refreezes a frozen source */
+  return r;
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
   _orb_fast_init(mrb);
   install_num_eq(mrb);
@@ -1911,6 +1949,8 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   gv_init_checked(mrb);
   wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
   wrap_cfunc(mrb, mrb->hash_class, "inspect", hash_inspect_w, &hash_inspect_orig);
+  wrap_cfunc(mrb, mrb->range_class, "initialize", range_init_w, &range_init_orig);
+  wrap_cfunc(mrb, mrb->range_class, "initialize_copy", range_init_copy_w, &range_init_copy_orig);
   wrap_cfunc(mrb, mrb->hash_class, "to_s", hash_inspect_w, &hash_inspect_orig);
   wrap_cfunc(mrb, mrb->module_class, "const_missing", const_missing_w, &const_missing_orig);
   wrap_cfunc(mrb, mrb->module_class, "remove_const", remove_const_w, &remove_const_orig);

@@ -689,6 +689,11 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 	if len(r.edits) == 0 {
 		return src
 	}
+	return r.output()
+}
+
+// output is the source with the edits applied
+func (r *rewriter) output() []byte {
 	sort.SliceStable(r.edits, func(a, b int) bool {
 		ea, eb := r.edits[a], r.edits[b]
 		if ea.start != eb.start {
@@ -716,7 +721,7 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		}
 		return ea.end > eb.end
 	})
-	return []byte(r.render(0, len(src)))
+	return []byte(r.render(0, len(r.src)))
 }
 
 func (r *rewriter) add(s, e int, build func(r *rewriter) string) {

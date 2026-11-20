@@ -53,6 +53,33 @@ typedef struct {
   int32_t e[ORB_SPANS];
 } orb_rec;
 
+// Coverage (go-coverage.c): what to insert where, and the branch and method
+// tables, in MRI's order
+enum {
+  ORB_COV_NONE,      // a counted line no counter can go to
+  ORB_COV_PREFIX,    // insert at s
+  ORB_COV_WRAP,      // around s..e
+  ORB_COV_COND,      // around a predicate s..e: counter t when truthy, f when not
+  ORB_COV_NILCOND,   // around a &. receiver s..e: t when not nil, f when nil
+  ORB_COV_BASE,      // a branch base: aux its type (if unless while until case &.), l1..c2
+  ORB_COV_TARGET,    // a branch target of base f: aux its label (then else body when in), counter t, l1..c2
+  ORB_COV_DEF,       // a def s..e: method t, name aux..aux2, f 0/1 (self.)/2 (receiver line..m), l1..c2
+};
+
+// The PREFIX and WRAP inserts count: line (its line coverage, -1 none),
+// t (a branch counter, +1), f (a branch counter, -1), m (a method's calls)
+typedef struct {
+  int32_t kind;
+  int32_t s, e;
+  int32_t line;
+  int32_t t, f, m;
+  int32_t aux, aux2;
+  int32_t l1, c1, l2, c2;
+} orb_cov_rec;
+
+orb_cov_rec *_oruby_prism_coverage(const char *src, size_t len, int branches, int methods,
+                                   int *count, int8_t **cover, int *nlines);
+
 long _oruby_prism_data_offset(const char *src, size_t len);
 orb_rec *_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_opts *opts, int *count, int *errors, char *encname, size_t encname_len, char **msgs);
 

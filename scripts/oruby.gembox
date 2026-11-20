@@ -104,6 +104,7 @@ MRuby::GemBox.new do |conf|
 
   # Binding
   conf.gem :core => "mruby-binding"
+  conf.gem :core => "mruby-proc-binding"
 
   # Set
   conf.gem :core => "mruby-set"

@@ -151,10 +151,31 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 	case ".mrb":
 		_, err = cxt.LoadIrepFile(fullName)
 	default:
-		_, err = mrb.LoadFileCxt(fullName, cxt)
+		if src, ok := coverageSource(mrb, fullName); ok {
+			_, err = mrb.LoadBytesCxt(src, cxt)
+		} else {
+			_, err = mrb.LoadFileCxt(fullName, cxt)
+		}
 	}
 
 	return err
+}
+
+// coverageSource is the file's source with Coverage's counters, while
+// coverage is set up (gem/coverage); ok false otherwise
+func coverageSource(mrb *oruby.MrbState, fullName string) ([]byte, bool) {
+	if !mrb.ClassDefined("Coverage") {
+		return nil, false
+	}
+	cov := mrb.ModuleGet("Coverage")
+	if !mrb.RespondTo(cov.Value(), mrb.Intern("__oruby_instrument")) {
+		return nil, false
+	}
+	v, err := mrb.Funcall(cov.Value(), mrb.Intern("__oruby_instrument"), fullName)
+	if err != nil || !v.IsString() {
+		return nil, false
+	}
+	return v.Bytes(), true
 }
 
 // doLoadWrapped is load(file, wrap): the file's code runs with a copy of
@@ -180,6 +201,9 @@ func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error 
 		}
 	}
 
+	if src, ok := coverageSource(mrb, fullName); ok {
+		data = src
+	}
 	cxt := mrb.MrbCcontextNew()
 	defer cxt.Free()
 	cxt.Filename(fullName)
