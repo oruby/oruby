@@ -223,6 +223,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "FileTest");
   (void)mrb_intern_lit(mrb, "FileUtils");
   (void)mrb_intern_lit(mrb, "Find");
+  (void)mrb_intern_lit(mrb, "Fixnum");
   (void)mrb_intern_lit(mrb, "Float");
   (void)mrb_intern_lit(mrb, "GENERALIZEDTIME");
   (void)mrb_intern_lit(mrb, "GID");
@@ -518,6 +519,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_interrupt");
   (void)mrb_intern_lit(mrb, "__oruby_interrupt_taken");
   (void)mrb_intern_lit(mrb, "__oruby_io_enum");
+  (void)mrb_intern_lit(mrb, "__oruby_io_print");
+  (void)mrb_intern_lit(mrb, "__oruby_io_puts");
   (void)mrb_intern_lit(mrb, "__oruby_it");
   (void)mrb_intern_lit(mrb, "__oruby_items");
   (void)mrb_intern_lit(mrb, "__oruby_join");
@@ -594,6 +597,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_symproc_sym");
   (void)mrb_intern_lit(mrb, "__oruby_timeout_start");
   (void)mrb_intern_lit(mrb, "__oruby_timeout_stop");
+  (void)mrb_intern_lit(mrb, "__oruby_to_s");
   (void)mrb_intern_lit(mrb, "__oruby_tparent");
   (void)mrb_intern_lit(mrb, "__oruby_tpath");
   (void)mrb_intern_lit(mrb, "__oruby_trace_exc");
@@ -945,7 +949,9 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "init_with");
   (void)mrb_intern_lit(mrb, "initgroups");
   (void)mrb_intern_lit(mrb, "initialize");
+  (void)mrb_intern_lit(mrb, "initialize_clone");
   (void)mrb_intern_lit(mrb, "initialize_copy");
+  (void)mrb_intern_lit(mrb, "initialize_dup");
   (void)mrb_intern_lit(mrb, "ino");
   (void)mrb_intern_lit(mrb, "insert");
   (void)mrb_intern_lit(mrb, "inspect");
@@ -1023,6 +1029,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "mesg");
   (void)mrb_intern_lit(mrb, "message");
   (void)mrb_intern_lit(mrb, "method");
+  (void)mrb_intern_lit(mrb, "method_added");
   (void)mrb_intern_lit(mrb, "method_missing");
   (void)mrb_intern_lit(mrb, "min");
   (void)mrb_intern_lit(mrb, "minus_operator");
@@ -1153,6 +1160,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "reset");
   (void)mrb_intern_lit(mrb, "resolve_feature_path");
   (void)mrb_intern_lit(mrb, "respond_to?");
+  (void)mrb_intern_lit(mrb, "respond_to_missing?");
   (void)mrb_intern_lit(mrb, "rest");
   (void)mrb_intern_lit(mrb, "restore");
   (void)mrb_intern_lit(mrb, "result");

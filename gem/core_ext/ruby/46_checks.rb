@@ -106,3 +106,135 @@ class Method
     to_proc.curry(arity)
   end
 end
+
+module Kernel
+  # rb_check_funcall: a method obj answers, by its respond_to? when that is
+  # its own, else by its methods, or through its own method_missing
+  def self.__oruby_check_call(obj, meth)
+    ro = ::Kernel.instance_method(:respond_to?)
+    if ::Kernel === obj
+      own_rt = obj.method(:respond_to?).owner != ::Kernel rescue false
+      if own_rt
+        return [false, nil] unless obj.respond_to?(meth, true)
+        begin
+          return [true, obj.__send__(meth)]
+        rescue ::NoMethodError => e
+          raise unless e.name == meth
+          return [false, nil]
+        end
+      end
+      return [true, obj.__send__(meth)] if ro.bind_call(obj, meth, true)
+    elsif __responds?(obj, meth)
+      return [true, obj.__send__(meth)]
+    end
+    sc = (class << obj; self; end)
+    mm = sc.instance_method(:method_missing) rescue nil
+    return [false, nil] if mm.nil? || mm.owner == ::BasicObject
+    begin
+      [true, obj.__send__(meth)]
+    rescue ::NoMethodError => e
+      raise unless e.name == meth
+      [false, nil]
+    end
+  end
+
+  # Kernel#String as MRI's rb_String: #to_str, else #to_s
+  def String(obj)
+    return obj if ::String === obj
+    s = Kernel.__check_implicit(obj, ::String)
+    return s unless nil.equal?(s)
+    ok, r = Kernel.__oruby_check_call(obj, :to_s)
+    name = Kernel.__cname(obj)
+    raise TypeError, "can't convert #{name} into String" unless ok
+    raise TypeError, "can't convert #{name} into String (#{name}#to_s gives #{Kernel.__cname(r)})" unless ::String === r
+    r
+  end
+
+  # Kernel#Hash as MRI's rb_Hash: nil and [] are {}, else #to_hash
+  def Hash(obj)
+    return {} if nil.equal?(obj) || (::Array === obj && obj.empty?)
+    return obj if ::Hash === obj
+    h = Kernel.__check_implicit(obj, ::Hash)
+    raise TypeError, "can't convert #{Kernel.__cname(obj)} into Hash" if nil.equal?(h)
+    h
+  end
+  module_function :String, :Hash
+end
+
+module Kernel
+  # methods(false) is singleton_methods(false); public_methods(false) and
+  # the like are the singleton class's, its extended modules' and the
+  # object's class's own (class_instance_method_list without recursion)
+  alias __oruby_methods methods
+  def methods(all = true)
+    return __oruby_methods if all
+    singleton_methods(false)
+  end
+
+  %i[public private protected].each do |vis|
+    orig = :"__oruby_#{vis}_methods"
+    alias_method orig, :"#{vis}_methods"
+    lister = :"#{vis}_instance_methods"
+    define_method(:"#{vis}_methods") do |all = true|
+      return __send__(orig, all) if all
+      out = []
+      Kernel.instance_method(:singleton_class).bind_call(self).ancestors.each do |m|
+        out.concat(m.__send__(lister, false))
+        break if Class === m && !m.singleton_class?
+      end
+      out.uniq
+    end
+  end
+end
+
+module Kernel
+  # MRI's rb_io_print / rb_io_puts on a $stdout that is not an IO: its
+  # #write takes the pieces (goprint.go calls these)
+  def self.__oruby_io_print(out, *args)
+    args = [$_] if args.empty?
+    ofs = $,
+    args.each_with_index do |a, i|
+      out.write(ofs) if i > 0 && ofs
+      out.write(a)
+    end
+    out.write($\) if $\
+    nil
+  end
+
+  def self.__oruby_io_puts(out, *args)
+    return out.write("\n") && nil if args.empty?
+    seen = {}
+    line = lambda do |a|
+      if ::String === a
+        s = a
+      elsif ::Array === a || (s = Kernel.__check_implicit(a, ::Array))
+        a = s if s
+        if seen[a.__id__]
+          out.write("[...]\n")
+        else
+          seen[a.__id__] = true
+          a.each { |e| line.(e) }
+          seen.delete(a.__id__)
+        end
+        next
+      else
+        s = a.to_s
+        s = ::Kernel.instance_method(:to_s).bind_call(a) unless ::String === s
+      end
+      out.write(s)
+      out.write("\n") unless s.end_with?("\n")
+    end
+    args.each { |a| line.(a) }
+    nil
+  end
+end
+
+module Kernel
+  # yield_self/then without a block: an Enumerator of size 1
+  alias __oruby_yield_self yield_self
+  def yield_self(&block)
+    return to_enum(:yield_self) { 1 } unless block
+    __oruby_yield_self(&block)
+  end
+  alias then yield_self
+end

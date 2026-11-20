@@ -206,9 +206,28 @@ func (mrb *MrbState) stdout() (Value, bool) {
 	return out, !out.IsNil() && mrb.RespondTo(out, Sym_write)
 }
 
+// stdoutIO: $stdout is an IO (its own print/puts write it); another
+// writer gets MRI's rb_io_print / rb_io_puts through its #write
+func (mrb *MrbState) stdoutIO(out Value) bool {
+	return mrb.ClassDefined("IO") && mrb.ObjIsKindOf(out, mrb.ClassGet("IO"))
+}
+
+// printOther writes to a $stdout that is not an IO (Kernel.__oruby_io_print
+// / __oruby_io_puts, gem/core_ext 46_checks.rb)
+func (mrb *MrbState) printOther(helper string, out Value, args []interface{}) MrbValue {
+	vals := append([]interface{}{out}, args...)
+	if _, err := mrb.Funcall(mrb.KernelModule().Value(), mrb.Intern(helper), vals...); err != nil {
+		return mrb.RaiseError(err)
+	}
+	return mrb.NilValue()
+}
+
 func printPrint(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
 	if out, ok := mrb.stdout(); ok {
+		if !mrb.stdoutIO(out) && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_io_print")) {
+			return mrb.printOther("__oruby_io_print", out, args.SliceIntf())
+		}
 		if _, err := mrb.Funcall(out, Sym_print, args.SliceIntf()...); err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -227,6 +246,9 @@ func printPrint(mrb *MrbState, self Value) MrbValue {
 func printPuts(mrb *MrbState, self Value) MrbValue {
 	args := mrb.GetArgs()
 	if out, ok := mrb.stdout(); ok {
+		if !mrb.stdoutIO(out) && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_io_puts")) {
+			return mrb.printOther("__oruby_io_puts", out, args.SliceIntf())
+		}
 		if _, err := mrb.Funcall(out, Sym_puts, args.SliceIntf()...); err != nil {
 			return mrb.RaiseError(err)
 		}

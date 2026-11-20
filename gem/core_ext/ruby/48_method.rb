@@ -98,3 +98,20 @@ class UnboundMethod
   end
 end
 
+
+# mruby's own Ruby-defined core methods (mrblib/, mrbgems/) are MRI's
+# <internal:...> files
+module Kernel
+  def self.__oruby_internal_loc(loc)
+    return loc unless ::Array === loc && ::String === (f = loc[0])
+    return loc unless f.start_with?("mrblib/", "mrbgems/")
+    ["<internal:#{f}>", loc[1]]
+  end
+end
+
+[Method, UnboundMethod, Proc].each do |k|
+  k.class_eval do
+    alias_method :__oruby_raw_source_location, :source_location
+    def source_location = Kernel.__oruby_internal_loc(__oruby_raw_source_location)
+  end
+end

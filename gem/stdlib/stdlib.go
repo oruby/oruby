@@ -74,6 +74,11 @@ func init() {
 	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "io/nonblock", "io/wait", "English"} {
 		oruby.LazyGem(name, func(*oruby.MrbState) interface{} { return nil })
 	}
+	oruby.LazyGem("io/console", func(mrb *oruby.MrbState) interface{} {
+		mrb.Require("stringio")
+		load(mrb, "console")
+		return nil
+	})
 	oruby.LazyGem("prettyprint", func(mrb *oruby.MrbState) interface{} {
 		load(mrb, "prettyprint")
 		return nil

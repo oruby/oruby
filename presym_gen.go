@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "a1c96b8c64fd717c"
+const presymTable = "713ac5ad81e46eaa"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -216,6 +216,7 @@ const (
 	SymQ_readable                               MrbSym = C.MRB_SYM_Q__readable                              // "readable?"
 	SymQ_readable_real                          MrbSym = C.MRB_SYM_Q__readable_real                         // "readable_real?"
 	SymQ_respond_to                             MrbSym = C.MRB_SYM_Q__respond_to                            // "respond_to?"
+	SymQ_respond_to_missing                     MrbSym = C.MRB_SYM_Q__respond_to_missing                    // "respond_to_missing?"
 	SymQ_saturday                               MrbSym = C.MRB_SYM_Q__saturday                              // "saturday?"
 	SymQ_setgid                                 MrbSym = C.MRB_SYM_Q__setgid                                // "setgid?"
 	SymQ_setuid                                 MrbSym = C.MRB_SYM_Q__setuid                                // "setuid?"
@@ -333,6 +334,7 @@ const (
 	Sym_FileTest                                MrbSym = C.MRB_SYM__FileTest                                // "FileTest"
 	Sym_FileUtils                               MrbSym = C.MRB_SYM__FileUtils                               // "FileUtils"
 	Sym_Find                                    MrbSym = C.MRB_SYM__Find                                    // "Find"
+	Sym_Fixnum                                  MrbSym = C.MRB_SYM__Fixnum                                  // "Fixnum"
 	Sym_Float                                   MrbSym = C.MRB_SYM__Float                                   // "Float"
 	Sym_GENERALIZEDTIME                         MrbSym = C.MRB_SYM__GENERALIZEDTIME                         // "GENERALIZEDTIME"
 	Sym_GID                                     MrbSym = C.MRB_SYM__GID                                     // "GID"
@@ -616,6 +618,8 @@ const (
 	Sym___oruby_interrupt                       MrbSym = C.MRB_SYM____oruby_interrupt                       // "__oruby_interrupt"
 	Sym___oruby_interrupt_taken                 MrbSym = C.MRB_SYM____oruby_interrupt_taken                 // "__oruby_interrupt_taken"
 	Sym___oruby_io_enum                         MrbSym = C.MRB_SYM____oruby_io_enum                         // "__oruby_io_enum"
+	Sym___oruby_io_print                        MrbSym = C.MRB_SYM____oruby_io_print                        // "__oruby_io_print"
+	Sym___oruby_io_puts                         MrbSym = C.MRB_SYM____oruby_io_puts                         // "__oruby_io_puts"
 	Sym___oruby_it                              MrbSym = C.MRB_SYM____oruby_it                              // "__oruby_it"
 	Sym___oruby_items                           MrbSym = C.MRB_SYM____oruby_items                           // "__oruby_items"
 	Sym___oruby_join                            MrbSym = C.MRB_SYM____oruby_join                            // "__oruby_join"
@@ -689,6 +693,7 @@ const (
 	Sym___oruby_symproc_sym                     MrbSym = C.MRB_SYM____oruby_symproc_sym                     // "__oruby_symproc_sym"
 	Sym___oruby_timeout_start                   MrbSym = C.MRB_SYM____oruby_timeout_start                   // "__oruby_timeout_start"
 	Sym___oruby_timeout_stop                    MrbSym = C.MRB_SYM____oruby_timeout_stop                    // "__oruby_timeout_stop"
+	Sym___oruby_to_s                            MrbSym = C.MRB_SYM____oruby_to_s                            // "__oruby_to_s"
 	Sym___oruby_tparent                         MrbSym = C.MRB_SYM____oruby_tparent                         // "__oruby_tparent"
 	Sym___oruby_tpath                           MrbSym = C.MRB_SYM____oruby_tpath                           // "__oruby_tpath"
 	Sym___oruby_trace_exc                       MrbSym = C.MRB_SYM____oruby_trace_exc                       // "__oruby_trace_exc"
@@ -992,7 +997,9 @@ const (
 	Sym_init_with                               MrbSym = C.MRB_SYM__init_with                               // "init_with"
 	Sym_initgroups                              MrbSym = C.MRB_SYM__initgroups                              // "initgroups"
 	Sym_initialize                              MrbSym = C.MRB_SYM__initialize                              // "initialize"
+	Sym_initialize_clone                        MrbSym = C.MRB_SYM__initialize_clone                        // "initialize_clone"
 	Sym_initialize_copy                         MrbSym = C.MRB_SYM__initialize_copy                         // "initialize_copy"
+	Sym_initialize_dup                          MrbSym = C.MRB_SYM__initialize_dup                          // "initialize_dup"
 	Sym_ino                                     MrbSym = C.MRB_SYM__ino                                     // "ino"
 	Sym_insert                                  MrbSym = C.MRB_SYM__insert                                  // "insert"
 	Sym_inspect                                 MrbSym = C.MRB_SYM__inspect                                 // "inspect"
@@ -1062,6 +1069,7 @@ const (
 	Sym_mesg                                    MrbSym = C.MRB_SYM__mesg                                    // "mesg"
 	Sym_message                                 MrbSym = C.MRB_SYM__message                                 // "message"
 	Sym_method                                  MrbSym = C.MRB_SYM__method                                  // "method"
+	Sym_method_added                            MrbSym = C.MRB_SYM__method_added                            // "method_added"
 	Sym_method_missing                          MrbSym = C.MRB_SYM__method_missing                          // "method_missing"
 	Sym_min                                     MrbSym = C.MRB_SYM__min                                     // "min"
 	Sym_minus_operator                          MrbSym = C.MRB_SYM__minus_operator                          // "minus_operator"

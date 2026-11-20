@@ -26,7 +26,10 @@ class Module
   # mruby rejects a path rooted at Object ("::String")
   alias_method :__const_get, :const_get
   def const_get(name, inherit = true)
-    return Object.__const_get(name[2..], inherit) if name.is_a?(String) && name.start_with?("::")
+    if name.is_a?(String) && name.start_with?("::")
+      raise NameError.new("wrong constant name #{name}", name.to_sym, receiver: self) if name == "::"
+      return Object.__const_get(name[2..], inherit)
+    end
     __const_get(name, inherit)
   end
 end
