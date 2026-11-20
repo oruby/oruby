@@ -30,7 +30,7 @@ class Binding
     unless __oruby_implicit_params.include?(sym)
       raise NameError.new("implicit parameter '#{sym}' is not defined for #{inspect}", sym)
     end
-    sym == :it ? __oruby_it : local_variable_get(sym)
+    sym == :it ? __oruby_it : (respond_to?(:__oruby_local_variable_get, true) ? __oruby_local_variable_get(sym) : local_variable_get(sym))
   end
 
   def self.__oruby_implicit_name(name)

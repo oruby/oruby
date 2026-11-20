@@ -1,22 +1,26 @@
 class CGI
   module Escape
     def escape(string)
+      string = Kernel.__implicit(string, String)
       enc = string.encoding
       CGI.__escape(string, true).force_encoding(enc)
     end
 
-    def unescape(string, encoding = Encoding::UTF_8)
+    def unescape(string, encoding = CGI.__oruby_accept_charset)
+      string = Kernel.__implicit(string, String)
       str = CGI.__unescape(string, true).force_encoding(encoding)
       str.valid_encoding? ? str : str.force_encoding(string.encoding)
     end
 
     def escapeURIComponent(string)
+      string = Kernel.__implicit(string, String)
       enc = string.encoding
       CGI.__escape(string, false).force_encoding(enc)
     end
     alias escape_uri_component escapeURIComponent
 
-    def unescapeURIComponent(string, encoding = Encoding::UTF_8)
+    def unescapeURIComponent(string, encoding = CGI.__oruby_accept_charset)
+      string = Kernel.__implicit(string, String)
       str = CGI.__unescape(string, false).force_encoding(encoding)
       str.valid_encoding? ? str : str.force_encoding(string.encoding)
     end
@@ -54,6 +58,12 @@ class CGI
   end
 
   @@accept_charset = Encoding::UTF_8
+
+  # the default target encoding of unescape: CGI's @@accept_charset
+  def self.__oruby_accept_charset
+    c = @@accept_charset
+    Encoding === c ? c : Encoding.find(c.to_s)
+  end
 
   include Escape
   extend Escape

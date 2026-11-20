@@ -202,6 +202,11 @@ func TestYAMLDumpDocumentAndIO(t *testing.T) {
 func TestYAMLDumpOpenStructAndFileWithoutEnablingObjectLoad(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
+	// ostruct is the upstream library ORuby ships in lib/oruby
+	lib, _ := filepath.Abs("../../lib/oruby/" + oruby.RubyVersion)
+	if _, err := mrb.Eval(`$LOAD_PATH.unshift(` + strconv.Quote(lib) + `)`); err != nil {
+		t.Fatal(err)
+	}
 	got, err := mrb.Eval(`
     require "yaml"
     require "ostruct"

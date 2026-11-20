@@ -13,6 +13,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "$!");
   (void)mrb_intern_lit(mrb, "$\"");
   (void)mrb_intern_lit(mrb, "$$");
+  (void)mrb_intern_lit(mrb, "$*");
   (void)mrb_intern_lit(mrb, "$,");
   (void)mrb_intern_lit(mrb, "$-0");
   (void)mrb_intern_lit(mrb, "$-F");
@@ -25,6 +26,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "$0");
   (void)mrb_intern_lit(mrb, "$:");
   (void)mrb_intern_lit(mrb, "$;");
+  (void)mrb_intern_lit(mrb, "$<");
   (void)mrb_intern_lit(mrb, "$=");
   (void)mrb_intern_lit(mrb, "$>");
   (void)mrb_intern_lit(mrb, "$?");
@@ -80,6 +82,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@__main_thread");
   (void)mrb_intern_lit(mrb, "@__mt");
   (void)mrb_intern_lit(mrb, "@__nil_mesg");
+  (void)mrb_intern_lit(mrb, "@__oruby_fstr");
   (void)mrb_intern_lit(mrb, "@__oruby_method");
   (void)mrb_intern_lit(mrb, "@__oruby_path");
   (void)mrb_intern_lit(mrb, "@__oruby_site");
@@ -131,6 +134,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@unlinked");
   (void)mrb_intern_lit(mrb, "ALT_SEPARATOR");
   (void)mrb_intern_lit(mrb, "APPEND");
+  (void)mrb_intern_lit(mrb, "ARGF");
   (void)mrb_intern_lit(mrb, "ARGV");
   (void)mrb_intern_lit(mrb, "ASN1");
   (void)mrb_intern_lit(mrb, "ASYNC");
@@ -464,6 +468,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__now");
   (void)mrb_intern_lit(mrb, "__ns");
   (void)mrb_intern_lit(mrb, "__open");
+  (void)mrb_intern_lit(mrb, "__oruby_adopt");
   (void)mrb_intern_lit(mrb, "__oruby_autoload_loading");
   (void)mrb_intern_lit(mrb, "__oruby_autoload_spend");
   (void)mrb_intern_lit(mrb, "__oruby_autoloads");
@@ -506,6 +511,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_fire");
   (void)mrb_intern_lit(mrb, "__oruby_frz__");
   (void)mrb_intern_lit(mrb, "__oruby_fwaiters");
+  (void)mrb_intern_lit(mrb, "__oruby_fwd");
   (void)mrb_intern_lit(mrb, "__oruby_glob");
   (void)mrb_intern_lit(mrb, "__oruby_gv");
   (void)mrb_intern_lit(mrb, "__oruby_gv_hook");
@@ -536,6 +542,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_list__");
   (void)mrb_intern_lit(mrb, "__oruby_load");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
+  (void)mrb_intern_lit(mrb, "__oruby_main_binding");
   (void)mrb_intern_lit(mrb, "__oruby_max");
   (void)mrb_intern_lit(mrb, "__oruby_mklass");
   (void)mrb_intern_lit(mrb, "__oruby_new__");
@@ -546,6 +553,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_nsig__");
   (void)mrb_intern_lit(mrb, "__oruby_orig");
   (void)mrb_intern_lit(mrb, "__oruby_os__");
+  (void)mrb_intern_lit(mrb, "__oruby_own_hook?");
   (void)mrb_intern_lit(mrb, "__oruby_owner");
   (void)mrb_intern_lit(mrb, "__oruby_pack");
   (void)mrb_intern_lit(mrb, "__oruby_params");
@@ -845,6 +853,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "encoding");
   (void)mrb_intern_lit(mrb, "end");
   (void)mrb_intern_lit(mrb, "entries");
+  (void)mrb_intern_lit(mrb, "env");
   (void)mrb_intern_lit(mrb, "eof");
   (void)mrb_intern_lit(mrb, "eof?");
   (void)mrb_intern_lit(mrb, "eoutvar");
@@ -1122,6 +1131,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "printf");
   (void)mrb_intern_lit(mrb, "private");
   (void)mrb_intern_lit(mrb, "private?");
+  (void)mrb_intern_lit(mrb, "proc");
   (void)mrb_intern_lit(mrb, "protected");
   (void)mrb_intern_lit(mrb, "public");
   (void)mrb_intern_lit(mrb, "public?");
@@ -1136,6 +1146,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "r_shift");
   (void)mrb_intern_lit(mrb, "raise");
   (void)mrb_intern_lit(mrb, "rand");
+  (void)mrb_intern_lit(mrb, "rb");
   (void)mrb_intern_lit(mrb, "rdev");
   (void)mrb_intern_lit(mrb, "rdev_major");
   (void)mrb_intern_lit(mrb, "rdev_minor");

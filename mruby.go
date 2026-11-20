@@ -241,7 +241,8 @@ module Kernel
       when :"$/", :"$-0", :"$\\", :"$,"
         raise TypeError, "value of #{name} must be String" unless v.nil? || String === v
         warn "warning: non-nil '#{name}' is deprecated", category: :deprecated if !v.nil? && defined?(Warning) && Warning[:deprecated]
-        v = v.dup.freeze if (name == :"$/" || name == :"$-0") && String === v && !v.frozen?
+        # a new frozen String, of String itself and without ivars, as MRI's
+        v = ::String.new(v).freeze if (name == :"$/" || name == :"$-0") && String === v && !(v.frozen? && v.instance_of?(::String))
       when :"$;", :"$-F"
         raise TypeError, "value of #{name} must be String or Regexp" unless v.nil? || String === v || (defined?(Regexp) && Regexp === v)
         warn "warning: non-nil '#{name}' is deprecated", category: :deprecated if !v.nil? && defined?(Warning) && Warning[:deprecated]
@@ -258,7 +259,7 @@ module Kernel
           end
         end
       when :"$stdout", :"$stderr", :"$>"
-        raise TypeError, "#{name} must have write method, #{cname.(v)} given" unless v.respond_to?(:write)
+        raise TypeError, "#{name} must have write method, #{::Kernel.instance_method(:class).bind_call(v)} given" unless v.respond_to?(:write)
       when :"$VERBOSE", :"$-v", :"$-w"
         v = v.nil? ? nil : (v ? true : false)
       when :"$~"
@@ -384,7 +385,8 @@ end
 		v    interface{}
 	}{
 		{"VERSION", RubyVersion}, {"PLATFORM", platform}, {"ENGINE", "oruby"}, {"ENGINE_VERSION", "0.1.0"},
-		{"DESCRIPTION", fmt.Sprintf("oruby 0.1.0 [%s]", platform)}, {"PATCHLEVEL", 0},
+		// the Ruby version too, as JRuby's and TruffleRuby's descriptions have it
+		{"DESCRIPTION", fmt.Sprintf("oruby 0.1.0 (%s) [%s]", RubyVersion, platform)}, {"PATCHLEVEL", 0},
 		{"RELEASE_DATE", "2026-11-01"}, {"REVISION", "oruby"},
 		{"COPYRIGHT", "oruby - Copyright (C) Dušan D. Majkić; mruby - Copyright (C) mruby developers"},
 	} {

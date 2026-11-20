@@ -767,6 +767,9 @@ func run() int {
 		if len(src) == 0 {
 			src = []byte("nil")
 		}
+		if mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_main_binding")) {
+			src = mainBindingInject(src)
+		}
 		v, err = c.LoadBytes(src)
 	}
 	_ = v
@@ -781,6 +784,47 @@ func run() int {
 		return 0
 	}
 	return finish(mrb)
+}
+
+// mainBindingInject has the main script hand its binding to
+// TOPLEVEL_BINDING first (Kernel.__oruby_main_binding): at the start of its
+// first line of code, after a shebang, magic comments and =begin blocks,
+// so that no line number moves
+func mainBindingInject(src []byte) []byte {
+	const call = "::Kernel.__oruby_main_binding(binding); "
+	pos, inDoc := 0, false
+	if bytes.HasPrefix(src, []byte("\xef\xbb\xbf")) { // a UTF-8 BOM stays first
+		pos = 3
+	}
+	for pos < len(src) {
+		end := bytes.IndexByte(src[pos:], '\n')
+		line := src[pos:]
+		if end >= 0 {
+			line = src[pos : pos+end]
+		}
+		t := bytes.TrimLeft(line, " \t\r")
+		switch {
+		case inDoc:
+			if bytes.HasPrefix(line, []byte("=end")) {
+				inDoc = false
+			}
+		case bytes.HasPrefix(line, []byte("=begin")):
+			inDoc = true
+		case len(t) == 0 || t[0] == '#':
+		case bytes.HasPrefix(line, []byte("__END__")):
+			return src
+		default:
+			out := make([]byte, 0, len(src)+len(call))
+			out = append(out, src[:pos]...)
+			out = append(out, call...)
+			return append(out, src[pos:]...)
+		}
+		if end < 0 {
+			break
+		}
+		pos += end + 1
+	}
+	return src
 }
 
 func firstLine(src []byte) []byte {

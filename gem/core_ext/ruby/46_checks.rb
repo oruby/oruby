@@ -299,4 +299,85 @@ module Kernel
   def self.__oruby_nomatch(v)
     raise NoMatchingPatternError, v.inspect
   end
+
+  # ... whose one clause is a Hash pattern of keys: MRI's single pattern
+  # messages, a missing key a NoMatchingPatternKeyError
+  def self.__oruby_nomatch_key(v, keys)
+    unless v.respond_to?(:deconstruct_keys)
+      raise NoMatchingPatternError, "#{v.inspect}: #{v.inspect} does not respond to #deconstruct_keys"
+    end
+    h = v.deconstruct_keys(keys)
+    if ::Hash === h
+      keys.each do |k|
+        next if h.key?(k)
+        raise NoMatchingPatternKeyError.new("#{v.inspect}: key not found: #{k.inspect}", matchee: h, key: k)
+      end
+    end
+    raise NoMatchingPatternError, v.inspect
+  end
+end
+
+class NoMatchingPatternKeyError
+  def initialize(message = nil, matchee: (no_matchee = true; nil), key: (no_key = true; nil))
+    super(message)
+    @matchee = matchee unless no_matchee
+    @key = key unless no_key
+  end
+
+  def matchee
+    raise ArgumentError, "no matchee is available" unless instance_variable_defined?(:@matchee)
+    @matchee
+  end
+
+  def key
+    raise ArgumentError, "no key is available" unless instance_variable_defined?(:@key)
+    @key
+  end
+end
+
+class Hash
+  # a hash pattern's keys, read with the #key? and #[] a subclass of Hash
+  # may have its own (mruby's __pat_values reads the table)
+  alias __oruby_pat_values __pat_values
+  def __pat_values(keys)
+    return __oruby_pat_values(keys) if ::Hash.equal?(::Kernel.instance_method(:class).bind_call(self))
+    keys.map { |k| return false unless key?(k); self[k] }
+  end
+end
+
+class Binding
+  # numbered parameters and `it` are no local variables of a binding
+  %i[local_variable_get local_variable_defined? local_variable_set].each do |m|
+    orig = :"__oruby_#{m.to_s.delete('?')}"
+    alias_method orig, m
+    define_method(m) do |name, *rest|
+      sym = Symbol === name ? name : (String === name ? name.to_sym : nil)
+      sym = Kernel.__implicit(name, String).to_sym if sym.nil? && !nil.equal?(name) && Kernel.__responds?(name, :to_str)
+      name = sym if sym
+      if Symbol === sym
+        s = sym.name
+        if s.size == 2 && s[0] == "_" && s[1] >= "1" && s[1] <= "9"
+          raise NameError.new("numbered parameter '#{s}' is not a local variable", sym)
+        end
+        if sym == :it && m != :local_variable_set && !local_variables.include?(:it)
+          raise NameError.new("local variable 'it' is not defined for #{inspect}", sym) if m == :local_variable_get
+          return false
+        end
+      end
+      __send__(orig, name, *rest)
+    end
+  end
+end
+
+module Kernel
+  # TOPLEVEL_BINDING is the main script's binding, as MRI's: cmd/oruby has
+  # the script hand its own over first (variables set in it before, by
+  # required files, are kept)
+  def self.__oruby_main_binding(b)
+    tb = ::TOPLEVEL_BINDING
+    old = tb.local_variables.map { |n| [n, tb.local_variable_get(n)] }
+    tb.__send__(:__oruby_adopt, b)
+    old.each { |n, v| tb.local_variable_set(n, v) unless tb.local_variable_defined?(n) }
+    nil
+  end
 end

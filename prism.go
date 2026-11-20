@@ -236,6 +236,10 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if hasMultiAssign(src) || hasRegexpEncFlag(src) || hasCaseIn(src) {
 		return true
 	}
+	// eval'd code may forward anonymous parameters (ORB_ANON_ARG)
+	if opts != nil && opts.NoRegexpLiterals && (bytes.IndexByte(src, '*') >= 0 || bytes.IndexByte(src, '&') >= 0) {
+		return true
+	}
 	// a regexp literal (ORB_REGEXP_LITERAL)
 	if (opts == nil || !opts.NoRegexpLiterals) && (bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
@@ -247,8 +251,9 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	}
 	// "**": **obj (ORB_KWSPLAT)
 	// "|", "->": block and lambda parameters (ORB_BLOCK_PARAMS)
+	// "when", "defined?": parse warnings (ORB_PARSE_WARN)
 	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
-		"__ENCODING__", "frozen_string_literal", "coding"} {
+		"__ENCODING__", "frozen_string_literal", "coding", "when", "defined?"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
 		}
@@ -347,7 +352,8 @@ func hasAliasedGvar(src []byte) bool {
 // readonlyGvars cannot be assigned from Ruby code
 var readonlyGvars = map[string]bool{
 	"$!": true, "$:": true, "$\"": true, "$<": true, "$FILENAME": true, "$?": true,
-	"$-a": true, "$-l": true, "$-p": true, "$$": true, "$LOAD_PATH": true, "$LOADED_FEATURES": true,
+	"$-a": true, "$-l": true, "$-p": true, "$$": true, "$LOAD_PATH": true, "$LOADED_FEATURES": true, "$-I": true,
+	"$*": true,
 }
 
 // hasMultiAssign: a line with a comma before a lone "=" may be a, b = v
@@ -507,6 +513,7 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		return src
 	}
 	r := &rewriter{src: src}
+	caseInKeys := map[int][]string{}
 	// aliases first: later references in this source use them too
 	for _, rc := range recs {
 		if rc.kind == C.ORB_ALIAS_GVAR {
@@ -630,7 +637,27 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			tmp := "__oruby_pm" + id
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "(" + tmp + " = (" },
 				func(*rewriter) string { return "))" })
-			r.add(s[1], s[1], func(*rewriter) string { return "else ::Kernel.__oruby_nomatch(" + tmp + ")\n" })
+			if rc.flags&1 != 0 {
+				// one Hash pattern: its keys (ORB_CASE_IN_KEY) tell a
+				// NoMatchingPatternKeyError
+				at := s[1]
+				r.add(s[1], s[1], func(*rewriter) string {
+					return "else ::Kernel.__oruby_nomatch_key(" + tmp + ", [" + strings.Join(caseInKeys[at], ", ") + "])\n"
+				})
+			} else {
+				r.add(s[1], s[1], func(*rewriter) string { return "else ::Kernel.__oruby_nomatch(" + tmp + ")\n" })
+			}
+		case C.ORB_CASE_IN_KEY:
+			// "b:" / "\"b c\":" -> :b / :"b c"
+			k := strings.TrimSuffix(string(src[s[0]:e[0]]), ":")
+			caseInKeys[s[1]] = append(caseInKeys[s[1]], ":"+k)
+		case C.ORB_WHEN_SPLAT:
+			// case / when *x: ([*x].any?)
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "([" }, func(*rewriter) string { return "].any?)" })
+		case C.ORB_PAT_LAMBDA:
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "^(" }, func(*rewriter) string { return ")" })
+		case C.ORB_PAT_ANON_REST:
+			r.add(s[0], e[0], func(*rewriter) string { return "" })
 		case C.ORB_MASGN_VALUE:
 			// a, b = v -> __oruby_masgn(id, (a, b = __oruby_to_ary(id, (v)))):
 			// the value is converted, the expression still returns v. The
@@ -763,6 +790,28 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			r.addWrap(s[0], e[0], func(*rewriter) string {
 				return "(::Kernel.__oruby_relit(" + id + ") || ::Kernel.__oruby_relit_set(" + id + ", "
 			}, func(*rewriter) string { return "))" })
+		case C.ORB_RANGE_LITERAL:
+			// one frozen Range per literal site, as MRI's (mruby makes one
+			// each time it is evaluated)
+			id := strconv.FormatUint(atomic.AddUint64(&regexpSiteCounter, 1), 10)
+			r.addWrap(s[0], e[0], func(*rewriter) string {
+				return "(::Kernel.__oruby_relit(" + id + ") || ::Kernel.__oruby_relit_set(" + id + ", ("
+			}, func(*rewriter) string { return ").freeze))" })
+		case C.ORB_ANON_ARG:
+			// eval'd code forwarding the method's anonymous parameters:
+			// their values, read from the method's frame (go-mrb.c)
+			var t string
+			switch rc.flags {
+			case 1:
+				t = "*::Kernel.__oruby_fwd(:*)"
+			case 2:
+				t = "**::Kernel.__oruby_fwd(:**)"
+			case 3:
+				t = "&::Kernel.__oruby_fwd(:&)"
+			default:
+				t = "*::Kernel.__oruby_fwd(:*), **::Kernel.__oruby_fwd(:**), &::Kernel.__oruby_fwd(:&)"
+			}
+			r.add(s[0], e[0], func(*rewriter) string { return t })
 		case C.ORB_KWSPLAT:
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_kwsplat((" },
 				func(*rewriter) string { return "))" })
@@ -820,7 +869,8 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 	}
 	if len(parseWarns) > 0 && warnAt >= 0 {
 		// MRI prints these as it parses; here the program does as it starts
-		call := "::Kernel.__oruby_parse_warn(__FILE__, [" + strings.Join(parseWarns, ", ") + "]); "
+		// (a state without core_ext has no printer)
+		call := "::Kernel.__oruby_parse_warn(__FILE__, [" + strings.Join(parseWarns, ", ") + "]) if ::Kernel.respond_to?(:__oruby_parse_warn); "
 		r.add(warnAt, warnAt, func(*rewriter) string { return call })
 	}
 	if len(r.edits) == 0 {

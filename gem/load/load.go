@@ -306,9 +306,18 @@ func resolveFeaturePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	name, _ := findFile(feature, exts, lp)
 	if name == "" {
-		return raiseCannotLoad(mrb, feature)
+		// a library built into oruby (a Go gem): Ruby code of no file
+		if !isExplicit(feature) && mrb.GemAvailable(feature) {
+			return mrb.AryNewFromValues(mrb.SymbolValue(mrb.Intern("rb")), mrb.StrNew("<internal:oruby>/"+feature+".rb"))
+		}
+		return mrb.NilValue()
 	}
-	return mrb.StrNew(name)
+	// MRI's [type, path]: :rb for Ruby code, :so for an extension
+	kind := "rb"
+	if extKind(name) == 's' {
+		kind = "so"
+	}
+	return mrb.AryNewFromValues(mrb.SymbolValue(mrb.Intern(kind)), mrb.StrNew(name))
 }
 
 // load(file, wrap = false): file is looked up as require does (without

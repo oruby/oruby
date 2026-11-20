@@ -92,8 +92,12 @@ module Kernel
     end
   end
 
+  # Object#dup / #clone have run initialize_copy already when they call a
+  # custom initialize_dup / initialize_clone (11_finalizer.rb)
+  def self.__oruby_copied = (@__oruby_copied ||= {})
+
   private def initialize_dup(orig)
-    initialize_copy(orig)
+    initialize_copy(orig) unless Kernel.__oruby_copied.key?(__id__)
     self
   end
 
@@ -101,7 +105,7 @@ module Kernel
     unless freeze.nil? || freeze == true || freeze == false
       raise ArgumentError, "unexpected value for freeze: #{freeze.class}"
     end
-    initialize_copy(orig)
+    initialize_copy(orig) unless Kernel.__oruby_copied.key?(__id__)
     self
   end
 end

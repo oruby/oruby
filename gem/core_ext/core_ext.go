@@ -86,15 +86,24 @@ module RbConfig
     'RUBY_SO_NAME' => 'oruby',
     'UNICODE_VERSION' => '17.0.0',
     'UNICODE_EMOJI_VERSION' => '17.0',
-    'CROSS_COMPILING' => 'no'
+    'CROSS_COMPILING' => 'no',
+    # oruby is one static executable: no libruby to link against
+    'ENABLE_SHARED' => 'no',
+    'LIBRUBY' => 'liboruby-static.a',
+    'LIBRUBY_A' => 'liboruby-static.a',
+    'LIBRUBY_SO' => 'liboruby.' + %q,
+    'libdirname' => 'libdir',
+    'LIBPATHENV' => 'DYLD_LIBRARY_PATH'
   }
+  # no frozen values (MRI's CONFIG is mutable, under --enable-frozen-string-literal too)
+  CONFIG.each { |k, v| CONFIG[k] = v.dup if String === v && v.frozen? }
   TOPDIR = prefix
   def self.ruby
     CONFIG['bindir'] + '/' + CONFIG['ruby_install_name'] + CONFIG['EXEEXT']
   end
 end
 CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
-`, prefix, runtime.GOOS, cpu, host, arch, runtime.GOOS, cpu, dlext, arch, arch, arch, arch))
+`, prefix, runtime.GOOS, cpu, host, arch, runtime.GOOS, cpu, dlext, arch, arch, arch, arch, dlext))
 		return nil
 	})
 

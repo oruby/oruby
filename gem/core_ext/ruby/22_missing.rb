@@ -78,6 +78,10 @@ module Kernel
           elsif singleton_class.protected_method_defined?(sym) then "protected"
           end
     raise NameError.new("method '#{sym}' for class '#{cls}' is #{vis}", sym, receiver: self) if vis
+    # a method only respond_to_missing?(name, true) answers is not public
+    if !singleton_class.public_method_defined?(sym) && !respond_to?(sym)
+      raise NameError.new("undefined method '#{sym}' for class '#{cls}'", sym, receiver: self)
+    end
     method(sym)
   end
 end

@@ -17,6 +17,7 @@ typedef struct {
   bool frozen; /* frozen_string_literal: true for this source */
   bool nonutf8; /* source encoding other than UTF-8: literals are tagged */
   bool relits;  /* regexp literals get a per-site object (ORB_REGEXP_LITERAL) */
+  bool eval;    /* eval'd code: anonymous forwarding arguments are rewritten (ORB_ANON_ARG) */
   const pm_node_t *keep_re; /* the literal of a named-capture =~ (assigns locals) */
 } orb_scan;
 
@@ -56,6 +57,20 @@ safe_nav_target(const pm_node_t *n)
   return n && PM_NODE_TYPE(n) == PM_CALL_TARGET_NODE && PM_NODE_FLAG_P(n, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION);
 }
 
+/* a range end MRI's compiler folds into a literal Range: none, nil, or a
+   (signed) numeric literal */
+static bool
+static_range_end(const pm_node_t *n)
+{
+  if (!n) return true;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_NIL_NODE: case PM_INTEGER_NODE: case PM_FLOAT_NODE:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static bool
 is_dsym(const pm_node_t *n)
 {
@@ -74,6 +89,87 @@ cpath_write(orb_scan *sc, int kind, const pm_node_t *node, const pm_constant_pat
 }
 
 static pm_visit_result_t visit(const pm_node_t *node, void *data);
+
+/* What mruby's codegen gets wrong in a pattern: a lambda in it (ORB_PAT_LAMBDA)
+   and an anonymous ** after keys (ORB_PAT_ANON_REST) */
+static void
+walk_pattern(orb_scan *sc, const pm_node_t *n)
+{
+  if (!n) return;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_LAMBDA_NODE: {
+    orb_rec *r = add(sc, ORB_PAT_LAMBDA);
+    span(r, 0, n);
+    break;
+  }
+  case PM_IF_NODE: {
+    const pm_statements_node_t *st = ((const pm_if_node_t *)n)->statements;
+    if (st && st->body.size > 0) walk_pattern(sc, st->body.nodes[0]);
+    break;
+  }
+  case PM_UNLESS_NODE: {
+    const pm_statements_node_t *st = ((const pm_unless_node_t *)n)->statements;
+    if (st && st->body.size > 0) walk_pattern(sc, st->body.nodes[0]);
+    break;
+  }
+  case PM_ALTERNATION_PATTERN_NODE:
+    walk_pattern(sc, ((const pm_alternation_pattern_node_t *)n)->left);
+    walk_pattern(sc, ((const pm_alternation_pattern_node_t *)n)->right);
+    break;
+  case PM_CAPTURE_PATTERN_NODE:
+    walk_pattern(sc, ((const pm_capture_pattern_node_t *)n)->value);
+    break;
+  case PM_ARRAY_PATTERN_NODE: {
+    const pm_array_pattern_node_t *a = (const pm_array_pattern_node_t *)n;
+    for (size_t i = 0; i < a->requireds.size; i++) walk_pattern(sc, a->requireds.nodes[i]);
+    for (size_t i = 0; i < a->posts.size; i++) walk_pattern(sc, a->posts.nodes[i]);
+    break;
+  }
+  case PM_FIND_PATTERN_NODE: {
+    const pm_find_pattern_node_t *f = (const pm_find_pattern_node_t *)n;
+    for (size_t i = 0; i < f->requireds.size; i++) walk_pattern(sc, f->requireds.nodes[i]);
+    break;
+  }
+  case PM_HASH_PATTERN_NODE: {
+    const pm_hash_pattern_node_t *h = (const pm_hash_pattern_node_t *)n;
+    for (size_t i = 0; i < h->elements.size; i++) {
+      const pm_node_t *e = h->elements.nodes[i];
+      if (PM_NODE_TYPE(e) == PM_ASSOC_NODE) walk_pattern(sc, ((const pm_assoc_node_t *)e)->value);
+    }
+    if (h->rest && PM_NODE_TYPE(h->rest) == PM_ASSOC_SPLAT_NODE && !((const pm_assoc_splat_node_t *)h->rest)->value &&
+        h->elements.size > 0) {
+      const pm_node_t *last = h->elements.nodes[h->elements.size - 1];
+      if (last->location.start + last->location.length <= h->rest->location.start) {
+        orb_rec *r = add(sc, ORB_PAT_ANON_REST);
+        r->s[0] = (int32_t)(last->location.start + last->location.length);
+        r->e[0] = (int32_t)(h->rest->location.start + h->rest->location.length);
+      }
+    }
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+/* eval'd code's anonymous *, ** and ... arguments among l (ORB_ANON_ARG) */
+static void
+anon_args(orb_scan *sc, const pm_node_list_t *l)
+{
+  if (!sc->eval) return;
+  for (size_t i = 0; i < l->size; i++) {
+    const pm_node_t *a = l->nodes[i];
+    int kind = 0;
+    if (PM_NODE_TYPE(a) == PM_SPLAT_NODE && !((const pm_splat_node_t *)a)->expression) kind = 1;
+    else if (PM_NODE_TYPE(a) == PM_ASSOC_SPLAT_NODE && !((const pm_assoc_splat_node_t *)a)->value) kind = 2;
+    else if (PM_NODE_TYPE(a) == PM_FORWARDING_ARGUMENTS_NODE) kind = 4;
+    if (kind) {
+      orb_rec *r = add(sc, ORB_ANON_ARG);
+      r->flags = kind;
+      span(r, 0, a);
+    }
+  }
+}
 
 /* the nested targets ((a, b)) in t, outer ones first */
 static void
@@ -191,7 +287,10 @@ visit(const pm_node_t *node, void *data)
   }
   case PM_RESCUE_NODE: {
     const pm_rescue_node_t *rn = (const pm_rescue_node_t *)node;
-    if (safe_nav_target(rn->reference)) {
+    /* rescue => obj.attr / obj[k] / a&.b: mruby's code generator assigns
+       the receiver instead; the exception goes through a local */
+    if (rn->reference && (PM_NODE_TYPE(rn->reference) == PM_CALL_TARGET_NODE ||
+                          PM_NODE_TYPE(rn->reference) == PM_INDEX_TARGET_NODE)) {
       r = add(sc, ORB_RESCUE_SAFE_NAV);
       span(r, 0, rn->reference);
     }
@@ -399,12 +498,15 @@ visit(const pm_node_t *node, void *data)
   }
   // patterns take literals only: leave their strings alone
   case PM_IN_NODE:
+    walk_pattern(sc, ((const pm_in_node_t *)node)->pattern);
     visit_child((const pm_node_t *)((const pm_in_node_t *)node)->statements, data);
     return PM_VISIT_SKIP;
   case PM_MATCH_PREDICATE_NODE:
+    walk_pattern(sc, ((const pm_match_predicate_node_t *)node)->pattern);
     visit_child(((const pm_match_predicate_node_t *)node)->value, data);
     return PM_VISIT_SKIP;
   case PM_MATCH_REQUIRED_NODE:
+    walk_pattern(sc, ((const pm_match_required_node_t *)node)->pattern);
     visit_child(((const pm_match_required_node_t *)node)->value, data);
     return PM_VISIT_SKIP;
   case PM_MULTI_WRITE_NODE: {
@@ -446,6 +548,7 @@ visit(const pm_node_t *node, void *data)
   case PM_ARRAY_NODE: {
     // [a, k: v]: mruby's code generator drops a brace-less trailing Hash
     const pm_node_list_t *el = &((const pm_array_node_t *)node)->elements;
+    anon_args(sc, el);
     if (el->size > 0 && PM_NODE_TYPE(el->nodes[el->size - 1]) == PM_KEYWORD_HASH_NODE) {
       const pm_keyword_hash_node_t *kh = (const pm_keyword_hash_node_t *)el->nodes[el->size - 1];
       r = add(sc, ORB_ARRAY_KWHASH);
@@ -489,6 +592,46 @@ visit(const pm_node_t *node, void *data)
     }
     break;
   }
+  case PM_ARGUMENTS_NODE:
+    anon_args(sc, &((const pm_arguments_node_t *)node)->arguments);
+    break;
+  case PM_KEYWORD_HASH_NODE:
+    anon_args(sc, &((const pm_keyword_hash_node_t *)node)->elements);
+    break;
+  case PM_HASH_NODE:
+    anon_args(sc, &((const pm_hash_node_t *)node)->elements);
+    break;
+  case PM_BLOCK_ARGUMENT_NODE:
+    if (sc->eval && !((const pm_block_argument_node_t *)node)->expression) {
+      r = add(sc, ORB_ANON_ARG);
+      r->flags = 3;
+      span(r, 0, node);
+    }
+    break;
+  case PM_RANGE_NODE: {
+    const pm_range_node_t *rg = (const pm_range_node_t *)node;
+    if (sc->relits && static_range_end(rg->left) && static_range_end(rg->right) && (rg->left || rg->right)) {
+      r = add(sc, ORB_RANGE_LITERAL);
+      span(r, 0, node);
+    }
+    break;
+  }
+  case PM_CASE_NODE: {
+    const pm_case_node_t *cn = (const pm_case_node_t *)node;
+    if (cn->predicate) break;
+    for (size_t i = 0; i < cn->conditions.size; i++) {
+      const pm_node_t *w = cn->conditions.nodes[i];
+      if (PM_NODE_TYPE(w) != PM_WHEN_NODE) continue;
+      const pm_node_list_t *cl = &((const pm_when_node_t *)w)->conditions;
+      for (size_t j = 0; j < cl->size; j++) {
+        if (PM_NODE_TYPE(cl->nodes[j]) == PM_SPLAT_NODE && ((const pm_splat_node_t *)cl->nodes[j])->expression) {
+          r = add(sc, ORB_WHEN_SPLAT);
+          span(r, 0, cl->nodes[j]);
+        }
+      }
+    }
+    break;
+  }
   case PM_CASE_MATCH_NODE: {
     // case/in without else: MRI's NoMatchingPatternError names the subject
     const pm_case_match_node_t *cm = (const pm_case_match_node_t *)node;
@@ -496,6 +639,21 @@ visit(const pm_node_t *node, void *data)
       r = add(sc, ORB_CASE_IN);
       span(r, 0, cm->predicate);
       r->s[1] = r->e[1] = (int32_t)cm->end_keyword_loc.start;
+      /* one clause, a Hash pattern: a missing key is a NoMatchingPatternKeyError */
+      if (cm->conditions.size == 1 && PM_NODE_TYPE(cm->conditions.nodes[0]) == PM_IN_NODE) {
+        const pm_node_t *pat = ((const pm_in_node_t *)cm->conditions.nodes[0])->pattern;
+        if (pat && PM_NODE_TYPE(pat) == PM_HASH_PATTERN_NODE && !((const pm_hash_pattern_node_t *)pat)->constant) {
+          const pm_hash_pattern_node_t *h = (const pm_hash_pattern_node_t *)pat;
+          r->flags = 1;
+          for (size_t i = 0; i < h->elements.size; i++) {
+            const pm_node_t *e = h->elements.nodes[i];
+            if (PM_NODE_TYPE(e) != PM_ASSOC_NODE) continue;
+            orb_rec *k = add(sc, ORB_CASE_IN_KEY);
+            span(k, 0, ((const pm_assoc_node_t *)e)->key);
+            k->s[1] = k->e[1] = (int32_t)cm->end_keyword_loc.start;
+          }
+        }
+      }
     }
     break;
   }
@@ -552,10 +710,20 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
   void *cc = mrc_ccontext_new(mrb);
   pm_arena_t *arena = pm_arena_new();
   pm_options_t *options = NULL;
-  if (opts && (opts->frozen >= 0 || (opts->encoding && opts->encoding[0]))) {
+  mrb_bool eval_src = opts && opts->no_regexp_literals;
+  if (opts && (opts->frozen >= 0 || (opts->encoding && opts->encoding[0]) || eval_src)) {
     options = pm_options_new();
     if (opts->frozen >= 0) pm_options_frozen_string_literal_set(options, opts->frozen != 0);
     if (opts->encoding && opts->encoding[0]) pm_options_encoding_set(options, opts->encoding);
+    if (eval_src) {
+      /* eval'd code may forward the method's anonymous parameters (*, **,
+         &, ...): parsed as in such a method, rewritten (ORB_ANON_ARG) */
+      pm_options_scopes_init(options, 1);
+      pm_options_scope_t *scope = pm_options_scope_mut(options, 0);
+      pm_options_scope_init(scope, 0);
+      pm_options_scope_forwarding_set(scope, PM_OPTIONS_SCOPE_FORWARDING_POSITIONALS | PM_OPTIONS_SCOPE_FORWARDING_KEYWORDS |
+                                             PM_OPTIONS_SCOPE_FORWARDING_BLOCK | PM_OPTIONS_SCOPE_FORWARDING_ALL);
+    }
   }
   pm_parser_t *parser = pm_parser_new(arena, (const uint8_t *)src, len, options);
   pm_node_t *root = pm_parse(parser);
@@ -567,6 +735,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
   }
   sc.frozen = pm_parser_frozen_string_literal(parser) > 0;
   sc.relits = !(opts && opts->no_regexp_literals);
+  sc.eval = eval_src;
   {
     const char *en = pm_parser_encoding_name(parser);
     sc.nonutf8 = en && strcmp(en, "UTF-8") != 0;
@@ -586,6 +755,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
       int verbose;
       if (strcmp(ty, "duplicated_hash_key") == 0) verbose = 0;
       else if (strcmp(ty, "duplicated_when_clause") == 0) verbose = 1;
+      else if (strcmp(ty, "void_statement") == 0) verbose = 1;
       else continue;
       const char *m = pm_diagnostic_message(w);
       size_t ml = strlen(m);

@@ -66,6 +66,16 @@ class Object
   alias __orig_dup__ dup
   def dup
     copy = __orig_dup__
+    # mruby's dup calls initialize_copy; MRI calls initialize_dup, which
+    # calls it: a custom one runs now, its super not copying twice
+    if Kernel.__oruby_own_hook?(copy, :initialize_dup)
+      Kernel.__oruby_copied[copy.__id__] = true
+      begin
+        copy.__send__(:initialize_dup, self)
+      ensure
+        Kernel.__oruby_copied.delete(copy.__id__)
+      end
+    end
     fins = ObjectSpace._finalizers[object_id]
     if fins
       fins.each { |f| ObjectSpace.define_finalizer(copy, f) }
@@ -87,12 +97,17 @@ class Object
       return self
     end
     copy = __orig_clone__
-    unless freeze.nil?
-      copy.__oruby_clone_unfreeze if copy.frozen?
-      m = copy.method(:initialize_clone) rescue nil
-      copy.__send__(:initialize_clone, self, freeze: freeze) if m && m.owner != Kernel && m.owner != BasicObject
-      copy.freeze if freeze
+    custom = Kernel.__oruby_own_hook?(copy, :initialize_clone)
+    copy.__oruby_clone_unfreeze if !freeze.nil? && copy.frozen?
+    if custom
+      Kernel.__oruby_copied[copy.__id__] = true
+      begin
+        freeze.nil? ? copy.__send__(:initialize_clone, self) : copy.__send__(:initialize_clone, self, freeze: freeze)
+      ensure
+        Kernel.__oruby_copied.delete(copy.__id__)
+      end
     end
+    copy.freeze if freeze
     fins = ObjectSpace._finalizers[object_id]
     if fins
       fins.each { |f| ObjectSpace.define_finalizer(copy, f) }

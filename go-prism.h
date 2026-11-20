@@ -36,6 +36,12 @@ enum {
   ORB_BLOCK_PARAMS,       // s0: (zero width) where a block's body starts; flags 1: one object given is spread by #to_ary (a non-lambda block of several parameters); its parameters follow as ORB_LIST_ITEM: s0 the parameter (a name, or a nested (a, b)), flags 0 required, 1 rest, 2 post, 3 the implicit rest of |a, |, +8 nested
   ORB_PARSE_WARN,         // s0: (zero width) the program's first statement, s1: where a parse warning points; flags 1: verbose only; its text is the next of _oruby_prism_scan's msgs
   ORB_CASE_IN,            // s0: the subject of a case/in without else, s1: (zero width) its end keyword
+  ORB_RANGE_LITERAL,      // s0: a range of literal (numeric or nil) ends: one frozen Range per site, as MRI's
+  ORB_PAT_LAMBDA,         // s0: a lambda in a pattern, pinned ^(->{}) (mruby's codegen fails the match)
+  ORB_PAT_ANON_REST,      // s0: ", **" ending a hash pattern with keys: dropped (deconstruct_keys gets the keys, as MRI's)
+  ORB_CASE_IN_KEY,        // s0: a key of the one Hash pattern of a case/in without else, s1: that case's end (ORB_CASE_IN)
+  ORB_WHEN_SPLAT,         // s0: the *x of a when in a case without a subject: true when an element is (mruby tests the Array)
+  ORB_ANON_ARG,           // s0: an anonymous *, **, & or ... argument in eval'd code; flags 1 rest, 2 keywords, 3 block, 4 all
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

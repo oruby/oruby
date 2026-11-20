@@ -532,5 +532,5 @@ module Kernel
     return path if Pathname === path
     Pathname.new(path)
   end
-  private :Pathname
+  module_function :Pathname  # private, and Kernel.Pathname public
 end

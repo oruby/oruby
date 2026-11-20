@@ -23,9 +23,11 @@ import "C"
 
 import (
 	_ "embed"
+	"errors"
 	"os"
 	"runtime"
 	"sync"
+	"syscall"
 	"unsafe"
 
 	"github.com/oruby/oruby"
@@ -210,8 +212,12 @@ func confstr(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
-	size := C.confstr(C.int(n), nil, 0)
+	size, cerr := C.confstr(C.int(n), nil, 0)
 	if size == 0 {
+		// an unknown name is EINVAL; a known one without a value is nil
+		if errors.Is(cerr, syscall.EINVAL) {
+			return mrb.RaiseError(syscall.EINVAL)
+		}
 		return mrb.NilValue()
 	}
 	buf := (*C.char)(C.malloc(size))

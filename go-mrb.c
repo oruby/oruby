@@ -405,6 +405,11 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, "frozen_string_literal") ||
           src_contains(s, len, "||=") || src_contains(s, len, "&&=") ||
           src_contains(s, len, "::") || src_contains(s, len, "$") || src_contains(s, len, "|") || src_contains(s, len, "->") ||
+          /* an anonymous *, & argument (prism.go ORB_ANON_ARG) */
+          src_contains(s, len, "*)") || src_contains(s, len, "*,") || src_contains(s, len, "*]") ||
+          src_contains(s, len, "&)") ||
+          /* parse warnings (ORB_PARSE_WARN) */
+          src_contains(s, len, "when") || src_contains(s, len, "defined?") ||
           src_bare_it(s, len) || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
@@ -619,7 +624,9 @@ static mrb_value respond_to_w(mrb_state *mrb, mrb_value self) {
       mrb_method_t m = mrb_method_search_vm(mrb, &owner, fork);
       struct RClass *process = mrb_class_defined_id(mrb, MRB_SYM(Process)) ?
         mrb_module_get(mrb, "Process") : NULL;
+      if (owner && owner->tt == MRB_TT_ICLASS) owner = owner->c;  /* Kernel as included */
       if (!MRB_METHOD_UNDEF_P(m) && (owner == mrb->kernel_module ||
+          owner == mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(mrb->kernel_module))) ||
           (process && owner == mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(process)))))) {
         return mrb_false_value();
       }
@@ -1483,10 +1490,13 @@ static mrb_value mod_const_location_m(mrb_state *mrb, mrb_value mod) {
 }
 
 /* Module#remove_const drops the record too (const_source_location counts a
-   record as a definition while an autoload is loading) */
+   record as a definition while an autoload is loading), and the VM's
+   constant cache, which mruby's leaves holding the removed value */
+void mrb_const_cache_clear(mrb_state *mrb);  /* variable.c */
 static mrb_func_t remove_const_orig;
 static mrb_value remove_const_w(mrb_state *mrb, mrb_value mod) {
   mrb_value v = remove_const_orig(mrb, mod);
+  mrb_const_cache_clear(mrb);
   mrb_value h = mrb_iv_get(mrb, mod, MRB_SYM(__oruby_csl));
   if (mrb_hash_p(h)) {
     mrb_value name = mrb_get_argv(mrb)[0];
@@ -1544,6 +1554,18 @@ static const struct RProc *binding_scope(mrb_state *mrb, mrb_value b, struct REn
 }
 
 /* Binding#__oruby_implicit_params: [:it], [:_1, .., :_n] or [] of its own scope */
+/* Binding#__oruby_adopt(b): self takes b's frame (TOPLEVEL_BINDING the
+   main script's, as MRI's: Kernel.__oruby_main_binding) */
+static mrb_value binding_adopt_m(mrb_state *mrb, mrb_value self) {
+  mrb_value b = mrb_get_arg1(mrb);
+  const mrb_sym ivs[4] = {MRB_SYM(proc), MRB_SYM(env), MRB_SYM(recv), MRB_SYM(pc)};
+  for (int i = 0; i < 4; i++) {
+    if (mrb_iv_defined(mrb, b, ivs[i])) mrb_iv_set(mrb, self, ivs[i], mrb_iv_get(mrb, b, ivs[i]));
+    else mrb_iv_remove(mrb, self, ivs[i]);
+  }
+  return self;
+}
+
 static mrb_value binding_implicit_m(mrb_state *mrb, mrb_value self) {
   struct REnv *e;
   const struct RProc *p = binding_scope(mrb, self, &e);
@@ -2024,6 +2046,15 @@ static void dollar_eq_warn(mrb_state *mrb, const char *msg) {
     mrb_funcall_id(mrb, k, MRB_SYM(__oruby_warn_here), 1, mrb_str_new_cstr(mrb, msg));
   }
 }
+/* $* and $<: ARGV and ARGF (read-only: prism.go rewrites assignments) */
+static mrb_value const_or_nil(mrb_state *mrb, mrb_sym name) {
+  if (!mrb_const_defined_at(mrb, mrb_obj_value(mrb->object_class), name)) return mrb_nil_value();
+  return mrb_const_get(mrb, mrb_obj_value(mrb->object_class), name);
+}
+static mrb_value argv_gv_get(mrb_state *mrb) { return const_or_nil(mrb, MRB_SYM(ARGV)); }
+static mrb_value argf_gv_get(mrb_state *mrb) { return const_or_nil(mrb, MRB_SYM(ARGF)); }
+static void ro_gv_set(mrb_state *mrb, mrb_value v) { (void)mrb; (void)v; }
+
 /* $? is thread-local, as MRI's: held by the running thread's (or fiber's)
    context object, the way $! is (go-backtrace.c errinfo_holder) */
 static mrb_value last_status_holder(mrb_state *mrb) {
@@ -2059,6 +2090,8 @@ static void gv_init_checked(mrb_state *mrb) {
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$_"), lastline_get, lastline_set);
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$="), dollar_eq_get, dollar_eq_set);
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$?"), last_status_get, last_status_set);
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$*"), argv_gv_get, ro_gv_set);
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$<"), argf_gv_get, ro_gv_set);
   _mrb_gv_hook(mrb, "$@", "$@", 3);
 }
 
@@ -2627,8 +2660,15 @@ void _orb_frozen_fix(mrb_state *mrb, struct RObject *exc) {
     }
   }
   if (exc->c == E_TYPE_ERROR) {
-    /* define_method(name, not_a_proc): MRI names all it takes */
     mrb_value mesg = mrb_exc_mesg_get(mrb, (struct RException*)exc);
+    /* &obj without #to_proc: MRI's implicit conversion message */
+    if (mesg_prefix(mesg, "can't convert ") && mesg_suffix(mesg, " into Proc")) {
+      mrb_value s = mrb_str_new_lit(mrb, "no implicit conversion of ");
+      mrb_str_cat(mrb, s, RSTRING_PTR(mesg) + 14, RSTRING_LEN(mesg) - 14);
+      mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
+      return;
+    }
+    /* define_method(name, not_a_proc): MRI names all it takes */
     if (mrb->c->ci->mid == MRB_SYM(define_method) && mesg_suffix(mesg, " (expected Proc)")) {
       mrb_value s = mrb_str_new(mrb, RSTRING_PTR(mesg), RSTRING_LEN(mesg) - 1);
       mrb_str_cat_lit(mrb, s, "/Method/UnboundMethod)");
@@ -2783,6 +2823,7 @@ enum chk_kind {
   CHK_STR_ORD,      /* String#ord of a broken US-ASCII character: ArgumentError */
   CHK_ARY_INSPECT,  /* [].inspect is US-ASCII */
   CHK_BINDING_SELF, /* Kernel#binding: self is the caller's, not the receiver */
+  CHK_SCLASS_FSTR,  /* singleton_class of a deduplicated String (-"str"): TypeError */
   CHK_STR_TO_SYM,   /* String#to_sym of broken UTF-8: EncodingError */
   CHK_STR_INSPECT,  /* String#inspect: \u for Unicode controls; a tagged one in Ruby */
   CHK_ASCII_COMPAT, /* String#to_f / #to_c: an ASCII-incompatible string raises */
@@ -2830,6 +2871,7 @@ static struct chk_def chk_defs[] = {
   {6, "ord", CHK_STR_ORD, NULL, NULL},
   {7, "inspect", CHK_ARY_INSPECT, NULL, NULL},
   {0, "binding", CHK_BINDING_SELF, NULL, NULL},
+  {0, "singleton_class", CHK_SCLASS_FSTR, NULL, NULL},
   {8, "binding", CHK_BINDING_SELF, NULL, NULL},
   {6, "to_sym", CHK_STR_TO_SYM, NULL, NULL},
   {6, "inspect", CHK_STR_INSPECT, NULL, NULL},
@@ -3132,6 +3174,20 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
       mrb_iv_set(mrb, b, MRB_SYM(recv), ci[-1].stack[0]);
     return b;
   }
+  case CHK_SCLASS_FSTR:
+    if (mrb_string_p(self) && mrb_frozen_p(mrb_basic_ptr(self))) {
+      /* String#-@'s table (27_string.rb): encoding => {str => fstr} */
+      mrb_value t = mrb_iv_get(mrb, mrb_obj_value(mrb->kernel_module), mrb_intern_lit(mrb, "@__oruby_fstr"));
+      if (mrb_hash_p(t)) {
+        mrb_value vals = mrb_hash_values(mrb, t);
+        for (mrb_int k = 0; k < RARRAY_LEN(vals); k++) {
+          mrb_value h = RARRAY_PTR(vals)[k];
+          if (mrb_hash_p(h) && mrb_obj_eq(mrb, mrb_hash_get(mrb, h, self), self))
+            mrb_raise(mrb, E_TYPE_ERROR, "can't define singleton");
+        }
+      }
+    }
+    break;
   case CHK_ARY_INSPECT:
     if (mrb_array_p(self) && RARRAY_LEN(self) == 0) {
       mrb_value r = mrb_str_new_lit(mrb, "[]");
@@ -3531,7 +3587,49 @@ static mrb_value meth_super_method_m(mrb_state *mrb, mrb_value self) {
   return mrb_obj_value(me);
 }
 
+/* Kernel.__oruby_own_hook?(obj, name): whether obj's class defines name
+   itself (not Kernel's / BasicObject's): Object#dup and #clone call a
+   custom initialize_dup / initialize_clone (11_finalizer.rb) */
+static mrb_value k_own_hook_p(mrb_state *mrb, mrb_value self) {
+  mrb_value obj;
+  mrb_sym name;
+  mrb_get_args(mrb, "on", &obj, &name);
+  struct RClass *c = mrb_class(mrb, obj);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, name);
+  if (MRB_METHOD_UNDEF_P(m) || !c) return mrb_false_value();
+  struct RClass *owner = c->tt == MRB_TT_ICLASS ? c->c : c;
+  return mrb_bool_value(owner != mrb->kernel_module && owner != mrb_class_get_id(mrb, MRB_SYM(BasicObject)));
+}
+
+/* Kernel.__oruby_fwd(:* / :** / :&): the value of the method's anonymous
+   parameter, for eval'd code forwarding it (prism.go's ORB_ANON_ARG): the
+   local of that name, through the eval'd code's enclosing frames */
+static mrb_value k_fwd_m(mrb_state *mrb, mrb_value self) {
+  mrb_sym sym;
+  mrb_get_args(mrb, "n", &sym);
+  mrb_callinfo *ci = mrb->c->ci - 1;
+  if (ci < mrb->c->cibase || !ci->proc) return mrb_nil_value();
+  const struct RProc *q = ci->proc;
+  const mrb_value *regs = ci->stack;
+  while (q && !MRB_PROC_CFUNC_P(q) && regs) {
+    const mrb_irep *irep = q->body.irep;
+    if (irep->lv) {
+      for (int i = 0; i + 1 < irep->nlocals; i++) {
+        if (irep->lv[i] == sym) return regs[i + 1];
+      }
+    }
+    if (!q->upper || !MRB_PROC_ENV_P(q) || !q->e.env) break;
+    regs = q->e.env->stack;
+    q = q->upper;
+  }
+  const char *what = sym == MRB_OPSYM(mul) ? "rest" : sym == MRB_OPSYM(pow) ? "keyword rest" : "block";
+  mrb_raisef(mrb, mrb_exc_get_id(mrb, MRB_SYM(SyntaxError)), "no anonymous %s parameter", what);
+  return mrb_nil_value();
+}
+
 static void install_method_identity(mrb_state *mrb) {
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_fwd), k_fwd_m, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_own_hook), k_own_hook_p, MRB_ARGS_REQ(2));
   if (mrb_class_defined_id(mrb, MRB_SYM(Method))) {
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Method)), MRB_SYM(super_method), meth_super_method_m, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)), MRB_SYM(super_method), meth_super_method_m, MRB_ARGS_NONE());
@@ -3612,6 +3710,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
     struct RClass *bc = mrb_class_get_id(mrb, MRB_SYM(Binding));
     wrap_cfunc(mrb, bc, "local_variables", b_lvars_w, &b_lvars_orig);
     mrb_define_private_method_id(mrb, bc, MRB_SYM(__oruby_implicit_params), binding_implicit_m, MRB_ARGS_NONE());
+    mrb_define_private_method_id(mrb, bc, MRB_SYM(__oruby_adopt), binding_adopt_m, MRB_ARGS_REQ(1));
     mrb_define_private_method_id(mrb, bc, MRB_SYM(__oruby_it), binding_it_m, MRB_ARGS_NONE());
   }
   wrap_eval_methods(mrb);
