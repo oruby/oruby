@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	_ "embed"
+	stdbinary "encoding/binary"
 	"errors"
 	"hash/crc32"
 	"io"
@@ -41,6 +42,7 @@ func init() {
 		zs.DefineMethod("__set_header", streamSetHeader, mrb.ArgsReq(3))
 		zs.DefineMethod("__state", streamState, mrb.ArgsNone())
 		zs.DefineMethod("__reset", streamReset, mrb.ArgsNone())
+		zs.DefineMethod("__take_unused", streamTakeUnused, mrb.ArgsNone())
 		rb.LoadRuby(mrb, "zlib.rb", zlibRb)
 		return nil
 	})
@@ -170,10 +172,8 @@ const (
 )
 
 const (
-	noFlush   = 0
-	syncFlush = 2
-	fullFlush = 3
-	finish    = 4
+	noFlush = 0
+	finish  = 4
 )
 
 type flusher interface {
@@ -193,21 +193,21 @@ type stream struct {
 
 	// inflate
 	in       []byte
-	produced int // bytes of output already returned
 	finished bool
 	unused   []byte
 	totalIn  int
 	totalOut int
 	adler    uint32
+	needDict bool
 }
 
 func wbitsMode(wbits int) int {
 	switch {
 	case wbits < 0:
 		return modeRaw
-	case wbits > 31:
+	case wbits >= 32:
 		return modeAuto
-	case wbits > 15:
+	case wbits >= 16:
 		return modeGzip
 	}
 	return modeZlib
@@ -229,13 +229,20 @@ func getStream(mrb *oruby.MrbState, self oruby.Value) (*stream, oruby.MrbValue) 
 func deflateInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs().Slice()
 	level := int(a[0].Int64())
-	if level < -1 || level > 9 {
+	wbits := int(a[1].Int64())
+	memlevel := int(a[2].Int64())
+	strategy := int(a[3].Int64())
+	if level < -1 || level > 9 || memlevel < 1 || memlevel > 9 || strategy < 0 || strategy > 4 {
 		return zerr(mrb, "StreamError", "stream error")
 	}
-	s := &stream{deflate: true, mode: wbitsMode(int(a[1].Int64())), level: level, adler: 1}
-	if s.mode == modeGzip {
-		s.adler = 0
+	if !(wbits >= -15 && wbits <= -9 || wbits >= 8 && wbits <= 15 || wbits >= 25 && wbits <= 31) {
+		return zerr(mrb, "StreamError", "stream error")
 	}
+	if strategy == 2 && level != flate.NoCompression {
+		level = flate.HuffmanOnly
+	}
+	s := &stream{deflate: true, mode: wbitsMode(wbits), level: level}
+	s.reset()
 	rb.Set(mrb, self, s)
 	return mrb.NilValue()
 }
@@ -243,7 +250,18 @@ func deflateInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 // __inflate_init(wbits)
 func inflateInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	wbits := int(mrb.GetArgsFirst().Int64())
-	rb.Set(mrb, self, &stream{mode: wbitsMode(wbits), adler: 1})
+	window := wbits
+	if wbits < 0 {
+		window = -wbits
+	} else if wbits <= 47 {
+		window = wbits % 16
+	}
+	if window > 15 || (window < 8 && !(window == 0 && wbits >= 0)) {
+		return zerr(mrb, "StreamError", "stream error")
+	}
+	s := &stream{mode: wbitsMode(wbits)}
+	s.reset()
+	rb.Set(mrb, self, s)
 	return mrb.NilValue()
 }
 
@@ -295,6 +313,7 @@ func streamWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if s.closed {
 			return zerr(mrb, "StreamError", "stream error")
 		}
+		starting := s.w == nil
 		w, err := s.writer()
 		if err != nil {
 			return zerr(mrb, "StreamError", err.Error())
@@ -305,7 +324,10 @@ func streamWrite(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		s.totalIn += len(data)
 		if s.mode == modeGzip {
 			s.adler = crc32.Update(s.adler, crc32.IEEETable, data)
-		} else {
+		} else if s.mode == modeZlib {
+			if starting && s.dict != nil {
+				s.adler = 1
+			}
 			s.adler = adlerUpdate(s.adler, data)
 		}
 		return mrb.NilValue()
@@ -355,9 +377,12 @@ func (s *stream) inflate(mrb *oruby.MrbState, data []byte) oruby.MrbValue {
 	}
 	if err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+			s.totalIn = len(s.in) - br.Len()
 			return binary(mrb, nil)
 		}
 		if errors.Is(err, zlib.ErrDictionary) {
+			s.needDict = true
+			s.adler = stdbinary.BigEndian.Uint32(s.in[2:6])
 			return zerr(mrb, "NeedDict", "need dictionary")
 		}
 		return zerr(mrb, "DataError", "incorrect header check")
@@ -369,19 +394,26 @@ func (s *stream) inflate(mrb *oruby.MrbState, data []byte) oruby.MrbValue {
 		}
 		return zerr(mrb, "DataError", "invalid compressed data -- format violated")
 	}
+	s.totalIn = len(s.in) - br.Len()
 	if err == nil {
 		s.finished = true
-		consumed := len(s.in) - br.Len()
-		s.unused = append([]byte(nil), s.in[consumed:]...)
-		s.totalIn = consumed
+		s.unused = append([]byte(nil), s.in[s.totalIn:]...)
 		s.in = nil
-		s.adler = adlerUpdate(1, out)
 	}
-	if len(out) < s.produced {
-		return binary(mrb, nil)
+	fresh := out[s.totalOut:]
+	switch mode {
+	case modeZlib:
+		if s.needDict {
+			s.adler = 1
+		}
+		s.adler = adlerUpdate(s.adler, fresh)
+	case modeGzip:
+		if s.totalOut == 0 {
+			s.adler = 0
+		}
+		s.adler = crc32.Update(s.adler, crc32.IEEETable, fresh)
 	}
-	fresh := out[s.produced:]
-	s.produced = len(out)
+	s.needDict = false
 	s.totalOut = len(out)
 	return binary(mrb, fresh)
 }
@@ -392,13 +424,11 @@ func streamFlush(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if exc != nil {
 		return exc
 	}
-	if !s.deflate || s.closed {
-		return mrb.NilValue()
-	}
 	mode := int(mrb.GetArgsFirst().Int64())
-	if mode == noFlush {
+	if !s.deflate || s.closed || mode == noFlush {
 		return mrb.NilValue()
 	}
+	starting := s.w == nil
 	w, err := s.writer()
 	if err != nil {
 		return zerr(mrb, "StreamError", err.Error())
@@ -411,6 +441,9 @@ func streamFlush(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	if err != nil {
 		return zerr(mrb, "StreamError", err.Error())
+	}
+	if starting && s.mode == modeZlib && s.dict != nil {
+		s.adler = 1
 	}
 	return mrb.NilValue()
 }
@@ -436,13 +469,28 @@ func streamSetDict(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
-	if s.deflate && s.w != nil {
-		return zerr(mrb, "StreamError", "stream error")
+	checksum := adlerUpdate(1, d)
+	if s.deflate {
+		if s.w != nil || s.mode == modeGzip {
+			return zerr(mrb, "StreamError", "stream error")
+		}
+		if s.mode == modeZlib {
+			s.adler = checksum
+			s.totalIn = len(d)
+		}
+	} else if s.mode == modeRaw {
+		if len(s.in) > 0 || s.finished {
+			return zerr(mrb, "StreamError", "stream error")
+		}
+	} else {
+		if !s.needDict {
+			return zerr(mrb, "StreamError", "stream error")
+		}
+		if checksum != s.adler {
+			return zerr(mrb, "DataError", "incorrect dictionary")
+		}
 	}
-	s.dict = append([]byte(nil), d...)
-	if !s.deflate {
-		s.adler = adlerUpdate(1, d)
-	}
+	s.dict = bytes.Clone(d)
 	return mrb.NilValue()
 }
 
@@ -480,7 +528,22 @@ func streamState(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if s.deflate {
 		fin = s.closed
 	}
-	return mrb.Value([]interface{}{s.totalIn, s.totalOut, fin, unused, int(s.adler)})
+	return mrb.Value([]interface{}{s.totalIn, s.totalOut + s.out.Len(), fin, unused, int(s.adler)})
+}
+
+// __take_unused -> the input after the end of the stream (nil if none),
+// which the stream then no longer holds
+func streamTakeUnused(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s, exc := getStream(mrb, self)
+	if exc != nil {
+		return exc
+	}
+	if len(s.unused) == 0 {
+		return mrb.NilValue()
+	}
+	u := binary(mrb, s.unused)
+	s.unused = nil
+	return u
 }
 
 func streamReset(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -488,8 +551,15 @@ func streamReset(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if exc != nil {
 		return exc
 	}
-	*s = stream{deflate: s.deflate, mode: s.mode, level: s.level, dict: s.dict, adler: 1}
+	s.reset()
 	return mrb.NilValue()
+}
+
+func (s *stream) reset() {
+	*s = stream{deflate: s.deflate, mode: s.mode, level: s.level, adler: 1}
+	if s.mode == modeGzip || (!s.deflate && s.mode == modeRaw) {
+		s.adler = 0
+	}
 }
 
 // Zlib.__gunzip(str) -> [data, orig_name, comment, mtime, os, unused, level_flag]

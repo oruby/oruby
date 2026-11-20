@@ -66,9 +66,15 @@ module Zlib
   end
 
   def self.__str(v)
-    return v if v.is_a?(String)
-    return v.to_str if v.respond_to?(:to_str)
-    raise TypeError, "no implicit conversion of #{v.nil? ? 'nil' : v.class} into String"
+    return v if String === v
+    Kernel.__implicit(v, String)
+  end
+
+  def self.__int(v, default = nil)
+    return default if v.nil? && !default.nil?
+    v = Kernel.__to_int(v) unless Integer === v
+    raise RangeError, "integer #{v} too big to convert to 'int'" unless (-2**31...2**31).cover?(v)
+    v
   end
 
   def self.adler32(str = nil, adler = 1)
@@ -92,19 +98,25 @@ module Zlib
   end
 
   class ZStream
+    CHUNK = 16384
+    private_constant :CHUNK
+
     def initialize
       raise NotImplementedError, "use Zlib::Deflate or Zlib::Inflate"
     end
 
     def total_in
+      __check_open
       __state[0]
     end
 
     def total_out
+      __check_open
       __state[1]
     end
 
     def finished?
+      __check_open
       __state[2]
     end
     alias stream_end? finished?
@@ -115,23 +127,28 @@ module Zlib
     alias ended? closed?
 
     def close
-      raise Zlib::Error, "stream is not ready" if @closed
+      __check_open
+      __reset
+      @pending = "".b
       @closed = true
       nil
     end
     alias end close
 
     def reset
+      __check_open
       __reset
       @pending = "".b
       nil
     end
 
     def adler
+      __check_open
       __state[4]
     end
 
     def data_type
+      __check_open
       Zlib::BINARY
     end
 
@@ -144,6 +161,7 @@ module Zlib
     end
 
     def avail_out=(size)
+      __check_open
       size
     end
 
@@ -152,17 +170,48 @@ module Zlib
     end
 
     def flush_next_out
-      out = __collect
-      out
-    end
-
-    def finish
-      __check_open
-      __finish
+      return "".b if @closed
+      __drain
     end
 
     def __check_open
       raise Zlib::Error, "stream is not ready" if @closed
+    end
+
+    private
+
+    def __drain
+      out = @pending
+      @pending = "".b
+      out
+    end
+
+    def __hand_out(buffer, block)
+      return __with_buffer(__drain, buffer) unless block
+
+      data = @pending
+      offset = 0
+      complete = finished?
+      begin
+        while offset < data.bytesize
+          size = [CHUNK, data.bytesize - offset].min
+          break if size < CHUNK && !complete
+          chunk = __with_buffer(data.byteslice(offset, size), buffer)
+          offset += size
+          block.call(chunk)
+        end
+      ensure
+        @pending = data.byteslice(offset, data.bytesize - offset) if offset > 0
+      end
+      __with_buffer(@pending, buffer) if offset == 0 && buffer
+      nil
+    end
+
+    def __with_buffer(out, buffer)
+      return out unless buffer
+      encoding = buffer.encoding
+      buffer.replace(out)
+      buffer.force_encoding(encoding)
     end
   end
 
@@ -170,24 +219,18 @@ module Zlib
     def self.deflate(src, level = DEFAULT_COMPRESSION, &block)
       z = new(level)
       begin
-        out = z.deflate(src, FINISH)
-        if block
-          out.bytes.each_slice(16384) { |chunk| block.call(chunk.pack("C*")) }
-          nil
-        else
-          out
-        end
+        z.deflate(Zlib.__str(src), FINISH, &block)
       ensure
         z.close
       end
     end
 
     def initialize(level = nil, wbits = nil, memlevel = nil, strategy = nil)
-      level ||= DEFAULT_COMPRESSION
-      wbits ||= MAX_WBITS
-      __deflate_init(level, wbits, memlevel || DEF_MEM_LEVEL, strategy || DEFAULT_STRATEGY)
-      @level = level
-      @wbits = wbits
+      __deflate_init(Zlib.__int(level, DEFAULT_COMPRESSION),
+                     Zlib.__int(wbits, MAX_WBITS),
+                     Zlib.__int(memlevel, DEF_MEM_LEVEL),
+                     Zlib.__int(strategy, DEFAULT_STRATEGY))
+      @pending = "".b
     end
 
     def initialize_copy(other)
@@ -196,110 +239,139 @@ module Zlib
 
     def deflate(src, flush = NO_FLUSH, &block)
       __check_open
+      flush = __flush_mode(flush, NO_FLUSH)
       __write(Zlib.__str(src)) unless src.nil?
       __flush(src.nil? ? FINISH : flush)
-      out = __take
-      if block
-        block.call(out) unless out.empty?
-        return nil
-      end
-      out
+      @pending << __take
+      __hand_out(nil, block)
     end
 
     def <<(src)
       __check_open
-      __write(Zlib.__str(src))
+      src.nil? ? __flush(FINISH) : __write(Zlib.__str(src))
       self
     end
 
     def flush(flush = SYNC_FLUSH, &block)
       __check_open
-      __flush(flush) unless flush == NO_FLUSH
-      out = __take
-      if block
-        block.call(out) unless out.empty?
-        return nil
-      end
-      out
+      __flush(__flush_mode(flush, SYNC_FLUSH))
+      @pending << __take
+      __hand_out(nil, block)
     end
 
     def params(level, strategy)
+      __check_open
+      level = Zlib.__int(level)
+      strategy = Zlib.__int(strategy)
+      unless (DEFAULT_COMPRESSION..BEST_COMPRESSION).cover?(level) &&
+             (DEFAULT_STRATEGY..FIXED).cover?(strategy)
+        raise Zlib::StreamError, "stream error"
+      end
+      # Go's compressor fixes its level and strategy when the writer is created.
       __flush(SYNC_FLUSH)
-      @level = level
       nil
     end
 
     def set_dictionary(dict)
-      __set_dictionary(Zlib.__str(dict))
-      dict
+      __check_open
+      str = Zlib.__str(dict)
+      __set_dictionary(str)
+      str
     end
 
-    def __finish
-      __flush(FINISH)
-      __take
+    def finish(&block)
+      flush(FINISH, &block)
     end
 
-    def __collect
-      __take
+    def flush_next_out
+      return "".b if closed?
+      @pending << __take
+      super
+    end
+
+    private
+
+    def __flush_mode(value, default)
+      mode = Zlib.__int(value, default)
+      raise Zlib::StreamError, "stream error" unless (NO_FLUSH..BLOCK).cover?(mode)
+      mode
     end
   end
 
+  # MRI's inflate stream: what is inflated waits in a buffer that inflate
+  # and finish hand out (<< does not); once the stream has ended, input
+  # passes through to that buffer, the input left over after the end first
+  # (after the call that ended it). With a block the buffer goes out in
+  # 16 KB pieces, and a break leaves the rest for the next call.
   class Inflate < ZStream
     def self.inflate(src)
       z = new
       begin
-        out = z.inflate(src)
-        out << z.finish
-        out
+        z.__send__(:__run, Zlib.__str(src))
+        z.__send__(:__run_finish)
+        z.__send__(:__drain)
       ensure
         z.close
       end
     end
 
-    def initialize(wbits = MAX_WBITS)
-      __inflate_init(wbits)
+    def initialize(wbits = nil)
+      __inflate_init(Zlib.__int(wbits, MAX_WBITS))
       @pending = "".b
+      @dictionaries = {}
     end
 
     def inflate(src, buffer: nil, &block)
       __check_open
-      out = src.nil? ? "".b : __write(Zlib.__str(src))
-      out = @pending + out unless @pending.empty?
-      @pending = "".b
-      if src.nil?
-        u = __state[3]
-        out << u if u && finished?
-        __clear_unused if u
+      unless buffer.nil?
+        buffer = Zlib.__str(buffer)
+        raise FrozenError, "can't modify frozen String" if buffer.frozen?
       end
-      if buffer
-        buffer.replace(out)
-        out = buffer
+      if finished?
+        unless src.nil?
+          str = Zlib.__str(src)
+          @pending << str.b unless buffer
+          return __with_buffer("".b, buffer)
+        end
+      else
+        __run(src.nil? ? nil : Zlib.__str(src))
       end
-      if block
-        block.call(out) unless out.empty?
-        return nil
+      begin
+        __hand_out(buffer, block)
+      ensure
+        __take_leftover
       end
-      out
     end
 
     def <<(src)
       __check_open
-      if src.nil?
-        @pending << inflate(nil)
+      if finished?
+        @pending << Zlib.__str(src).b unless src.nil?
       else
-        @pending << __write(Zlib.__str(src))
+        __run(src.nil? ? nil : Zlib.__str(src))
+        __take_leftover
       end
       self
     end
 
+    def finish(&block)
+      __check_open
+      __run_finish unless finished?
+      __hand_out(nil, block)
+    end
+
     def add_dictionary(dict)
-      __set_dictionary(Zlib.__str(dict))
+      __check_open
+      str = Zlib.__str(dict).b
+      @dictionaries[Zlib.adler32(str)] = str
       self
     end
 
     def set_dictionary(dict)
-      __set_dictionary(Zlib.__str(dict))
-      dict
+      __check_open
+      str = Zlib.__str(dict)
+      __set_dictionary(str)
+      str
     end
 
     def sync(str)
@@ -314,23 +386,35 @@ module Zlib
       __state[3]
     end
 
-    def __clear_unused
-      @unused_cleared = true
+    private
+
+    # inflates src (nil: what input there is): a call that makes no
+    # progress on an unfinished stream is zlib's Z_BUF_ERROR
+    def __run(src)
+      out = __inflate_bytes(src.nil? ? "".b : src)
+      raise Zlib::BufError, "buffer error" if src.nil? && out.empty? && !finished?
+      @pending << out
     end
 
-    def __finish
-      out = @pending
-      @pending = "".b
-      u = __state[3]
-      if u && !@unused_cleared
-        out << u
-        @unused_cleared = true
-      end
-      out
+    # Z_FINISH: the stream must end with the input it has
+    def __run_finish
+      @pending << __inflate_bytes("".b)
+      raise Zlib::BufError, "buffer error" unless finished?
     end
 
-    def __collect
-      __finish
+    def __inflate_bytes(src)
+      __write(src)
+    rescue Zlib::NeedDict
+      dict = @dictionaries[adler]
+      raise unless dict
+      __set_dictionary(dict)
+      __write("".b)
+    end
+
+    def __take_leftover
+      return unless finished?
+      u = __take_unused
+      @pending << u if u
     end
   end
 

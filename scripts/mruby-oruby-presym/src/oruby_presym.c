@@ -658,6 +658,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__state");
   (void)mrb_intern_lit(mrb, "__systmpdir");
   (void)mrb_intern_lit(mrb, "__take");
+  (void)mrb_intern_lit(mrb, "__take_unused");
   (void)mrb_intern_lit(mrb, "__tls_read");
   (void)mrb_intern_lit(mrb, "__tmpname__");
   (void)mrb_intern_lit(mrb, "__to_int");
