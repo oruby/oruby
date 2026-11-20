@@ -489,6 +489,16 @@ visit(const pm_node_t *node, void *data)
     }
     break;
   }
+  case PM_CASE_MATCH_NODE: {
+    // case/in without else: MRI's NoMatchingPatternError names the subject
+    const pm_case_match_node_t *cm = (const pm_case_match_node_t *)node;
+    if (!cm->else_clause && cm->predicate) {
+      r = add(sc, ORB_CASE_IN);
+      span(r, 0, cm->predicate);
+      r->s[1] = r->e[1] = (int32_t)cm->end_keyword_loc.start;
+    }
+    break;
+  }
   case PM_SOURCE_ENCODING_NODE:
     r = add(sc, ORB_SOURCE_ENCODING);
     span(r, 0, node);

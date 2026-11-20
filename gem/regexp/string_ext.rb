@@ -26,7 +26,8 @@ class String
     i = rindex(sep)
     return ["", "", dup] unless i
     m = $~
-    [self[0, i], m[0], m.post_match]
+    enc = encoding
+    [self[0, i], m[0], m.post_match.force_encoding(enc)]
   end
 
   alias_method :__re_start_with?, :start_with?

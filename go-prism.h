@@ -35,6 +35,7 @@ enum {
   ORB_IT_BLOCK,           // s0: (zero width) just after the opening of a block or lambda whose parameter is `it`
   ORB_BLOCK_PARAMS,       // s0: (zero width) where a block's body starts; flags 1: one object given is spread by #to_ary (a non-lambda block of several parameters); its parameters follow as ORB_LIST_ITEM: s0 the parameter (a name, or a nested (a, b)), flags 0 required, 1 rest, 2 post, 3 the implicit rest of |a, |, +8 nested
   ORB_PARSE_WARN,         // s0: (zero width) the program's first statement, s1: where a parse warning points; flags 1: verbose only; its text is the next of _oruby_prism_scan's msgs
+  ORB_CASE_IN,            // s0: the subject of a case/in without else, s1: (zero width) its end keyword
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

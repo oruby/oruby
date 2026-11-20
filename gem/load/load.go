@@ -146,6 +146,9 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 	cxt := mrb.MrbCcontextNew()
 	defer cxt.Free()
 	cxt.Filename(fullName)
+	// a syntax error is the SyntaxError's message ("file:line: ..."), as
+	// MRI's, not printed
+	cxt.SetCaptureErrors(true)
 
 	switch filepath.Ext(fullName) {
 	case ".mrb":
@@ -156,9 +159,39 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 		} else {
 			_, err = mrb.LoadFileCxt(fullName, cxt)
 		}
+		if err != nil {
+			syntaxErrorAt(mrb, fullName)
+		}
 	}
 
 	return err
+}
+
+// syntaxErrorAt gives the pending SyntaxError of loading file MRI's
+// "file:line: message" and its #path (mruby's captured error has only the
+// message; the line is the parser's first error)
+func syntaxErrorAt(mrb *oruby.MrbState, file string) {
+	exc := mrb.Exc()
+	if exc == nil || !mrb.ClassDefined("SyntaxError") || !mrb.ObjIsKindOf(exc.Value(), mrb.ClassGet("SyntaxError")) {
+		return
+	}
+	msg := mrb.String(mrb.ExcMessage(exc.Value()))
+	if strings.HasPrefix(msg, file+":") {
+		return
+	}
+	line := 1
+	cxt := mrb.MrbCcontextNew()
+	cxt.SetCaptureErrors(true)
+	cxt.Filename(file)
+	if p, perr := mrb.ParseFile(file, cxt); perr == nil {
+		if p.NErr() > 0 {
+			line = int(p.ErrorBuffer(0).LineNo)
+		}
+		p.Free()
+	}
+	cxt.Free()
+	_ = mrb.SetExcMessage(exc.Value(), mrb.StrNew(fmt.Sprintf("%s:%d: %s", file, line, msg)))
+	_ = mrb.IVSet(exc.Value(), mrb.Intern("@path"), mrb.StrNew(file))
 }
 
 // coverageSource is the file's source with Coverage's counters, while

@@ -209,13 +209,31 @@ func hasBareIt(src []byte) bool {
 	return false
 }
 
+// hasCaseIn: an `in` clause of a case/in (ORB_CASE_IN) starts a line, or
+// follows a `;`
+func hasCaseIn(src []byte) bool {
+	for i := 0; i+2 < len(src); i++ {
+		if src[i] != 'i' || src[i+1] != 'n' || (src[i+2] != ' ' && src[i+2] != '\t' && src[i+2] != '\n') {
+			continue
+		}
+		j := i - 1
+		for j >= 0 && (src[j] == ' ' || src[j] == '\t') {
+			j--
+		}
+		if j < 0 || src[j] == '\n' || src[j] == ';' {
+			return true
+		}
+	}
+	return false
+}
+
 // mayNeedRewrite is a cheap filter before parsing: every rewrite site
 // contains one of these
 func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if atomic.LoadInt32(&frozenStringDefault) == 1 || opts != nil && opts.SourceEncoding != "" {
 		return true
 	}
-	if hasMultiAssign(src) || hasRegexpEncFlag(src) {
+	if hasMultiAssign(src) || hasRegexpEncFlag(src) || hasCaseIn(src) {
 		return true
 	}
 	// a regexp literal (ORB_REGEXP_LITERAL)
@@ -605,6 +623,14 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			})
 		case C.ORB_FROZEN_STRING:
 			r.addAfter(s[0], e[0], func(*rewriter) string { return ".-@" })
+		case C.ORB_CASE_IN:
+			// case v / in ... / end -> case (__oruby_pmN = (v)) ... else
+			// ::Kernel.__oruby_nomatch(__oruby_pmN) end
+			id := strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+			tmp := "__oruby_pm" + id
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "(" + tmp + " = (" },
+				func(*rewriter) string { return "))" })
+			r.add(s[1], s[1], func(*rewriter) string { return "else ::Kernel.__oruby_nomatch(" + tmp + ")\n" })
 		case C.ORB_MASGN_VALUE:
 			// a, b = v -> __oruby_masgn(id, (a, b = __oruby_to_ary(id, (v)))):
 			// the value is converted, the expression still returns v. The

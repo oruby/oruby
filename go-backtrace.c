@@ -469,7 +469,9 @@ static mrb_value bt_location(mrb_state *mrb, struct RClass *cls, const bt_frame 
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__label__), label);
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__base_label__), bt_base_label(mrb, f));
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__to_s__), bt_string_at(mrb, file, line, label));
-  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__abs__), mrb_bool_value(!f->eval && !f->internal && file));
+  /* an internal frame is shown at its caller's position: that file's */
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__abs__),
+                       mrb_bool_value(!f->eval && file && !bt_internal_file(file)));
   /* the instruction the frame was at, for #source_range (go-srcrange.c) */
   {
     mrb_value site = _orb_insn_site(mrb, f->irep, f->idx);

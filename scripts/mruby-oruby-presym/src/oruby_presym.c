@@ -407,6 +407,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__base_label__");
   (void)mrb_intern_lit(mrb, "__boot_seed");
   (void)mrb_intern_lit(mrb, "__bt_locations__");
+  (void)mrb_intern_lit(mrb, "__callee__");
   (void)mrb_intern_lit(mrb, "__char_len");
   (void)mrb_intern_lit(mrb, "__check_implicit");
   (void)mrb_intern_lit(mrb, "__children");
@@ -454,6 +455,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__make");
   (void)mrb_intern_lit(mrb, "__match_raw");
   (void)mrb_intern_lit(mrb, "__merge");
+  (void)mrb_intern_lit(mrb, "__method__");
   (void)mrb_intern_lit(mrb, "__mkdtemp");
   (void)mrb_intern_lit(mrb, "__names");
   (void)mrb_intern_lit(mrb, "__new");
@@ -530,6 +532,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_keep_source");
   (void)mrb_intern_lit(mrb, "__oruby_kept_sources");
   (void)mrb_intern_lit(mrb, "__oruby_kill__");
+  (void)mrb_intern_lit(mrb, "__oruby_last_status");
   (void)mrb_intern_lit(mrb, "__oruby_list__");
   (void)mrb_intern_lit(mrb, "__oruby_load");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
@@ -960,6 +963,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "instance_methods");
   (void)mrb_intern_lit(mrb, "instance_variable_get");
   (void)mrb_intern_lit(mrb, "instance_variables");
+  (void)mrb_intern_lit(mrb, "instance_variables_to_inspect");
   (void)mrb_intern_lit(mrb, "int32");
   (void)mrb_intern_lit(mrb, "internal_encoding");
   (void)mrb_intern_lit(mrb, "invert_operator");
@@ -1150,6 +1154,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "realdirpath");
   (void)mrb_intern_lit(mrb, "realpath");
   (void)mrb_intern_lit(mrb, "rect");
+  (void)mrb_intern_lit(mrb, "recv");
   (void)mrb_intern_lit(mrb, "regexp");
   (void)mrb_intern_lit(mrb, "remove_const");
   (void)mrb_intern_lit(mrb, "rename");
@@ -1253,6 +1258,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "succ");
   (void)mrb_intern_lit(mrb, "success?");
   (void)mrb_intern_lit(mrb, "sunday?");
+  (void)mrb_intern_lit(mrb, "super_method");
   (void)mrb_intern_lit(mrb, "swapcase");
   (void)mrb_intern_lit(mrb, "switch");
   (void)mrb_intern_lit(mrb, "symlink");

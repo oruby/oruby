@@ -115,3 +115,26 @@ end
     def source_location = Kernel.__oruby_internal_loc(__oruby_raw_source_location)
   end
 end
+
+# Proc#curry: MRI's curried procs are C level functions: no binding, no
+# source location, parameters [[:rest]]. The curry is mruby's; the proc it
+# returns is marked (not the partial applications it makes later).
+class Proc
+  alias __oruby_curry_raw curry
+  def curry(arity = (no_arity = true; nil))
+    c = no_arity ? __oruby_curry_raw : __oruby_curry_raw(arity)
+    Proc.__oruby_mark_curried(c)
+  end
+
+  def self.__oruby_mark_curried(c)
+    c.instance_variable_set(:@__oruby_curried, true) if Proc === c
+    c
+  end
+
+
+  alias __oruby_binding_raw binding
+  def binding
+    raise ArgumentError, "Can't create Binding from C level function" if @__oruby_curried
+    __oruby_binding_raw
+  end
+end

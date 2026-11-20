@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "713ac5ad81e46eaa"
+const presymTable = "2780e45ff452fb77"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -515,6 +515,7 @@ const (
 	Sym___base_label__                          MrbSym = C.MRB_SYM____base_label__                          // "__base_label__"
 	Sym___boot_seed                             MrbSym = C.MRB_SYM____boot_seed                             // "__boot_seed"
 	Sym___bt_locations__                        MrbSym = C.MRB_SYM____bt_locations__                        // "__bt_locations__"
+	Sym___callee__                              MrbSym = C.MRB_SYM____callee__                              // "__callee__"
 	Sym___char_len                              MrbSym = C.MRB_SYM____char_len                              // "__char_len"
 	Sym___check_implicit                        MrbSym = C.MRB_SYM____check_implicit                        // "__check_implicit"
 	Sym___children                              MrbSym = C.MRB_SYM____children                              // "__children"
@@ -558,6 +559,7 @@ const (
 	Sym___make                                  MrbSym = C.MRB_SYM____make                                  // "__make"
 	Sym___match_raw                             MrbSym = C.MRB_SYM____match_raw                             // "__match_raw"
 	Sym___merge                                 MrbSym = C.MRB_SYM____merge                                 // "__merge"
+	Sym___method__                              MrbSym = C.MRB_SYM____method__                              // "__method__"
 	Sym___mkdtemp                               MrbSym = C.MRB_SYM____mkdtemp                               // "__mkdtemp"
 	Sym___names                                 MrbSym = C.MRB_SYM____names                                 // "__names"
 	Sym___new                                   MrbSym = C.MRB_SYM____new                                   // "__new"
@@ -629,6 +631,7 @@ const (
 	Sym___oruby_keep_source                     MrbSym = C.MRB_SYM____oruby_keep_source                     // "__oruby_keep_source"
 	Sym___oruby_kept_sources                    MrbSym = C.MRB_SYM____oruby_kept_sources                    // "__oruby_kept_sources"
 	Sym___oruby_kill__                          MrbSym = C.MRB_SYM____oruby_kill__                          // "__oruby_kill__"
+	Sym___oruby_last_status                     MrbSym = C.MRB_SYM____oruby_last_status                     // "__oruby_last_status"
 	Sym___oruby_list__                          MrbSym = C.MRB_SYM____oruby_list__                          // "__oruby_list__"
 	Sym___oruby_load                            MrbSym = C.MRB_SYM____oruby_load                            // "__oruby_load"
 	Sym___oruby_main__                          MrbSym = C.MRB_SYM____oruby_main__                          // "__oruby_main__"
@@ -1008,6 +1011,7 @@ const (
 	Sym_instance_methods                        MrbSym = C.MRB_SYM__instance_methods                        // "instance_methods"
 	Sym_instance_variable_get                   MrbSym = C.MRB_SYM__instance_variable_get                   // "instance_variable_get"
 	Sym_instance_variables                      MrbSym = C.MRB_SYM__instance_variables                      // "instance_variables"
+	Sym_instance_variables_to_inspect           MrbSym = C.MRB_SYM__instance_variables_to_inspect           // "instance_variables_to_inspect"
 	Sym_int32                                   MrbSym = C.MRB_SYM__int32                                   // "int32"
 	Sym_internal_encoding                       MrbSym = C.MRB_SYM__internal_encoding                       // "internal_encoding"
 	Sym_invert_operator                         MrbSym = C.MRB_SYM__invert_operator                         // "invert_operator"
@@ -1176,6 +1180,7 @@ const (
 	Sym_realdirpath                             MrbSym = C.MRB_SYM__realdirpath                             // "realdirpath"
 	Sym_realpath                                MrbSym = C.MRB_SYM__realpath                                // "realpath"
 	Sym_rect                                    MrbSym = C.MRB_SYM__rect                                    // "rect"
+	Sym_recv                                    MrbSym = C.MRB_SYM__recv                                    // "recv"
 	Sym_regexp                                  MrbSym = C.MRB_SYM__regexp                                  // "regexp"
 	Sym_remove_const                            MrbSym = C.MRB_SYM__remove_const                            // "remove_const"
 	Sym_rename                                  MrbSym = C.MRB_SYM__rename                                  // "rename"
@@ -1257,6 +1262,7 @@ const (
 	Sym_subject_certificate                     MrbSym = C.MRB_SYM__subject_certificate                     // "subject_certificate"
 	Sym_submicro                                MrbSym = C.MRB_SYM__submicro                                // "submicro"
 	Sym_succ                                    MrbSym = C.MRB_SYM__succ                                    // "succ"
+	Sym_super_method                            MrbSym = C.MRB_SYM__super_method                            // "super_method"
 	Sym_swapcase                                MrbSym = C.MRB_SYM__swapcase                                // "swapcase"
 	Sym_switch                                  MrbSym = C.MRB_SYM__switch                                  // "switch"
 	Sym_symlink                                 MrbSym = C.MRB_SYM__symlink                                 // "symlink"

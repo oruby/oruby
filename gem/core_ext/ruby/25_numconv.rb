@@ -43,6 +43,7 @@ class String
   end
 
   def to_c
+    raise Encoding::CompatibilityError, "ASCII incompatible encoding: #{encoding}" unless encoding.ascii_compatible?
     String.__to_c(self, false) || __oruby_Complex(0, 0)
   end
 

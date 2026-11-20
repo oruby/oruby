@@ -443,6 +443,7 @@ class String
 
   def scrub!(rep = nil, &block)
     r = scrub(rep, &block)
+    return self if r.bytesize == bytesize && r == self  # nothing to replace: no modification
     enc = r.encoding
     replace(r)
     force_encoding(enc)

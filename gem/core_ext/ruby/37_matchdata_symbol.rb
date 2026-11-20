@@ -365,6 +365,7 @@ class Proc
   # MRI's parameters(lambda: nil): go-mrb.c's __oruby_params
   def parameters(lambda: nil)
     return [[:req], [:rest]] if __oruby_sym_proc?
+    return [[:rest]] if @__oruby_curried
     m = @__oruby_method
     return m.parameters if m
     __oruby_params(lambda.nil? ? -1 : (lambda ? 1 : 0))
@@ -372,7 +373,7 @@ class Proc
 
   alias __orig_proc_source_location source_location
   def source_location
-    return nil if __oruby_sym_proc?
+    return nil if __oruby_sym_proc? || @__oruby_curried
     m = @__oruby_method
     return m.source_location if m
     __orig_proc_source_location

@@ -53,7 +53,7 @@ module Kernel
     loc = (caller(1, 1) || [])[0]
     return nil unless loc
     file = loc.sub(/:\d+.*$/, "")
-    return nil if file == "-e" || file.empty?
+    return nil if file == "-e" || file.empty? || file.start_with?("(eval")
     begin
       File.dirname(File.realpath(file))
     rescue

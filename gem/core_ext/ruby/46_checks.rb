@@ -238,3 +238,65 @@ module Kernel
   end
   alias then yield_self
 end
+
+# A class is not included, prepended nor extended: Class has no such hooks
+class Class
+  %i[append_features prepend_features extend_object].each do |m|
+    undef_method(m) if method_defined?(m) || private_method_defined?(m)
+  end
+end
+
+# A refinement is not included, prepended nor extended (MRI undefines the
+# hooks); refined_class is gone since Ruby 3.4
+if defined?(Refinement)
+  class Refinement
+    %i[append_features prepend_features extend_object refined_class].each do |m|
+      undef_method(m) if method_defined?(m) || private_method_defined?(m)
+    end
+  end
+end
+
+# Module's append_features / prepend_features / extend_object need a
+# Module receiver that is not a Class (MRI raises when called so bound)
+class UnboundMethod
+  alias __oruby_chk_bind bind
+  def bind(obj)
+    if ::Class === obj && owner.equal?(::Module) && %i[append_features prepend_features extend_object].include?(name)
+      raise TypeError, "wrong argument type Class (expected Module)"
+    end
+    __oruby_chk_bind(obj)
+  end
+end
+
+# main's define_method makes a public method of Object, its ruby2_keywords
+# is Object's (MRI's main has both as private singleton methods)
+class << self
+  private
+
+  def define_method(*args, &block)
+    name = Object.__send__(:define_method, *args, &block)
+    Object.__send__(:public, name)
+    name
+  end
+
+  def ruby2_keywords(*names)
+    Object.__send__(:ruby2_keywords, *names)
+  end
+end
+
+class Module
+  # Ruby 4.1: method_defined?(name, inherit = true, include_private = false)
+  alias __oruby_method_defined? method_defined?
+  def method_defined?(name, inherit = true, include_private = false)
+    return true if __oruby_method_defined?(name, inherit)
+    include_private ? private_method_defined?(name, inherit) : false
+  end
+end
+
+
+module Kernel
+  # case/in without a matching clause nor else (prism.go's ORB_CASE_IN)
+  def self.__oruby_nomatch(v)
+    raise NoMatchingPatternError, v.inspect
+  end
+end

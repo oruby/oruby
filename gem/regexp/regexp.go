@@ -235,7 +235,30 @@ func regexLinearTime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		r = compiled
 	}
 
-	return oruby.Bool(r != nil && r.re2 != nil)
+	return oruby.Bool(r != nil && !hasBackref(r.source))
+}
+
+// hasBackref: whether a pattern uses a back-reference (\1..\9, \k<name>),
+// the one construct Onigmo's memoization cannot match in linear time
+// (lookarounds, atomic groups and possessive quantifiers it can)
+func hasBackref(src string) bool {
+	inClass := 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case c == '\\' && i+1 < len(src):
+			n := src[i+1]
+			if inClass == 0 && ((n >= '1' && n <= '9') || n == 'k') {
+				return true
+			}
+			i++
+		case c == '[':
+			inClass++
+		case c == ']' && inClass > 0:
+			inClass--
+		}
+	}
+	return false
 }
 
 // regexAfterInit is called when a Go-created *Regexp is passed to oruby
@@ -626,6 +649,9 @@ func subject(mrb *oruby.MrbState, v oruby.Value) (string, bool) {
 
 func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, block := mrb.GetArgsWithBlock()
+	if r, ok := mrb.Data(self).(*Regexp); !ok || r == nil {
+		return mrb.ETypeError().Raisef("uninitialized Regexp")
+	}
 	s, ok := subject(mrb, args.Item(0))
 	if !ok {
 		if mrb.HasExc() {
@@ -807,6 +833,13 @@ func regexLastMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	arg := mrb.GetArgsFirst()
 	if arg.IsNil() {
 		return matchValue
+	}
+	switch arg.Type() {
+	case oruby.MrbTTFixnum, oruby.MrbTTString, oruby.MrbTTSymbol:
+	default:
+		if !mrb.RespondTo(arg, oruby.Sym_to_int) {
+			return mrb.ETypeError().Raisef("no implicit conversion of %s into Integer", mrb.ClassName(mrb.ObjClass(arg)))
+		}
 	}
 	return matchDataGetIndex(mrb, m, arg)
 }

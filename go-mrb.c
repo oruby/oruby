@@ -156,7 +156,72 @@ static void vis_prepare_name(mrb_state *mrb, struct RClass *c, mrb_value name) {
   copy_object_method(mrb, c, mid, mid);
 }
 
+/* public/private/protected with names, as MRI's rb_export_method: an own
+   method (of the origin, when the class is prepended) changes in place; an
+   inherited one already of that visibility is left alone; another is
+   copied into the class with it, and method_added hears of the copy. FALSE:
+   a name is not a method here, for mruby's own to raise about. */
+static mrb_bool vis_export(mrb_state *mrb, mrb_value self, int which) {
+  static const unsigned int vis_fl[3] = {MRB_METHOD_PUBLIC_FL, MRB_METHOD_PRIVATE_FL, MRB_METHOD_PROTECTED_FL};
+  if (which > 2 || (!mrb_class_p(self) && !mrb_module_p(self))) return FALSE;
+  struct RClass *c = mrb_class_ptr(self), *home = c;
+  if (c->flags & MRB_FL_CLASS_IS_PREPENDED) {
+    home = c->super;
+    while (home && !(home->flags & MRB_FL_CLASS_IS_ORIGIN)) home = home->super;
+    if (!home) home = c;
+  }
+  mrb_int argc = mrb_get_argc(mrb);
+  const mrb_value *argv = mrb_get_argv(mrb);
+  mrb_value names = mrb_ary_new(mrb);
+  for (mrb_int i = 0; i < argc; i++) {
+    if (mrb_array_p(argv[i])) mrb_ary_concat(mrb, names, argv[i]);
+    else mrb_ary_push(mrb, names, argv[i]);
+  }
+  /* every name a method first: else mruby's raises its NameError */
+  for (mrb_int i = 0; i < RARRAY_LEN(names); i++) {
+    mrb_value n = RARRAY_PTR(names)[i];
+    if (!mrb_symbol_p(n) && !mrb_string_p(n)) return FALSE;
+    mrb_sym mid = mrb_symbol_p(n) ? mrb_symbol(n) : mrb_intern_str(mrb, n);
+    struct RClass *o = home;
+    mrb_method_t m = mrb_method_search_vm(mrb, &o, mid);
+    if (MRB_METHOD_UNDEF_P(m)) return FALSE;
+  }
+  if (mrb_frozen_p(mrb_basic_ptr(self))) return FALSE;
+  for (mrb_int i = 0; i < RARRAY_LEN(names); i++) {
+    mrb_value n = RARRAY_PTR(names)[i];
+    mrb_sym mid = mrb_symbol_p(n) ? mrb_symbol(n) : mrb_intern_str(mrb, n);
+    struct RClass *o = home;
+    mrb_method_t m = mrb_method_search_vm(mrb, &o, mid);
+    if (o == home || (o->tt == MRB_TT_ICLASS && o == home)) {
+      MRB_METHOD_SET_VISIBILITY(m, vis_fl[which]);
+      mrb_define_method_raw(mrb, home, mid, m);
+      continue;
+    }
+    if ((unsigned int)MRB_METHOD_VISIBILITY(m) == vis_fl[which]) continue;
+    if (MRB_METHOD_PROC_P(m) && !MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m)) && !MRB_PROC_ALIAS_P(MRB_METHOD_PROC(m))) {
+      /* MRI's ZSUPER entry: the method of where it was found, so that a
+         `super` in it goes on from there (an alias proc keeps the owner) */
+      struct RProc *pnew = MRB_OBJ_ALLOC(mrb, MRB_TT_PROC, mrb->proc_class);
+      pnew->body.mid = mid;
+      pnew->upper = MRB_METHOD_PROC(m);
+      pnew->e.target_class = o;
+      pnew->flags |= MRB_PROC_ALIAS;
+      MRB_METHOD_FROM_PROC(m, pnew);
+    }
+    MRB_METHOD_SET_VISIBILITY(m, vis_fl[which]);
+    mrb_define_method_raw(mrb, c, mid, m);
+    mrb_method_added(mrb, c, mid);
+  }
+  return TRUE;
+}
+
 static mrb_value vis_call(mrb_state *mrb, mrb_value self, int which) {
+  if (which <= 2 && mrb_get_argc(mrb) > 0 && vis_export(mrb, self, which)) {
+    mrb_int argc = mrb_get_argc(mrb);
+    const mrb_value *argv = mrb_get_argv(mrb);
+    /* MRI returns its argument (an Array of them for several) */
+    return argc == 1 ? argv[0] : mrb_ary_new_from_values(mrb, argc, argv);
+  }
   if (mrb_type(self) == MRB_TT_MODULE) {
     struct RClass *c = mrb_class_ptr(self);
     mrb_int argc = mrb_get_argc(mrb);
@@ -303,6 +368,10 @@ static void eval_string_args(mrb_state *mrb, int which) {
 
 static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
   if (which >= 2 && which <= 4) eval_string_args(mrb, which);
+  else if (mrb_get_argc(mrb) > 0 && !mrb_string_p(mrb_get_argv(mrb)[0])) {
+    /* eval(obj): the source by #to_str */
+    eval_arg_implicit(mrb, (mrb_value *)mrb_get_argv(mrb), 0, mrb->string_class);
+  }
   mrb_int argc = mrb_get_argc(mrb);
   if (argc > 0) {
     mrb_value *argv = (mrb_value *)mrb_get_argv(mrb);
@@ -1814,6 +1883,8 @@ static mrb_value orb_params(mrb_state *mrb, mrb_value procv, int lambda) {
   return out;
 }
 
+mrb_value orb_params_c(mrb_state *mrb, mrb_value procv) { return orb_params(mrb, procv, 1); }
+
 /* Proc#__oruby_params(lambda): -1, 0 or 1 (see orb_params) */
 static mrb_value proc_params_m(mrb_state *mrb, mrb_value self) {
   mrb_int lambda = -1;
@@ -1953,6 +2024,20 @@ static void dollar_eq_warn(mrb_state *mrb, const char *msg) {
     mrb_funcall_id(mrb, k, MRB_SYM(__oruby_warn_here), 1, mrb_str_new_cstr(mrb, msg));
   }
 }
+/* $? is thread-local, as MRI's: held by the running thread's (or fiber's)
+   context object, the way $! is (go-backtrace.c errinfo_holder) */
+static mrb_value last_status_holder(mrb_state *mrb) {
+  if (mrb->c->fib && (mrb->c != mrb->root_c || !MRB_FLAG_TEST(mrb->c->fib, MRB_FL_FIBER_BORROWED)))
+    return mrb_obj_value(mrb->c->fib);
+  return mrb_obj_value(mrb->kernel_module);
+}
+static mrb_value last_status_get(mrb_state *mrb) {
+  return mrb_iv_get(mrb, last_status_holder(mrb), MRB_SYM(__oruby_last_status));
+}
+static void last_status_set(mrb_state *mrb, mrb_value v) {
+  mrb_iv_set(mrb, last_status_holder(mrb), MRB_SYM(__oruby_last_status), v);
+}
+
 static mrb_value dollar_eq_get(mrb_state *mrb) {
   dollar_eq_warn(mrb, "variable $= is no longer effective");
   return mrb_false_value();
@@ -1973,6 +2058,7 @@ static void gv_init_checked(mrb_state *mrb) {
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$~"), backref_get, backref_set);
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$_"), lastline_get, lastline_set);
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$="), dollar_eq_get, dollar_eq_set);
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$?"), last_status_get, last_status_set);
   _mrb_gv_hook(mrb, "$@", "$@", 3);
 }
 
@@ -2155,9 +2241,37 @@ static mrb_value const_missing_w(mrb_state *mrb, mrb_value mod) {
       struct RClass *owner = c->tt == MRB_TT_ICLASS ? c->c : c;
       if (!mrb_iv_defined(mrb, mrb_obj_value(owner), sym)) continue;
       if (mrb_const_flags(mrb, owner, sym) & MRB_CONST_PRIVATE) {
-        mrb_name_error(mrb, sym, "private constant %C::%n referenced", owner, sym);
+        mrb_value e = mrb_exc_new_str(mrb, E_NAME_ERROR, mrb_format(mrb, "private constant %C::%n referenced", owner, sym));
+        mrb_iv_set(mrb, e, MRB_IVSYM(name), mrb_symbol_value(sym));
+        mrb_iv_set(mrb, e, MRB_IVSYM(receiver), mrb_obj_value(owner));
+        mrb_exc_raise(mrb, e);
       }
       break;
+    }
+  }
+  if (mrb_class_p(mod) && mrb_get_argc(mrb) == 1 && mrb_symbol_p(mrb_get_argv(mrb)[0])) {
+    /* Cls::X goes on into the modules included in Object (MRI skips only
+       Object itself) */
+    mrb_sym sym = mrb_symbol(mrb_get_argv(mrb)[0]);
+    for (struct RClass *c = mrb->object_class->super; c; c = c->super) {
+      if (c->tt != MRB_TT_ICLASS) continue;
+      if (mrb_iv_defined(mrb, mrb_obj_value(c->c), sym)) return mrb_const_get(mrb, mrb_obj_value(c->c), sym);
+    }
+  }
+  if ((mrb_class_p(mod) || mrb_module_p(mod)) && mod_namespace_p(mod) && !mod_perm_p(mrb, mod) &&
+      mrb_get_argc(mrb) == 1 && mrb_symbol_p(mrb_get_argv(mrb)[0])) {
+    /* an anonymous module's own #name, else #inspect, names it (MRI's
+       rb_const_missing message) */
+    mrb_sym sym = mrb_symbol(mrb_get_argv(mrb)[0]);
+    struct RClass *sc = mrb_class(mrb, mod), *o1 = sc, *o2 = sc;
+    mrb_method_t mn = mrb_method_search_vm(mrb, &o1, MRB_SYM(name)), mi = mrb_method_search_vm(mrb, &o2, MRB_SYM(inspect));
+    if ((!MRB_METHOD_UNDEF_P(mn) && o1->tt == MRB_TT_SCLASS) || (!MRB_METHOD_UNDEF_P(mi) && o2->tt == MRB_TT_SCLASS)) {
+      mrb_value desc = mrb_funcall_id(mrb, mod, MRB_SYM(name), 0);
+      if (!mrb_string_p(desc)) desc = mrb_funcall_id(mrb, mod, MRB_SYM(inspect), 0);
+      mrb_value e = mrb_exc_new_str(mrb, E_NAME_ERROR, mrb_format(mrb, "uninitialized constant %v::%n", desc, sym));
+      mrb_iv_set(mrb, e, MRB_IVSYM(name), mrb_symbol_value(sym));
+      mrb_iv_set(mrb, e, MRB_IVSYM(receiver), mod);
+      mrb_exc_raise(mrb, e);
     }
   }
   if (atomic_load(&orb_threads_active) && (mrb_class_p(mod) || mrb_module_p(mod)) && mrb_get_argc(mrb) == 1 &&
@@ -2292,6 +2406,7 @@ static mrb_bool mesg_suffix(mrb_value mesg, const char *suf) {
 
 /* mruby's OP_ENTER reports only the required count ("expected 2"); MRI
    gives the range of the method's parameters ("expected 2+", "1..2"). */
+mrb_value orb_params_c(mrb_state *mrb, mrb_value procv);
 static void argnum_fix(mrb_state *mrb, struct RObject *exc) {
   mrb_callinfo *ci = mrb->c->ci;
   if (ci->mid == MRB_SYM(instance_eval) || ci->mid == MRB_SYM(module_eval) || ci->mid == MRB_SYM(class_eval)) {
@@ -2314,7 +2429,29 @@ static void argnum_fix(mrb_state *mrb, struct RObject *exc) {
   if (sscanf(RSTRING_CSTR(mrb, mesg), "wrong number of arguments (given %d, expected %d%c", &given, &expected, &tail) != 3 || tail != ')') return;
   uint32_t a = PEEK_W(irep->iseq + 1);
   int m1 = MRB_ASPEC_REQ(a), o = MRB_ASPEC_OPT(a), r = MRB_ASPEC_REST(a), m2 = MRB_ASPEC_POST(a);
-  if (m1 + m2 != expected || (o == 0 && r == 0)) return;
+  if (MRB_ASPEC_KDICT(a) && ci->kw) {
+    /* **nil given keywords: MRI's error, whatever the count */
+    mrb_value params = orb_params_c(mrb, mrb_obj_value((struct RProc*)ci->proc));
+    for (mrb_int i = 0; i < RARRAY_LEN(params); i++) {
+      mrb_value pr = RARRAY_PTR(params)[i];
+      if (mrb_array_p(pr) && RARRAY_LEN(pr) >= 1 && mrb_symbol(RARRAY_PTR(pr)[0]) == MRB_SYM(nokey)) {
+        mrb_exc_mesg_set(mrb, (struct RException*)exc, mrb_str_new_lit(mrb, "no keywords accepted"));
+        return;
+      }
+    }
+  }
+  /* keywords to a method that takes none are one more positional argument */
+  mrb_bool kw_counted = FALSE;
+  if (!MRB_ASPEC_KEY(a) && !MRB_ASPEC_KDICT(a) && ci->kw && ci->n < 15 && given == ci->n && ci->n > 0) {
+    mrb_value kd = ci->stack[ci->n + 1];
+    if (mrb_hash_p(kd) && !mrb_hash_empty_p(mrb, kd)) { given++; kw_counted = TRUE; }
+  }
+  if (m1 + m2 != expected) return;
+  if (o == 0 && r == 0) {
+    if (kw_counted)
+      mrb_exc_mesg_set(mrb, (struct RException*)exc, mrb_format(mrb, "wrong number of arguments (given %d, expected %d)", given, expected));
+    return;
+  }
   mrb_value s = r ? mrb_format(mrb, "wrong number of arguments (given %d, expected %d+)", given, m1 + m2)
                   : mrb_format(mrb, "wrong number of arguments (given %d, expected %d..%d)", given, m1 + m2, m1 + o + m2);
   mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
@@ -2395,8 +2532,77 @@ static void syntax_error_fix(mrb_state *mrb, struct RObject *exc, mrb_value mesg
     break;
   }
   mrb_value s = mrb_str_new(mrb, p + 5, sep - (p + 5));
+  mrb_iv_set(mrb, mrb_obj_value(exc), MRB_IVSYM(path), mrb_str_dup(mrb, s));  /* SyntaxError#path */
   mrb_str_cat_str(mrb, s, mrb_format(mrb, ":%d: ", (mrb_int)line));
   mrb_str_cat(mrb, s, q + 2, e - (q + 2));
+  mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
+}
+
+/* a Hash key as Kernel#inspect shows it, without calling Ruby (the hook
+   runs with mrb->exc set) */
+static void kw_key_inspect(mrb_state *mrb, mrb_value s, mrb_value k) {
+  if (mrb_symbol_p(k)) {
+    mrb_int n;
+    const char *p = mrb_sym_name_len(mrb, mrb_symbol(k), &n);
+    mrb_bool plain = n > 0 && (ISALPHA(p[0]) || p[0] == '_' || ((unsigned char)p[0]) >= 0x80);
+    for (mrb_int i = 1; plain && i < n; i++) {
+      unsigned char ch = (unsigned char)p[i];
+      if (!(ISALNUM(ch) || ch == '_' || ch >= 0x80 || (i == n - 1 && (ch == '?' || ch == '!')))) plain = FALSE;
+    }
+    mrb_str_cat_cstr(mrb, s, plain ? ":" : ":\"");
+    mrb_str_cat(mrb, s, p, n);
+    if (!plain) mrb_str_cat_lit(mrb, s, "\"");
+  }
+  else if (mrb_nil_p(k)) mrb_str_cat_lit(mrb, s, "nil");
+  else if (mrb_true_p(k)) mrb_str_cat_lit(mrb, s, "true");
+  else if (mrb_false_p(k)) mrb_str_cat_lit(mrb, s, "false");
+  else if (mrb_integer_p(k)) mrb_str_cat_str(mrb, s, mrb_integer_to_str(mrb, k, 10));
+  else if (mrb_string_p(k)) { mrb_str_cat_lit(mrb, s, "\""); mrb_str_cat_str(mrb, s, k); mrb_str_cat_lit(mrb, s, "\""); }
+  else mrb_str_cat_str(mrb, s, mrb_any_to_s(mrb, k));
+}
+
+mrb_value orb_params_c(mrb_state *mrb, mrb_value procv);
+
+/* keyword errors as MRI's: every missing (required) keyword or every
+   unknown one, each shown as Kernel#inspect does ("missing keywords: :a, :b") */
+static void kw_error_fix(mrb_state *mrb, struct RObject *exc, mrb_bool missing) {
+  mrb_callinfo *ci = mrb->c->ci;
+  if (!ci->proc || MRB_PROC_CFUNC_P(ci->proc) || !ci->pc || !ci->stack) return;
+  const mrb_irep *irep = ci->proc->body.irep;
+  if (irep->ilen < 4 || irep->iseq[0] != OP_ENTER) return;
+  uint32_t aspec = PEEK_W(irep->iseq + 1);
+  mrb_int kidx = ci->n < 15 ? ci->n + 1 : MRB_ASPEC_REQ(aspec) + MRB_ASPEC_OPT(aspec) + MRB_ASPEC_REST(aspec) + MRB_ASPEC_POST(aspec) + 1;
+  mrb_value kdict = ci->stack[kidx];
+  mrb_value names = mrb_ary_new(mrb);
+  if (missing) {
+    const mrb_code *pc = ci->pc;
+    if (pc - irep->iseq < 3 || pc[-3] != OP_KARG || pc[-1] >= irep->slen) return;
+    mrb_sym cur = irep->syms[pc[-1]];
+    mrb_value params = orb_params_c(mrb, mrb_obj_value((struct RProc*)ci->proc));
+    mrb_bool from = FALSE;
+    for (mrb_int i = 0; i < RARRAY_LEN(params); i++) {
+      mrb_value pr = RARRAY_PTR(params)[i];
+      if (!mrb_array_p(pr) || RARRAY_LEN(pr) < 2 || mrb_symbol(RARRAY_PTR(pr)[0]) != MRB_SYM(keyreq)) continue;
+      mrb_value nm = RARRAY_PTR(pr)[1];
+      if (mrb_symbol(nm) == cur) from = TRUE;
+      if (!from) continue;
+      if (mrb_hash_p(kdict) && mrb_hash_key_p(mrb, kdict, nm)) continue;
+      mrb_ary_push(mrb, names, nm);
+    }
+    if (RARRAY_LEN(names) == 0) mrb_ary_push(mrb, names, mrb_symbol_value(cur));
+  }
+  else {
+    if (!mrb_hash_p(kdict)) return;
+    names = mrb_hash_keys(mrb, kdict);
+  }
+  mrb_int n = RARRAY_LEN(names);
+  if (n == 0) return;
+  mrb_value s = mrb_str_new_cstr(mrb, missing ? "missing keyword" : "unknown keyword");
+  mrb_str_cat_cstr(mrb, s, n > 1 ? "s: " : ": ");
+  for (mrb_int i = 0; i < n; i++) {
+    if (i) mrb_str_cat_lit(mrb, s, ", ");
+    kw_key_inspect(mrb, s, RARRAY_PTR(names)[i]);
+  }
   mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
 }
 
@@ -2411,16 +2617,40 @@ void _orb_frozen_fix(mrb_state *mrb, struct RObject *exc) {
       exc->c = mrb_exc_get_id(mrb, MRB_ERROR_SYM(FrozenError));
       mrb_exc_mesg_set(mrb, (struct RException*)exc, mrb_format(mrb, "can't modify frozen %C", mrb_obj_class(mrb, ci->stack[0])));
     }
+    else if (mesg_prefix(mesg, "missing keyword: ") || mesg_prefix(mesg, "unknown keyword: ")) {
+      kw_error_fix(mrb, exc, mesg_prefix(mesg, "missing"));
+      return;
+    }
     else {
       argnum_fix(mrb, exc);
       return;
     }
   }
-  if (exc->c == E_TYPE_ERROR) { classdef_fix(mrb, exc); return; }
+  if (exc->c == E_TYPE_ERROR) {
+    /* define_method(name, not_a_proc): MRI names all it takes */
+    mrb_value mesg = mrb_exc_mesg_get(mrb, (struct RException*)exc);
+    if (mrb->c->ci->mid == MRB_SYM(define_method) && mesg_suffix(mesg, " (expected Proc)")) {
+      mrb_value s = mrb_str_new(mrb, RSTRING_PTR(mesg), RSTRING_LEN(mesg) - 1);
+      mrb_str_cat_lit(mrb, s, "/Method/UnboundMethod)");
+      mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
+      return;
+    }
+    classdef_fix(mrb, exc);
+    return;
+  }
   if (exc->c == E_NAME_ERROR) {
     /* Module#instance_method's NameError names the method */
     mrb_value e = mrb_obj_value(exc);
     mrb_value mesg = mrb_exc_mesg_get(mrb, (struct RException*)exc);
+    /* an undefined @@x read in Ruby code: the receiver is the class whose
+       scope it is read in */
+    if (mesg_prefix(mesg, "uninitialized class variable ") && !mrb_iv_defined(mrb, e, MRB_IVSYM(receiver))) {
+      mrb_callinfo *ci = mrb->c->ci;
+      if (ci->proc && !MRB_PROC_CFUNC_P(ci->proc)) {
+        struct RClass *c = mrb_vm_cref_class(mrb, ci);
+        if (c) mrb_iv_set(mrb, e, MRB_IVSYM(receiver), mrb_obj_value(c));
+      }
+    }
     if (mrb_nil_p(mrb_iv_get(mrb, e, MRB_IVSYM(name))) && mesg_prefix(mesg, "undefined method '")) {
       const char *p = RSTRING_PTR(mesg) + 18, *q = memchr(p, '\'', RSTRING_LEN(mesg) - 18);
       if (q) mrb_iv_set(mrb, e, MRB_IVSYM(name), mrb_symbol_value(mrb_intern(mrb, p, q - p)));
@@ -2550,10 +2780,14 @@ enum chk_kind {
   CHK_STR_CMP,      /* String#<=>: #to_str, else the inverse <=>; encodings of equal bytes */
   CHK_ASCII_ONLY,   /* String#ascii_only?: never for an ASCII-incompatible encoding */
   CHK_STR_LENGTH,   /* String#length of a tagged string: by its encoding (Ruby) */
+  CHK_STR_ORD,      /* String#ord of a broken US-ASCII character: ArgumentError */
+  CHK_ARY_INSPECT,  /* [].inspect is US-ASCII */
+  CHK_BINDING_SELF, /* Kernel#binding: self is the caller's, not the receiver */
   CHK_STR_TO_SYM,   /* String#to_sym of broken UTF-8: EncodingError */
   CHK_STR_INSPECT,  /* String#inspect: \u for Unicode controls; a tagged one in Ruby */
   CHK_ASCII_COMPAT, /* String#to_f / #to_c: an ASCII-incompatible string raises */
   CHK_PATH_ARG1,    /* argument 1 a path: #to_path, then #to_str */
+  CHK_OBJ_INSPECT,  /* Kernel#inspect: #instance_variables_to_inspect (4.0), BasicObject ivars */
 };
 
 struct chk_def {
@@ -2593,11 +2827,16 @@ static struct chk_def chk_defs[] = {
   {6, "<=>", CHK_STR_CMP, NULL, NULL},
   {6, "ascii_only?", CHK_ASCII_ONLY, NULL, NULL},
   {6, "length", CHK_STR_LENGTH, NULL, NULL},
+  {6, "ord", CHK_STR_ORD, NULL, NULL},
+  {7, "inspect", CHK_ARY_INSPECT, NULL, NULL},
+  {0, "binding", CHK_BINDING_SELF, NULL, NULL},
+  {8, "binding", CHK_BINDING_SELF, NULL, NULL},
   {6, "to_sym", CHK_STR_TO_SYM, NULL, NULL},
   {6, "inspect", CHK_STR_INSPECT, NULL, NULL},
   {6, "to_f", CHK_ASCII_COMPAT, NULL, NULL},
   {6, "to_c", CHK_ASCII_COMPAT, NULL, NULL},
   {2, "autoload", CHK_PATH_ARG1, NULL, NULL},
+  {0, "inspect", CHK_OBJ_INSPECT, NULL, NULL},
 };
 #define CHK_N (sizeof(chk_defs) / sizeof(chk_defs[0]))
 
@@ -2690,6 +2929,24 @@ static mrb_value str_inspect_unicode(mrb_state *mrb, mrb_value r) {
   return out;
 }
 
+/* "#<Class:0x... @a=1, @b=2>" of the ivars names lists (all when nil) */
+static mrb_value obj_inspect_ivars(mrb_state *mrb, mrb_value obj, mrb_value names) {
+  mrb_value s = mrb_any_to_s(mrb, obj);
+  if (mrb_nil_p(names)) names = mrb_obj_instance_variables(mrb, obj);
+  mrb_str_resize(mrb, s, RSTRING_LEN(s) - 1);  /* the closing ">" */
+  mrb_int shown = 0;
+  for (mrb_int i = 0; i < RARRAY_LEN(names); i++) {
+    mrb_value n = RARRAY_PTR(names)[i];
+    if (!mrb_symbol_p(n) || !mrb_iv_defined(mrb, obj, mrb_symbol(n))) continue;
+    mrb_str_cat_cstr(mrb, s, shown++ ? ", " : " ");
+    mrb_str_cat_str(mrb, s, mrb_sym_str(mrb, mrb_symbol(n)));
+    mrb_str_cat_lit(mrb, s, "=");
+    mrb_str_cat_str(mrb, s, mrb_inspect(mrb, mrb_iv_get(mrb, obj, mrb_symbol(n))));
+  }
+  mrb_str_cat_lit(mrb, s, ">");
+  return s;
+}
+
 /* the String's tag (an Encoding other than UTF-8/BINARY), or nil */
 static mrb_value str_tag(mrb_state *mrb, mrb_value s) {
   return mrb_iv_get(mrb, s, MRB_SYM(__encoding));
@@ -2752,6 +3009,14 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
     break;
   case CHK_ARGC_MIN1:
     if (argc == 0) mrb_argnum_error(mrb, 0, 1, -1);
+    if (mrb->refinement_class) {
+      for (mrb_int j = 0; j < argc; j++) {
+        if (mrb_obj_class(mrb, argv[j]) != mrb->refinement_class) continue;
+        const char *w = d->name[0] == 'e' ? "Cannot extend object with refinement" :
+                        d->name[0] == 'p' ? "Cannot prepend refinement" : "Cannot include refinement";
+        mrb_raise(mrb, E_TYPE_ERROR, w);
+      }
+    }
     break;
   case CHK_IVAR_FROZEN:
     if (argc >= 1 && chk_ivar_name_p(mrb, argv[0])) mrb_check_frozen_value(mrb, self);
@@ -2773,6 +3038,12 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
   case CHK_NOT_CLASS:
     if (mrb_class_p(self) && mrb_class_ptr(self) == mrb->class_class)
       mrb_raise(mrb, E_TYPE_ERROR, "allocator undefined for Class");
+    if (mrb_class_p(self) && mrb_class_ptr(self) == mrb->string_class) {
+      /* String.allocate is a binary String, as MRI's */
+      mrb_value r = d->orig(mrb, self);
+      if (mrb_string_p(r)) RSTR_ENCODING_SET(mrb_str_ptr(r), MRB_STR_ENCODING_BINARY);
+      return r;
+    }
     break;
   case CHK_SINGLETON:
     if (!mrb_sclass_p(self)) mrb_raisef(mrb, E_TYPE_ERROR, "'%v' is not a singleton class", self);
@@ -2854,6 +3125,29 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
     if (mrb_string_p(self) && RSTRING_LEN(self) > 0 && str_tag_ascii_incompatible(mrb, self)) return mrb_false_value();
     if (mrb_string_p(self) && RSTRING_LEN(self) == 0 && str_tag_ascii_incompatible(mrb, self)) return mrb_false_value();
     break;
+  case CHK_BINDING_SELF: {
+    mrb_value b = d->orig(mrb, self);
+    mrb_callinfo *ci = mrb->c->ci;
+    if (ci > mrb->c->cibase && ci[-1].stack && !mrb_immediate_p(b))
+      mrb_iv_set(mrb, b, MRB_SYM(recv), ci[-1].stack[0]);
+    return b;
+  }
+  case CHK_ARY_INSPECT:
+    if (mrb_array_p(self) && RARRAY_LEN(self) == 0) {
+      mrb_value r = mrb_str_new_lit(mrb, "[]");
+      str_enc_us_ascii_set(mrb, r);
+      return r;
+    }
+    break;
+  case CHK_STR_ORD:
+    if (mrb_string_p(self) && RSTRING_LEN(self) > 0 && ((unsigned char)RSTRING_PTR(self)[0]) >= 0x80 &&
+        RSTR_BINARY_P(mrb_str_ptr(self))) {
+      mrb_value tag = str_tag(mrb, self);
+      if (!mrb_nil_p(tag) && mrb_class_defined_id(mrb, MRB_SYM(Encoding)) &&
+          mrb_obj_eq(mrb, tag, mrb_const_get(mrb, mrb_obj_value(mrb_class_get_id(mrb, MRB_SYM(Encoding))), MRB_SYM(US_ASCII))))
+        mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid byte sequence in US-ASCII");
+    }
+    break;
   case CHK_STR_LENGTH:
     if (mrb_string_p(self) && RSTR_BINARY_P(mrb_str_ptr(self)) && !mrb_nil_p(str_tag(mrb, self)))
       return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_enc_length), 0);
@@ -2872,6 +3166,18 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
     }
     return str_inspect_unicode(mrb, d->orig(mrb, self));
   case CHK_ASCII_COMPAT:
+    if (d->name[3] == 'f' && mrb_string_p(self) && memchr(RSTRING_PTR(self), '_', RSTRING_LEN(self))) {
+      /* to_f: an underscore not between two digits ends the number */
+      const char *p = RSTRING_PTR(self);
+      mrb_int n = RSTRING_LEN(self);
+      for (mrb_int k = 0; k < n; k++) {
+        if (p[k] != '_') continue;
+        if (k == 0 || k + 1 >= n || !ISDIGIT(p[k - 1]) || !ISDIGIT(p[k + 1])) {
+          mrb_value t = mrb_str_new(mrb, p, k);
+          return d->orig(mrb, t);
+        }
+      }
+    }
     if (mrb_string_p(self) && str_tag_ascii_incompatible(mrb, self)) {
       struct RClass *enc = mrb_class_get_id(mrb, MRB_SYM(Encoding));
       mrb_value name = mrb_funcall_id(mrb, str_tag(mrb, self), MRB_SYM(name), 0);
@@ -2906,6 +3212,24 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
       }
       return r;
     }
+  case CHK_OBJ_INSPECT: {
+    if (!mrb_object_p(self)) break;
+    struct RClass *c = mrb_class(mrb, self), *owner = c;
+    mrb_method_t m = mrb_method_search_vm(mrb, &owner, MRB_SYM(instance_variables_to_inspect));
+    if (!MRB_METHOD_UNDEF_P(m)) {
+      mrb_value names = mrb_funcall_id(mrb, self, MRB_SYM(instance_variables_to_inspect), 0);
+      if (!mrb_nil_p(names) && !mrb_array_p(names))
+        mrb_raisef(mrb, E_TYPE_ERROR, "Expected #instance_variables_to_inspect to return an Array or nil, but it returned %C",
+                   mrb_obj_class(mrb, names));
+      if (mrb_array_p(names)) return obj_inspect_ivars(mrb, self, names);
+      break;
+    }
+    /* a BasicObject (no #to_s at all) shows its ivars too */
+    owner = c;
+    if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(to_s))))
+      return obj_inspect_ivars(mrb, self, mrb_nil_value());
+    break;
+  }
   case CHK_FROZEN_P:
     if (mrb_integer_p(self) || mrb_float_p(self) || mrb_bigint_p(self)) return mrb_true_value();
     break;
@@ -2938,6 +3262,8 @@ static void install_checks(mrb_state *mrb) {
     case 4: c = mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(mrb->class_class))); break;
     case 5: c = mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(mrb->proc_class))); break;
     case 6: c = mrb->string_class; break;
+    case 7: c = mrb->array_class; break;
+    case 8: c = mrb_class_ptr(mrb_singleton_class(mrb, mrb_obj_value(mrb->kernel_module))); break;
     }
     mrb_func_t orig = NULL;
     wrap_cfunc(mrb, c, d->name, chk_ws[i], &orig);
@@ -2947,6 +3273,7 @@ static void install_checks(mrb_state *mrb) {
   mrb_alias_method(mrb, mrb->module_class, MRB_SYM(class_exec), MRB_SYM(module_exec));
   mrb_alias_method(mrb, mrb->string_class, MRB_OPSYM(eqq), MRB_OPSYM(eq));
   mrb_alias_method(mrb, mrb->string_class, MRB_SYM(size), MRB_SYM(length));
+  mrb_alias_method(mrb, mrb->array_class, MRB_SYM(to_s), MRB_SYM(inspect));
 }
 
 
@@ -3110,7 +3437,109 @@ static mrb_value mod_method_added_m(mrb_state *mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+/* __method__ / __callee__ as MRI's: the method a block belongs to (through
+   its enclosing procs, define_method bodies included), never the C method
+   that yields to it; __callee__ the name it was called by (an alias), read
+   from the caller's send. */
+static mrb_sym frame_called_name(mrb_state *mrb, mrb_callinfo *f) {
+  mrb_callinfo *cf = f - 1;
+  if (cf < mrb->c->cibase || !cf->proc || MRB_PROC_CFUNC_P(cf->proc) || !cf->pc) return f->mid;
+  const mrb_irep *irep = cf->proc->body.irep;
+  const mrb_code *pc = cf->pc;
+  ptrdiff_t off = pc - irep->iseq;
+  int b = -1;
+  if (off >= 4 && (pc[-4] == OP_SEND || pc[-4] == OP_SSEND || pc[-4] == OP_SENDB || pc[-4] == OP_SSENDB)) b = pc[-2];
+  else if (off >= 3 && (pc[-3] == OP_SEND0 || pc[-3] == OP_SSEND0)) b = pc[-1];
+  if (b < 0 || b >= irep->slen) return f->mid;
+  mrb_sym called = irep->syms[b];
+  if (called == f->mid || !f->stack) return f->mid;
+  /* the alias the caller named, when it is one of this method */
+  struct RClass *c = mrb_class(mrb, f->stack[0]);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, called);
+  if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_PROC_P(m) && MRB_PROC_ALIAS_P(MRB_METHOD_PROC(m)) &&
+      MRB_METHOD_PROC(m)->body.mid == f->mid)
+    return called;
+  return f->mid;
+}
+
+static mrb_value frame_method(mrb_state *mrb, mrb_bool callee) {
+  mrb_callinfo *ci = mrb->c->ci - 1;
+  if (ci < mrb->c->cibase || !ci->proc) return mrb_nil_value();
+  const struct RProc *p = ci->proc;
+  if (MRB_PROC_CFUNC_P(p)) return ci->mid ? mrb_symbol_value(ci->mid) : mrb_nil_value();
+  while (p && !MRB_PROC_SCOPE_P(p)) p = p->upper;
+  if (!p) return mrb_nil_value();
+  for (mrb_callinfo *f = ci; f >= mrb->c->cibase; f--) {
+    if (f->proc != p) continue;
+    if (!f->mid) return mrb_nil_value();
+    return mrb_symbol_value(callee ? frame_called_name(mrb, f) : f->mid);
+  }
+  /* the method's frame is gone (a block that outlived it) */
+  if (ci->proc->e.env && ci->proc->e.env->tt == MRB_TT_ENV && ci->proc->e.env->mid)
+    return mrb_symbol_value(ci->proc->e.env->mid);
+  return mrb_nil_value();
+}
+static mrb_value k_method_m(mrb_state *mrb, mrb_value self) { return frame_method(mrb, FALSE); }
+static mrb_value k_callee_m(mrb_state *mrb, mrb_value self) { return frame_method(mrb, TRUE); }
+
+/* Method#super_method / UnboundMethod#super_method: the next definition
+   after the method's own place in the ancestry it was looked up in (an
+   included module's place too, which mruby's skipped), an alias resolved
+   to where its original was found */
+static mrb_value meth_super_method_m(mrb_state *mrb, mrb_value self) {
+  mrb_value recv = mrb_iv_get(mrb, self, MRB_SYM(_recv));
+  mrb_value klass = mrb_iv_get(mrb, self, MRB_SYM(_klass));
+  mrb_value owner = mrb_iv_get(mrb, self, MRB_SYM(_owner));
+  mrb_value name = mrb_iv_get(mrb, self, MRB_SYM(_name));
+  mrb_value procv = mrb_iv_get(mrb, self, MRB_SYM(_proc));
+  if (!mrb_symbol_p(name) || !(mrb_class_p(owner) || mrb_module_p(owner) || mrb_sclass_p(owner))) return mrb_nil_value();
+  struct RClass *own = mrb_class_ptr(owner), *at = NULL;
+  mrb_sym mid = mrb_symbol(name);
+  if (mrb_proc_p(procv)) {
+    const struct RProc *p = mrb_proc_ptr(procv);
+    while (p && MRB_PROC_ALIAS_P(p)) {
+      if (p->e.target_class) { own = p->e.target_class; mid = p->body.mid; }
+      p = p->upper;
+    }
+  }
+  if (own->tt == MRB_TT_ICLASS) at = own;
+  struct RClass *start = (mrb_class_p(klass) || mrb_module_p(klass) || mrb_sclass_p(klass)) ? mrb_class_ptr(klass)
+                         : mrb_class(mrb, recv);
+  if (!at) {
+    for (struct RClass *k = start; k; k = k->super) {
+      if (k == own || (k->tt == MRB_TT_ICLASS && k->c == own)) { at = k; break; }
+    }
+  }
+  if (!at) at = own;
+  struct RClass *f = at->super;
+  if (!f) return mrb_nil_value();
+  mrb_method_t m = mrb_method_search_vm(mrb, &f, mid);
+  if (MRB_METHOD_UNDEF_P(m) || !f) return mrb_nil_value();
+  const struct RProc *proc;
+  if (MRB_METHOD_PROC_P(m)) proc = MRB_METHOD_PROC(m);
+  else {
+    struct RProc *cp = mrb_proc_new_cfunc(mrb, MRB_METHOD_FUNC(m));
+    proc = cp;
+  }
+  struct RClass *fowner = f->tt == MRB_TT_ICLASS ? f->c : f;
+  struct RObject *me = (struct RObject*)mrb_obj_alloc(mrb, MRB_TT_OBJECT, mrb_obj_class(mrb, self));
+  mrb_obj_iv_set(mrb, me, MRB_SYM(_owner), mrb_obj_value(fowner));
+  mrb_obj_iv_set(mrb, me, MRB_SYM(_recv), recv);
+  mrb_obj_iv_set(mrb, me, MRB_SYM(_name), mrb_symbol_value(mid));
+  mrb_obj_iv_set(mrb, me, MRB_SYM(_proc), mrb_obj_value((void*)proc));
+  mrb_obj_iv_set(mrb, me, MRB_SYM(_klass), mrb_obj_value(start));
+  return mrb_obj_value(me);
+}
+
 static void install_method_identity(mrb_state *mrb) {
+  if (mrb_class_defined_id(mrb, MRB_SYM(Method))) {
+    mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Method)), MRB_SYM(super_method), meth_super_method_m, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)), MRB_SYM(super_method), meth_super_method_m, MRB_ARGS_NONE());
+  }
+  mrb_define_private_method_id(mrb, mrb->kernel_module, MRB_SYM(__method__), k_method_m, MRB_ARGS_NONE());
+  mrb_define_private_method_id(mrb, mrb->kernel_module, MRB_SYM(__callee__), k_callee_m, MRB_ARGS_NONE());
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__method__), k_method_m, MRB_ARGS_NONE());
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__callee__), k_callee_m, MRB_ARGS_NONE());
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(method_added), mod_method_added_m, MRB_ARGS_REQ(1));
   /* Fixnum is gone since Ruby 3.2 */
   if (mrb_const_defined_at(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Fixnum)))
