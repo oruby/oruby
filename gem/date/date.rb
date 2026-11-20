@@ -558,7 +558,7 @@ class Date
   def zone = format("%s%02d:%02d", @of < 0 ? "-" : "+", @of.abs / 3600, @of.abs / 60 % 60)
 
   def inspect
-    "#<#{self.class}: #{to_s} ((#{@jd}j,#{@df}s,#{@sf.is_a?(Integer) ? @sf : (@sf * 1_000_000_000).to_i}n),#{@of >= 0 ? '+' : '-'}#{@of.abs}s,#{@sg.is_a?(Float) ? @sg : @sg.to_i}j)>"
+    "#<#{self.class}: #{to_s} ((#{@jd}j,#{@df}s,#{@sf.is_a?(Integer) ? @sf : (@sf * 1_000_000_000).to_i}n),#{@of >= 0 ? '+' : '-'}#{@of.abs}s,#{@sg.is_a?(Float) && @sg.infinite? ? (@sg > 0 ? 'Inf' : '-Inf') : @sg.to_i}j)>"
   end
 
   def to_date = Date.__new_jd(jd, @sg)

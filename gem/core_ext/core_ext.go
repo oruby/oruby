@@ -106,6 +106,7 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		initFormat(mrb)
 		initPack(mrb)
 		initRandom(mrb)
+		initBigPow(mrb)
 		// before the Ruby files: 21_implicit.rb wraps String#+ in Ruby and
 		// calls the original, which must be the encoding-checking one
 		mrb.WrapStringConcat()

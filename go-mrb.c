@@ -1288,10 +1288,34 @@ static mrb_value define_method_w(mrb_state *mrb, mrb_value mod) {
   return r;
 }
 
+/* MRI 4.1: aliasing a method that a prepended module defines is deprecated.
+   mruby's prepend moves the class's own methods to an origin iclass, the
+   prepended modules' iclasses in between: a lookup that ends before the
+   origin found a prepended method. */
+static void prepend_alias_warn(mrb_state *mrb, mrb_value mod, mrb_value oldv) {
+  struct RClass *c = mrb_class_ptr(mod);
+  if (!(c->flags & MRB_FL_CLASS_IS_PREPENDED) || !(mrb_symbol_p(oldv) || mrb_string_p(oldv))) return;
+  if (mrb_nil_p(mrb_gv_get(mrb, MRB_GVSYM(VERBOSE)))) return;
+  struct RClass *owner = c;
+  mrb_method_t m = mrb_method_search_vm(mrb, &owner, mrb_obj_to_sym(mrb, oldv));
+  if (MRB_METHOD_UNDEF_P(m) || owner == c) return;
+  for (struct RClass *p = c->super; p; p = p->super) {
+    if (p->flags & MRB_FL_CLASS_IS_ORIGIN) return;  /* the class's own, or after */
+    if (p == owner) break;
+  }
+  mrb_value k = mrb_obj_value(mrb->kernel_module);
+  if (!mrb_respond_to(mrb, k, MRB_SYM(__oruby_warn_here))) return;
+  struct RClass *pm = owner->tt == MRB_TT_ICLASS ? owner->c : owner;
+  mrb_value msg = mrb_format(mrb, "aliasing %v#%n defined in a prepended module %v is deprecated and will be removed in Ruby 4.3",
+                             mrb_inspect(mrb, mod), mrb_obj_to_sym(mrb, oldv), mrb_inspect(mrb, mrb_obj_value(pm)));
+  mrb_funcall_id(mrb, k, MRB_SYM(__oruby_warn_here), 2, msg, mrb_symbol_value(MRB_SYM(deprecated)));
+}
+
 static mrb_value alias_method_w(mrb_state *mrb, mrb_value mod) {
   mrb_int argc = mrb_get_argc(mrb);
   mrb_value newv = argc > 0 ? mrb_get_argv(mrb)[0] : mrb_nil_value();
   mrb_value oldv = argc > 1 ? mrb_get_argv(mrb)[1] : mrb_nil_value();
+  prepend_alias_warn(mrb, mod, oldv);
   mrb_value r = alias_method_orig(mrb, mod);
   if ((mrb_symbol_p(newv) || mrb_string_p(newv)) && (mrb_symbol_p(oldv) || mrb_string_p(oldv))) {
     mrb_sym nn = mrb_obj_to_sym(mrb, newv), on = mrb_obj_to_sym(mrb, oldv);
@@ -1509,6 +1533,66 @@ static mrb_value method_params_m(mrb_state *mrb, mrb_value self) {
   return orb_params(mrb, procv, 1);
 }
 
+/* ---- name arguments by #to_str (MRI's rb_check_id) ----
+   mruby takes a Symbol or a String; MRI also what #to_str makes a String
+   ("can't convert X into String (X#to_str gives Y)" when it does not), and
+   for anything else "... is not a symbol nor a string". Converted in place,
+   in the method's own frame (some read their caller's), before the C. */
+static void name_arg(mrb_state *mrb, mrb_value *v) {
+  if (mrb_symbol_p(*v) || mrb_string_p(*v)) return;
+  if (!mrb_respond_to(mrb, *v, MRB_SYM(to_str))) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "%!v is not a symbol nor a string", *v);
+  }
+  mrb_value r = mrb_funcall_id(mrb, *v, MRB_SYM(to_str), 0);
+  if (!mrb_string_p(r)) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "can't convert %T into String (%T#to_str gives %T)", *v, *v, r);
+  }
+  *v = r;
+}
+
+#define NAME_ALL 0xff
+static const struct { int cls; const char *name; uint8_t mask; } name_defs[] = {
+  /* cls 0: Module, 1: Kernel, 2: Binding */
+  {0, "instance_method", 1}, {0, "public_instance_method", 1}, {0, "method_defined?", 1},
+  {0, "public_method_defined?", 1}, {0, "private_method_defined?", 1}, {0, "protected_method_defined?", 1},
+  {0, "module_function", NAME_ALL}, {0, "const_defined?", 1}, {0, "const_get", 1}, {0, "class_variable_get", 1},
+  {0, "class_variable_set", 1}, {0, "class_variable_defined?", 1}, {0, "remove_class_variable", 1},
+  {0, "undef_method", NAME_ALL}, {0, "remove_method", NAME_ALL}, {0, "private_constant", NAME_ALL},
+  {0, "public_constant", NAME_ALL}, {0, "define_method", 1}, {0, "alias_method", 3}, {0, "remove_const", 1},
+  {1, "instance_variable_get", 1}, {1, "instance_variable_set", 1}, {1, "instance_variable_defined?", 1},
+  {1, "remove_instance_variable", 1}, {1, "method", 1}, {1, "singleton_method", 1},
+  {2, "local_variable_get", 1}, {2, "local_variable_set", 1}, {2, "local_variable_defined?", 1},
+};
+#define NAME_N ((int)(sizeof(name_defs) / sizeof(name_defs[0])))
+static mrb_func_t name_orig[32];
+
+static mrb_value name_call(mrb_state *mrb, mrb_value self, int n) {
+  mrb_callinfo *ci = mrb->c->ci;
+  if (ci->n < 15) { /* not packed */
+    mrb_int argc = mrb_get_argc(mrb);
+    mrb_value *argv = (mrb_value *)mrb_get_argv(mrb);
+    for (mrb_int i = 0; i < argc && i < 8; i++) {
+      if (name_defs[n].mask & (1 << i)) name_arg(mrb, &argv[i]);
+    }
+  }
+  return name_orig[n](mrb, self);
+}
+#define NW(n) static mrb_value name_w_##n(mrb_state *mrb, mrb_value self) { return name_call(mrb, self, n); }
+NW(0) NW(1) NW(2) NW(3) NW(4) NW(5) NW(6) NW(7) NW(8) NW(9) NW(10) NW(11) NW(12) NW(13) NW(14) NW(15)
+NW(16) NW(17) NW(18) NW(19) NW(20) NW(21) NW(22) NW(23) NW(24) NW(25) NW(26) NW(27) NW(28) NW(29) NW(30) NW(31)
+static const mrb_func_t name_fns[32] = {
+  name_w_0, name_w_1, name_w_2, name_w_3, name_w_4, name_w_5, name_w_6, name_w_7, name_w_8, name_w_9, name_w_10,
+  name_w_11, name_w_12, name_w_13, name_w_14, name_w_15, name_w_16, name_w_17, name_w_18, name_w_19, name_w_20,
+  name_w_21, name_w_22, name_w_23, name_w_24, name_w_25, name_w_26, name_w_27, name_w_28, name_w_29, name_w_30, name_w_31};
+
+static void wrap_name_methods(mrb_state *mrb) {
+  struct RClass *binding = mrb_class_defined_id(mrb, MRB_SYM(Binding)) ? mrb_class_get_id(mrb, MRB_SYM(Binding)) : NULL;
+  for (int n = 0; n < NAME_N && n < 32; n++) {
+    struct RClass *c = name_defs[n].cls == 0 ? mrb->module_class : name_defs[n].cls == 1 ? mrb->kernel_module : binding;
+    if (c) wrap_cfunc(mrb, c, name_defs[n].name, name_fns[n], &name_orig[n]);
+  }
+}
+
 /* Fiber#__oruby_status: mruby's status word (its inspect's), for
    29_fiber.rb, which parsed it out of #inspect with a regexp */
 static mrb_value fiber_status_m(mrb_state *mrb, mrb_value self) {
@@ -1526,6 +1610,24 @@ static mrb_value fiber_status_m(mrb_state *mrb, mrb_value self) {
   return mrb_str_new_cstr(mrb, st);
 }
 
+/* $=, which MRI keeps only to warn: false, and an assignment ignored */
+static void dollar_eq_warn(mrb_state *mrb, const char *msg) {
+  if (mrb_nil_p(mrb_gv_get(mrb, mrb_intern_lit(mrb, "$VERBOSE")))) return;
+  /* with the caller's file:line, as rb_warn (05_kernel.rb) */
+  mrb_value k = mrb_obj_value(mrb->kernel_module);
+  if (mrb_respond_to(mrb, k, MRB_SYM(__oruby_warn_here))) {
+    mrb_funcall_id(mrb, k, MRB_SYM(__oruby_warn_here), 1, mrb_str_new_cstr(mrb, msg));
+  }
+}
+static mrb_value dollar_eq_get(mrb_state *mrb) {
+  dollar_eq_warn(mrb, "variable $= is no longer effective");
+  return mrb_false_value();
+}
+static void dollar_eq_set(mrb_state *mrb, mrb_value v) {
+  (void)v;
+  dollar_eq_warn(mrb, "variable $= is no longer effective; ignored");
+}
+
 static void gv_init_checked(mrb_state *mrb) {
   static const char *pairs[][2] = {
     {"$/", "$/"}, {"$-0", "$/"}, {"$\\", "$\\"}, {"$,", "$,"}, {"$;", "$;"}, {"$-F", "$;"},
@@ -1536,6 +1638,7 @@ static void gv_init_checked(mrb_state *mrb) {
   for (int i = 0; pairs[i][0]; i++) _mrb_gv_hook(mrb, pairs[i][0], pairs[i][1], 1);
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$~"), backref_get, backref_set);
   mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$_"), lastline_get, lastline_set);
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$="), dollar_eq_get, dollar_eq_set);
   _mrb_gv_hook(mrb, "$@", "$@", 3);
 }
 
@@ -1727,6 +1830,67 @@ static mrb_value const_missing_w(mrb_state *mrb, mrb_value mod) {
   return const_missing_orig(mrb, mod);
 }
 
+/* Hash#inspect: mruby writes every Symbol key as `name: `; MRI quotes one
+   that is not a plain name (symbol_key_needs_quote): `"a b": `, `"x=": `.
+   A hash without such a key keeps mruby's inspect. */
+static mrb_func_t hash_inspect_orig;
+
+static mrb_bool
+sym_key_needs_quote(mrb_state *mrb, mrb_sym sym)
+{
+  mrb_int len;
+  const char *s = mrb_sym_name_len(mrb, sym, &len);
+  if (!s || len == 0) return TRUE;
+  const char *d = mrb_sym_dump(mrb, sym);
+  if (!d || d[0] == '"') return TRUE;
+  if (s[0] == '@' || s[0] == '$' || s[0] == '!') return TRUE;
+  return strchr("+-*/`%^&|]<=>~@", s[len - 1]) != NULL;
+}
+
+static int
+quoted_key_i(mrb_state *mrb, mrb_value key, mrb_value val, void *data)
+{
+  (void)val;
+  if (mrb_symbol_p(key) && sym_key_needs_quote(mrb, mrb_symbol(key))) {
+    *(mrb_bool *)data = TRUE;
+    return 1;
+  }
+  return 0;
+}
+
+static mrb_value
+hash_inspect_w(mrb_state *mrb, mrb_value self)
+{
+  mrb_bool quote = FALSE;
+  mrb_hash_foreach(mrb, mrb_hash_ptr(self), quoted_key_i, &quote);
+  if (!quote) return hash_inspect_orig(mrb, self);
+  mrb->c->ci->mid = MRB_SYM(inspect);
+  if (MRB_RECURSIVE_UNARY_P(mrb, MRB_SYM(inspect), self)) return mrb_str_new_lit(mrb, "{...}");
+  /* a snapshot of the keys: a key's or value's inspect may change the hash */
+  mrb_value keys = mrb_hash_keys(mrb, self);
+  mrb_value ret = mrb_str_new_lit(mrb, "{");
+  int ai = mrb_gc_arena_save(mrb);
+  for (mrb_int i = 0; i < RARRAY_LEN(keys); i++) {
+    mrb_value k = RARRAY_PTR(keys)[i];
+    if (!mrb_hash_key_p(mrb, self, k)) continue;
+    mrb_value v = mrb_hash_get(mrb, self, k);
+    if (RSTRING_LEN(ret) > 1) mrb_str_cat_lit(mrb, ret, ", ");
+    if (mrb_symbol_p(k)) {
+      mrb_value name = mrb_sym_str(mrb, mrb_symbol(k));
+      mrb_str_cat_str(mrb, ret, sym_key_needs_quote(mrb, mrb_symbol(k)) ? mrb_str_inspect(mrb, name) : name);
+      mrb_str_cat_lit(mrb, ret, ": ");
+    }
+    else {
+      mrb_str_cat_str(mrb, ret, mrb_inspect(mrb, k));
+      mrb_str_cat_lit(mrb, ret, " => ");
+    }
+    mrb_str_cat_str(mrb, ret, mrb_inspect(mrb, v));
+    mrb_gc_arena_restore(mrb, ai);
+  }
+  mrb_str_cat_lit(mrb, ret, "}");
+  return ret;
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
   _orb_fast_init(mrb);
   install_num_eq(mrb);
@@ -1734,6 +1898,8 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   _mrb_wrap_string_encoding(mrb);
   gv_init_checked(mrb);
   wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
+  wrap_cfunc(mrb, mrb->hash_class, "inspect", hash_inspect_w, &hash_inspect_orig);
+  wrap_cfunc(mrb, mrb->hash_class, "to_s", hash_inspect_w, &hash_inspect_orig);
   wrap_cfunc(mrb, mrb->module_class, "const_missing", const_missing_w, &const_missing_orig);
   wrap_cfunc(mrb, mrb->module_class, "remove_const", remove_const_w, &remove_const_orig);
   wrap_cfunc(mrb, mrb->kernel_module, "local_variables", k_lvars_w, &k_lvars_orig);
@@ -1747,6 +1913,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   wrap_cfunc(mrb, mrb->module_class, "attr_reader", attr_reader_w, &attr_reader_orig);
   wrap_cfunc(mrb, mrb->module_class, "attr_writer", attr_writer_w, &attr_writer_orig);
   wrap_cfunc(mrb, mrb->module_class, "attr_accessor", attr_accessor_w, &attr_accessor_orig);
+  wrap_name_methods(mrb);
   wrap_cfunc(mrb, mrb->module_class, "alias_method", alias_method_w, &alias_method_orig);
   if (mrb_class_defined_id(mrb, MRB_SYM(Method))) {
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Method)), MRB_SYM(original_name), method_original_name_m, MRB_ARGS_NONE());

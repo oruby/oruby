@@ -70,12 +70,12 @@ func TestPreprocessRuby(t *testing.T) {
 		{
 			name:     "method def with **nil",
 			input:    `def no_kw(arg1, **nil, &); inner(&) end`,
-			expected: `def no_kw(arg1, **__no_kw_disallow__, &); inner(&) end`,
+			expected: `def no_kw(arg1, **__no_kw_disallow__, &); ::Kernel.raise(::ArgumentError, "no keywords accepted") unless __no_kw_disallow__.empty?;; inner(&) end`,
 		},
 		{
 			name:     "proc with **nil",
 			input:    `proc { |**nil| :ok }`,
-			expected: `proc { |**__no_kw_disallow__| :ok }`,
+			expected: `proc { |**__no_kw_disallow__|; ::Kernel.raise(::ArgumentError, "no keywords accepted") unless __no_kw_disallow__.empty?; :ok }`,
 		},
 		{
 			name:     "comment with alias does not break",

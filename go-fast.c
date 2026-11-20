@@ -92,7 +92,16 @@ static mrb_bool p_fdiv(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_v
 static mrb_bool p_int_pow(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
   if (argc != 1 || !mrb_nil_p(blk) || !mrb_integer_p(self)) return FALSE;
   mrb_value o = argv[0];
-  if (mrb_integer_p(o)) return mrb_integer(o) >= 0;
+  if (mrb_integer_p(o)) {
+    /* not past mruby's bigint pow limit of a million result bits (18_numeric.rb
+       computes those in Go) */
+    mrb_int e = mrb_integer(o), b = mrb_integer(self);
+    if (e < 0) return FALSE;
+    if (b < 0) b = -b;
+    int bits = 0;
+    while (b) { bits++; b >>= 1; }
+    return bits <= 1 || e <= 1000000 / bits;
+  }
   if (mrb_float_p(o)) return mrb_integer(self) >= 0;
   return FALSE;
 }

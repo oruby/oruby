@@ -61,6 +61,7 @@ var (
 type prismRec struct {
 	kind, flags int
 	s, e        [C.ORB_SPANS]int
+	msg         string // ORB_PARSE_WARN's text
 }
 
 // PreprocessOptions are per-source settings for the rewriter
@@ -104,18 +105,27 @@ func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 		so.encoding = cs
 	}
 	var encName [64]C.char
-	p := C._oruby_prism_scan(nil, (*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src)), &so, &n, &errs, &encName[0], C.size_t(len(encName)))
+	var msgs *C.char
+	p := C._oruby_prism_scan(nil, (*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src)), &so, &n, &errs, &encName[0], C.size_t(len(encName)), &msgs)
 	enc := C.GoString(&encName[0])
+	if msgs != nil {
+		defer C.free(unsafe.Pointer(msgs))
+	}
 	if p == nil {
 		return nil, enc, errs == 0
 	}
 	defer C.free(unsafe.Pointer(p))
 	raw := unsafe.Slice(p, int(n))
 	recs := make([]prismRec, len(raw))
+	mp := msgs
 	for i, r := range raw {
 		recs[i].kind, recs[i].flags = int(r.kind), int(r.flags)
 		for j := 0; j < C.ORB_SPANS; j++ {
 			recs[i].s[j], recs[i].e[j] = int(r.s[j]), int(r.e[j])
+		}
+		if recs[i].kind == C.ORB_PARSE_WARN && mp != nil {
+			recs[i].msg = C.GoString(mp)
+			mp = (*C.char)(unsafe.Add(unsafe.Pointer(mp), len(recs[i].msg)+1))
 		}
 	}
 	return recs, enc, errs == 0
@@ -128,6 +138,11 @@ func DataOffset(src []byte) int {
 		return -1
 	}
 	return int(C._oruby_prism_data_offset((*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src))))
+}
+
+// rubySingleQuoted is s as a Ruby single-quoted literal
+func rubySingleQuoted(s string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
 }
 
 // hasBareIt: `it` as a word (a block's implicit parameter, ORB_IT_BLOCK)
@@ -156,7 +171,9 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if (opts == nil || !opts.NoRegexpLiterals) && (bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
-	if hasArrayKwHash(src) || hasBareIt(src) || bytes.Contains(src, []byte("&nil")) {
+	// "=>" and ": ": a hash literal, whose duplicated keys MRI warns about (ORB_PARSE_WARN)
+	if hasArrayKwHash(src) || hasBareIt(src) || bytes.Contains(src, []byte("&nil")) ||
+		bytes.Contains(src, []byte("=>")) || bytes.Contains(src, []byte(": ")) {
 		return true
 	}
 	// "**": **obj (ORB_KWSPLAT)
@@ -432,6 +449,8 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		}
 	}
 	cpathWraps := map[[2]int]*masgnPost{} // an assignment's writes after it (ORB_MASGN_CPATH, _NESTED)
+	var parseWarns []string               // ORB_PARSE_WARN, printed by one call at the first statement
+	warnAt := -1
 	for i := 0; i < len(recs); i++ {
 		rc := recs[i]
 		s, e := rc.s, rc.e
@@ -565,6 +584,19 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 			cpathWraps[key] = w
 			v := "__oruby_cpv" + id
 			r.addWrap(s[1], e[1], func(*rewriter) string { return "(" + v + " = (" }, w.closer(v))
+		case C.ORB_PARSE_WARN:
+			line := 1 + bytes.Count(src[:s[1]], []byte("\n"))
+			parseWarns = append(parseWarns, "["+strconv.Itoa(line)+", "+strconv.FormatBool(rc.flags&1 != 0)+", "+rubySingleQuoted(rc.msg)+"]")
+			warnAt = s[0]
+		case C.ORB_NOKW:
+			// **nil: MRI's ArgumentError for keywords given
+			check := `::Kernel.raise(::ArgumentError, "no keywords accepted") unless __no_kw_disallow__.empty?`
+			if rc.flags&1 != 0 {
+				r.addWrap(s[2], e[2], func(*rewriter) string { return "(" + check + "; " },
+					func(*rewriter) string { return ")" })
+			} else {
+				r.add(s[1], s[1], func(*rewriter) string { return "; " + check + ";" })
+			}
 		case C.ORB_NOBLOCK:
 			// &nil: a hidden block parameter (Proc#parameters answers
 			// [:noblock] for it) and MRI's ArgumentError for a block given
@@ -671,6 +703,11 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 				return b.String()
 			})
 		}
+	}
+	if len(parseWarns) > 0 && warnAt >= 0 {
+		// MRI prints these as it parses; here the program does as it starts
+		call := "::Kernel.__oruby_parse_warn(__FILE__, [" + strings.Join(parseWarns, ", ") + "]); "
+		r.add(warnAt, warnAt, func(*rewriter) string { return call })
 	}
 	if len(r.edits) == 0 {
 		return src

@@ -234,11 +234,20 @@ visit(const pm_node_t *node, void *data)
     // |&nil|: as a def's (ORB_NOBLOCK), the check after the parameters
     if (params && PM_NODE_TYPE(params) == PM_BLOCK_PARAMETERS_NODE) {
       const pm_block_parameters_node_t *bp = (const pm_block_parameters_node_t *)params;
+      /* where the body starts: a block's after its |params|, a lambda's
+         after the { or do that follows its (params) */
+      int32_t body_at = PM_NODE_TYPE(node) == PM_LAMBDA_NODE ? (int32_t)(open.start + open.length)
+                                                              : (int32_t)(bp->closing_loc.start + bp->closing_loc.length);
       if (bp->parameters && bp->parameters->block && PM_NODE_TYPE(bp->parameters->block) == PM_NO_BLOCK_PARAMETER_NODE &&
           bp->closing_loc.length > 0) {
         r = add(sc, ORB_NOBLOCK);
         span(r, 0, bp->parameters->block);
-        r->s[1] = r->e[1] = (int32_t)(bp->closing_loc.start + bp->closing_loc.length);
+        r->s[1] = r->e[1] = body_at;
+      }
+      if (bp->parameters && bp->parameters->keyword_rest &&
+          PM_NODE_TYPE(bp->parameters->keyword_rest) == PM_NO_KEYWORDS_PARAMETER_NODE && bp->closing_loc.length > 0) {
+        r = add(sc, ORB_NOKW);
+        r->s[1] = r->e[1] = body_at;
       }
     }
     break;
@@ -248,6 +257,18 @@ visit(const pm_node_t *node, void *data)
     // unset constant (a random symbol, or an abort); it becomes a hidden
     // block parameter and MRI's check (prism.go)
     const pm_def_node_t *d = (const pm_def_node_t *)node;
+    // def m(**nil): MRI's check that no keywords came (the rename is ORB_NO_KEYWORDS)
+    if (d->parameters && d->parameters->keyword_rest &&
+        PM_NODE_TYPE(d->parameters->keyword_rest) == PM_NO_KEYWORDS_PARAMETER_NODE) {
+      if (d->equal_loc.length > 0 && d->body) {
+        r = add(sc, ORB_NOKW);
+        span(r, 2, d->body);
+        r->flags = 1;
+      } else if (d->rparen_loc.length > 0) {
+        r = add(sc, ORB_NOKW);
+        r->s[1] = r->e[1] = (int32_t)(d->rparen_loc.start + d->rparen_loc.length);
+      }
+    }
     if (d->parameters && d->parameters->block && PM_NODE_TYPE(d->parameters->block) == PM_NO_BLOCK_PARAMETER_NODE) {
       if (d->equal_loc.length > 0 && d->body) {
         r = add(sc, ORB_NOBLOCK);
@@ -518,7 +539,7 @@ _oruby_prism_data_offset(const char *src, size_t len)
 }
 
 orb_rec *
-_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_opts *opts, int *count, int *errors, char *encname, size_t encname_len)
+_oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_opts *opts, int *count, int *errors, char *encname, size_t encname_len, char **msgs)
 {
   static mrb_state *scan_mrb = NULL; // allocator state when no mrb is given
   orb_scan sc = {0};
@@ -549,6 +570,38 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
     sc.nonutf8 = en && strcmp(en, "UTF-8") != 0;
   }
   if (root && *errors == 0) pm_visit_node(root, visit, &sc);
+  /* the parse warnings MRI prints (mruby's compiler prints none), for
+     prism.go to have the program print them as it starts: their texts in
+     *msgs, NUL separated, one ORB_PARSE_WARN each */
+  if (msgs) *msgs = NULL;
+  if (msgs && root && *errors == 0 && PM_NODE_TYPE(root) == PM_PROGRAM_NODE) {
+    const pm_statements_node_t *st = ((const pm_program_node_t *)root)->statements;
+    int32_t first = (st && st->body.size > 0) ? (int32_t)st->body.nodes[0]->location.start : -1;
+    size_t mlen = 0;
+    char *mbuf = NULL;
+    for (const pm_diagnostic_t *w = pm_parser_warnings_first(parser); w && first >= 0; w = pm_diagnostic_next(w)) {
+      const char *ty = pm_diagnostic_type(w);
+      int verbose;
+      if (strcmp(ty, "duplicated_hash_key") == 0) verbose = 0;
+      else if (strcmp(ty, "duplicated_when_clause") == 0) verbose = 1;
+      else continue;
+      const char *m = pm_diagnostic_message(w);
+      size_t ml = strlen(m);
+      char *nb = (char *)realloc(mbuf, mlen + ml + 1);
+      if (!nb) break;
+      mbuf = nb;
+      memcpy(mbuf + mlen, m, ml + 1);
+      mlen += ml + 1;
+      orb_rec *r = add(&sc, ORB_PARSE_WARN);
+      if (!r) break;
+      r->s[0] = r->e[0] = first;
+      pm_location_t loc = pm_diagnostic_location(w);
+      r->s[1] = (int32_t)loc.start;
+      r->e[1] = (int32_t)(loc.start + loc.length);
+      r->flags = verbose;
+    }
+    *msgs = mbuf;
+  }
   pm_parser_free(parser);
   pm_arena_free(arena);
   if (options) pm_options_free(options);

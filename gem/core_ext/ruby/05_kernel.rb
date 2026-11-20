@@ -252,3 +252,21 @@ module Kernel
   module_function :Array, :open
   private :__oruby_kernel_open
 end
+
+module Kernel
+  # rb_warn for C: "file:line: warning: msg" at the nearest user frame
+  def self.__oruby_warn_here(msg, category = nil) = warn(msg, uplevel: 0, category: category)
+end
+
+module Kernel
+  # the parse warnings of a source (prism.go's ORB_PARSE_WARN): [line,
+  # verbose only, text], printed as MRI does while parsing
+  def self.__oruby_parse_warn(file, warns)
+    return if $VERBOSE.nil?
+    warns.each do |line, verbose, msg|
+      next if verbose && !$VERBOSE
+      warn "#{file}:#{line}: warning: #{msg}"
+    end
+    nil
+  end
+end

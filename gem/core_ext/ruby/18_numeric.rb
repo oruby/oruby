@@ -19,6 +19,9 @@ class Integer
     elsif other.is_a?(Rational)
       return self ** other.numerator if other.denominator == 1
       to_f ** other.to_f
+    elsif other.is_a?(Integer) && bit_length * other > 1_000_000
+      # past mruby's bigint pow limit (a RangeError there): Go's math/big
+      __oruby_big_pow(other)
     else
       __pow(other)
     end

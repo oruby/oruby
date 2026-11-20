@@ -75,30 +75,20 @@ func TestYAMLRejectsUnsupportedAndUnsafeValues(t *testing.T) {
     custom_tag = begin
       YAML.load("object: !ruby/object:Object {}")
       false
-    rescue ArgumentError
+    rescue Psych::DisallowedClass
       true
     end
     alias_rejected = begin
       YAML.load("base: &anchor [1]\ncopy: *anchor\n")
       false
-    rescue ArgumentError
+    rescue Psych::AliasesNotEnabled
       true
     end
-    unsupported_dump = begin
-      YAML.dump(Object.new)
-      false
-    rescue ArgumentError
-      true
-    end
-    cyclic_dump = begin
-      values = []
-      values << values
-      YAML.dump(values)
-      false
-    rescue ArgumentError
-      true
-    end
-    [wrong_type, syntax_error, custom_tag, alias_rejected, unsupported_dump, cyclic_dump].map { |check| check ? "1" : "0" }.join
+    object_dump = YAML.dump(Object.new) == "--- !ruby/object {}\n"
+    values = []
+    values << values
+    cyclic_dump = YAML.dump(values) == "--- &1\n- *1\n"
+    [wrong_type, syntax_error, custom_tag, alias_rejected, object_dump, cyclic_dump].map { |check| check ? "1" : "0" }.join
   `)
 	checks := mrb.String(got)
 	if err != nil || checks != "111111" {
@@ -121,7 +111,7 @@ func TestYAMLAliasesAndLoadFile(t *testing.T) {
     disabled = begin
       YAML.load(source)
       false
-    rescue ArgumentError
+    rescue Psych::BadAlias
       true
     end
     decoded = YAML.safe_load(source, aliases: true)
@@ -138,21 +128,17 @@ func TestYAMLAliasesAndLoadFile(t *testing.T) {
 		t.Fatalf("YAML.load_file = %v, %v; want true, nil", got, err)
 	}
 	got, err = mrb.Eval(`
-    begin
-      YAML.load("cycle: &cycle [*cycle]\n", aliases: true)
-      false
-    rescue ArgumentError
-      true
-    end
+    cycle = YAML.load("cycle: &cycle [*cycle]\n", aliases: true)["cycle"]
+    cycle[0].equal?(cycle)
   `)
 	if err != nil || !got.Bool() {
-		t.Fatalf("YAML cyclic alias rejection = %v, %v; want true, nil", got, err)
+		t.Fatalf("YAML cyclic alias = %v, %v; want true, nil", got, err)
 	}
 	got, err = mrb.Eval(`
     alone = YAML.safe_load("a: &anchor [one]\n") == {"a" => ["one"]}
     truthy = YAML.safe_load("a: &anchor [one]\nb: *anchor\n", aliases: 1)["b"] == ["one"]
     unknown = begin
-      YAML.safe_load("a: 1", permitted_classes: [Object])
+      YAML.safe_load("a: 1", no_such_option: 1)
       false
     rescue ArgumentError
       true
@@ -164,15 +150,11 @@ func TestYAMLAliasesAndLoadFile(t *testing.T) {
 	}
 	got, err = mrb.Eval(`
     source = "base: &anchor \"" + ("x" * 100000) + "\"\ncopies:\n" + ("  - *anchor\n" * 90)
-    begin
-      YAML.safe_load(source, aliases: true)
-      false
-    rescue ArgumentError
-      true
-    end
+    v = YAML.safe_load(source, aliases: true)
+    v["copies"].all? { |c| c.equal?(v["base"]) }
   `)
 	if err != nil || !got.Bool() {
-		t.Fatalf("YAML alias expansion byte limit = %v, %v; want true, nil", got, err)
+		t.Fatalf("YAML aliases share the anchored value = %v, %v; want true, nil", got, err)
 	}
 }
 
@@ -234,7 +216,7 @@ func TestYAMLDumpOpenStructAndFileWithoutEnablingObjectLoad(t *testing.T) {
     safe_load = begin
       YAML.load(object_yaml)
       false
-    rescue ArgumentError
+    rescue Psych::DisallowedClass
       true
     end
     [
