@@ -14,6 +14,7 @@
 #
 # RUBY_EXE is set to the oruby binary, so specs that spawn `ruby_exe` test the
 # same build instead of the :target from the suite's default.mspec.
+# RUBY_FLAGS defaults to an empty string for fixtures that read it directly.
 require 'json'
 require 'fileutils'
 require 'optparse'
@@ -48,13 +49,14 @@ files.each { |f| queue << f }
 results = Queue.new
 tally_re = /(\d+) files?, (\d+) examples?, (\d+) expectations?, (\d+) failures?, (\d+) errors?/
 
+child_env = { 'RUBY_EXE' => oruby, 'RUBY_FLAGS' => ENV.fetch('RUBY_FLAGS', '') }
 workers = opts[:jobs].times.map do
   Thread.new do
     while (file = (queue.pop(true) rescue nil))
       rel = file.delete_prefix("#{suite}/ruby/")
       log = File.join(logs, rel.gsub('/', '__') + '.log')
       started = Time.now
-      pid = Process.spawn({ 'RUBY_EXE' => oruby }, oruby, File.join(suite, 'mspec/bin/mspec-run'), '-B', File.join(root, 'scripts/oruby.mspec'), file,
+      pid = Process.spawn(child_env, oruby, File.join(suite, 'mspec/bin/mspec-run'), '-B', File.join(root, 'scripts/oruby.mspec'), file,
                           chdir: suite, out: log, err: %i[child out], in: :close, pgroup: true)
       status = nil
       loop do

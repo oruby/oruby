@@ -17,6 +17,7 @@ typedef struct {
   bool frozen; /* frozen_string_literal: true for this source */
   bool nonutf8; /* source encoding other than UTF-8: literals are tagged */
   bool relits;  /* regexp literals get a per-site object (ORB_REGEXP_LITERAL) */
+  bool regexp_ranges;
   bool eval;    /* eval'd code: anonymous forwarding arguments are rewritten (ORB_ANON_ARG) */
   const pm_node_t *keep_re; /* the literal of a named-capture =~ (assigns locals) */
   /* warnings MRI's compiler gives that Prism does not (ORB_PARSE_WARN) */
@@ -602,6 +603,12 @@ visit(const pm_node_t *node, void *data)
     break;
   }
   case PM_REGULAR_EXPRESSION_NODE:
+    if (sc->regexp_ranges) {
+      const pm_regular_expression_node_t *re = (const pm_regular_expression_node_t *)node;
+      r = add(sc, ORB_REGEXP_RANGE);
+      lspan(r, 0, re->content_loc);
+      r->flags = (node->flags & PM_REGULAR_EXPRESSION_FLAGS_EXTENDED) != 0;
+    }
     if (sc->relits && node != sc->keep_re) {
       r = add(sc, ORB_REGEXP_LITERAL);
       span(r, 0, node);
@@ -809,6 +816,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
   }
   sc.frozen = pm_parser_frozen_string_literal(parser) > 0;
   sc.relits = !(opts && opts->no_regexp_literals);
+  sc.regexp_ranges = opts && opts->check_regexp_ranges;
   sc.eval = eval_src;
   sc.src = src;
   {

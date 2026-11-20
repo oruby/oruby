@@ -432,6 +432,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__copy_deflate");
   (void)mrb_intern_lit(mrb, "__crc32");
   (void)mrb_intern_lit(mrb, "__crc32_combine");
+  (void)mrb_intern_lit(mrb, "__defined_const_path?");
   (void)mrb_intern_lit(mrb, "__deflate_init");
   (void)mrb_intern_lit(mrb, "__diff");
   (void)mrb_intern_lit(mrb, "__encoding");
@@ -477,7 +478,11 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__open");
   (void)mrb_intern_lit(mrb, "__oruby_adopt");
   (void)mrb_intern_lit(mrb, "__oruby_autoload_loading");
+  (void)mrb_intern_lit(mrb, "__oruby_autoload_marks");
+  (void)mrb_intern_lit(mrb, "__oruby_autoload_other_thread?");
+  (void)mrb_intern_lit(mrb, "__oruby_autoload_registered");
   (void)mrb_intern_lit(mrb, "__oruby_autoload_spend");
+  (void)mrb_intern_lit(mrb, "__oruby_autoload_wait");
   (void)mrb_intern_lit(mrb, "__oruby_autoloads");
   (void)mrb_intern_lit(mrb, "__oruby_backtrace");
   (void)mrb_intern_lit(mrb, "__oruby_backtrace_locations");
@@ -803,6 +808,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "compile");
   (void)mrb_intern_lit(mrb, "concat");
   (void)mrb_intern_lit(mrb, "const_added");
+  (void)mrb_intern_lit(mrb, "const_defined?");
   (void)mrb_intern_lit(mrb, "const_get");
   (void)mrb_intern_lit(mrb, "const_missing");
   (void)mrb_intern_lit(mrb, "const_set");

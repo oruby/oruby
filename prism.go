@@ -73,6 +73,18 @@ type PreprocessOptions struct {
 	NoRegexpLiterals bool
 }
 
+var regexpRangeValidator func(string, bool) error
+
+// RegisterRegexpRangeValidator installs the regexp gem's static character
+// class range check. The gem registers it during package initialization.
+func RegisterRegexpRangeValidator(validate func(string, bool) error) {
+	regexpRangeValidator = validate
+}
+
+func checkRegexpRanges(src []byte) bool {
+	return regexpRangeValidator != nil && bytes.Contains(src, []byte("[:"))
+}
+
 // frozenStringDefault is --enable/--disable-frozen-string-literal: -1 unset
 var frozenStringDefault int32 = -1
 
@@ -97,6 +109,9 @@ func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 	so.frozen = C.int(atomic.LoadInt32(&frozenStringDefault))
 	if opts != nil && opts.NoRegexpLiterals {
 		so.no_regexp_literals = 1
+	}
+	if checkRegexpRanges(src) {
+		so.check_regexp_ranges = 1
 	}
 	if opts != nil && opts.SourceEncoding != "" {
 		cs := C.CString(opts.SourceEncoding)
@@ -241,7 +256,8 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 		return true
 	}
 	// a regexp literal (ORB_REGEXP_LITERAL)
-	if (opts == nil || !opts.NoRegexpLiterals) && (bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
+	if ((opts == nil || !opts.NoRegexpLiterals) || checkRegexpRanges(src)) &&
+		(bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
 	// "=>" and ": ": a hash literal, whose duplicated keys MRI warns about (ORB_PARSE_WARN)
@@ -506,14 +522,29 @@ var endSiteCounter, masgnSiteCounter, regexpSiteCounter uint64
 
 // PreprocessRubyWith is PreprocessRubyBytes with per-source options
 func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
+	out, _ := preprocessRuby(src, opts)
+	return out
+}
+
+func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 	if !mayNeedRewrite(src, opts) {
-		return src
+		return src, nil
 	}
 	recs, encName, ok := prismScan(src, opts)
 	if !ok || len(recs) == 0 {
-		return src
+		return src, nil
 	}
 	r := &rewriter{src: src}
+	for _, rc := range recs {
+		if rc.kind == C.ORB_REGEXP_RANGE {
+			pattern := r.text(rc.s[0], rc.e[0])
+			if strings.Contains(pattern, "[:") {
+				if err := regexpRangeValidator(pattern, rc.flags != 0); err != nil {
+					return src, ESyntaxError("%s", err)
+				}
+			}
+		}
+	}
 	caseInKeys := map[int][]string{}
 	// aliases first: later references in this source use them too
 	for _, rc := range recs {
@@ -886,9 +917,9 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		r.add(warnAt, warnAt, func(*rewriter) string { return call })
 	}
 	if len(r.edits) == 0 {
-		return src
+		return src, nil
 	}
-	return r.output()
+	return r.output(), nil
 }
 
 // output is the source with the edits applied

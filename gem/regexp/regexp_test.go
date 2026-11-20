@@ -41,6 +41,20 @@ func TestRegexp_Compile(t *testing.T) {
 	assert(t, "Regexp.compile", `Regexp.compile(".*")`)
 }
 
+func TestPOSIXCharacterClassRange(t *testing.T) {
+	assert(t, "invalid literal range is a syntax error before execution", `
+	  begin
+	    eval("false && /[[:alpha:]-[:digit:]]/")
+	    false
+	  rescue SyntaxError
+	    true
+	  end
+	`)
+	if _, _, err := TranslateFull("[[:alpha:]-&&[a-]]", 0); err != nil {
+		t.Fatalf("literal hyphen before class intersection: %v", err)
+	}
+}
+
 func TestRegexp_New2(t *testing.T) {
 	assert(t, "Regexp.new", `Regexp.new(".*", Regexp::MULTILINE)`)
 }

@@ -17,6 +17,7 @@ const (
 )
 
 func init() {
+	oruby.RegisterRegexpRangeValidator(validateLiteralRange)
 	oruby.Gem("regexp", func(mrb *oruby.MrbState) interface{} {
 		// StringScanner is provided by stdlib gem (require "strscan")
 

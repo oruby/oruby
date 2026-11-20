@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "27d4a1b3c713095d"
+const presymTable = "d59514079a87504a"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -163,9 +163,11 @@ const (
 	SymE_timeout                                MrbSym = C.MRB_SYM_E__timeout                               // "timeout="
 	SymE_uid                                    MrbSym = C.MRB_SYM_E__uid                                   // "uid="
 	SymE_version                                MrbSym = C.MRB_SYM_E__version                               // "version="
+	SymQ___defined_const_path                   MrbSym = C.MRB_SYM_Q____defined_const_path                  // "__defined_const_path?"
 	SymQ___encoding_binary                      MrbSym = C.MRB_SYM_Q____encoding_binary                     // "__encoding_binary?"
 	SymQ___encoding_us_ascii                    MrbSym = C.MRB_SYM_Q____encoding_us_ascii                   // "__encoding_us_ascii?"
 	SymQ___nonblock                             MrbSym = C.MRB_SYM_Q____nonblock                            // "__nonblock?"
+	SymQ___oruby_autoload_other_thread          MrbSym = C.MRB_SYM_Q____oruby_autoload_other_thread         // "__oruby_autoload_other_thread?"
 	SymQ___oruby_bta                            MrbSym = C.MRB_SYM_Q____oruby_bta                           // "__oruby_bta?"
 	SymQ___oruby_buffered                       MrbSym = C.MRB_SYM_Q____oruby_buffered                      // "__oruby_buffered?"
 	SymQ___oruby_core_proc                      MrbSym = C.MRB_SYM_Q____oruby_core_proc                     // "__oruby_core_proc?"
@@ -187,6 +189,7 @@ const (
 	SymQ_closed                                 MrbSym = C.MRB_SYM_Q__closed                                // "closed?"
 	SymQ_compare_by_identity                    MrbSym = C.MRB_SYM_Q__compare_by_identity                   // "compare_by_identity?"
 	SymQ_compatible                             MrbSym = C.MRB_SYM_Q__compatible                            // "compatible?"
+	SymQ_const_defined                          MrbSym = C.MRB_SYM_Q__const_defined                         // "const_defined?"
 	SymQ_critical                               MrbSym = C.MRB_SYM_Q__critical                              // "critical?"
 	SymQ_defined                                MrbSym = C.MRB_SYM_Q__defined                               // "defined?"
 	SymQ_directory                              MrbSym = C.MRB_SYM_Q__directory                             // "directory?"
@@ -579,7 +582,10 @@ const (
 	Sym___open                                  MrbSym = C.MRB_SYM____open                                  // "__open"
 	Sym___oruby_adopt                           MrbSym = C.MRB_SYM____oruby_adopt                           // "__oruby_adopt"
 	Sym___oruby_autoload_loading                MrbSym = C.MRB_SYM____oruby_autoload_loading                // "__oruby_autoload_loading"
+	Sym___oruby_autoload_marks                  MrbSym = C.MRB_SYM____oruby_autoload_marks                  // "__oruby_autoload_marks"
+	Sym___oruby_autoload_registered             MrbSym = C.MRB_SYM____oruby_autoload_registered             // "__oruby_autoload_registered"
 	Sym___oruby_autoload_spend                  MrbSym = C.MRB_SYM____oruby_autoload_spend                  // "__oruby_autoload_spend"
+	Sym___oruby_autoload_wait                   MrbSym = C.MRB_SYM____oruby_autoload_wait                   // "__oruby_autoload_wait"
 	Sym___oruby_autoloads                       MrbSym = C.MRB_SYM____oruby_autoloads                       // "__oruby_autoloads"
 	Sym___oruby_backtrace                       MrbSym = C.MRB_SYM____oruby_backtrace                       // "__oruby_backtrace"
 	Sym___oruby_backtrace_locations             MrbSym = C.MRB_SYM____oruby_backtrace_locations             // "__oruby_backtrace_locations"

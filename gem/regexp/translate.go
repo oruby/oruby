@@ -773,10 +773,10 @@ var posixFragments = map[string]string{
 	"blank":  `\t\p{Zs}`,
 	"cntrl":  `\p{Cc}`,
 	"punct":  `\p{P}$+<=>\^` + "`" + `|~`,
-	"graph":  `\p{L}\p{M}\p{N}\p{P}\p{S}`,
-	"print":  `\p{L}\p{M}\p{N}\p{P}\p{S}\p{Zs}`,
+	"graph":  `\p{L}\p{M}\p{N}\p{P}\p{S}\p{Cf}\p{Co}`,
+	"print":  `\p{L}\p{M}\p{N}\p{P}\p{S}\p{Cf}\p{Co}\p{Zs}`,
 	"xdigit": `0-9a-fA-F`,
-	"word":   `\p{L}\p{M}\p{Nd}\p{Pc}`,
+	"word":   `\p{L}\p{M}\p{Nl}\p{Nd}\p{Pc}\x{200c}\x{200d}`,
 	"ascii":  `\x00-\x7f`,
 	"any":    `\x00-\x{10ffff}`,
 }
@@ -836,6 +836,20 @@ type citem struct {
 	negFrag string // exact in-class form of a negated item, if the target has one
 }
 
+type posixRangeError struct{ error }
+
+func validateLiteralRange(source string, extended bool) error {
+	options := 0
+	if extended {
+		options = Extended
+	}
+	_, err := translate(source, options, targetFull)
+	if _, ok := err.(*posixRangeError); ok {
+		return err
+	}
+	return nil
+}
+
 func (tr *translator) class() (string, error) {
 	cs, err := tr.parseClass()
 	if err != nil {
@@ -887,6 +901,10 @@ func (tr *translator) parseClass() (*cset, error) {
 			if !ok {
 				return nil, tr.errorf("invalid POSIX bracket type [:%s:]", name)
 			}
+			if tr.i+1 < len(src) && src[tr.i] == '-' && src[tr.i+1] != ']' &&
+				!strings.HasPrefix(src[tr.i+1:], "&&") {
+				return nil, &posixRangeError{tr.errorf("unmatched range specifier in char-class")}
+			}
 			if neg {
 				cur.items = append(cur.items, citem{sub: &cset{neg: true, items: []citem{{frag: frag}}}})
 			} else {
@@ -916,6 +934,9 @@ func (tr *translator) parseClass() (*cset, error) {
 			if tr.i+1 < len(src) && src[tr.i] == '-' && src[tr.i+1] != ']' {
 				save := tr.i
 				tr.i++
+				if strings.HasPrefix(src[tr.i:], "[:") && strings.Contains(src[tr.i+2:], ":]") {
+					return nil, &posixRangeError{tr.errorf("char-class value at end of range")}
+				}
 				if src[tr.i] == '[' || (src[tr.i] == '\\' && tr.i+1 < len(src) && strings.IndexByte("dDwWsShHpP", src[tr.i+1]) >= 0) {
 					tr.i = save
 					cur.items = append(cur.items, citem{frag: classLiteral(lo)})

@@ -411,7 +411,10 @@ end
 			return mrb.NilValue()
 		}
 		// eval'd code: its regexp literals are made as it is compiled
-		out := PreprocessRubyWith([]byte(args.Item(0).String()), &PreprocessOptions{NoRegexpLiterals: true})
+		out, err := preprocessRuby([]byte(args.Item(0).String()), &PreprocessOptions{NoRegexpLiterals: true})
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
 		return mrb.StringValue(string(out))
 	}, mrb.ArgsReq(1))
 	// $. reads ARGF's last line number in MRI: 0 before any line is read

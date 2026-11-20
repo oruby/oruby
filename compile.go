@@ -361,10 +361,13 @@ func (mrb *MrbState) ParseFile(fileName string, context *MrbCcontext) (MrbParser
 
 // ParseString to oruby parser state
 func (mrb *MrbState) ParseString(s string, context *MrbCcontext) (MrbParserState, error) {
-	s = PreprocessRuby(s)
-	cs := C.CString(s)
+	buf, err := preprocessRuby([]byte(s), nil)
+	if err != nil {
+		return MrbParserState{nil}, err
+	}
+	cs := C.CString(string(buf))
 	defer C.free(unsafe.Pointer(cs))
-	p := C.mrb_parse_nstring(mrb.p, cs, C.size_t(len(s)), context.p)
+	p := C.mrb_parse_nstring(mrb.p, cs, C.size_t(len(buf)), context.p)
 	if p == nil {
 		return MrbParserState{nil}, errors.New("create parser state error")
 	}
@@ -412,12 +415,15 @@ func (mrb *MrbState) LoadFile(fileName string) (Value, error) {
 
 // LoadString loads string to oruby value
 func (mrb *MrbState) LoadString(s string) (Value, error) {
-	s = PreprocessRuby(s)
-	cs := C.CString(s)
+	buf, err := preprocessRuby([]byte(s), nil)
+	if err != nil {
+		return mrb.NilValue(), err
+	}
+	cs := C.CString(string(buf))
 	defer C.free(unsafe.Pointer(cs))
 
 	var result C.mrb_value
-	status := C._mrb_load_nstring_cxt(mrb.p, cs, C.size_t(len(s)), nil, &result)
+	status := C._mrb_load_nstring_cxt(mrb.p, cs, C.size_t(len(buf)), nil, &result)
 	v := Value{result}
 	return mrb.protectedResult(v, status)
 
@@ -446,7 +452,10 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	if len(buf) == 0 {
 		return nilValue, errors.New("empty buffer")
 	}
-	buf = PreprocessRubyBytes(buf)
+	buf, err := preprocessRuby(buf, nil)
+	if err != nil {
+		return mrb.NilValue(), err
+	}
 	var result C.mrb_value
 	status := C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p, &result)
 	runtime.KeepAlive(buf)
@@ -461,7 +470,10 @@ func (mrb *MrbState) LoadBytesWrapped(buf []byte, context *MrbCcontext, klass RC
 	if len(buf) == 0 {
 		return nilValue, nil
 	}
-	buf = PreprocessRubyBytes(buf)
+	buf, err := preprocessRuby(buf, nil)
+	if err != nil {
+		return mrb.NilValue(), err
+	}
 	var result C.mrb_value
 	status := C._mrb_load_nstring_wrapped(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p, klass.p, self.Value().v, &result)
 	runtime.KeepAlive(buf)

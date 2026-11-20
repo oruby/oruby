@@ -412,6 +412,8 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, "when") || src_contains(s, len, "defined?") ||
           /* an interpolated symbol (ORB_DSYM) */
           src_contains(s, len, ":\"") || src_contains(s, len, "%I") ||
+          /* static POSIX class ranges (ORB_REGEXP_RANGE) */
+          src_contains(s, len, "[:") ||
           src_bare_it(s, len) || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
@@ -442,15 +444,18 @@ static mrb_value eval_w3(mrb_state *mrb, mrb_value self) { return eval_call(mrb,
 static mrb_value eval_w4(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 4); }
 static mrb_value eval_w5(mrb_state *mrb, mrb_value self) { return eval_call(mrb, self, 5); }
 
-static void wrap_cfunc(mrb_state *mrb, struct RClass *c, const char *name, mrb_func_t wrapper, mrb_func_t *orig) {
+static void wrap_cfunc_id(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_func_t wrapper, mrb_func_t *orig) {
   struct RClass *owner = c;
-  mrb_sym mid = mrb_intern_cstr(mrb, name);
   mrb_method_t m = mrb_method_search_vm(mrb, &owner, mid);
   if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m) || MRB_METHOD_CFUNC(m) == wrapper) return;
   *orig = MRB_METHOD_CFUNC(m);
   mrb_method_t w = m;  /* keeps the original's flags, aspec and visibility */
   w.as.func = wrapper;
   mrb_define_method_raw(mrb, owner, mid, w);
+}
+
+static void wrap_cfunc(mrb_state *mrb, struct RClass *c, const char *name, mrb_func_t wrapper, mrb_func_t *orig) {
+  wrap_cfunc_id(mrb, c, mrb_intern_cstr(mrb, name), wrapper, orig);
 }
 
 static void wrap_eval_methods(mrb_state *mrb) {
@@ -1484,7 +1489,14 @@ static mrb_value mod_const_added_m(mrb_state *mrb, mrb_value mod) {
 }
 
 /* Module#__oruby_const_location(sym): the record ([file, line], a copy) or nil */
+static mrb_value autoload_active(mrb_state *, mrb_value, mrb_value);
+static mrb_bool autoload_other_thread(mrb_state *, mrb_value);
 static mrb_value mod_const_location_m(mrb_state *mrb, mrb_value mod) {
+  mrb_value mark = autoload_active(mrb, mod, mrb_get_arg1(mrb));
+  if (autoload_other_thread(mrb, mark)) {
+    mrb_value loc = RARRAY_PTR(mark)[2];
+    return mrb_array_p(loc) ? mrb_ary_new_from_values(mrb, 2, RARRAY_PTR(loc)) : mrb_nil_value();
+  }
   mrb_value h = mrb_iv_get(mrb, mod, MRB_SYM(__oruby_csl));
   if (!mrb_hash_p(h)) return mrb_nil_value();
   mrb_value loc = mrb_hash_get(mrb, h, mrb_get_arg1(mrb));
@@ -2256,25 +2268,66 @@ void _orb_trace_init(mrb_state *mrb);
 void _orb_fast_capture(mrb_state *mrb);
 void _orb_fast_init(mrb_state *mrb);
 
-/* Module#const_missing for a constant another thread's autoload is
-   loading: mruby's lookup does not wait for it (the autoload's `loading`
-   flag makes the constant missing), MRI's does. The thread passes until the
-   load is done and looks the constant up again: the constant, or the
-   autoload tried here too when that load raised. A load in this thread
-   (an autoload referencing its own constant) is not waited for. */
-#include <stdatomic.h>
+/* The loader records each active autoload until the file has executed.
+   The native marker covers lookups by the loading thread. The extra record
+   also covers lookups by other threads after the constant has been assigned. */
 mrb_bool mrb_autoload_p(mrb_value v);
-struct orb_autoload { mrb_bool loading; mrb_int len; char path[]; }; /* mruby's struct autoload (variable.c) */
-extern _Atomic int orb_threads_active;
+struct orb_autoload { mrb_bool loading; mrb_int len; char path[]; }; /* mruby's struct autoload */
 static mrb_func_t const_missing_orig;
 
-static mrb_bool requiring_here(mrb_state *mrb, const char *path, mrb_int len) {
-  for (mrb_callinfo *ci = mrb->c->ci; ci > mrb->c->cibase; ci--) {
-    if (ci->mid != MRB_SYM(require) || ci->n < 1 || ci->n >= 15) continue;
-    mrb_value a = ci->stack[1];
-    if (mrb_string_p(a) && RSTRING_LEN(a) == len && memcmp(RSTRING_PTR(a), path, len) == 0) return TRUE;
+static mrb_value autoload_marks(mrb_state *mrb, mrb_value mod) {
+  return mrb_iv_get(mrb, mod, MRB_SYM(__oruby_autoload_marks));
+}
+
+/* An active record is [marker, real file, source location]. A completed
+   registration without a definition only retains [marker]. */
+static mrb_value autoload_active(mrb_state *mrb, mrb_value mod, mrb_value name) {
+  mrb_value marks = autoload_marks(mrb, mod);
+  if (!mrb_hash_p(marks)) return mrb_nil_value();
+  mrb_value mark = mrb_hash_get(mrb, marks, name);
+  return mrb_array_p(mark) && RARRAY_LEN(mark) == 3 ? mark : mrb_nil_value();
+}
+
+static mrb_value autoload_lookup(mrb_state *mrb, mrb_value mod, mrb_sym sym, mrb_bool inherit) {
+  mrb_value name = mrb_symbol_value(sym);
+  for (struct RClass *c = mrb_class_ptr(mod); c; c = inherit ? c->super : NULL) {
+    if (MRB_FLAG_TEST(c, MRB_FL_CLASS_IS_PREPENDED)) continue;
+    mrb_value owner = mrb_obj_value(c->tt == MRB_TT_ICLASS ? c->c : c);
+    mrb_value mark = autoload_active(mrb, owner, name);
+    if (!mrb_nil_p(mark)) return mark;
+    mrb_value slot = mrb_iv_get(mrb, owner, sym);
+    if (mrb_iv_defined(mrb, owner, sym) &&
+        (!mrb_autoload_p(slot) || !((struct orb_autoload *)DATA_PTR(slot))->loading)) break;
   }
-  return FALSE;
+  return mrb_nil_value();
+}
+
+static mrb_value autoload_loader_call(mrb_state *mrb, mrb_sym method, mrb_value mark) {
+  if (mrb_nil_p(mark)) return mrb_false_value();
+  return mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), method, 1, RARRAY_PTR(mark)[1]);
+}
+
+static mrb_bool autoload_other_thread(mrb_state *mrb, mrb_value mark) {
+  return mrb_test(autoload_loader_call(mrb, MRB_SYM_Q(__oruby_autoload_other_thread), mark));
+}
+
+/* An autoload may define the name in an inner lexical scope the VM already
+   searched. Recheck the lexical read without loading any more files. */
+static mrb_value retry_lexical_const(mrb_state *mrb, mrb_sym sym) {
+  mrb_callinfo *ci = mrb->c->ci - 1;
+  if (ci < mrb->c->cibase || !ci->proc || MRB_PROC_CFUNC_P(ci->proc)) return mrb_undef_value();
+  const mrb_irep *irep = ci->proc->body.irep;
+  if (!ci->pc || ci->pc <= irep->iseq || ci->pc > irep->iseq + irep->ilen) return mrb_undef_value();
+  for (const mrb_code *pc = irep->iseq; pc < ci->pc;) {
+    struct mrb_insn_data insn = mrb_decode_insn(pc);
+    if (insn.next == ci->pc && insn.insn == OP_GETCONST && insn.b < irep->slen &&
+        irep->syms[insn.b] == sym) {
+      mrb_value value = mrb_vm_const_get_noraise(mrb, ci, sym, FALSE);
+      if (!mrb_autoload_p(value)) return value;
+    }
+    pc = insn.next;
+  }
+  return mrb_undef_value();
 }
 
 static mrb_value const_missing_w(mrb_state *mrb, mrb_value mod) {
@@ -2319,19 +2372,15 @@ static mrb_value const_missing_w(mrb_state *mrb, mrb_value mod) {
       mrb_exc_raise(mrb, e);
     }
   }
-  if (atomic_load(&orb_threads_active) && (mrb_class_p(mod) || mrb_module_p(mod)) && mrb_get_argc(mrb) == 1 &&
-      mrb_symbol_p(mrb_get_argv(mrb)[0]) && mrb_class_defined_id(mrb, MRB_SYM(Thread))) {
+  if ((mrb_class_p(mod) || mrb_module_p(mod)) && mrb_get_argc(mrb) == 1 &&
+      mrb_symbol_p(mrb_get_argv(mrb)[0])) {
     mrb_sym sym = mrb_symbol(mrb_get_argv(mrb)[0]);
-    mrb_value v = mrb_iv_get(mrb, mod, sym);
-    mrb_bool waited = FALSE;
-    while (mrb_autoload_p(v)) {
-      struct orb_autoload *al = (struct orb_autoload *)DATA_PTR(v);
-      if (!al->loading || requiring_here(mrb, al->path, al->len)) break;
-      mrb_funcall_id(mrb, mrb_obj_value(mrb_class_get_id(mrb, MRB_SYM(Thread))), MRB_SYM(pass), 0);
-      v = mrb_iv_get(mrb, mod, sym);
-      waited = TRUE;
+    mrb_value mark = autoload_lookup(mrb, mod, sym, TRUE);
+    if (mrb_test(autoload_loader_call(mrb, MRB_SYM(__oruby_autoload_wait), mark))) {
+      return mrb_const_get(mrb, mod, sym);
     }
-    if (waited) return mrb_const_get(mrb, mod, sym);
+    mrb_value v = retry_lexical_const(mrb, sym);
+    if (!mrb_undef_p(v)) return v;
   }
   return const_missing_orig(mrb, mod);
 }
@@ -3348,6 +3397,10 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
         }
         mrb_value e[3] = {self, argv[0], mrb_str_dup(mrb, argv[1])};
         mrb_ary_push(mrb, reg, mrb_ary_new_from_values(mrb, 3, e));
+        struct RClass *owner = mrb_class(mrb, k);
+        if (mrb_obj_respond_to(mrb, owner, MRB_SYM(__oruby_autoload_registered))) {
+          mrb_funcall_argv(mrb, k, MRB_SYM(__oruby_autoload_registered), 3, e);
+        }
       }
       return r;
     }
@@ -3517,26 +3570,142 @@ static mrb_value proc_s_new_m(mrb_state *mrb, mrb_value klass) {
   return proc;
 }
 
-/* Module#__oruby_autoload_loading(sym, on): marks the pending autoload of
-   sym as loading (its file is required directly); false when none is.
-   Module#__oruby_autoload_spend(sym): a pending one is spent (its file is
-   in), as mruby's own load leaves it. */
-mrb_bool mrb_autoload_p(mrb_value v);
-struct orb_autoload_m { mrb_bool loading; mrb_int len; char path[]; };
 static mrb_value mod_autoload_loading_m(mrb_state *mrb, mrb_value self) {
   mrb_sym sym;
-  mrb_bool on;
-  mrb_get_args(mrb, "nb", &sym, &on);
-  mrb_value v = mrb_iv_get(mrb, self, sym);
-  if (!mrb_autoload_p(v)) return mrb_false_value();
-  ((struct orb_autoload_m *)DATA_PTR(v))->loading = on;
-  return mrb_true_value();
+  mrb_value path, real;
+  mrb_get_args(mrb, "nSS", &sym, &path, &real);
+  mrb_value marker = mrb_iv_get(mrb, self, sym);
+  if (!mrb_autoload_p(marker)) return mrb_fixnum_value(0);
+  struct orb_autoload *al = (struct orb_autoload *)DATA_PTR(marker);
+  if (al->len != RSTRING_LEN(path) || memcmp(al->path, RSTRING_PTR(path), al->len) != 0) {
+    return mrb_fixnum_value(0);
+  }
+
+  mrb_value name = mrb_symbol_value(sym);
+  mrb_value marks = autoload_marks(mrb, self);
+  if (!mrb_hash_p(marks)) {
+    marks = mrb_hash_new(mrb);
+    mrb_obj_iv_set_force(mrb, mrb_obj_ptr(self), MRB_SYM(__oruby_autoload_marks), marks);
+  }
+  mrb_value record = mrb_hash_get(mrb, marks, name);
+  if (mrb_array_p(record) && mrb_obj_eq(mrb, RARRAY_PTR(record)[0], marker)) {
+    return mrb_fixnum_value(0);
+  }
+
+  int status = al->loading ? 2 : 1;
+  al->loading = TRUE;
+  mrb_value locations = mrb_iv_get(mrb, self, MRB_SYM(__oruby_csl));
+  mrb_value location = mrb_hash_p(locations) ? mrb_hash_get(mrb, locations, name) : mrb_nil_value();
+  mrb_value values[] = {marker, real, location};
+  mrb_hash_set(mrb, marks, name, mrb_ary_new_from_values(mrb, 3, values));
+  return mrb_fixnum_value(status);
 }
+
 static mrb_value mod_autoload_spend_m(mrb_state *mrb, mrb_value self) {
   mrb_sym sym;
-  mrb_get_args(mrb, "n", &sym);
-  if (mrb_autoload_p(mrb_iv_get(mrb, self, sym))) mrb_const_remove(mrb, self, sym);
+  mrb_int mode;
+  mrb_get_args(mrb, "ni", &sym, &mode);
+  mrb_value name = mrb_symbol_value(sym);
+  mrb_value record = autoload_active(mrb, self, name);
+  if (mrb_nil_p(record)) return mrb_nil_value();
+
+  mrb_value marks = autoload_marks(mrb, self);
+  mrb_value marker = RARRAY_PTR(record)[0];
+  mrb_value warning = mrb_nil_value();
+  if (mrb_obj_eq(mrb, mrb_iv_get(mrb, self, sym), marker)) {
+    ((struct orb_autoload *)DATA_PTR(marker))->loading = mode != 0;
+    if (mode == 1) {
+      mrb_hash_set(mrb, marks, name, mrb_ary_new_from_values(mrb, 1, &marker));
+      return mrb_nil_value();
+    }
+    if (mode == 2 && mrb_true_p(mrb_gv_get(mrb, MRB_GVSYM(VERBOSE))) &&
+        mrb_class_defined_id(mrb, MRB_SYM(Warning))) {
+      warning = mrb_format(mrb, "warning: Expected %v to define %C::%n but it didn't\n",
+                           RARRAY_PTR(record)[1], mrb_class_ptr(self), sym);
+    }
+  }
+  mrb_hash_delete_key(mrb, marks, name);
+  if (!mrb_nil_p(warning)) {
+    mrb_funcall_id(mrb, mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(Warning))), MRB_SYM(warn), 1, warning);
+  }
   return mrb_nil_value();
+}
+
+static mrb_func_t autoload_p_orig;
+static mrb_value mod_autoload_p_w(mrb_state *mrb, mrb_value mod) {
+  mrb_sym sym;
+  mrb_bool inherit = TRUE;
+  mrb_get_args(mrb, "n|b", &sym, &inherit);
+  mrb_value mark = autoload_lookup(mrb, mod, sym, inherit);
+  if (autoload_other_thread(mrb, mark)) {
+    struct orb_autoload *al = (struct orb_autoload *)DATA_PTR(RARRAY_PTR(mark)[0]);
+    return mrb_str_new(mrb, al->path, al->len);
+  }
+  return autoload_p_orig(mrb, mod);
+}
+
+static mrb_value autoload_of_const_arg(mrb_state *mrb, mrb_value mod) {
+  mrb_int argc = mrb_get_argc(mrb);
+  if (argc < 1 || argc > 2) return mrb_nil_value();
+  const mrb_value *argv = mrb_get_argv(mrb);
+  mrb_sym sym = mrb_symbol_p(argv[0]) ? mrb_symbol(argv[0]) :
+                mrb_string_p(argv[0]) ? mrb_intern_check_str(mrb, argv[0]) : 0;
+  if (!sym) return mrb_nil_value();
+  return autoload_lookup(mrb, mod, sym, argc == 1 || mrb_test(argv[1]));
+}
+
+static mrb_func_t const_defined_orig, const_get_orig;
+static mrb_value mod_const_defined_w(mrb_state *mrb, mrb_value mod) {
+  mrb_value result = const_defined_orig(mrb, mod);
+  if (mrb_test(result)) return result;
+  return mrb_bool_value(autoload_other_thread(mrb, autoload_of_const_arg(mrb, mod)));
+}
+
+static mrb_value mod_const_get_w(mrb_state *mrb, mrb_value mod) {
+  autoload_loader_call(mrb, MRB_SYM(__oruby_autoload_wait), autoload_of_const_arg(mrb, mod));
+  return const_get_orig(mrb, mod);
+}
+
+static mrb_value defined_const_path_body(mrb_state *mrb, void *unused) {
+  (void)unused;
+  mrb_value start, path;
+  mrb_get_args(mrb, "oA", &start, &path);
+  mrb_int len = RARRAY_LEN(path);
+  if (!len || !mrb_symbol_p(RARRAY_PTR(path)[0])) return mrb_nil_value();
+  mrb_int i = 0;
+  mrb_value outer = start;
+  if (mrb_nil_p(start)) {
+    mrb_callinfo *ci = &mrb->c->ci[-1];
+    if (ci < mrb->c->cibase || !ci->proc) return mrb_nil_value();
+    outer = mrb_vm_const_get_noraise(mrb, ci, mrb_symbol(RARRAY_PTR(path)[0]), len > 1);
+    if (mrb_undef_p(outer)) return mrb_nil_value();
+    i = 1;
+  }
+  for (; i < RARRAY_LEN(path); i++) {
+    if (!mrb_class_p(outer) && !mrb_module_p(outer) && mrb_type(outer) != MRB_TT_SCLASS) return mrb_nil_value();
+    mrb_value name = RARRAY_PTR(path)[i];
+    if (!mrb_symbol_p(name)) return mrb_nil_value();
+    mrb_sym sym = mrb_symbol(name);
+    mrb_bool final = i == RARRAY_LEN(path) - 1;
+    mrb_value v = mrb_const_get_noraise(mrb, mrb_class_ptr(outer), sym, !final);
+    if (mrb_undef_p(v)) {
+      /* The final name is a query, so another thread's autoload remains
+         visible without waiting for the file to finish. */
+      if (final && !(mrb_const_flags(mrb, mrb_class_ptr(outer), sym) & MRB_CONST_PRIVATE) &&
+          autoload_other_thread(mrb, autoload_lookup(mrb, outer, sym, FALSE))) break;
+      return mrb_nil_value();
+    }
+    outer = v;
+  }
+  return mrb_str_new_lit_frozen(mrb, "constant");
+}
+
+static mrb_value defined_const_path_w(mrb_state *mrb, mrb_value self) {
+  (void)self;
+  mrb_bool error;
+  mrb_value result = mrb_protect_error(mrb, defined_const_path_body, NULL, &error);
+  if (error && mrb_type(result) == MRB_TT_BREAK) mrb_exc_raise(mrb, result);
+  return error ? mrb_nil_value() : result;
 }
 
 /* Kernel.autoload / Kernel.autoload?: on the caller's cref, as
@@ -3756,8 +3925,12 @@ static void install_method_identity(mrb_state *mrb) {
   mrb_define_method_id(mrb, mrb->false_class, MRB_SYM(to_s), special_to_s, MRB_ARGS_NONE());
   mrb_alias_method(mrb, mrb->true_class, MRB_SYM(inspect), MRB_SYM(to_s));
   mrb_alias_method(mrb, mrb->false_class, MRB_SYM(inspect), MRB_SYM(to_s));
-  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_autoload_loading), mod_autoload_loading_m, MRB_ARGS_REQ(2));
-  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_autoload_spend), mod_autoload_spend_m, MRB_ARGS_REQ(1));
+  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_autoload_loading), mod_autoload_loading_m, MRB_ARGS_REQ(3));
+  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_autoload_spend), mod_autoload_spend_m, MRB_ARGS_REQ(2));
+  wrap_cfunc_id(mrb, mrb->module_class, MRB_SYM_Q(autoload), mod_autoload_p_w, &autoload_p_orig);
+  wrap_cfunc_id(mrb, mrb->module_class, MRB_SYM_Q(const_defined), mod_const_defined_w, &const_defined_orig);
+  wrap_cfunc_id(mrb, mrb->module_class, MRB_SYM(const_get), mod_const_get_w, &const_get_orig);
+  mrb_define_private_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(BasicObject)), MRB_SYM_Q(__defined_const_path), defined_const_path_w, MRB_ARGS_REQ(2));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(autoload), kernel_s_autoload, MRB_ARGS_ANY());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(autoload), kernel_s_autoload_p, MRB_ARGS_ANY());
   mrb_define_class_method_id(mrb, mrb->proc_class, MRB_SYM(new), proc_s_new_m, MRB_ARGS_ANY() | MRB_ARGS_BLOCK());

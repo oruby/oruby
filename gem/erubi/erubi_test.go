@@ -132,7 +132,8 @@ func TestERBOptionsAndRun(t *testing.T) {
       def write(s); @value << s; end
     end
     out = ERBCapture.new
-    original = $stdout
+    original = ERBCapture.new
+    $stdout = original
     begin
       $stdout = out
       result = ERB.new("hello").run

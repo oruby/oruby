@@ -65,7 +65,11 @@ func init() {
 		mrb.DefineGlobalFunction("require", loadRequire, mrb.ArgsReq(1))
 		mrb.DefineGlobalFunction("require_relative", loadRequireRelative, mrb.ArgsReq(1))
 		// Module#autoload is mruby's own; it loads files with the require above
-		return nil
+		kernel := mrb.KernelModule()
+		kernel.DefineClassMethod("__oruby_autoload_registered", autoloadRegistered, mrb.ArgsReq(3))
+		kernel.DefineClassMethod("__oruby_autoload_other_thread?", autoloadOtherThread, mrb.ArgsReq(1))
+		kernel.DefineClassMethod("__oruby_autoload_wait", autoloadWait, mrb.ArgsReq(1))
+		return make(map[string]*loadLock)
 	})
 }
 
@@ -258,12 +262,33 @@ func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error 
 // loadLock is MRI's per-feature load lock: the thread requiring a file
 // (by real path) and the threads waiting for it to finish
 type loadLock struct {
-	owner   *oruby.Thread
-	waiters []*oruby.Waiter
+	owner    *oruby.Thread
+	waiters  []*oruby.Waiter
+	marks    []autoloadMark
+	autoload bool // the require started at a native autoload lookup
 }
 
-// loadLocks: per state, the files being required (changed under the GVL)
-var loadLocks = map[*oruby.MrbState]map[string]*loadLock{}
+type autoloadMark struct {
+	mod, name oruby.Value
+	during    bool // registered while the file was loading
+	trigger   bool // its constant lookup started the require
+}
+
+func loadLocks(mrb *oruby.MrbState) map[string]*loadLock {
+	locks, _ := mrb.GemData("load").(map[string]*loadLock)
+	return locks
+}
+
+func (lk *loadLock) ownedBy(thread *oruby.Thread) bool {
+	return lk.owner == thread || lk.owner == nil && thread != nil && thread.Main()
+}
+
+func (lk *loadLock) wait(mrb *oruby.MrbState) error {
+	w := mrb.NewWaiter()
+	lk.waiters = append(lk.waiters, w)
+	_, err := mrb.ThreadWait(w.C(), -1, true)
+	return err
+}
 
 // the files being required, by real path (a circular require), per state
 func loadingFilesFind(mrb *oruby.MrbState, filepath oruby.Value) bool {
@@ -684,11 +709,7 @@ func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
 	if r, err := filepath.EvalSymlinks(path); err == nil {
 		real = r
 	}
-	locks := loadLocks[mrb]
-	if locks == nil {
-		locks = map[string]*loadLock{}
-		loadLocks[mrb] = locks
-	}
+	locks := loadLocks(mrb)
 	for {
 		if featureP(mrb, path, 'r', nil) != 0 || loadedByRealpath(mrb, path, real) {
 			return mrb.FalseValue()
@@ -697,15 +718,13 @@ func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
 		if lk == nil {
 			break
 		}
-		if lk.owner == mrb.CurrentThread() {
+		if lk.ownedBy(mrb.CurrentThread()) {
 			warnCircular(mrb, path)
 			return mrb.FalseValue()
 		}
 		// another thread loads it: wait for it, then look again (it is
 		// loaded, or that require failed and this one loads it)
-		w := mrb.NewWaiter()
-		lk.waiters = append(lk.waiters, w)
-		if _, err := mrb.ThreadWait(w.C(), -1, true); err != nil {
+		if err := lk.wait(mrb); err != nil {
 			return mrb.RaiseError(err)
 		}
 	}
@@ -721,26 +740,40 @@ func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
 
 	loadingFilesAdd(mrb, realValue)
 	defer loadingFilesDelete(mrb, realValue)
-	marks := autoloadsOf(mrb, path, real)
+	lk.markAutoloads(mrb, path, real)
 	if err := doLoad(mrb, path); err != nil {
-		autoloadsDone(mrb, marks, false)
+		exc := mrb.Exc()
+		if exc != nil {
+			mrb.GCProtect(exc.Value())
+			mrb.ExcClear()
+		}
+		lk.finishAutoloads(mrb, false)
+		if exc != nil {
+			return mrb.RaiseObj(exc.Value())
+		}
 		return loadFailure(mrb, err)
 	}
 	mrb.AryPush(mrb.GVGet(oruby.GvSym_LOADED_FEATURES), mrb.StrNew(path))
-	autoloadsDone(mrb, marks, true)
+	lk.finishAutoloads(mrb, true)
 	return mrb.TrueValue()
 }
 
-// autoloadsOf marks the pending autoloads whose file is path (required
-// directly, not through the constant) as loading, as MRI's autoload of a
-// feature being required: the constant reads as undefined meanwhile and
-// the autoload is spent once the file is in. Each is [module, name].
-func autoloadsOf(mrb *oruby.MrbState, path, real string) [][2]oruby.Value {
-	reg := mrb.IVGet(mrb.KernelModule().Value(), mrb.Intern("__oruby_autoloads"))
-	if !reg.IsArray() {
-		return nil
+func autoloadFile(path string, lp []string) string {
+	exts := []string{""}
+	if extKind(path) == 0 {
+		exts = []string{".rb", ".mrb"}
 	}
-	var marks [][2]oruby.Value
+	full, _ := findFile(path, exts, lp)
+	return full
+}
+
+// markAutoloads finds pending registrations for this file, including paths
+// reached through the load path or a symlink.
+func (lk *loadLock) markAutoloads(mrb *oruby.MrbState, path, real string) {
+	reg := mrb.IVGet(mrb.KernelModule(), oruby.Sym___oruby_autoloads)
+	if !reg.IsArray() {
+		return
+	}
 	var lp []string
 	n := oruby.RArrayLen(reg)
 	for i := 0; i < n; i++ {
@@ -748,39 +781,80 @@ func autoloadsOf(mrb *oruby.MrbState, path, real string) [][2]oruby.Value {
 		if !e.IsArray() || oruby.RArrayLen(e) != 3 {
 			continue
 		}
-		mod, sym, p := mrb.AryRef(e, 0), mrb.AryRef(e, 1), mrb.String(mrb.AryRef(e, 2))
-		var full string
-		exts := []string{""}
-		if extKind(p) == 0 {
-			exts = []string{".rb"}
+		mod, sym, p := mrb.AryRef(e, 0), mrb.AryRef(e, 1), mrb.AryRef(e, 2)
+		feature := mrb.String(p)
+		if lp == nil && !isExplicit(feature) {
+			lp = expandedLoadPath(mrb)
 		}
-		if isExplicit(p) {
-			full, _ = findFile(p, exts, nil)
-		} else {
-			if lp == nil {
-				lp = expandedLoadPath(mrb)
-			}
-			full, _ = findFile(p, exts, lp)
-		}
+		full := autoloadFile(feature, lp)
 		if full == "" || (full != path && realpathOf(full) != real) {
 			continue
 		}
-		on, err := mrb.Funcall(mod, mrb.Intern("__oruby_autoload_loading"), sym, true)
-		if err == nil && on.Bool() {
-			marks = append(marks, [2]oruby.Value{mod, sym})
-		}
+		lk.markAutoload(mrb, mod, sym, p, real, false)
 	}
-	return marks
 }
 
-func autoloadsDone(mrb *oruby.MrbState, marks [][2]oruby.Value, loaded bool) {
-	// a file that defines the constant replaces the autoload; one that does
-	// not leaves it pending (MRI keeps the name, undefined, which mruby has
-	// no state for)
-	_ = loaded
-	for _, m := range marks {
-		_, _ = mrb.Funcall(m[0], mrb.Intern("__oruby_autoload_loading"), m[1], false)
+func (lk *loadLock) markAutoload(mrb *oruby.MrbState, mod, sym, path oruby.Value, real string, during bool) {
+	status, err := mrb.Funcall(mod, oruby.Sym___oruby_autoload_loading, sym, path, real)
+	if err == nil && status.Int() != 0 {
+		trigger := status.Int() == 2
+		lk.autoload = lk.autoload || trigger
+		lk.marks = append(lk.marks, autoloadMark{mod, sym, during, trigger})
 	}
+}
+
+func (lk *loadLock) finishAutoloads(mrb *oruby.MrbState, loaded bool) {
+	for i := len(lk.marks) - 1; i >= 0; i-- {
+		mark := lk.marks[i]
+		// An autoload can share its file with other registrations; leave
+		// siblings pending so they can load it again if the feature is removed.
+		mode := 0
+		if loaded && mark.trigger {
+			mode = 2
+		} else if loaded && (!lk.autoload || mark.during) {
+			mode = 1
+		}
+		_, _ = mrb.Funcall(mark.mod, oruby.Sym___oruby_autoload_spend, mark.name, mode)
+	}
+}
+
+func autoloadRegistered(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	a := mrb.GetArgs()
+	p := a.Item(2)
+	path := mrb.String(p)
+	var lp []string
+	if !isExplicit(path) {
+		lp = expandedLoadPath(mrb)
+	}
+	full := autoloadFile(path, lp)
+	if full != "" {
+		real := realpathOf(full)
+		if lock := loadLocks(mrb)[real]; lock != nil {
+			lock.markAutoload(mrb, a.Item(0), a.Item(1), p, real, true)
+		} else if featureP(mrb, full, 'r', nil) != 0 || loadedByRealpath(mrb, full, real) {
+			lock := loadLock{}
+			lock.markAutoload(mrb, a.Item(0), a.Item(1), p, real, true)
+			lock.finishAutoloads(mrb, true)
+		}
+	}
+	return mrb.NilValue()
+}
+
+func autoloadOtherThread(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	lock := loadLocks(mrb)[mrb.String(mrb.GetArgsFirst())]
+	return mrb.BoolValue(lock != nil && !lock.ownedBy(mrb.CurrentThread()))
+}
+
+func autoloadWait(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	real := mrb.String(mrb.GetArgsFirst())
+	waited := false
+	for lock := loadLocks(mrb)[real]; lock != nil && !lock.ownedBy(mrb.CurrentThread()); lock = loadLocks(mrb)[real] {
+		if err := lock.wait(mrb); err != nil {
+			return mrb.RaiseError(err)
+		}
+		waited = true
+	}
+	return mrb.BoolValue(waited)
 }
 
 // warnCircular is MRI's verbose-only warning for a require of a file that
