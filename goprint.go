@@ -1,5 +1,7 @@
 package oruby
 
+// #include "go-mrb.h"
+import "C"
 import (
 	"fmt"
 	"strings"
@@ -72,10 +74,23 @@ func (mrb *MrbState) RunAtExitHandlers() {
 	// during a handler must not free the rest
 	mrb.SetGV("$__at_exit_running__", list.Value())
 	defer mrb.SetGV("$__at_exit_running__", mrb.NilValue())
+	C._orb_bt_atexit(mrb.p, 1)
+	defer C._orb_bt_atexit(mrb.p, 0)
 	// MRI's rb_ec_exec_end_proc: each handler protected; a SystemExit in one
 	// decides the exit status, any other exception is printed (status 1);
 	// either is $! for the handlers after it
-	for list.Len() > 0 {
+	for {
+		// a handler registered by a handler runs right after it, as MRI's
+		if !mrb.GetGV("$__at_exit_list__").IsNil() {
+			n := mrb.GVGetObj(GvSym___at_exit_list__).RArray().Slice()
+			mrb.SetGV("$__at_exit_list__", mrb.NilValue())
+			for k := len(n) - 1; k >= 0; k-- {
+				list.Unshift(n[k])
+			}
+		}
+		if list.Len() == 0 {
+			break
+		}
 		handler := list.Shift()
 		if handler.IsNil() {
 			continue

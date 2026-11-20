@@ -154,7 +154,7 @@ func init() {
 		mrb.DefineModuleFunc(mProc, "gid", os.Getgid)
 		mrb.DefineModuleFunc(mProc, "euid", os.Geteuid)
 		mrb.DefineModuleFunc(mProc, "egid", os.Getegid)
-		mrb.DefineModuleFunc(mProc, "groups", os.Getgroups)
+		mrb.DefineModuleFunc(mProc, "groups", procGroups)
 		mrb.DefineModuleFunction(mProc, "initgroups", procInitgroups, mrb.ArgsArg(1, 1))
 
 		mProcUID := mrb.DefineModuleUnder(mProc, "UID")
@@ -722,4 +722,33 @@ func raiseExecErr(mrb *oruby.MrbState, err error, path string) oruby.MrbValue {
 		return raiseErrno(mrb, syscall.ENOENT, path)
 	}
 	return mrb.RaiseError(err)
+}
+
+// procGroups is Process.groups: getgroups(2), which on macOS stops at 16
+// groups unless built for unlimited ones (MRI is); the user's full group
+// list there comes from getgrouplist (os/user)
+func procGroups() ([]int, error) {
+	gs, err := os.Getgroups()
+	if err != nil || runtime.GOOS != "darwin" {
+		return gs, err
+	}
+	u, uerr := user.Current()
+	if uerr != nil {
+		return gs, nil
+	}
+	ids, gerr := u.GroupIds()
+	if gerr != nil {
+		return gs, nil
+	}
+	seen := make(map[int]bool, len(gs))
+	for _, g := range gs {
+		seen[g] = true
+	}
+	for _, id := range ids {
+		if g, cerr := strconv.Atoi(id); cerr == nil && !seen[g] {
+			seen[g] = true
+			gs = append(gs, g)
+		}
+	}
+	return gs, nil
 }

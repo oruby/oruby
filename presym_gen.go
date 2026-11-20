@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "0d5e5f0f816cc233"
+const presymTable = "0a5444af17714826"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -66,6 +66,7 @@ const (
 	IvSym_closed                                MrbSym = C.MRB_IVSYM__closed                                // "@closed"
 	IvSym_dstaddr                               MrbSym = C.MRB_IVSYM__dstaddr                               // "@dstaddr"
 	IvSym_encoding                              MrbSym = C.MRB_IVSYM__encoding                              // "@encoding"
+	IvSym_exit_value                            MrbSym = C.MRB_IVSYM__exit_value                            // "@exit_value"
 	IvSym_external_encoding                     MrbSym = C.MRB_IVSYM__external_encoding                     // "@external_encoding"
 	IvSym_filename                              MrbSym = C.MRB_IVSYM__filename                              // "@filename"
 	IvSym_flags                                 MrbSym = C.MRB_IVSYM__flags                                 // "@flags"
@@ -82,6 +83,7 @@ const (
 	IvSym_path                                  MrbSym = C.MRB_IVSYM__path                                  // "@path"
 	IvSym_pos                                   MrbSym = C.MRB_IVSYM__pos                                   // "@pos"
 	IvSym_public_key                            MrbSym = C.MRB_IVSYM__public_key                            // "@public_key"
+	IvSym_reason                                MrbSym = C.MRB_IVSYM__reason                                // "@reason"
 	IvSym_receiver                              MrbSym = C.MRB_IVSYM__receiver                              // "@receiver"
 	IvSym_regexp                                MrbSym = C.MRB_IVSYM__regexp                                // "@regexp"
 	IvSym_safe_level                            MrbSym = C.MRB_IVSYM__safe_level                            // "@safe_level"
@@ -595,6 +597,8 @@ const (
 	Sym___oruby_dec_round                       MrbSym = C.MRB_SYM____oruby_dec_round                       // "__oruby_dec_round"
 	Sym___oruby_deliver__                       MrbSym = C.MRB_SYM____oruby_deliver__                       // "__oruby_deliver__"
 	Sym___oruby_dstr_enc                        MrbSym = C.MRB_SYM____oruby_dstr_enc                        // "__oruby_dstr_enc"
+	Sym___oruby_dsym                            MrbSym = C.MRB_SYM____oruby_dsym                            // "__oruby_dsym"
+	Sym___oruby_dsyms                           MrbSym = C.MRB_SYM____oruby_dsyms                           // "__oruby_dsyms"
 	Sym___oruby_enc_concat                      MrbSym = C.MRB_SYM____oruby_enc_concat                      // "__oruby_enc_concat"
 	Sym___oruby_enc_inspect                     MrbSym = C.MRB_SYM____oruby_enc_inspect                     // "__oruby_enc_inspect"
 	Sym___oruby_enc_length                      MrbSym = C.MRB_SYM____oruby_enc_length                      // "__oruby_enc_length"
@@ -820,6 +824,7 @@ const (
 	Sym_block_length                            MrbSym = C.MRB_SYM__block_length                            // "block_length"
 	Sym_blocks                                  MrbSym = C.MRB_SYM__blocks                                  // "blocks"
 	Sym_body                                    MrbSym = C.MRB_SYM__body                                    // "body"
+	Sym_break                                   MrbSym = C.MRB_SYM__break                                   // "break"
 	Sym_broadaddr                               MrbSym = C.MRB_SYM__broadaddr                               // "broadaddr"
 	Sym_broadcast                               MrbSym = C.MRB_SYM__broadcast                               // "broadcast"
 	Sym_bt                                      MrbSym = C.MRB_SYM__bt                                      // "bt"
@@ -836,6 +841,7 @@ const (
 	Sym_caller_locations                        MrbSym = C.MRB_SYM__caller_locations                        // "caller_locations"
 	Sym_capitalize                              MrbSym = C.MRB_SYM__capitalize                              // "capitalize"
 	Sym_captures                                MrbSym = C.MRB_SYM__captures                                // "captures"
+	Sym_catch                                   MrbSym = C.MRB_SYM__catch                                   // "catch"
 	Sym_cause                                   MrbSym = C.MRB_SYM__cause                                   // "cause"
 	Sym_center                                  MrbSym = C.MRB_SYM__center                                  // "center"
 	Sym_chars                                   MrbSym = C.MRB_SYM__chars                                   // "chars"

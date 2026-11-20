@@ -63,6 +63,8 @@ module Net
     include HTTPExceptions
   end
   HTTPServerException = HTTPClientException
+  # for backward compatibility (net-http: renamed in Ruby 2.6)
+  deprecate_constant(:HTTPServerException)
 
   class HTTPFatalError < ProtoFatalError
     include HTTPExceptions

@@ -85,6 +85,7 @@ extern void go_debug_line_hook(mrb_int idx, struct mrb_irep *irep, uint32_t pc_o
 
 void _orb_vm_poll(mrb_state *mrb);
 int _orb_vm_hooked(mrb_state *mrb);
+void _orb_bt_atexit(mrb_state *mrb, int on);
 
 static void injector(struct mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs) {
   mrb_int idx = _mrb_get_idx(mrb);

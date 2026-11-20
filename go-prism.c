@@ -19,7 +19,50 @@ typedef struct {
   bool relits;  /* regexp literals get a per-site object (ORB_REGEXP_LITERAL) */
   bool eval;    /* eval'd code: anonymous forwarding arguments are rewritten (ORB_ANON_ARG) */
   const pm_node_t *keep_re; /* the literal of a named-capture =~ (assigns locals) */
+  /* warnings MRI's compiler gives that Prism does not (ORB_PARSE_WARN) */
+  struct { int32_t s, e; const char *msg; int verbose; } xw[16];
+  int nxw;
+  const char *src;                 /* the source, the locations' base */
+  const pm_node_t *alias_dsym[8];  /* dsyms ORB_ALIAS/UNDEF_DYNAMIC render themselves */
+  int nalias_dsym;
 } orb_scan;
+
+static bool is_dsym(const pm_node_t *n);
+
+static void
+keep_dsym(orb_scan *sc, const pm_node_t *n)
+{
+  if (is_dsym(n) && sc->nalias_dsym < 8) sc->alias_dsym[sc->nalias_dsym++] = n;
+}
+
+static void
+compile_warn(orb_scan *sc, const pm_node_t *n, const char *msg, int verbose)
+{
+  if (sc->nxw >= 16) return;
+  sc->xw[sc->nxw].s = (int32_t)n->location.start;
+  sc->xw[sc->nxw].e = (int32_t)(n->location.start + n->location.length);
+  sc->xw[sc->nxw].msg = msg;
+  sc->xw[sc->nxw].verbose = verbose;
+  sc->nxw++;
+}
+
+/* a return with an argument at the top level of a file (not in a method,
+   block, lambda or class body): MRI ignores the argument and says so */
+static pm_visit_result_t
+toplevel_return_visit(const pm_node_t *node, void *data)
+{
+  switch (PM_NODE_TYPE(node)) {
+  case PM_DEF_NODE: case PM_BLOCK_NODE: case PM_LAMBDA_NODE:
+  case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE:
+    return PM_VISIT_SKIP;
+  case PM_RETURN_NODE:
+    if (((const pm_return_node_t *)node)->arguments)
+      compile_warn((orb_scan *)data, node, "argument of top-level return is ignored", 0);
+    return PM_VISIT_DESCEND;
+  default:
+    return PM_VISIT_DESCEND;
+  }
+}
 
 static orb_rec *
 add(orb_scan *sc, int kind)
@@ -265,6 +308,8 @@ visit(const pm_node_t *node, void *data)
     const pm_alias_method_node_t *a = (const pm_alias_method_node_t *)node;
     if (is_dsym(a->new_name) || is_dsym(a->old_name)) {
       r = add(sc, ORB_ALIAS_DYNAMIC);
+      keep_dsym(sc, a->new_name);
+      keep_dsym(sc, a->old_name);
       span(r, 0, node);
       span(r, 1, a->new_name);
       span(r, 2, a->old_name);
@@ -281,7 +326,21 @@ visit(const pm_node_t *node, void *data)
       for (size_t i = 0; i < u->names.size; i++) {
         orb_rec *nr = add(sc, ORB_LIST_ITEM);
         span(nr, 0, u->names.nodes[i]);
+        keep_dsym(sc, u->names.nodes[i]);
       }
+    }
+    break;
+  }
+  case PM_INTERPOLATED_SYMBOL_NODE: {
+    /* :"a#{x}": checked as String#to_sym (mruby's OP_INTERN takes any
+       bytes); a %I[] element is checked by its array */
+    const pm_interpolated_symbol_node_t *is = (const pm_interpolated_symbol_node_t *)node;
+    bool kept = false;
+    for (int i = 0; i < sc->nalias_dsym; i++) kept = kept || sc->alias_dsym[i] == node;
+    if (!kept && is->opening_loc.length == 2 && sc->src[is->opening_loc.start] == ':' && sc->src[is->opening_loc.start + 1] == '"' &&
+        is->closing_loc.length == 1) {
+      r = add(sc, ORB_DSYM);
+      span(r, 0, node);
     }
     break;
   }
@@ -389,6 +448,9 @@ visit(const pm_node_t *node, void *data)
       r->flags = PM_NODE_FLAG_P(node, PM_RANGE_FLAGS_EXCLUDE_END) ? 1 : 0;
       if (PM_NODE_TYPE(ff->left) == PM_INTEGER_NODE) r->flags |= 2;
       if (PM_NODE_TYPE(ff->right) == PM_INTEGER_NODE) r->flags |= 4;
+      /* one warning per Integer end, as MRI's */
+      if (r->flags & 2) compile_warn(sc, node, "integer literal in flip-flop", 1);
+      if (r->flags & 4) compile_warn(sc, node, "integer literal in flip-flop", 1);
       span(r, 0, node);
       span(r, 1, ff->left);
       span(r, 2, ff->right);
@@ -549,6 +611,18 @@ visit(const pm_node_t *node, void *data)
     // [a, k: v]: mruby's code generator drops a brace-less trailing Hash
     const pm_node_list_t *el = &((const pm_array_node_t *)node)->elements;
     anon_args(sc, el);
+    {
+      const pm_array_node_t *an = (const pm_array_node_t *)node;
+      bool interp = false;
+      for (size_t i = 0; i < el->size; i++) interp = interp || is_dsym(el->nodes[i]);
+      if (interp && an->opening_loc.length == 3 && sc->src[an->opening_loc.start] == '%' && sc->src[an->opening_loc.start + 1] == 'I') {
+        r = add(sc, ORB_DSYM);
+        r->flags = 1;
+        span(r, 0, node);
+        r->s[1] = (int32_t)an->opening_loc.start;
+        r->e[1] = r->s[1] + 2;
+      }
+    }
     if (el->size > 0 && PM_NODE_TYPE(el->nodes[el->size - 1]) == PM_KEYWORD_HASH_NODE) {
       const pm_keyword_hash_node_t *kh = (const pm_keyword_hash_node_t *)el->nodes[el->size - 1];
       r = add(sc, ORB_ARRAY_KWHASH);
@@ -736,11 +810,13 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
   sc.frozen = pm_parser_frozen_string_literal(parser) > 0;
   sc.relits = !(opts && opts->no_regexp_literals);
   sc.eval = eval_src;
+  sc.src = src;
   {
     const char *en = pm_parser_encoding_name(parser);
     sc.nonutf8 = en && strcmp(en, "UTF-8") != 0;
   }
   if (root && *errors == 0) pm_visit_node(root, visit, &sc);
+  if (root && *errors == 0 && !sc.eval) pm_visit_node(root, toplevel_return_visit, &sc);
   /* the parse warnings MRI prints (mruby's compiler prints none), for
      prism.go to have the program print them as it starts: their texts in
      *msgs, NUL separated, one ORB_PARSE_WARN each */
@@ -756,6 +832,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
       if (strcmp(ty, "duplicated_hash_key") == 0) verbose = 0;
       else if (strcmp(ty, "duplicated_when_clause") == 0) verbose = 1;
       else if (strcmp(ty, "void_statement") == 0) verbose = 1;
+      else if (strcmp(ty, "ignored_frozen_string_literal") == 0) verbose = 1;
       else continue;
       const char *m = pm_diagnostic_message(w);
       size_t ml = strlen(m);
@@ -771,6 +848,21 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
       r->s[1] = (int32_t)loc.start;
       r->e[1] = (int32_t)(loc.start + loc.length);
       r->flags = verbose;
+    }
+    for (int i = 0; i < sc.nxw && first >= 0; i++) {
+      const char *m = sc.xw[i].msg;
+      size_t ml = strlen(m);
+      char *nb = (char *)realloc(mbuf, mlen + ml + 1);
+      if (!nb) break;
+      mbuf = nb;
+      memcpy(mbuf + mlen, m, ml + 1);
+      mlen += ml + 1;
+      orb_rec *r = add(&sc, ORB_PARSE_WARN);
+      if (!r) break;
+      r->s[0] = r->e[0] = first;
+      r->s[1] = sc.xw[i].s;
+      r->e[1] = sc.xw[i].e;
+      r->flags = sc.xw[i].verbose;
     }
     *msgs = mbuf;
   }

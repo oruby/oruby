@@ -349,12 +349,17 @@ func (s *streamReader) AtEOF() (bool, error) {
 	return false, nil
 }
 
-// mapReadErr: a descriptor not open for reading is MRI's IOError
+// mapReadErr: a descriptor not open for reading is MRI's IOError; one
+// closed while the read waited (a closed stream is refused before it
+// starts) is MRI's IOError for a close in another thread
 func mapReadErr(err error) error {
 	if err == nil || errors.Is(err, io.EOF) {
 		return err
 	}
-	if errors.Is(err, syscall.EBADF) || errors.Is(err, os.ErrClosed) {
+	if errors.Is(err, os.ErrClosed) {
+		return oruby.EError("IOError", "stream closed in another thread")
+	}
+	if errors.Is(err, syscall.EBADF) {
 		return oruby.EError("IOError", "not opened for reading")
 	}
 	return err

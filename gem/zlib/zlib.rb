@@ -73,12 +73,22 @@ module Zlib
 
   def self.adler32(str = nil, adler = 1)
     return adler if str.nil?
-    __adler32(__str(str), adler)
+    __adler32(__str(str), __ulong(adler))
   end
 
   def self.crc32(str = nil, crc = 0)
     return crc if str.nil?
-    __crc32(__str(str), crc)
+    __crc32(__str(str), __ulong(crc))
+  end
+
+  # NUM2ULONG: a negative value wraps, one past unsigned long is a
+  # RangeError; the checksums use its low 32 bits
+  def self.__ulong(v)
+    v = Kernel.__to_int(v) unless Integer === v
+    if v >= 2**64 || v < -2**63
+      raise RangeError, "integer #{v} too big to convert to 'unsigned long'"
+    end
+    v & 0xFFFFFFFF
   end
 
   class ZStream
@@ -547,8 +557,13 @@ module Zlib
 
     def initialize(io, external_encoding: nil, internal_encoding: nil, encoding: nil, **opts)
       @io = io
-      raw = io.read
-      raw = "".b if raw.nil?
+      @io_start = (io.pos rescue nil) if io.respond_to?(:pos)
+      # read in pieces, as MRI's gzfile_read_more
+      raw = "".b
+      while (chunk = io.read(2048))
+        break if chunk.empty?
+        raw << chunk
+      end
       data, @orig_name, @comment, @mtime, @os_code, @unused, @xfl = Zlib.__gunzip(raw)
       @level = case @xfl
                when 2 then BEST_COMPRESSION
@@ -561,6 +576,7 @@ module Zlib
       @external_encoding = enc || Encoding.default_external
       @buf = Zlib.__sio(data.dup.force_encoding(@external_encoding))
       @lineno = 0
+      @pos_adj = 0  # bytes pushed back before the start: pos goes negative
     end
 
     attr_reader :unused
@@ -671,14 +687,22 @@ module Zlib
 
     def ungetc(c)
       __check_closed
+      n = Integer === c ? c.chr(@external_encoding).bytesize : c.to_s.bytesize
+      __unget_adjust(n)
       @buf.ungetc(c)
       nil
     end
 
     def ungetbyte(b)
       __check_closed
+      __unget_adjust(Integer === b ? 1 : b.to_s.bytesize) unless b.nil?
       @buf.ungetbyte(b)
       nil
+    end
+
+    private def __unget_adjust(n)
+      before = @buf.pos
+      @pos_adj += n - before if n > before
     end
 
     def eof?
@@ -688,13 +712,16 @@ module Zlib
     alias eof eof?
 
     def pos
-      @buf.pos
+      @buf.pos - @pos_adj
     end
     alias tell pos
 
     def rewind
       __check_closed
-      @buf.rewind
+      # MRI seeks the IO back to where the gzip data started
+      @io.seek(@io_start || 0, IO::SEEK_SET) if @io.respond_to?(:seek)
+      @buf = Zlib.__sio(@__data.dup.force_encoding(@external_encoding))
+      @pos_adj = 0
       @lineno = 0
       0
     end

@@ -252,8 +252,9 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	// "**": **obj (ORB_KWSPLAT)
 	// "|", "->": block and lambda parameters (ORB_BLOCK_PARAMS)
 	// "when", "defined?": parse warnings (ORB_PARSE_WARN)
+	// ":\"", "%I": interpolated symbols (ORB_DSYM)
 	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
-		"__ENCODING__", "frozen_string_literal", "coding", "when", "defined?"} {
+		"__ENCODING__", "frozen_string_literal", "coding", "when", "defined?", ":\"", "%I"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
 		}
@@ -654,6 +655,17 @@ func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 		case C.ORB_WHEN_SPLAT:
 			// case / when *x: ([*x].any?)
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "([" }, func(*rewriter) string { return "].any?)" })
+		case C.ORB_DSYM:
+			// :"a#{x}" -> ::Kernel.__oruby_dsym("a#{x}"); %I[..] ->
+			// ::Kernel.__oruby_dsyms(%W[..]): the names checked as
+			// String#to_sym does (go-mrb.c)
+			if rc.flags&1 != 0 {
+				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_dsyms(" }, func(*rewriter) string { return ")" })
+				r.add(s[1], e[1], func(*rewriter) string { return "%W" })
+			} else {
+				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_dsym(" }, func(*rewriter) string { return ")" })
+				r.add(s[0], s[0]+1, func(*rewriter) string { return "" })
+			}
 		case C.ORB_PAT_LAMBDA:
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "^(" }, func(*rewriter) string { return ")" })
 		case C.ORB_PAT_ANON_REST:

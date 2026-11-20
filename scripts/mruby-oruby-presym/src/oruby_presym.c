@@ -102,6 +102,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@closed");
   (void)mrb_intern_lit(mrb, "@dstaddr");
   (void)mrb_intern_lit(mrb, "@encoding");
+  (void)mrb_intern_lit(mrb, "@exit_value");
   (void)mrb_intern_lit(mrb, "@external_encoding");
   (void)mrb_intern_lit(mrb, "@filename");
   (void)mrb_intern_lit(mrb, "@flags");
@@ -118,6 +119,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@path");
   (void)mrb_intern_lit(mrb, "@pos");
   (void)mrb_intern_lit(mrb, "@public_key");
+  (void)mrb_intern_lit(mrb, "@reason");
   (void)mrb_intern_lit(mrb, "@receiver");
   (void)mrb_intern_lit(mrb, "@regexp");
   (void)mrb_intern_lit(mrb, "@safe_level");
@@ -496,6 +498,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_dec_round");
   (void)mrb_intern_lit(mrb, "__oruby_deliver__");
   (void)mrb_intern_lit(mrb, "__oruby_dstr_enc");
+  (void)mrb_intern_lit(mrb, "__oruby_dsym");
+  (void)mrb_intern_lit(mrb, "__oruby_dsyms");
   (void)mrb_intern_lit(mrb, "__oruby_enc_concat");
   (void)mrb_intern_lit(mrb, "__oruby_enc_inspect");
   (void)mrb_intern_lit(mrb, "__oruby_enc_length");
@@ -737,6 +741,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "blockdev?");
   (void)mrb_intern_lit(mrb, "blocks");
   (void)mrb_intern_lit(mrb, "body");
+  (void)mrb_intern_lit(mrb, "break");
   (void)mrb_intern_lit(mrb, "broadaddr");
   (void)mrb_intern_lit(mrb, "broadcast");
   (void)mrb_intern_lit(mrb, "bt");
@@ -754,6 +759,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "capitalize");
   (void)mrb_intern_lit(mrb, "captures");
   (void)mrb_intern_lit(mrb, "casefold?");
+  (void)mrb_intern_lit(mrb, "catch");
   (void)mrb_intern_lit(mrb, "cause");
   (void)mrb_intern_lit(mrb, "center");
   (void)mrb_intern_lit(mrb, "chardev?");

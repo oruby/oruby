@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/internal/rb"
@@ -544,7 +545,14 @@ func platformUpdateState(lastState *status, sysState interface{}) {
 }
 
 func platformKill(pid, sig int) error {
-	return syscall.Kill(pid, syscall.Signal(sig))
+	err := syscall.Kill(pid, syscall.Signal(sig))
+	// a SIGKILL sent to this process: kill(2) delivers it before it returns
+	// to a single-threaded caller, here another thread may take it, so wait
+	// for it rather than run on (Process.kill(:KILL, $$); exit(42))
+	if err == nil && syscall.Signal(sig) == syscall.SIGKILL && (pid == os.Getpid() || pid == 0 || pid == -syscall.Getpgrp()) {
+		time.Sleep(time.Second)
+	}
+	return err
 }
 
 // platformSelfTarget: kill(2) to pid reaches this process

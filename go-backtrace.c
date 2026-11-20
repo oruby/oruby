@@ -205,6 +205,16 @@ static void bt_label(mrb_state *mrb, mrb_callinfo *cibase, ptrdiff_t i, bt_frame
   f->owner = bt_owner(f->owner);
 }
 
+/* the state whose at_exit handlers run after its program ended (goprint.go) */
+static mrb_state *bt_atexit_mrb = NULL;
+
+/* on: the handlers start with the stack at its base (after the program,
+   not inside Kernel#exit); off: they are done */
+void _orb_bt_atexit(mrb_state *mrb, int on) {
+  if (!on) { if (bt_atexit_mrb == mrb) bt_atexit_mrb = NULL; return; }
+  if (mrb->c == mrb->root_c && mrb->c->ci == mrb->c->cibase) bt_atexit_mrb = mrb;
+}
+
 /* The frames from ci index top down; *rawp is the number of frames mruby's
    packed backtrace has for the same stack. The owners are kept in owners. */
 static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value owners) {
@@ -227,6 +237,9 @@ static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value 
     ptrdiff_t at;
 
     memset(&f, 0, sizeof(f));
+    /* the main script has ended when at_exit handlers run: its frame,
+       still the base one, is not shown (MRI's handlers have none below) */
+    if (i == 0 && bt_atexit_mrb == mrb) continue;
     if (ci->proc && !MRB_PROC_CFUNC_P(ci->proc)) {
       if (!pos[i].valid) continue;
       raw++;

@@ -410,6 +410,8 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, "&)") ||
           /* parse warnings (ORB_PARSE_WARN) */
           src_contains(s, len, "when") || src_contains(s, len, "defined?") ||
+          /* an interpolated symbol (ORB_DSYM) */
+          src_contains(s, len, ":\"") || src_contains(s, len, "%I") ||
           src_bare_it(s, len) || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
@@ -1495,6 +1497,16 @@ static mrb_value mod_const_location_m(mrb_state *mrb, mrb_value mod) {
 void mrb_const_cache_clear(mrb_state *mrb);  /* variable.c */
 static mrb_func_t remove_const_orig;
 static mrb_value remove_const_w(mrb_state *mrb, mrb_value mod) {
+  /* a deprecated one warns as when read (MRI's rb_const_remove); mruby's
+     read gives the warning with the caller's location */
+  if (mrb_get_argc(mrb) >= 1 && (mrb_type(mod) == MRB_TT_CLASS || mrb_type(mod) == MRB_TT_MODULE)) {
+    mrb_value n = mrb_get_argv(mrb)[0];
+    mrb_sym sym = mrb_symbol_p(n) ? mrb_symbol(n) : 0;
+    if (mrb_string_p(n)) sym = mrb_intern_check_str(mrb, n);
+    if (sym && (mrb_const_flags(mrb, mrb_class_ptr(mod), sym) & MRB_CONST_DEPRECATED) &&
+        mrb_const_defined_at(mrb, mod, sym))
+      (void)mrb_const_get(mrb, mod, sym);
+  }
   mrb_value v = remove_const_orig(mrb, mod);
   mrb_const_cache_clear(mrb);
   mrb_value h = mrb_iv_get(mrb, mod, MRB_SYM(__oruby_csl));
@@ -2640,6 +2652,35 @@ static void kw_error_fix(mrb_state *mrb, struct RObject *exc, mrb_bool missing) 
 }
 
 void _orb_frozen_fix(mrb_state *mrb, struct RObject *exc) {
+  if (exc->c == E_NOMETHOD_ERROR) {
+    /* catch without a block: mruby's (bytecode, so no C pre-check) calls
+       nil; MRI's LocalJumpError */
+    mrb_callinfo *ci = mrb->c->ci;
+    if (ci > mrb->c->cibase && ci->mid != MRB_SYM(catch)) ci--;  /* the method_missing frame */
+    if (ci->mid == MRB_SYM(catch) && ci->proc && !MRB_PROC_CFUNC_P(ci->proc) && !ci->blk) {
+      mrb_value mesg = mrb_exc_mesg_get(mrb, (struct RException*)exc);
+      if (mesg_prefix(mesg, "undefined method 'call' for NilClass")) {
+        exc->c = E_LOCALJUMP_ERROR;
+        mrb_exc_mesg_set(mrb, (struct RException*)exc, mrb_str_new_lit(mrb, "no block given"));
+        return;
+      }
+    }
+  }
+  if (exc->c == E_LOCALJUMP_ERROR) {
+    /* LocalJumpError#exit_value: the value of the return / break the VM
+       refused, read from the instruction's register (OP_RETURN_BLK a,
+       OP_BREAK a) */
+    mrb_callinfo *ci = mrb->c->ci;
+    if (ci->proc && !MRB_PROC_CFUNC_P(ci->proc) && ci->pc && ci->stack) {
+      const mrb_code *pc = ci->pc;
+      const mrb_irep *irep = ci->proc->body.irep;
+      if (pc - irep->iseq >= 2 && (pc[-2] == OP_RETURN_BLK || pc[-2] == OP_BREAK) && pc[-1] < irep->nregs) {
+        mrb_obj_iv_set(mrb, exc, MRB_IVSYM(exit_value), ci->stack[pc[-1]]);
+        if (pc[-2] == OP_BREAK) mrb_obj_iv_set(mrb, exc, MRB_IVSYM(reason), mrb_symbol_value(MRB_SYM(break)));
+      }
+    }
+    return;
+  }
   if (exc->c == E_ARGUMENT_ERROR) {
     /* an @ivar set on an immediate (instance_eval { @a = 1 } on nil): MRI's
        FrozenError, the receiver found as for one (below) */
@@ -2824,6 +2865,7 @@ enum chk_kind {
   CHK_ARY_INSPECT,  /* [].inspect is US-ASCII */
   CHK_BINDING_SELF, /* Kernel#binding: self is the caller's, not the receiver */
   CHK_SCLASS_FSTR,  /* singleton_class of a deduplicated String (-"str"): TypeError */
+  CHK_NAME_BYTES,   /* alias_method: a String name's bytes valid, as String#to_sym */
   CHK_STR_TO_SYM,   /* String#to_sym of broken UTF-8: EncodingError */
   CHK_STR_INSPECT,  /* String#inspect: \u for Unicode controls; a tagged one in Ruby */
   CHK_ASCII_COMPAT, /* String#to_f / #to_c: an ASCII-incompatible string raises */
@@ -2872,6 +2914,7 @@ static struct chk_def chk_defs[] = {
   {7, "inspect", CHK_ARY_INSPECT, NULL, NULL},
   {0, "binding", CHK_BINDING_SELF, NULL, NULL},
   {0, "singleton_class", CHK_SCLASS_FSTR, NULL, NULL},
+  {2, "alias_method", CHK_NAME_BYTES, NULL, NULL},
   {8, "binding", CHK_BINDING_SELF, NULL, NULL},
   {6, "to_sym", CHK_STR_TO_SYM, NULL, NULL},
   {6, "inspect", CHK_STR_INSPECT, NULL, NULL},
@@ -2972,7 +3015,39 @@ static mrb_value str_inspect_unicode(mrb_state *mrb, mrb_value r) {
 }
 
 /* "#<Class:0x... @a=1, @b=2>" of the ivars names lists (all when nil) */
+/* the objects whose ivars are being inspected: one seen again is "..." */
+#define OBJ_INSPECT_MAX 64
+static struct { mrb_state *mrb; struct RBasic *o; } obj_inspect_stack[OBJ_INSPECT_MAX];
+static int obj_inspect_depth;
+
+static mrb_value obj_inspect_ivars_body(mrb_state *mrb, mrb_value obj, mrb_value names);
+static mrb_value obj_inspect_ivars_protected(mrb_state *mrb, void *p) {
+  mrb_value *a = (mrb_value *)p;
+  return obj_inspect_ivars_body(mrb, a[0], a[1]);
+}
+
 static mrb_value obj_inspect_ivars(mrb_state *mrb, mrb_value obj, mrb_value names) {
+  for (int i = 0; i < obj_inspect_depth; i++) {
+    if (obj_inspect_stack[i].mrb == mrb && obj_inspect_stack[i].o == mrb_basic_ptr(obj)) {
+      mrb_value s = mrb_any_to_s(mrb, obj);
+      mrb_str_resize(mrb, s, RSTRING_LEN(s) - 1);
+      mrb_str_cat_lit(mrb, s, " ...>");
+      return s;
+    }
+  }
+  if (obj_inspect_depth >= OBJ_INSPECT_MAX) return obj_inspect_ivars_body(mrb, obj, names);
+  int d = obj_inspect_depth++;
+  obj_inspect_stack[d].mrb = mrb;
+  obj_inspect_stack[d].o = mrb_basic_ptr(obj);
+  mrb_value args[2] = {obj, names};
+  mrb_bool err = FALSE;
+  mrb_value r = mrb_protect_error(mrb, obj_inspect_ivars_protected, args, &err);
+  obj_inspect_depth = d;
+  if (err) mrb_exc_raise(mrb, r);
+  return r;
+}
+
+static mrb_value obj_inspect_ivars_body(mrb_state *mrb, mrb_value obj, mrb_value names) {
   mrb_value s = mrb_any_to_s(mrb, obj);
   if (mrb_nil_p(names)) names = mrb_obj_instance_variables(mrb, obj);
   mrb_str_resize(mrb, s, RSTRING_LEN(s) - 1);  /* the closing ">" */
@@ -3174,6 +3249,14 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
       mrb_iv_set(mrb, b, MRB_SYM(recv), ci[-1].stack[0]);
     return b;
   }
+  case CHK_NAME_BYTES:
+    for (mrb_int k = 0; k < mrb_get_argc(mrb); k++) {
+      mrb_value a = mrb_get_argv(mrb)[k];
+      if (mrb_string_p(a) && !RSTR_BINARY_P(mrb_str_ptr(a)) &&
+          !utf8_valid((const unsigned char *)RSTRING_PTR(a), RSTRING_LEN(a)))
+        mrb_raisef(mrb, mrb_exc_get_id(mrb, MRB_SYM(EncodingError)), "invalid symbol in encoding UTF-8 :%v", mrb_inspect(mrb, a));
+    }
+    break;
   case CHK_SCLASS_FSTR:
     if (mrb_string_p(self) && mrb_frozen_p(mrb_basic_ptr(self))) {
       /* String#-@'s table (27_string.rb): encoding => {str => fstr} */
@@ -3280,9 +3363,12 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
       if (mrb_array_p(names)) return obj_inspect_ivars(mrb, self, names);
       break;
     }
-    /* a BasicObject (no #to_s at all) shows its ivars too */
+    /* an object with ivars shows them as MRI's: whatever its #to_s (mruby's
+       shows them only for the basic one), a BasicObject's too, and one seen
+       again as "#<C:0x... ...>" (mruby's leaves "-<C" there) */
     owner = c;
-    if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(to_s))))
+    if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &owner, MRB_SYM(to_s))) ||
+        RARRAY_LEN(mrb_obj_instance_variables(mrb, self)) > 0)
       return obj_inspect_ivars(mrb, self, mrb_nil_value());
     break;
   }
@@ -3627,8 +3713,31 @@ static mrb_value k_fwd_m(mrb_state *mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+/* a symbol from a String's bytes, which a UTF-8 string must have valid, as
+   String#to_sym (CHK_STR_TO_SYM) */
+static mrb_value str_checked_intern(mrb_state *mrb, mrb_value s) {
+  if (!mrb_string_p(s)) return mrb_funcall_id(mrb, s, MRB_SYM(to_sym), 0);
+  if (!RSTR_BINARY_P(mrb_str_ptr(s)) && !utf8_valid((const unsigned char *)RSTRING_PTR(s), RSTRING_LEN(s)))
+    mrb_raisef(mrb, mrb_exc_get_id(mrb, MRB_SYM(EncodingError)), "invalid symbol in encoding UTF-8 :%v", mrb_inspect(mrb, s));
+  return mrb_symbol_value(mrb_intern_str(mrb, s));
+}
+
+/* Kernel.__oruby_dsym(str), .__oruby_dsyms(ary): :"a#{x}" and %I[] (prism.go
+   ORB_DSYM) */
+static mrb_value k_dsym_m(mrb_state *mrb, mrb_value self) {
+  return str_checked_intern(mrb, mrb_get_arg1(mrb));
+}
+static mrb_value k_dsyms_m(mrb_state *mrb, mrb_value self) {
+  mrb_value a = mrb_get_arg1(mrb);
+  if (!mrb_array_p(a)) return a;
+  for (mrb_int i = 0; i < RARRAY_LEN(a); i++) mrb_ary_set(mrb, a, i, str_checked_intern(mrb, RARRAY_PTR(a)[i]));
+  return a;
+}
+
 static void install_method_identity(mrb_state *mrb) {
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_fwd), k_fwd_m, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_dsym), k_dsym_m, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_dsyms), k_dsyms_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_own_hook), k_own_hook_p, MRB_ARGS_REQ(2));
   if (mrb_class_defined_id(mrb, MRB_SYM(Method))) {
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Method)), MRB_SYM(super_method), meth_super_method_m, MRB_ARGS_NONE());

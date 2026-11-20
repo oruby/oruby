@@ -41,6 +41,7 @@ enum {
   ORB_PAT_ANON_REST,      // s0: ", **" ending a hash pattern with keys: dropped (deconstruct_keys gets the keys, as MRI's)
   ORB_CASE_IN_KEY,        // s0: a key of the one Hash pattern of a case/in without else, s1: that case's end (ORB_CASE_IN)
   ORB_WHEN_SPLAT,         // s0: the *x of a when in a case without a subject: true when an element is (mruby tests the Array)
+  ORB_DSYM,               // s0: an interpolated :"…" (s1 its ':'), flags 1: a %I[] (s1 its "%I"): names checked as String#to_sym does
   ORB_ANON_ARG,           // s0: an anonymous *, **, & or ... argument in eval'd code; flags 1 rest, 2 keywords, 3 block, 4 all
 };
 
