@@ -103,8 +103,7 @@ class Random
           first + __random_float * (last - first)
         end
       else
-        raise ArgumentError, "invalid argument - #{n.inspect}" unless lenient
-        __random_float
+        raise ArgumentError, "invalid argument - #{n.inspect}"
       end
     end
   end

@@ -671,7 +671,7 @@ class StringIO
         end
       end
       s = obj.nil? ? "" : obj.to_s
-      s = s.is_a?(String) ? s : obj.inspect
+      s = s.is_a?(String) ? s : ::Kernel.instance_method(:to_s).bind_call(obj)
       __write(s)
       __write("\n") unless s.end_with?("\n")
     end

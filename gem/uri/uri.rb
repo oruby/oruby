@@ -534,6 +534,8 @@ module URI
       raise BadURIError, "relative URI: #{oth}" if oth.relative?
       return dup if scheme != oth.scheme
       if userinfo != oth.userinfo || host&.downcase != oth.host&.downcase || port != oth.port
+        return dup if userinfo.nil? && host.nil?
+
         rel = Generic.new(nil, userinfo, host, port == default_port ? nil : port, nil, path, opaque, query, fragment)
         return rel
       end
@@ -557,6 +559,8 @@ module URI
 
     def route_from_path(src, dst)
       return "" if src == dst
+      return dst.dup if %r{(?:\A|/)\.\.?(?:/|\z)}.match?(dst)
+
       src_path = src.split("/", -1)
       dst_path = dst.split("/", -1)
       src_path.pop
