@@ -44,7 +44,17 @@ type translation struct {
 // TranslateFull converts a Ruby pattern to regexp2 (.NET) syntax for the full
 // regexp engine. named reports whether the pattern defines named groups.
 func TranslateFull(source string, options int) (pattern string, named bool, err error) {
-	tr, err := translate(source, options, targetFull)
+	return translateFull(source, options, `\G`)
+}
+
+// TranslateFullAtEndDistance fixes \G at a position the given number of
+// characters from the end of the haystack, independently of the search start.
+func TranslateFullAtEndDistance(source string, options, remaining int) (pattern string, named bool, err error) {
+	return translateFull(source, options, `(?=[\s\S]{`+strconv.Itoa(remaining)+`}\z)`)
+}
+
+func translateFull(source string, options int, startAnchor string) (string, bool, error) {
+	tr, err := translateWithStartAnchor(source, options, targetFull, startAnchor)
 	if err != nil {
 		return "", false, err
 	}
@@ -52,6 +62,10 @@ func TranslateFull(source string, options int) (pattern string, named bool, err 
 }
 
 func translate(source string, options int, t target) (translation, error) {
+	return translateWithStartAnchor(source, options, t, `\G`)
+}
+
+func translateWithStartAnchor(source string, options int, t target, startAnchor string) (translation, error) {
 	if strings.Contains(source, `\g`) {
 		expanded, err := expandCalls(source, options&Extended != 0)
 		if err != nil {
@@ -59,7 +73,7 @@ func translate(source string, options int, t target) (translation, error) {
 		}
 		source = expanded
 	}
-	tr := &translator{src: source, t: t, x: options&Extended != 0, lastAtom: -1, named: hasNamedGroups(source)}
+	tr := &translator{src: source, t: t, x: options&Extended != 0, lastAtom: -1, named: hasNamedGroups(source), startAnchor: startAnchor}
 	if err := tr.run(); err != nil {
 		return translation{}, err
 	}
@@ -80,19 +94,20 @@ type groupFrame struct {
 }
 
 type translator struct {
-	src      string
-	i        int
-	t        target
-	out      strings.Builder
-	x        bool
-	stack    []groupFrame
-	named    bool
-	ctx      bool
-	ncap     int
-	lastAtom int  // out offset of the last atom; -1 if none
-	quant    bool // last token was a quantifier
-	keep     bool // \K seen at top level
-	topAlt   bool // top-level | seen
+	src         string
+	startAnchor string
+	i           int
+	t           target
+	out         strings.Builder
+	x           bool
+	stack       []groupFrame
+	named       bool
+	ctx         bool
+	ncap        int
+	lastAtom    int  // out offset of the last atom; -1 if none
+	quant       bool // last token was a quantifier
+	keep        bool // \K seen at top level
+	topAlt      bool // top-level | seen
 }
 
 func (tr *translator) errorf(format string, args ...interface{}) error {
@@ -503,7 +518,7 @@ func (tr *translator) escape() error {
 			return err
 		}
 		tr.ctx = true
-		tr.assertion(`\G`)
+		tr.assertion(tr.startAnchor)
 	case 'K':
 		if err := tr.full(`\K`); err != nil {
 			return err

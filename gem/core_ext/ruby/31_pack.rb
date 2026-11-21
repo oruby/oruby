@@ -14,19 +14,6 @@ module Kernel
       end
     end
 
-    # the strings 'p'/'P' pointers in a packed string point to, as MRI
-    # associates them with the string (held for the life of the process)
-    def __pack_associate(str, targets)
-      t = instance_variable_get(:@__oruby_pack_ptrs) || instance_variable_set(:@__oruby_pack_ptrs, {}.compare_by_identity)
-      (t[str] ||= []).concat(targets)
-      nil
-    end
-
-    def __pack_associated(str)
-      t = instance_variable_get(:@__oruby_pack_ptrs)
-      t && t[str]
-    end
-
     # 'M' packs obj.to_s
     def __pack_to_s(obj)
       s = obj.to_s

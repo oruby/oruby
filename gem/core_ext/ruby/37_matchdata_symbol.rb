@@ -323,23 +323,15 @@ class String
       next false if s.bytesize > bytesize
       start = bytesize - s.bytesize
       next false unless byteslice(start, s.bytesize).b == s.b
-      if !ascii_only? && encoding == Encoding::UTF_8
-        pos = 0
-        ok = (start == 0)
-        unless ok
-          each_char do |c|
-            pos += c.bytesize
-            if pos == start
-              ok = true
-              break
-            end
-            break if pos > start
-          end
-        end
-        ok
-      else
-        true
+      next true if start == 0
+      enc = encoding
+      next true if enc == Encoding::BINARY || (enc.ascii_compatible? && ascii_only?)
+      pos = 0
+      each_char do |c|
+        pos += c.bytesize
+        break if pos >= start
       end
+      pos == start
     end
   end
 end

@@ -1097,8 +1097,22 @@ func reverseSearch(mrb *oruby.MrbState, self oruby.Value, old string, bytes bool
 			pos = b
 		}
 	}
+	find := re.findErr
+	// Each candidate moves backwards, while \G stays at the given offset.
+	if engine, ok := re.engine.(interface {
+		WithSearchOrigin(string, int) (Engine, error)
+	}); ok && strings.Contains(re.source, `\G`) {
+		if pos < len(s) && !utf8.RuneStart(s[pos]) {
+			return mrb.Raisef(mrb.EIndexError(), "offset %d does not land on character boundary", pos)
+		}
+		fixed, err := engine.WithSearchOrigin(s, pos)
+		if err != nil {
+			return raiseRegexpError(mrb, err)
+		}
+		find = fixed.FindAt
+	}
 	for p := pos; p >= 0; {
-		m, err := re.findErr(s, p)
+		m, err := find(s, p)
 		if err != nil {
 			return raiseTimeout(mrb, err)
 		}

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dlclark/regexp2/v2"
 	rx "github.com/oruby/oruby/gem/regexp"
@@ -32,8 +33,10 @@ func init() {
 }
 
 type engine struct {
-	re    *regexp2.Regexp
-	names []string // index = Ruby group number
+	re      *regexp2.Regexp
+	names   []string // index = Ruby group number
+	source  string
+	options int
 }
 
 func compile(source string, options int) (rx.Engine, error) {
@@ -41,6 +44,10 @@ func compile(source string, options int) (rx.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	return compilePattern(source, options, pattern, named)
+}
+
+func compilePattern(source string, options int, pattern string, named bool) (*engine, error) {
 	opts := regexp2.None
 	if named {
 		// with named groups, Ruby's plain (...) do not capture
@@ -64,7 +71,20 @@ func compile(source string, options int) (rx.Engine, error) {
 			names[i] = name
 		}
 	}
-	return &engine{re: re, names: names}, nil
+	return &engine{re: re, names: names, source: source, options: options}, nil
+}
+
+func (e *engine) WithSearchOrigin(s string, pos int) (rx.Engine, error) {
+	pattern, named, err := rx.TranslateFullAtEndDistance(e.source, e.options, utf8.RuneCountInString(s[pos:]))
+	if err != nil {
+		return nil, err
+	}
+	fixed, err := compilePattern(e.source, e.options, pattern, named)
+	if err != nil {
+		return nil, err
+	}
+	fixed.re.MatchTimeout = e.re.MatchTimeout
+	return fixed, nil
 }
 
 func (e *engine) NumSubexp() int        { return len(e.names) - 1 }

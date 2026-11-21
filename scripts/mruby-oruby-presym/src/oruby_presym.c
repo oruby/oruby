@@ -570,6 +570,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_own_hook?");
   (void)mrb_intern_lit(mrb, "__oruby_owner");
   (void)mrb_intern_lit(mrb, "__oruby_pack");
+  (void)mrb_intern_lit(mrb, "__oruby_pack_ptrs");
   (void)mrb_intern_lit(mrb, "__oruby_params");
   (void)mrb_intern_lit(mrb, "__oruby_pipe_fds");
   (void)mrb_intern_lit(mrb, "__oruby_pname");
@@ -606,6 +607,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_slow_join");
   (void)mrb_intern_lit(mrb, "__oruby_slow_new");
   (void)mrb_intern_lit(mrb, "__oruby_slow_to_proc");
+  (void)mrb_intern_lit(mrb, "__oruby_source_paths");
   (void)mrb_intern_lit(mrb, "__oruby_space");
   (void)mrb_intern_lit(mrb, "__oruby_start");
   (void)mrb_intern_lit(mrb, "__oruby_started");

@@ -532,11 +532,23 @@ func (p packer) packIt(fmtStr string, ary, buffer oruby.Value) oruby.Value {
 		}
 	}
 	if len(assoc) > 0 {
-		list := mrb.AryNew()
-		for _, a := range assoc {
-			mrb.AryPush(list, a)
+		// String copies inherit hidden instance variables. Replace the list
+		// when a buffer is reused so its previous copies retain their own list.
+		previous := mrb.IVGet(out, oruby.Sym___oruby_pack_ptrs)
+		capacity := len(assoc)
+		if previous.IsArray() {
+			capacity += oruby.RArrayLen(previous)
 		}
-		p.kernel("__pack_associate", out, list.Value())
+		list := mrb.AryNewCapa(capacity)
+		if previous.IsArray() {
+			mrb.AryConcat(list, previous)
+		}
+		for _, target := range assoc {
+			mrb.AryPush(list, target)
+		}
+		if err := mrb.IVSet(out, oruby.Sym___oruby_pack_ptrs, list); err != nil {
+			return mrb.RaiseError(err)
+		}
 	}
 	return out
 }
@@ -995,7 +1007,7 @@ func (p packer) unpackIt(self oruby.Value, fmtStr string, offset int, first bool
 }
 
 func (p packer) pointerTarget(self oruby.Value, addr uint64) (oruby.Value, bool) {
-	list := p.kernel("__pack_associated", self)
+	list := p.mrb.IVGet(self, oruby.Sym___oruby_pack_ptrs)
 	if !list.IsArray() {
 		return list, false
 	}

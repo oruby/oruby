@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "d59514079a87504a"
+const presymTable = "9c40f6c07e367c9f"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -668,6 +668,7 @@ const (
 	Sym___oruby_os__                            MrbSym = C.MRB_SYM____oruby_os__                            // "__oruby_os__"
 	Sym___oruby_owner                           MrbSym = C.MRB_SYM____oruby_owner                           // "__oruby_owner"
 	Sym___oruby_pack                            MrbSym = C.MRB_SYM____oruby_pack                            // "__oruby_pack"
+	Sym___oruby_pack_ptrs                       MrbSym = C.MRB_SYM____oruby_pack_ptrs                       // "__oruby_pack_ptrs"
 	Sym___oruby_params                          MrbSym = C.MRB_SYM____oruby_params                          // "__oruby_params"
 	Sym___oruby_pipe_fds                        MrbSym = C.MRB_SYM____oruby_pipe_fds                        // "__oruby_pipe_fds"
 	Sym___oruby_pname                           MrbSym = C.MRB_SYM____oruby_pname                           // "__oruby_pname"
@@ -702,6 +703,7 @@ const (
 	Sym___oruby_slow_join                       MrbSym = C.MRB_SYM____oruby_slow_join                       // "__oruby_slow_join"
 	Sym___oruby_slow_new                        MrbSym = C.MRB_SYM____oruby_slow_new                        // "__oruby_slow_new"
 	Sym___oruby_slow_to_proc                    MrbSym = C.MRB_SYM____oruby_slow_to_proc                    // "__oruby_slow_to_proc"
+	Sym___oruby_source_paths                    MrbSym = C.MRB_SYM____oruby_source_paths                    // "__oruby_source_paths"
 	Sym___oruby_space                           MrbSym = C.MRB_SYM____oruby_space                           // "__oruby_space"
 	Sym___oruby_start                           MrbSym = C.MRB_SYM____oruby_start                           // "__oruby_start"
 	Sym___oruby_started                         MrbSym = C.MRB_SYM____oruby_started                         // "__oruby_started"

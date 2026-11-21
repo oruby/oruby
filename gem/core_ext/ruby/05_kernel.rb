@@ -50,10 +50,12 @@ end
 
 module Kernel
   def __dir__
-    loc = (caller(1, 1) || [])[0]
+    loc = (caller_locations(1, 1) || [])[0]
     return nil unless loc
-    file = loc.sub(/:\d+.*$/, "")
+    file = loc.path
     return nil if file == "-e" || file.empty? || file.start_with?("(eval")
+    absolute = loc.absolute_path
+    return File.dirname(absolute) if absolute
     begin
       File.dirname(File.realpath(file))
     rescue

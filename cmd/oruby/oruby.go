@@ -629,6 +629,13 @@ func run() int {
 	}
 
 	ai := mrb.GCArenaSave()
+	// Capture the main source path before startup code can change directories.
+	c := mrb.MrbCcontextNew()
+	defer c.Free()
+	c.Filename(cmdline)
+	c.SetDumpResult(false)
+	c.SetNoExec(o.checkSyntax)
+
 	mrb.DefineGlobalConst("ARGV", mrb.Value(o.scriptArgs))
 	mrb.SetGV("$DEBUG", o.debug)
 	switch o.verbose {
@@ -711,11 +718,6 @@ func run() int {
 		mrb.LoadString("begin; require 'rubygems'; rescue LoadError => e; warn \"`RubyGems' were not loaded: #{e}\" if $VERBOSE; end")
 	}
 
-	c := mrb.MrbCcontextNew()
-	defer c.Free()
-	c.SetDumpResult(false)
-	c.SetNoExec(o.checkSyntax)
-
 	for _, lib := range o.libs {
 		if lib == "rubygems" && gems {
 			continue
@@ -747,7 +749,6 @@ func run() int {
 		}
 	}
 
-	c.Filename(cmdline)
 	mrb.SetMainScript(cmdline)
 	// a program not read from a file is kept for #source_range (core_ext)
 	if src != nil && (cmdline == "-e" || cmdline == "-") && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_keep_main_source")) {

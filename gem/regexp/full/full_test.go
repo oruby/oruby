@@ -37,6 +37,7 @@ func TestRubyOnlyConstructs(t *testing.T) {
 		{`"abcabc"[/(?<w>abc)\k<w>/]`, `"abcabc"`},
 		{`"price: 42".sub(/price: \K\d+/, "99")`, `"price: 99"`},
 		{`"aab".scan(/\Ga/)`, `["a", "a"]`},
+		{`s = "éYOUあ"; [s.rindex(/YOU\Gあ/, 4), s.byterindex(/YOU\Gあ/, 5)]`, `[1, 2]`},
 		{`["a\n" =~ /a\Z/, "a\nb" =~ /a\Z/]`, `[0, nil]`},
 		{`"a\r\nb\nc".split(/\R/)`, `["a", "b", "c"]`},
 		{`"hello world".scan(/[a-z&&[^aeiou]]/).join`, `"hllwrld"`},

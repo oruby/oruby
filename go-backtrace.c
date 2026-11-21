@@ -482,9 +482,18 @@ static mrb_value bt_location(mrb_state *mrb, struct RClass *cls, const bt_frame 
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__label__), label);
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__base_label__), bt_base_label(mrb, f));
   mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__to_s__), bt_string_at(mrb, file, line, label));
-  /* an internal frame is shown at its caller's position: that file's */
-  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__abs__),
-                       mrb_bool_value(!f->eval && file && !bt_internal_file(file)));
+  /* An internal frame is shown at its caller's position. Capture the
+     source path alongside its display name for absolute_path. */
+  mrb_value absolute = mrb_bool_value(!f->eval && file && !bt_internal_file(file));
+  if (mrb_test(absolute)) {
+    mrb_value paths = mrb_iv_get(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_source_paths));
+    mrb_sym name = mrb_intern_check_cstr(mrb, file);
+    if (name && mrb_hash_p(paths)) {
+      mrb_value path = mrb_hash_get(mrb, paths, mrb_symbol_value(name));
+      if (mrb_string_p(path)) absolute = path;
+    }
+  }
+  mrb_obj_iv_set_force(mrb, loc, MRB_SYM(__abs__), absolute);
   /* the instruction the frame was at, for #source_range (go-srcrange.c) */
   {
     mrb_value site = _orb_insn_site(mrb, f->irep, f->idx);
@@ -691,7 +700,9 @@ static mrb_value loc_absolute_path(mrb_state *mrb, mrb_value self) {
   if (!mrb_iv_defined(mrb, self, abs)) {
     return loc_abs_orig ? loc_abs_orig(mrb, self) : mrb_nil_value();
   }
-  if (!mrb_test(mrb_iv_get(mrb, self, abs))) return mrb_nil_value();
+  mrb_value saved = mrb_iv_get(mrb, self, abs);
+  if (mrb_string_p(saved)) return mrb_str_dup(mrb, saved);
+  if (!mrb_test(saved)) return mrb_nil_value();
   mrb_value path = mrb_iv_get(mrb, self, MRB_SYM(__path__));
   if (!mrb_string_p(path)) return mrb_nil_value();
   char buf[PATH_MAX];

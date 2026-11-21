@@ -5,7 +5,9 @@ import "C"
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -69,9 +71,34 @@ func (c *MrbCcontext) Free() { C.mrb_ccontext_free(c.mrb.p, c.p) }
 
 // Filename set for MrbCcontext
 func (c *MrbCcontext) Filename(filename string) string {
+	c.rememberSourcePath(filename)
 	cfn := C.CString(filename)
 	defer C.free(unsafe.Pointer(cfn))
 	return C.GoString(C.mrb_ccontext_filename(c.mrb.p, c.p, cfn))
+}
+
+// Remember the file while its spelling still resolves. Its display name is
+// also used by __FILE__ and may be relative or point at a symlink.
+func (c *MrbCcontext) rememberSourcePath(filename string) {
+	if filename == "" || filename == "-" || filename == "-e" || strings.HasPrefix(filename, "<internal:") {
+		return
+	}
+	absolute, err := filepath.Abs(filename)
+	if err != nil {
+		return
+	}
+	real, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return
+	}
+	mrb := c.mrb
+	kernel := mrb.KernelModule()
+	paths := mrb.IVGet(kernel, Sym___oruby_source_paths)
+	if paths.Type() != MrbTTHash {
+		paths = mrb.HashNew().Value()
+		_ = mrb.IVSet(kernel, Sym___oruby_source_paths, paths)
+	}
+	mrb.HashSet(paths, mrb.SymbolValue(mrb.Intern(filename)), mrb.StrNew(real))
 }
 
 // PartialHook set parser hook. It has no effect with the Prism compiler

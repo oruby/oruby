@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -917,20 +916,28 @@ func pathArg(mrb *oruby.MrbState, v oruby.Value) (string, error) {
 	return mrb.String(s), nil
 }
 
-var callerLine = regexp.MustCompile(`^(.*?):\d+(?::in |$)`)
-
-// callerFile is the file of the code calling require_relative (an eval's
-// given file name too)
+// callerFile returns the path recorded when the calling file was opened.
+// An eval with a supplied filename can still provide its display path.
 func callerFile(mrb *oruby.MrbState) string {
-	res, err := mrb.Funcall(mrb.TopSelf(), oruby.Sym_caller, 0)
+	res, err := mrb.Funcall(mrb.TopSelf(), oruby.Sym_caller_locations, 0, 1)
 	if err != nil || !res.IsArray() || oruby.RArrayLen(res) == 0 {
 		return ""
 	}
-	loc := mrb.String(mrb.AryEntry(res, 0))
-	if m := callerLine.FindStringSubmatch(loc); m != nil {
-		return m[1]
+	loc := mrb.AryEntry(res, 0)
+	if path, err := mrb.Funcall(loc, oruby.Sym_absolute_path); err == nil && path.IsString() {
+		if absolute := mrb.String(path); filepath.IsAbs(absolute) {
+			return absolute
+		}
 	}
-	return ""
+	path, err := mrb.Funcall(loc, oruby.Sym_path)
+	if err != nil || !path.IsString() {
+		return ""
+	}
+	base := expandPath(mrb.String(path))
+	if real, err := filepath.EvalSymlinks(base); err == nil {
+		return real
+	}
+	return base
 }
 
 // require_relative(path): path relative to the directory of the real path
@@ -950,11 +957,7 @@ func loadRequireRelative(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if file == "" {
 			return mrb.Raise(mrb.ClassGet("LoadError"), "cannot infer basepath")
 		}
-		base := expandPath(file)
-		if r, err := filepath.EvalSymlinks(base); err == nil {
-			base = r
-		}
-		feature = filepath.Join(filepath.Dir(base), feature)
+		feature = filepath.Join(filepath.Dir(file), feature)
 	}
 	return doRequire(mrb, feature)
 }
