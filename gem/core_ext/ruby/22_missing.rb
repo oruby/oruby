@@ -15,37 +15,20 @@ class Module
             else raise TypeError, "#{name.inspect} is not a symbol nor a string"
             end
       orig = instance_method(sym)
-      # MRI's: only a method taking *args, without keywords or arguments
-      # after the splat, gets the flag
-      params = orig.parameters
-      rest = params.index { |t, _| t == :rest }
-      if rest.nil? || params.any? { |t, _| t == :key || t == :keyreq || t == :keyrest || t == :nokey } ||
-         params[(rest + 1)..].any? { |t, _| t == :req || t == :opt }
+      if !orig.owner.equal?(self)
+        warn "Skipping set of ruby2_keywords flag for #{sym} (can only set in method defining module)", uplevel: 0
+      elsif !orig.__oruby_ruby2_keywords
         warn "Skipping set of ruby2_keywords flag for #{sym} (method accepts keywords or post arguments " \
              "or method does not accept argument splat)", uplevel: 0
-        next
       end
-      priv = private_method_defined?(sym)
-      prot = protected_method_defined?(sym)
-      define_method(sym) do |*args, **kw, &blk|
-        args << Hash.ruby2_keywords_hash(kw) unless kw.empty?
-        orig.bind_call(self, *args, &blk)
-      end
-      private(sym) if priv
-      protected(sym) if prot
     end
     nil
   end
 end
 
 class Proc
-  # MRI's: only a proc taking *args, without keywords or arguments after
-  # the splat, gets the flag (the flag itself is not modelled)
   def ruby2_keywords
-    params = parameters
-    rest = params.index { |t, _| t == :rest }
-    if rest.nil? || params.any? { |t, _| t == :key || t == :keyreq || t == :keyrest || t == :nokey } ||
-       params[(rest + 1)..].any? { |t, _| t == :req || t == :opt }
+    unless __oruby_ruby2_keywords
       warn "Skipping set of ruby2_keywords flag for proc (proc accepts keywords or post arguments " \
            "or proc does not accept argument splat)", uplevel: 0
     end

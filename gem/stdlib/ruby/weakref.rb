@@ -1,29 +1,27 @@
 require "delegate"
 
-# WeakRef keeps a reference to obj; mruby has no weak references, so the
-# object stays alive while the WeakRef does (weakref_alive? is always true).
 class WeakRef < Delegator
   VERSION = "0.1.3"
+  REFERENTS = ::ObjectSpace::WeakMap.new
+  private_constant :REFERENTS
 
   class RefError < StandardError; end
 
-  def initialize(orig)
-    super
-  end
-
   def __getobj__
-    unless defined?(@__weak_obj)
-      return yield if block_given?
-      raise RefError, "Invalid Reference - probably recycled"
-    end
-    @__weak_obj
+    referent = REFERENTS[self]
+    # mruby emits a nil test here, even for BasicObject referents.
+    return referent unless referent.nil?
+    return nil if REFERENTS.key?(self)
+    return yield if block_given?
+
+    raise RefError, "Invalid Reference - probably recycled"
   end
 
   def __setobj__(obj)
-    @__weak_obj = obj
+    REFERENTS[self] = obj
   end
 
   def weakref_alive?
-    defined?(@__weak_obj) ? true : false
+    REFERENTS.key?(self)
   end
 end

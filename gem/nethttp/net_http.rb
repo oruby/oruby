@@ -114,6 +114,10 @@ module Net
       @io.closed?
     end
 
+    def read_eof?
+      @read_eof
+    end
+
     def close
       @io.close
     end
@@ -192,7 +196,7 @@ module Net
       if @io.respond_to?(:__tls_read)
         s = @io.__tls_read(BUFSIZE, @read_timeout)
         raise Net::ReadTimeout.new(@io) if s == :timeout
-        raise EOFError, "end of file reached" if s.nil?
+        raise_read_eof if s.nil?
         @rbuf << s
         return
       end
@@ -205,12 +209,17 @@ module Net
         when :wait_writable
           @io.wait_writable(@read_timeout) or raise Net::ReadTimeout.new(@io)
         when nil
-          raise EOFError, "end of file reached"
+          raise_read_eof
         else
           @rbuf << rv.b
           return
         end
       end
+    end
+
+    def raise_read_eof
+      @read_eof = true
+      raise EOFError, "end of file reached"
     end
 
     def rbuf_consume(len = nil)
@@ -1706,6 +1715,7 @@ module Net
       end
       @socket = BufferedIO.new(s, read_timeout: @read_timeout, write_timeout: @write_timeout,
                                   continue_timeout: @continue_timeout, debug_output: @debug_output)
+      @debug_output << "opened connection to #{conn_address}:#{conn_port}\n" if @debug_output
       @last_communicated = nil
     rescue IO::TimeoutError => e
       raise Net::OpenTimeout, "Failed to open TCP connection to #{conn_address}:#{conn_port} (#{e.message})"
@@ -1785,7 +1795,7 @@ module Net
       @last_communicated = nil
       if @socket.closed?
         nil
-      elsif !res.body && @close_on_empty_response
+      elsif @socket.read_eof? || (!res.body && @close_on_empty_response)
         @socket.close
       elsif keep_alive?(req, res)
         @last_communicated = Process.clock_gettime(Process::CLOCK_MONOTONIC)

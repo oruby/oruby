@@ -256,7 +256,7 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 		return true
 	}
 	// a regexp literal (ORB_REGEXP_LITERAL)
-	if ((opts == nil || !opts.NoRegexpLiterals) || checkRegexpRanges(src) || bytes.IndexByte(src, 'o') >= 0) &&
+	if ((opts == nil || !opts.NoRegexpLiterals) || checkRegexpRanges(src) || bytes.IndexByte(src, 'o') >= 0 || bytes.IndexByte(src, '#') >= 0) &&
 		(bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
@@ -397,6 +397,7 @@ func hasRegexpEncFlag(src []byte) bool {
 }
 
 func hasMultiAssign(src []byte) bool {
+	complexTarget := bytes.IndexAny(src, ".[") >= 0 || bytes.Contains(src, []byte("::"))
 	for _, line := range bytes.Split(src, []byte("\n")) {
 		c := bytes.IndexByte(line, ',')
 		if c < 0 {
@@ -406,6 +407,9 @@ func hasMultiAssign(src []byte) bool {
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == '=' && (i+1 >= len(rest) || rest[i+1] != '=' && rest[i+1] != '>' && rest[i+1] != '~') &&
 				(i == 0 || bytes.IndexByte([]byte("=!<>+-*/%&|^"), rest[i-1]) < 0) {
+				if complexTarget {
+					return true
+				}
 				// a, b = x, y or a, b = [..] needs no conversion: only a
 				// single value that is not an Array literal does
 				rhs := bytes.TrimSpace(rest[i+1:])
@@ -531,6 +535,18 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 		return src, nil
 	}
 	recs, encName, ok := prismScan(src, opts)
+	for ok {
+		prepared := prepareMasgnOperands(src, recs)
+		if prepared == nil {
+			break
+		}
+		next, encoding, valid := prismScan(prepared, opts)
+		if !valid {
+			break
+		}
+		src = prepared
+		recs, encName = next, encoding
+	}
 	if !ok || len(recs) == 0 {
 		return src, nil
 	}
@@ -896,34 +912,50 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 		case C.ORB_BIG_INTEGER:
 			r.add(s[0], e[0], func(r *rewriter) string { return `Integer("` + r.text(s[0], e[0]) + `")` })
 		case C.ORB_REGEXP_ENC:
-			// /a#{x}/n -> ::Regexp.compile("a#{x}", nil, "n"): the literal
-			// text verbatim (a regexp source), the embedded code rewritten
-			letter := string(rune(rc.flags))
-			type part struct {
-				s, e int
-				text bool
-			}
-			var parts []part
+			flags := rc.flags
+			var parts []prismRec
 			for i+1 < len(recs) && recs[i+1].kind == C.ORB_LIST_ITEM {
 				i++
-				parts = append(parts, part{recs[i].s[0], recs[i].e[0], recs[i].flags == 1})
+				parts = append(parts, recs[i])
 			}
 			r.add(s[0], e[0], func(r *rewriter) string {
 				var b strings.Builder
-				b.WriteString(`::Regexp.compile("`)
-				for _, p := range parts {
-					if !p.text {
-						b.WriteString(r.render(p.s, p.e))
+				b.WriteString("::Regexp.compile(")
+				if len(parts) == 0 || len(parts) > 1 && parts[0].flags == 0 {
+					b.WriteString(`""`)
+				}
+				for i, p := range parts {
+					from, to := p.s[0], p.e[0]
+					if i > 0 || len(parts) > 1 && parts[0].flags == 0 {
+						b.WriteString(" + ")
+					}
+					if p.flags == 0 {
+						// The span begins with # for both #{code} and #$var.
+						from++
+						if src[from] == '{' {
+							from++
+							to--
+						}
+						b.WriteString("::Kernel.__oruby_regexp_part(( " + r.render(from, to) + " ))")
 						continue
 					}
-					for _, c := range []byte(r.text(p.s, p.e)) {
+					b.WriteByte('"')
+					for _, c := range src[from:to] {
 						if c == '\\' || c == '"' || c == '#' {
 							b.WriteByte('\\')
 						}
 						b.WriteByte(c)
 					}
+					b.WriteByte('"')
+					if encName != "" && encName != "UTF-8" {
+						b.WriteString(".force_encoding(" + strconv.Quote(encName) + ")")
+					}
 				}
-				b.WriteString(`", nil, "` + letter + `")`)
+				b.WriteString(", " + strconv.Itoa(flags>>8))
+				if letter := flags & 255; letter != 0 {
+					b.WriteString(", " + strconv.Quote(string(rune(letter))))
+				}
+				b.WriteByte(')')
 				return b.String()
 			})
 		}
@@ -938,6 +970,37 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 		return src, nil
 	}
 	return r.output(), nil
+}
+
+// prepareMasgnOperands moves receiver and index expressions before the
+// multiple assignment. The normal rewrite pass then handles its targets.
+func prepareMasgnOperands(src []byte, records []prismRec) []byte {
+	prefixes := make(map[[2]int]*strings.Builder)
+	r := &rewriter{src: src}
+	for _, rec := range records {
+		if rec.kind != C.ORB_MASGN_OPERAND {
+			continue
+		}
+		owner := [2]int{rec.s[1], rec.e[1]}
+		prefix := prefixes[owner]
+		if prefix == nil {
+			prefix = new(strings.Builder)
+			prefixes[owner] = prefix
+			r.addWrap(owner[0], owner[1],
+				func(*rewriter) string { return "(" + prefix.String() },
+				func(*rewriter) string { return ")" })
+		}
+		tmp := "__oruby_mop" + strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+		for bytes.Contains(src, []byte(tmp)) {
+			tmp = "__oruby_mop" + strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+		}
+		prefix.WriteString(tmp + " = (" + r.text(rec.s[0], rec.e[0]) + "); ")
+		r.add(rec.s[0], rec.e[0], func(*rewriter) string { return tmp })
+	}
+	if len(prefixes) == 0 {
+		return nil
+	}
+	return r.output()
 }
 
 // output is the source with the edits applied

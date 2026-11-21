@@ -27,9 +27,10 @@ enum {
   ORB_LITERAL_ENCODING,   // s0: literal in non-UTF-8 source; flags 1: \u (UTF-8), 2: binary
   ORB_HASH_LABEL_ENCODING, // s0: bare non-ASCII Hash label, s1: label text
   ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment
+  ORB_MASGN_OPERAND,      // s0: a receiver or index evaluated before the RHS, s1: the assignment
   ORB_KWSPLAT,            // s0: the value of **value in a call or Hash literal
   ORB_ARRAY_KWHASH,       // s0: a brace-less Hash at the end of an Array literal; flags 1: only **splats (dropped when empty)
-  ORB_REGEXP_ENC,         // s0: /..#{x}../n with only an encoding flag (flags: its letter); parts follow as ORB_LIST_ITEM (flags 1: literal text)
+  ORB_REGEXP_ENC,         // s0: interpolated regexp; flags: encoding letter and options in the high byte; parts follow as ORB_LIST_ITEM
   ORB_REGEXP_LITERAL,     // s0: a static regexp or interpolated /o literal cached per site
   ORB_REGEXP_RANGE,       // s0: static regexp content, flags: extended mode
   ORB_MASGN_CPATH,        // s0: a constant path target of a multiple assignment, s1: the assignment

@@ -23,6 +23,7 @@ oruby_build = MRuby::Build.new do |conf|
 
   # include the default GEMs
   conf.gembox 'default'
+  conf.gem :core => 'mruby-objectspace-weakmap'
 
   # the symbol names oruby's C and Go code look up, as presyms (tools/gensym
   # writes its source; last, so the numbers of the other gems' stay)

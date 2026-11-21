@@ -78,8 +78,7 @@ module Syslog
 
     def mask=(m)
       raise RuntimeError, "must open syslog before setting log mask" unless @opened
-      raise TypeError, "no implicit conversion into Integer" unless m.is_a?(Integer)
-      @mask = m
+      @mask = Kernel.__to_int(m)
     end
 
     def log(pri, format, *args)

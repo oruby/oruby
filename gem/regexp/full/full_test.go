@@ -49,6 +49,7 @@ func TestRubyOnlyConstructs(t *testing.T) {
 		{`seen = []
           patterns = eval('[1, 2].map { |i| /#{seen << i; i}/io.source }')
           [patterns, seen]`, `[["1", "1"], [1]]`},
+		{`[defined?((/#{missing_method}/)), defined?((obj.x, y = a, b))]`, `["expression", "assignment"]`},
 		{`m = /(?<=é)(b)/.match("éb"); [m.begin(0), m.pre_match, m[1]]`, `[1, "é", "b"]`},
 	}
 	for _, c := range cases {

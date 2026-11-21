@@ -78,7 +78,7 @@ class NoMethodError
   alias __orig_nme_to_s to_s
   def to_s
     s = __orig_nme_to_s
-    if instance_variable_defined?(:@receiver) && (m = /\Aundefined method '([^']+)' for .*\z/.__match_raw(s))
+    if instance_variable_defined?(:@receiver) && (m = /\Aundefined method '([^']+)' for (.*)\z/.__match_raw(s))
       recv = @receiver
       desc = if nil.equal?(recv)
                "nil"
@@ -91,7 +91,7 @@ class NoMethodError
              elsif Module === recv
                "module #{recv.name || Module.instance_method(:to_s).bind_call(recv)}"
              elsif !(Kernel === recv)
-               return s
+               "an instance of #{m[2]}"
              elsif !Kernel.instance_method(:singleton_methods).bind_call(recv, false).empty?
                Kernel.instance_method(:to_s).bind_call(recv)
              else

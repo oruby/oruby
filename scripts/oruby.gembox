@@ -69,6 +69,7 @@ MRuby::GemBox.new do |conf|
 
   # Use ObjectSpace class
   conf.gem :core => "mruby-objectspace"
+  conf.gem :core => "mruby-objectspace-weakmap"
 
   # Use Fiber class
   conf.gem :core => "mruby-fiber"

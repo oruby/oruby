@@ -896,6 +896,20 @@ static mrb_value symproc_call(mrb_state *mrb, mrb_value self) {
 }
 
 static mrb_value d_sym_to_proc(mrb_state *mrb, mrb_value self) {
+#ifdef MRB_USE_REFINEMENTS
+  mrb_callinfo *ci = mrb->c->ci;
+  if (mrb->refscopes_len && ci > mrb->c->cibase && mrb_refined_mid_p(mrb, mrb_symbol(self))) {
+    struct RArray *scope = mrb_vm_refinements(mrb, ci - 1);
+    if (scope) {
+      /* The Ruby lambda's public_send looks up the name in its own scope. */
+      mrb_value pr = mrb_funcall_id(mrb, self, MRB_SYM(__oruby_slow_to_proc), 0);
+      if (!mrb_proc_p(pr)) mrb_raise(mrb, E_TYPE_ERROR, "Symbol#to_proc");
+      mrb_proc_set_refscope(mrb, mrb_proc_ptr(pr), scope);
+      mrb_iv_set(mrb, pr, mrb_intern_lit(mrb, "@__oruby_symproc"), self);
+      return pr;
+    }
+  }
+#endif
   mrb_value sc = mrb_obj_value(mrb->symbol_class);
   mrb_sym iv = MRB_SYM(__oruby_sym_procs);
   mrb_value cache = mrb_iv_get(mrb, sc, iv);
@@ -916,7 +930,8 @@ static mrb_bool symproc_p(const struct RProc *p) {
   return MRB_PROC_CFUNC_P(p) && MRB_PROC_CFUNC(p) == symproc_call;
 }
 static mrb_value d_proc_symproc_p(mrb_state *mrb, mrb_value self) {
-  return mrb_bool_value(symproc_p(mrb_proc_ptr(self)));
+  return mrb_bool_value(symproc_p(mrb_proc_ptr(self)) ||
+    (mrb->refscopes_len && mrb_symbol_p(mrb_iv_get(mrb, self, MRB_IVSYM(__oruby_symproc)))));
 }
 
 /* ---- Proc ---- */
@@ -930,6 +945,9 @@ static mrb_func_t proc_arity_builtin;
 static mrb_value d_proc_arity(mrb_state *mrb, mrb_value self) {
   struct RProc *p = mrb_proc_ptr(self);
   if (symproc_p(p)) return mrb_fixnum_value(-2);
+  if (mrb->refscopes_len && mrb_symbol_p(mrb_iv_get(mrb, self, MRB_IVSYM(__oruby_symproc)))) {
+    return mrb_fixnum_value(-2);
+  }
   if (!MRB_PROC_CFUNC_P(p) && p->body.irep) {
     mrb_value pc = mrb_obj_value(mrb->proc_class);
     mrb_sym iv = MRB_SYM(__oruby_symproc);
@@ -1619,7 +1637,9 @@ static const mrb_func_t imp_fns[IMP_MAX] = {IR8(0), IR8(1), IR8(2), IR8(3), IR8(
 /* Proc#__oruby_symproc_sym: the Symbol of a Symbol#to_proc lambda, or nil */
 static mrb_value proc_symproc_sym_m(mrb_state *mrb, mrb_value self) {
   mrb_sym sym = blk_sym(self);
-  return sym ? mrb_symbol_value(sym) : mrb_nil_value();
+  if (sym) return mrb_symbol_value(sym);
+  if (mrb->refscopes_len) return mrb_iv_get(mrb, self, MRB_IVSYM(__oruby_symproc));
+  return mrb_nil_value();
 }
 
 /* Module#__oruby_implicit_c(name, types): true when name is a C method now

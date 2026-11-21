@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "a89e6100d43fc512"
+const presymTable = "9b7da32130f69a29"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -51,6 +51,7 @@ const (
 	IvSym___oruby_path                          MrbSym = C.MRB_IVSYM____oruby_path                          // "@__oruby_path"
 	IvSym___oruby_site                          MrbSym = C.MRB_IVSYM____oruby_site                          // "@__oruby_site"
 	IvSym___oruby_svar_root                     MrbSym = C.MRB_IVSYM____oruby_svar_root                     // "@__oruby_svar_root"
+	IvSym___oruby_symproc                       MrbSym = C.MRB_IVSYM____oruby_symproc                       // "@__oruby_symproc"
 	IvSym___oruby_trace_var                     MrbSym = C.MRB_IVSYM____oruby_trace_var                     // "@__oruby_trace_var"
 	IvSym___sym_encodings                       MrbSym = C.MRB_IVSYM____sym_encodings                       // "@__sym_encodings"
 	IvSym___t                                   MrbSym = C.MRB_IVSYM____t                                   // "@__t"
@@ -697,6 +698,7 @@ const (
 	Sym___oruby_rbuf                            MrbSym = C.MRB_SYM____oruby_rbuf                            // "__oruby_rbuf"
 	Sym___oruby_read                            MrbSym = C.MRB_SYM____oruby_read                            // "__oruby_read"
 	Sym___oruby_reentry                         MrbSym = C.MRB_SYM____oruby_reentry                         // "__oruby_reentry"
+	Sym___oruby_regexp_part                     MrbSym = C.MRB_SYM____oruby_regexp_part                     // "__oruby_regexp_part"
 	Sym___oruby_release_held                    MrbSym = C.MRB_SYM____oruby_release_held                    // "__oruby_release_held"
 	Sym___oruby_relit                           MrbSym = C.MRB_SYM____oruby_relit                           // "__oruby_relit"
 	Sym___oruby_relit_set                       MrbSym = C.MRB_SYM____oruby_relit_set                       // "__oruby_relit_set"
@@ -705,6 +707,7 @@ const (
 	Sym___oruby_reopen_path                     MrbSym = C.MRB_SYM____oruby_reopen_path                     // "__oruby_reopen_path"
 	Sym___oruby_root_fiber                      MrbSym = C.MRB_SYM____oruby_root_fiber                      // "__oruby_root_fiber"
 	Sym___oruby_rpos                            MrbSym = C.MRB_SYM____oruby_rpos                            // "__oruby_rpos"
+	Sym___oruby_ruby2_keywords                  MrbSym = C.MRB_SYM____oruby_ruby2_keywords                  // "__oruby_ruby2_keywords"
 	Sym___oruby_scan                            MrbSym = C.MRB_SYM____oruby_scan                            // "__oruby_scan"
 	Sym___oruby_sched                           MrbSym = C.MRB_SYM____oruby_sched                           // "__oruby_sched"
 	Sym___oruby_scheduler_flag                  MrbSym = C.MRB_SYM____oruby_scheduler_flag                  // "__oruby_scheduler_flag"

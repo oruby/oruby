@@ -87,6 +87,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@__oruby_path");
   (void)mrb_intern_lit(mrb, "@__oruby_site");
   (void)mrb_intern_lit(mrb, "@__oruby_svar_root");
+  (void)mrb_intern_lit(mrb, "@__oruby_symproc");
   (void)mrb_intern_lit(mrb, "@__oruby_trace_var");
   (void)mrb_intern_lit(mrb, "@__sym_encodings");
   (void)mrb_intern_lit(mrb, "@__t");
@@ -601,6 +602,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_read");
   (void)mrb_intern_lit(mrb, "__oruby_readable?");
   (void)mrb_intern_lit(mrb, "__oruby_reentry");
+  (void)mrb_intern_lit(mrb, "__oruby_regexp_part");
   (void)mrb_intern_lit(mrb, "__oruby_release_held");
   (void)mrb_intern_lit(mrb, "__oruby_relit");
   (void)mrb_intern_lit(mrb, "__oruby_relit_set");
@@ -609,6 +611,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_reopen_path");
   (void)mrb_intern_lit(mrb, "__oruby_root_fiber");
   (void)mrb_intern_lit(mrb, "__oruby_rpos");
+  (void)mrb_intern_lit(mrb, "__oruby_ruby2_keywords");
   (void)mrb_intern_lit(mrb, "__oruby_scan");
   (void)mrb_intern_lit(mrb, "__oruby_sched");
   (void)mrb_intern_lit(mrb, "__oruby_scheduler_flag");

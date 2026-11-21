@@ -11,6 +11,23 @@ import (
 	_ "github.com/oruby/oruby/gem/thread"
 )
 
+func TestRuby2KeywordsPromotesOnlySplatCalls(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      def receive(*args, **keywords) = [args, keywords]
+      marked = Hash.ruby2_keywords_hash({a: 1})
+      positional, keywords = receive(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, marked)
+      splatted = receive(*[1, marked])
+      positional.length == 15 && positional.last.equal?(marked) && keywords.empty? &&
+        splatted == [[1], {a: 1}] && !Hash.ruby2_keywords_hash?(splatted.last)
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ruby2_keywords argument packing = %v, %v; want true", got, err)
+	}
+}
+
 func TestLiteralFreezeHonorsOverride(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

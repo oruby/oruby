@@ -13,6 +13,45 @@ import (
 	_ "github.com/oruby/oruby/gem/stdlib"
 )
 
+func TestWeakReferencesReleaseCollectedObjects(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      require "weakref"
+      def weak_ref_data(key)
+        object = BasicObject.new
+        map = ObjectSpace::WeakMap.new
+        map[key] = object
+        [WeakRef.new(object), map]
+      end
+
+      reference, map = weak_ref_data(:key)
+      GC.start
+      invalid = begin
+        reference.__getobj__
+        false
+      rescue WeakRef::RefError
+        true
+      end
+
+      value = BasicObject.new
+      def value.nil? = raise "unexpected nil? dispatch"
+      live = WeakRef.new(value)
+      basic = BasicObject.new
+      basic_ref = WeakRef.new(basic)
+      nil_ref = WeakRef.new(nil)
+      false_ref = WeakRef.new(false)
+      invalid && !reference.weakref_alive? && !map.key?(:key) && map.each.equal?(map) &&
+        live.__getobj__.equal?(value) && basic_ref.__getobj__.equal?(basic) &&
+        nil_ref.weakref_alive? && nil_ref.__getobj__.nil? &&
+        false_ref.weakref_alive? && false_ref.__getobj__.equal?(false)
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("weak reference lifetime = %v, %v; want true", got, err)
+	}
+}
+
 func TestStdlibImportRegistersProviders(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

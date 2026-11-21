@@ -3,6 +3,7 @@
 #include "go-mrb.h"
 #include <mruby/proc.h>
 #include <mruby/opcode.h>
+#include "oruby-vm-compat.h"
 #include <mruby/debug.h>
 #include <mruby/internal.h>
 
@@ -415,8 +416,11 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, ":\"") || src_contains(s, len, "%I") ||
           /* static POSIX class ranges (ORB_REGEXP_RANGE) */
           src_contains(s, len, "[:") ||
-          /* interpolated /o literals are cached even in eval */
-          (src_contains(s, len, "o") && (src_contains(s, len, "/") || src_contains(s, len, "%r"))) ||
+          /* interpolated regexp encodings and /o literals in eval */
+          ((src_contains(s, len, "o") || src_contains(s, len, "#")) &&
+           (src_contains(s, len, "/") || src_contains(s, len, "%r"))) ||
+          (src_contains(s, len, ",") && src_contains(s, len, "=") &&
+           (src_contains(s, len, ".") || src_contains(s, len, "["))) ||
           src_contains(s, len, "freeze") ||
           src_bare_it(s, len) || len > 255) {
         mrb_value rewritten = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
@@ -2001,6 +2005,24 @@ static mrb_value core_params(mrb_state *mrb, mrb_aspec aspec) {
   }
   for (int i = 0; i < MRB_ASPEC_REQ(aspec); i++) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(req), 0));
   return out;
+}
+
+static mrb_value ruby2_keywords_mark_m(mrb_state *mrb, mrb_value self) {
+  mrb_value proc = mrb_proc_p(self) ? self : mrb_iv_get(mrb, self, MRB_SYM(_proc));
+  if (!mrb_proc_p(proc)) return mrb_false_value();
+  const struct RProc *p = mrb_proc_ptr(proc);
+  while (p && MRB_PROC_ALIAS_P(p)) p = p->upper;
+  if (!p || MRB_PROC_CFUNC_P(p)) return mrb_false_value();
+  const mrb_irep *irep = p->body.irep;
+  if (!irep || (irep->flags & MRB_IREP_NO_FREE) || irep->ilen < 4 || irep->iseq[0] != OP_ENTER) {
+    return mrb_false_value();
+  }
+  mrb_aspec args = PEEK_W(irep->iseq + 1);
+  if (!MRB_ASPEC_REST(args) || MRB_ASPEC_POST(args) || MRB_ASPEC_KEY(args) || MRB_ASPEC_KDICT(args)) {
+    return mrb_false_value();
+  }
+  ((mrb_irep*)irep)->flags |= ORUBY_IREP_RUBY2_KEYWORDS;
+  return mrb_true_value();
 }
 
 /* Method#parameters, UnboundMethod#parameters: a method takes its
@@ -4130,7 +4152,13 @@ static mrb_value frozen_string_copy_m(mrb_state *mrb, mrb_value self) {
   return mrb_obj_freeze(mrb, copy);
 }
 
+static mrb_value regexp_part_m(mrb_state *mrb, mrb_value self) {
+  (void)self;
+  return mrb_obj_as_string(mrb, mrb_get_arg1(mrb));
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_regexp_part), regexp_part_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_literal_freeze), literal_freeze_m, MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_plain_string), plain_string_p, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_frozen_string_copy), frozen_string_copy_m, MRB_ARGS_REQ(1));
@@ -4168,7 +4196,11 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   if (mrb_class_defined_id(mrb, MRB_SYM(UnboundMethod))) {
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)), MRB_SYM(original_name), method_original_name_m, MRB_ARGS_NONE());
     mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)), MRB_SYM(parameters), method_params_m, MRB_ARGS_NONE());
+    mrb_define_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(UnboundMethod)),
+                         mrb_intern_lit(mrb, "__oruby_ruby2_keywords"), ruby2_keywords_mark_m, MRB_ARGS_NONE());
   }
+  mrb_define_private_method_id(mrb, mrb->proc_class, mrb_intern_lit(mrb, "__oruby_ruby2_keywords"),
+                               ruby2_keywords_mark_m, MRB_ARGS_NONE());
   mrb_define_private_method_id(mrb, mrb->proc_class, MRB_SYM(__oruby_params), proc_params_m, MRB_ARGS_OPT(1));
   if (mrb_class_defined_id(mrb, MRB_SYM(Binding))) {
     struct RClass *bc = mrb_class_get_id(mrb, MRB_SYM(Binding));

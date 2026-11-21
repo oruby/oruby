@@ -262,6 +262,87 @@ cpath_targets(orb_scan *sc, const pm_node_t *t, int kind, int32_t s1, int32_t e1
   }
 }
 
+static pm_visit_result_t
+masgn_operand_layout(const pm_node_t *node, void *data)
+{
+  orb_scan *sc = data;
+  pm_location_t opening = {0};
+  switch (PM_NODE_TYPE(node)) {
+  case PM_SOURCE_LINE_NODE:
+  case PM_DEF_NODE:
+  case PM_LAMBDA_NODE:
+    return PM_VISIT_STOP;
+  case PM_STRING_NODE: opening = ((const pm_string_node_t *)node)->opening_loc; break;
+  case PM_INTERPOLATED_STRING_NODE: opening = ((const pm_interpolated_string_node_t *)node)->opening_loc; break;
+  case PM_X_STRING_NODE: opening = ((const pm_x_string_node_t *)node)->opening_loc; break;
+  case PM_INTERPOLATED_X_STRING_NODE: opening = ((const pm_interpolated_x_string_node_t *)node)->opening_loc; break;
+  default: break;
+  }
+  if (opening.length >= 2 && memcmp(sc->src + opening.start, "<<", 2) == 0) return PM_VISIT_STOP;
+  return PM_VISIT_DESCEND;
+}
+
+static bool
+masgn_operand(orb_scan *sc, const pm_node_t *operand, const pm_node_t *owner)
+{
+  if (!operand || PM_NODE_TYPE(operand) == PM_SELF_NODE) return true;
+  const char *s = sc->src + operand->location.start;
+  size_t n = operand->location.length;
+  if (PM_NODE_TYPE(operand) == PM_LOCAL_VARIABLE_READ_NODE &&
+      n >= 12 && memcmp(s, "__oruby_mop", 11) == 0) return true;
+  /* A new line here could carry a comment or a heredoc; keep its location. */
+  if (memchr(s, '\n', n) || PM_NODE_TYPE(operand) == PM_SPLAT_NODE ||
+      PM_NODE_TYPE(operand) == PM_KEYWORD_HASH_NODE ||
+      PM_NODE_TYPE(operand) == PM_FORWARDING_ARGUMENTS_NODE) return false;
+  if (!pm_visit_node(operand, masgn_operand_layout, sc)) return false;
+  orb_rec *r = add(sc, ORB_MASGN_OPERAND);
+  span(r, 0, operand);
+  span(r, 1, owner);
+  return true;
+}
+
+static bool masgn_operands(orb_scan *, const pm_node_t *, const pm_node_t *);
+
+static bool
+masgn_operand_list(orb_scan *sc, const pm_node_list_t *list, const pm_node_t *owner)
+{
+  for (size_t i = 0; i < list->size; i++) {
+    if (!masgn_operands(sc, list->nodes[i], owner)) return false;
+  }
+  return true;
+}
+
+static bool
+masgn_operands(orb_scan *sc, const pm_node_t *t, const pm_node_t *owner)
+{
+  if (!t) return true;
+  switch (PM_NODE_TYPE(t)) {
+  case PM_CALL_TARGET_NODE:
+    return !safe_nav_target(t) && masgn_operand(sc, ((const pm_call_target_node_t *)t)->receiver, owner);
+  case PM_INDEX_TARGET_NODE: {
+    const pm_index_target_node_t *index = (const pm_index_target_node_t *)t;
+    if (index->block || !masgn_operand(sc, index->receiver, owner)) return false;
+    if (!index->arguments) return true;
+    const pm_node_list_t *args = &index->arguments->arguments;
+    for (size_t i = 0; i < args->size; i++) {
+      if (!masgn_operand(sc, args->nodes[i], owner)) return false;
+    }
+    return true;
+  }
+  case PM_CONSTANT_PATH_TARGET_NODE:
+    return masgn_operand(sc, ((const pm_constant_path_target_node_t *)t)->parent, owner);
+  case PM_MULTI_TARGET_NODE: {
+    const pm_multi_target_node_t *nested = (const pm_multi_target_node_t *)t;
+    return masgn_operand_list(sc, &nested->lefts, owner) && masgn_operands(sc, nested->rest, owner) &&
+      masgn_operand_list(sc, &nested->rights, owner);
+  }
+  case PM_SPLAT_NODE:
+    return masgn_operands(sc, ((const pm_splat_node_t *)t)->expression, owner);
+  default:
+    return true;
+  }
+}
+
 static void
 visit_child(const pm_node_t *node, void *data)
 {
@@ -296,10 +377,19 @@ visit(const pm_node_t *node, void *data)
   case PM_DEFINED_NODE: {
     // defined?(A::B ||= v) is answered without generating the assignment
     const pm_node_t *v = ((const pm_defined_node_t *)node)->value;
+    while (v && PM_NODE_TYPE(v) == PM_PARENTHESES_NODE) {
+      const pm_node_t *body = ((const pm_parentheses_node_t *)v)->body;
+      if (!body || PM_NODE_TYPE(body) != PM_STATEMENTS_NODE) break;
+      const pm_node_list_t *statements = &((const pm_statements_node_t *)body)->body;
+      if (statements->size != 1) break;
+      v = statements->nodes[0];
+    }
     switch (v ? PM_NODE_TYPE(v) : 0) {
     case PM_CONSTANT_PATH_OR_WRITE_NODE:
     case PM_CONSTANT_PATH_AND_WRITE_NODE:
     case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE:
+    case PM_MULTI_WRITE_NODE:
+    case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE:
       return PM_VISIT_SKIP;
     case PM_CALL_NODE: {
       const pm_node_t *previous = sc->defined_target;
@@ -605,6 +695,9 @@ visit(const pm_node_t *node, void *data)
     {
       const pm_multi_write_node_t *m = (const pm_multi_write_node_t *)node;
       int32_t s1 = (int32_t)node->location.start, e1 = (int32_t)(node->location.start + node->location.length);
+      int first_operand = sc->n;
+      if (!masgn_operand_list(sc, &m->lefts, node) || !masgn_operands(sc, m->rest, node) ||
+          !masgn_operand_list(sc, &m->rights, node)) sc->n = first_operand;
       /* (a, b), c = obj, 1: MRI converts a nested target's value with
          #to_ary, mruby does not; nested targets are assigned after, outer
          ones first, then the constant paths among them */
@@ -674,8 +767,7 @@ visit(const pm_node_t *node, void *data)
     break;
   }
   case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
-    // /a#{x}/n: with an encoding flag but no i, m or x, mruby's code
-    // generator passes the letter as Regexp.compile's options
+    /* Keep the encodings of the interpolated strings until Regexp.compile. */
     const pm_interpolated_regular_expression_node_t *re = (const pm_interpolated_regular_expression_node_t *)node;
     pm_node_flags_t f = node->flags;
     if (f & PM_REGULAR_EXPRESSION_FLAGS_ONCE) {
@@ -687,15 +779,17 @@ visit(const pm_node_t *node, void *data)
     else if (f & PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT) letter = 'n';
     else if (f & PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J) letter = 's';
     else if (f & PM_REGULAR_EXPRESSION_FLAGS_UTF_8) letter = 'u';
-    if (letter && !(f & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE | PM_REGULAR_EXPRESSION_FLAGS_EXTENDED | PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE))) {
-      r = add(sc, ORB_REGEXP_ENC);
-      span(r, 0, node);
-      r->flags = letter;
-      for (size_t i = 0; i < re->parts.size; i++) {
-        orb_rec *pr = add(sc, ORB_LIST_ITEM);
-        span(pr, 0, re->parts.nodes[i]);
-        pr->flags = PM_NODE_TYPE(re->parts.nodes[i]) == PM_STRING_NODE;
-      }
+    r = add(sc, ORB_REGEXP_ENC);
+    span(r, 0, node);
+    r->flags = (unsigned char)letter;
+    if (f & PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE) r->flags |= 1 << 8;
+    if (f & PM_REGULAR_EXPRESSION_FLAGS_EXTENDED) r->flags |= 2 << 8;
+    if (f & PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE) r->flags |= 4 << 8;
+    for (size_t i = 0; i < re->parts.size; i++) {
+      const pm_node_t *part = re->parts.nodes[i];
+      orb_rec *pr = add(sc, ORB_LIST_ITEM);
+      span(pr, 0, part);
+      pr->flags = PM_NODE_TYPE(part) == PM_STRING_NODE;
     }
     break;
   }
