@@ -25,6 +25,7 @@ enum {
   ORB_LITERAL_FREEZE,     // s0: no-argument freeze call, s1: literal receiver
   ORB_SOURCE_ENCODING,    // s0: __ENCODING__
   ORB_LITERAL_ENCODING,   // s0: literal in non-UTF-8 source; flags 1: \u (UTF-8), 2: binary
+  ORB_HASH_LABEL_ENCODING, // s0: bare non-ASCII Hash label, s1: label text
   ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment
   ORB_KWSPLAT,            // s0: the value of **value in a call or Hash literal
   ORB_ARRAY_KWHASH,       // s0: a brace-less Hash at the end of an Array literal; flags 1: only **splats (dropped when empty)

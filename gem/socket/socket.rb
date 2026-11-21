@@ -356,7 +356,7 @@ class BasicSocket < IO
   def __recv_str(res, outbuf)
     data = res[0]
     if outbuf
-      outbuf.replace(data)
+      outbuf.replace(data.force_encoding(outbuf.encoding))
       outbuf
     else
       data
@@ -367,7 +367,7 @@ class BasicSocket < IO
     __check_readable
     res = Socket.__recv(__fd, maxlen, flags || 0, false)
     if res[2] == 0 && maxlen > 0 && __socktype == Socket::SOCK_STREAM
-      outbuf&.replace("")
+      outbuf&.clear
       return nil
     end
     __recv_str(res, outbuf)
@@ -382,7 +382,7 @@ class BasicSocket < IO
       return :wait_readable
     end
     if res[2] == 0 && maxlen > 0 && __socktype == Socket::SOCK_STREAM
-      outbuf&.replace("")
+      outbuf&.clear
       return nil
     end
     __recv_str(res, outbuf)

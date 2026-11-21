@@ -538,6 +538,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_implicit_c");
   (void)mrb_intern_lit(mrb, "__oruby_implicit_params");
   (void)mrb_intern_lit(mrb, "__oruby_init_struct");
+  (void)mrb_intern_lit(mrb, "__oruby_inspect_part");
+  (void)mrb_intern_lit(mrb, "__oruby_inspect_symbol_quote?");
   (void)mrb_intern_lit(mrb, "__oruby_install_defaults__");
   (void)mrb_intern_lit(mrb, "__oruby_instrument");
   (void)mrb_intern_lit(mrb, "__oruby_interrupt");
@@ -666,7 +668,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__read_nonblock");
   (void)mrb_intern_lit(mrb, "__replacement");
   (void)mrb_intern_lit(mrb, "__reset");
-  (void)mrb_intern_lit(mrb, "__rm_rf");
   (void)mrb_intern_lit(mrb, "__sec_i");
   (void)mrb_intern_lit(mrb, "__secure_compare");
   (void)mrb_intern_lit(mrb, "__set");

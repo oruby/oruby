@@ -397,7 +397,8 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
       }
       const char *s = RSTRING_PTR(argv[0]);
       mrb_int len = RSTRING_LEN(argv[0]);
-      if (src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
+      if (!mrb_nil_p(str_enc_tag(mrb, argv[0])) ||
+          src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
           src_contains(s, len, "**") || src_contains(s, len, "=>") ||
           src_contains(s, len, ": ") || src_contains(s, len, "..") ||
           src_contains(s, len, "&.") || src_contains(s, len, "BEGIN") ||
@@ -418,7 +419,10 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           (src_contains(s, len, "o") && (src_contains(s, len, "/") || src_contains(s, len, "%r"))) ||
           src_contains(s, len, "freeze") ||
           src_bare_it(s, len) || len > 255) {
-        argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
+        mrb_value rewritten = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
+        argv = (mrb_value *)mrb_get_argv(mrb);
+        argv[0] = rewritten;
+        ci = mrb->c->ci;
       }
       if (!mrb_nil_p(deffile)) {
         /* the file argument added: the arguments are passed packed (n = 15:
@@ -708,6 +712,23 @@ static mrb_value str_init_w(mrb_state *mrb, mrb_value self) {
   return r;
 }
 
+static mrb_func_t str_replace_orig;
+static mrb_value str_replace_w(mrb_state *mrb, mrb_value self) {
+  mrb_value src = mrb_get_arg1(mrb);
+  mrb_value r = str_replace_orig(mrb, self);
+  if (!mrb_obj_eq(mrb, src, self)) {
+    mrb_sym sym = MRB_SYM(__encoding);
+    mrb_value tag = mrb_iv_get(mrb, src, sym);
+    if (mrb_nil_p(tag)) {
+      if (mrb_iv_defined(mrb, self, sym)) mrb_iv_remove(mrb, self, sym);
+    }
+    else {
+      mrb_iv_set(mrb, self, sym, tag);
+    }
+  }
+  return r;
+}
+
 // String#+, #<<, #concat, #prepend check that the encodings are
 // compatible (Kernel.__oruby_enc_concat, in Ruby) unless both strings are
 // untagged with the same binary flag, and give the result that encoding
@@ -825,7 +846,7 @@ void _mrb_wrap_string_encoding(mrb_state *mrb) {
     "strip", "lstrip", "rstrip", "chomp", "chop", "reverse", "center", "ljust", "rjust",
     "succ", "next", "squeeze", "delete", "tr", "tr_s", "scrub", "partition", "rpartition",
     "split", "lines", "chars", "delete_prefix", "delete_suffix", "chr", "each_char", "%",
-    "sub", "gsub", "insert", "replace", NULL
+    "sub", "gsub", "insert", NULL
   };
   int n = 0;
   for (int i = 0; names[i] && n < ENC_KEEP_MAX; i++) {
@@ -845,6 +866,7 @@ void _mrb_wrap_string_encoding(mrb_state *mrb) {
     mrb_define_method_raw(mrb, owner, mid, w);
   }
   wrap_string_enc_checks(mrb);
+  wrap_cfunc(mrb, mrb->string_class, "replace", str_replace_w, &str_replace_orig);
   struct RClass *owner = mrb->string_class;
   mrb_method_t m = mrb_method_search_vm(mrb, &owner, MRB_SYM(initialize));
   if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_CFUNC_P(m) && MRB_METHOD_CFUNC(m) != str_init_w) {
@@ -2414,11 +2436,69 @@ static mrb_value const_missing_w(mrb_state *mrb, mrb_value mod) {
   return const_missing_orig(mrb, mod);
 }
 
-/* Hash#inspect: mruby writes every Symbol key as `name: `; MRI quotes one
-   that is not a plain name (symbol_key_needs_quote): `"a b": `, `"x=": `.
-   A hash without such a key keeps mruby's inspect. */
-static mrb_func_t hash_inspect_orig;
+/* Container inspection appends each result with its encoding preserved. */
+struct inspect_buffer {
+  mrb_value str;
+  mrb_value kernel;
+  mrb_bool normalize;
+  mrb_bool ascii;
+};
 
+static mrb_bool inspect_ascii(mrb_value str) {
+  const unsigned char *p = (const unsigned char *)RSTRING_PTR(str);
+  for (mrb_int i = 0; i < RSTRING_LEN(str); i++) {
+    if (p[i] >= 0x80) return FALSE;
+  }
+  return TRUE;
+}
+
+static void inspect_append(mrb_state *mrb, struct inspect_buffer *b, mrb_value part, mrb_bool first) {
+  mrb_bool ascii = inspect_ascii(part);
+  if (first || (b->ascii && (!ascii || RSTR_ENCODING(mrb_str_ptr(b->str)) == ORB_STR_ENCODING_US_ASCII))) {
+    mrb_sym sym = MRB_SYM(__encoding);
+    mrb_value tag = mrb_iv_get(mrb, part, sym);
+    RSTR_ENCODING_SET(mrb_str_ptr(b->str), RSTR_ENCODING(mrb_str_ptr(part)));
+    if (!mrb_nil_p(tag)) mrb_iv_set(mrb, b->str, sym, tag);
+    else if (mrb_iv_defined(mrb, b->str, sym)) mrb_iv_remove(mrb, b->str, sym);
+  }
+  mrb_str_cat(mrb, b->str, RSTRING_PTR(part), RSTRING_LEN(part));
+  b->ascii = b->ascii && ascii;
+}
+
+static mrb_value inspect_part(mrb_state *mrb, struct inspect_buffer *b, mrb_value part) {
+  if (!b->normalize) return part;
+  return mrb_funcall_id(mrb, b->kernel, MRB_SYM(__oruby_inspect_part), 1, part);
+}
+
+static struct inspect_buffer inspect_buffer_new(mrb_state *mrb, mrb_value str) {
+  mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+  struct inspect_buffer b = {
+    us_ascii_str(mrb, str), kernel,
+    mrb_respond_to(mrb, kernel, MRB_SYM(__oruby_inspect_part)), TRUE
+  };
+  return b;
+}
+
+static mrb_value array_inspect_w(mrb_state *mrb, mrb_value self) {
+  mrb->c->ci->mid = MRB_SYM(inspect);
+  if (MRB_RECURSIVE_UNARY_P(mrb, MRB_SYM(inspect), self))
+    return us_ascii_str(mrb, mrb_str_new_lit(mrb, "[...]"));
+
+  struct inspect_buffer b = inspect_buffer_new(mrb, mrb_str_new_lit(mrb, "["));
+  mrb_str_ptr(b.str)->c = NULL; /* hide the buffer from ObjectSpace.each_object */
+  int ai = mrb_gc_arena_save(mrb);
+  for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
+    mrb_value part = inspect_part(mrb, &b, mrb_inspect(mrb, RARRAY_PTR(self)[i]));
+    if (i > 0) mrb_str_cat_lit(mrb, b.str, ", ");
+    inspect_append(mrb, &b, part, i == 0);
+    mrb_gc_arena_restore(mrb, ai);
+  }
+  mrb_str_cat_lit(mrb, b.str, "]");
+  mrb_str_ptr(b.str)->c = mrb->string_class;
+  return b.str;
+}
+
+/* Symbol keys without a plain name are written with quotes, e.g. "a b":. */
 static mrb_bool
 sym_key_needs_quote(mrb_state *mrb, mrb_sym sym)
 {
@@ -2431,48 +2511,56 @@ sym_key_needs_quote(mrb_state *mrb, mrb_sym sym)
   return strchr("+-*/`%^&|]<=>~@", s[len - 1]) != NULL;
 }
 
-static int
-quoted_key_i(mrb_state *mrb, mrb_value key, mrb_value val, void *data)
-{
-  (void)val;
-  if (mrb_symbol_p(key) && sym_key_needs_quote(mrb, mrb_symbol(key))) {
-    *(mrb_bool *)data = TRUE;
-    return 1;
+static int hash_inspect_entry(mrb_state *mrb, mrb_value key, mrb_value value, void *data) {
+  struct inspect_buffer *b = data;
+  int ai = mrb_gc_arena_save(mrb);
+  mrb_gc_protect(mrb, value); /* key.inspect can remove the entry */
+  mrb_bool first = RSTRING_LEN(b->str) == 1;
+  if (!first) mrb_str_cat_lit(mrb, b->str, ", ");
+  if (mrb_symbol_p(key)) {
+    mrb_sym sym = mrb_symbol(key);
+    mrb_value name = mrb_sym_str(mrb, sym);
+    mrb_bool ascii = inspect_ascii(name);
+    if (ascii) us_ascii_str(mrb, name);
+    else {
+      mrb_value tags = mrb_iv_get(mrb, mrb_obj_value(mrb->symbol_class), MRB_IVSYM(__sym_encodings));
+      if (mrb_hash_p(tags)) {
+        mrb_value tag = mrb_hash_get(mrb, tags, key);
+        if (!mrb_nil_p(tag)) {
+          RSTR_ENCODING_SET(mrb_str_ptr(name), MRB_STR_ENCODING_BINARY);
+          mrb_iv_set(mrb, name, MRB_SYM(__encoding), tag);
+        }
+      }
+    }
+    mrb_value part = name;
+    mrb_bool quote = ascii || !b->normalize ? sym_key_needs_quote(mrb, sym) :
+      mrb_test(mrb_funcall_id(mrb, b->kernel, MRB_SYM_Q(__oruby_inspect_symbol_quote), 1, name));
+    if (quote) {
+      part = inspect_part(mrb, b, mrb_str_inspect(mrb, name));
+    }
+    inspect_append(mrb, b, part, first);
+    mrb_str_cat_lit(mrb, b->str, ": ");
   }
+  else {
+    inspect_append(mrb, b, inspect_part(mrb, b, mrb_inspect(mrb, key)), first);
+    mrb_str_cat_lit(mrb, b->str, " => ");
+  }
+  inspect_append(mrb, b, inspect_part(mrb, b, mrb_inspect(mrb, value)), FALSE);
+  mrb_gc_arena_restore(mrb, ai);
   return 0;
 }
 
-static mrb_value
-hash_inspect_w(mrb_state *mrb, mrb_value self)
-{
-  mrb_bool quote = FALSE;
-  mrb_hash_foreach(mrb, mrb_hash_ptr(self), quoted_key_i, &quote);
-  if (!quote) return hash_inspect_orig(mrb, self);
+static mrb_value hash_inspect_w(mrb_state *mrb, mrb_value self) {
   mrb->c->ci->mid = MRB_SYM(inspect);
-  if (MRB_RECURSIVE_UNARY_P(mrb, MRB_SYM(inspect), self)) return mrb_str_new_lit(mrb, "{...}");
-  /* a snapshot of the keys: a key's or value's inspect may change the hash */
-  mrb_value keys = mrb_hash_keys(mrb, self);
-  mrb_value ret = mrb_str_new_lit(mrb, "{");
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i = 0; i < RARRAY_LEN(keys); i++) {
-    mrb_value k = RARRAY_PTR(keys)[i];
-    if (!mrb_hash_key_p(mrb, self, k)) continue;
-    mrb_value v = mrb_hash_get(mrb, self, k);
-    if (RSTRING_LEN(ret) > 1) mrb_str_cat_lit(mrb, ret, ", ");
-    if (mrb_symbol_p(k)) {
-      mrb_value name = mrb_sym_str(mrb, mrb_symbol(k));
-      mrb_str_cat_str(mrb, ret, sym_key_needs_quote(mrb, mrb_symbol(k)) ? mrb_str_inspect(mrb, name) : name);
-      mrb_str_cat_lit(mrb, ret, ": ");
-    }
-    else {
-      mrb_str_cat_str(mrb, ret, mrb_inspect(mrb, k));
-      mrb_str_cat_lit(mrb, ret, " => ");
-    }
-    mrb_str_cat_str(mrb, ret, mrb_inspect(mrb, v));
-    mrb_gc_arena_restore(mrb, ai);
-  }
-  mrb_str_cat_lit(mrb, ret, "}");
-  return ret;
+  if (MRB_RECURSIVE_UNARY_P(mrb, MRB_SYM(inspect), self))
+    return us_ascii_str(mrb, mrb_str_new_lit(mrb, "{...}"));
+
+  struct inspect_buffer b = inspect_buffer_new(mrb, mrb_str_new_lit(mrb, "{"));
+  mrb_str_ptr(b.str)->c = NULL;
+  mrb_hash_foreach(mrb, mrb_hash_ptr(self), hash_inspect_entry, &b);
+  mrb_str_cat_lit(mrb, b.str, "}");
+  mrb_str_ptr(b.str)->c = mrb->string_class;
+  return b.str;
 }
 
 /* Range: MRI freezes a Range made by Range.new (not a subclass's), and a
@@ -2940,7 +3028,6 @@ enum chk_kind {
   CHK_ASCII_ONLY,   /* String#ascii_only?: never for an ASCII-incompatible encoding */
   CHK_STR_LENGTH,   /* String#length of a tagged string: by its encoding (Ruby) */
   CHK_STR_ORD,      /* String#ord of a broken US-ASCII character: ArgumentError */
-  CHK_ARY_INSPECT,  /* [].inspect is US-ASCII */
   CHK_BINDING_SELF, /* Kernel#binding: self is the caller's, not the receiver */
   CHK_SCLASS_FSTR,  /* singleton_class of a deduplicated String (-"str"): TypeError */
   CHK_NAME_BYTES,   /* alias_method: a String name's bytes valid, as String#to_sym */
@@ -2989,7 +3076,6 @@ static struct chk_def chk_defs[] = {
   {6, "ascii_only?", CHK_ASCII_ONLY, NULL, NULL},
   {6, "length", CHK_STR_LENGTH, NULL, NULL},
   {6, "ord", CHK_STR_ORD, NULL, NULL},
-  {7, "inspect", CHK_ARY_INSPECT, NULL, NULL},
   {0, "binding", CHK_BINDING_SELF, NULL, NULL},
   {0, "singleton_class", CHK_SCLASS_FSTR, NULL, NULL},
   {2, "alias_method", CHK_NAME_BYTES, NULL, NULL},
@@ -3347,13 +3433,6 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
             mrb_raise(mrb, E_TYPE_ERROR, "can't define singleton");
         }
       }
-    }
-    break;
-  case CHK_ARY_INSPECT:
-    if (mrb_array_p(self) && RARRAY_LEN(self) == 0) {
-      mrb_value r = mrb_str_new_lit(mrb, "[]");
-      str_enc_us_ascii_set(mrb, r);
-      return r;
     }
     break;
   case CHK_STR_ORD:
@@ -4029,10 +4108,12 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   _mrb_wrap_string_encoding(mrb);
   gv_init_checked(mrb);
   wrap_cfunc(mrb, mrb->kernel_module, "respond_to?", respond_to_w, &respond_to_orig);
-  wrap_cfunc(mrb, mrb->hash_class, "inspect", hash_inspect_w, &hash_inspect_orig);
+  mrb_define_method_id(mrb, mrb->array_class, MRB_SYM(inspect), array_inspect_w, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, mrb->hash_class, MRB_SYM(inspect), hash_inspect_w, MRB_ARGS_NONE());
   wrap_cfunc(mrb, mrb->range_class, "initialize", range_init_w, &range_init_orig);
   wrap_cfunc(mrb, mrb->range_class, "initialize_copy", range_init_copy_w, &range_init_copy_orig);
-  wrap_cfunc(mrb, mrb->hash_class, "to_s", hash_inspect_w, &hash_inspect_orig);
+  mrb_alias_method(mrb, mrb->array_class, MRB_SYM(to_s), MRB_SYM(inspect));
+  mrb_alias_method(mrb, mrb->hash_class, MRB_SYM(to_s), MRB_SYM(inspect));
   wrap_cfunc(mrb, mrb->module_class, "const_missing", const_missing_w, &const_missing_orig);
   wrap_cfunc(mrb, mrb->module_class, "remove_const", remove_const_w, &remove_const_orig);
   wrap_cfunc(mrb, mrb->kernel_module, "local_variables", k_lvars_w, &k_lvars_orig);

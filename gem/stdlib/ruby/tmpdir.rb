@@ -23,7 +23,7 @@ class Dir
       begin
         yield path.dup
       ensure
-        __rm_rf(path) if File.directory?(path)
+        FileUtils.remove_entry(path, true)
       end
     else
       path

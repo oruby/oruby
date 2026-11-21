@@ -864,6 +864,18 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 		case C.ORB_KWSPLAT:
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_kwsplat((" },
 				func(*rewriter) string { return "))" })
+		case C.ORB_HASH_LABEL_ENCODING:
+			// mruby symbols have no encoding slot. Build the symbol via String#to_sym,
+			// which records its encoding alongside the interned name.
+			var label strings.Builder
+			const hex = "0123456789abcdef"
+			for _, b := range src[s[1]:e[1]] {
+				label.WriteString("\\x")
+				label.WriteByte(hex[b>>4])
+				label.WriteByte(hex[b&15])
+			}
+			replacement := `"` + label.String() + `".force_encoding(::Encoding.find("` + encName + `")).to_sym =>`
+			r.add(s[0], e[0], func(*rewriter) string { return replacement })
 		case C.ORB_LITERAL_ENCODING:
 			// MRI tags a literal with its source encoding; \u escapes make it
 			// UTF-8, which is oruby's default already

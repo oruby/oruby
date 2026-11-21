@@ -114,10 +114,6 @@ func init() {
 		dir.DefineClassMethod("__systmpdir", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.StrNew(strings.TrimSuffix(os.TempDir(), "/"))
 		}, mrb.ArgsNone())
-		dir.DefineClassMethod("__rm_rf", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-			os.RemoveAll(mrb.GetArgsFirst().String())
-			return mrb.NilValue()
-		}, mrb.ArgsReq(1))
 		load(mrb, "tmpdir")
 		return nil
 	})

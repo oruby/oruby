@@ -705,9 +705,31 @@ visit(const pm_node_t *node, void *data)
   case PM_KEYWORD_HASH_NODE:
     anon_args(sc, &((const pm_keyword_hash_node_t *)node)->elements);
     break;
-  case PM_HASH_NODE:
-    anon_args(sc, &((const pm_hash_node_t *)node)->elements);
+  case PM_HASH_NODE: {
+    const pm_node_list_t *elements = &((const pm_hash_node_t *)node)->elements;
+    anon_args(sc, elements);
+    if (!sc->nonutf8) break;
+    for (size_t i = 0; i < elements->size; i++) {
+      const pm_node_t *elem = elements->nodes[i];
+      if (PM_NODE_TYPE(elem) != PM_ASSOC_NODE) continue;
+      const pm_assoc_node_t *assoc = (const pm_assoc_node_t *)elem;
+      if (assoc->value && PM_NODE_TYPE(assoc->value) == PM_IMPLICIT_NODE) continue;
+      const pm_node_t *key = assoc->key;
+      if (PM_NODE_TYPE(key) != PM_SYMBOL_NODE) continue;
+      const pm_symbol_node_t *sym = (const pm_symbol_node_t *)key;
+      if (sym->opening_loc.length != 0 || sym->closing_loc.length != 1 ||
+          sc->src[sym->closing_loc.start] != ':') continue;
+      for (size_t j = 0; j < sym->content_loc.length; j++) {
+        if ((unsigned char)sc->src[sym->content_loc.start + j] < 0x80) continue;
+        r = add(sc, ORB_HASH_LABEL_ENCODING);
+        span(r, 0, key);
+        r->s[1] = (int32_t)sym->content_loc.start;
+        r->e[1] = r->s[1] + (int32_t)sym->content_loc.length;
+        break;
+      }
+    }
     break;
+  }
   case PM_BLOCK_ARGUMENT_NODE:
     if (sc->eval && !((const pm_block_argument_node_t *)node)->expression) {
       r = add(sc, ORB_ANON_ARG);

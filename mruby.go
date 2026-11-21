@@ -411,7 +411,16 @@ end
 			return mrb.NilValue()
 		}
 		// eval'd code: its regexp literals are made as it is compiled
-		out, err := preprocessRuby([]byte(args.Item(0).String()), &PreprocessOptions{NoRegexpLiterals: true})
+		src := args.Item(0)
+		opts := PreprocessOptions{NoRegexpLiterals: true}
+		if tag := mrb.IVGet(src, Sym___encoding); !tag.IsNil() {
+			name, err := mrb.Funcall(tag, Sym_name)
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+			opts.SourceEncoding = name.String()
+		}
+		out, err := preprocessRuby([]byte(src.String()), &opts)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}

@@ -206,6 +206,51 @@ class String
   end
 end
 
+module Kernel
+  INSPECT_ESCAPES = {
+    0 => '\0', 7 => '\a', 8 => '\b', 9 => '\t', 10 => '\n',
+    11 => '\v', 12 => '\f', 13 => '\r', 27 => '\e', 127 => '\c?'
+  }.freeze
+  private_constant :INSPECT_ESCAPES
+
+  def self.__oruby_inspect_symbol_quote?(name)
+    enc = Encoding.default_internal || Encoding.default_external
+    return true if name.encoding != enc || !enc.ascii_compatible? || !name.valid_encoding?
+    !name.encode(Encoding::UTF_8).match?(/\A(?:[a-zA-Z_]|[^\x00-\x7F])(?:[a-zA-Z0-9_]|[^\x00-\x7F])*[!?]?\z/)
+  end
+
+  # Make an inspection fragment readable in the selected encoding while
+  # preserving the syntax already produced by the object's inspect method.
+  def self.__oruby_inspect_part(str)
+    target = Encoding.default_internal || Encoding.default_external
+    enc = str.encoding
+    if str.ascii_only?
+      return str if target.ascii_compatible? || enc.equal?(Encoding::US_ASCII)
+      return str.dup.force_encoding(Encoding::US_ASCII)
+    end
+    return str if enc.equal?(target) && target.ascii_compatible?
+    unicode = %w[UTF-8 UTF8-MAC UTF-16LE UTF-16BE UTF-32LE UTF-32BE].include?(enc.name)
+    out = +""
+    str.each_char do |char|
+      if !char.valid_encoding?
+        char.each_byte { |byte| out << format('\x%02X', byte) }
+        next
+      end
+      cp = unicode && !enc.equal?(Encoding::UTF_8) ? char.encode(Encoding::UTF_8).ord : char.ord
+      if INSPECT_ESCAPES.key?(cp)
+        out << INSPECT_ESCAPES[cp]
+      elsif cp.between?(32, 126)
+        out << cp.chr
+      elsif unicode
+        out << (cp <= 0xFFFF ? format('\u%04X', cp) : format('\u{%X}', cp))
+      else
+        out << (cp <= 0xFF ? format('\x%02X', cp) : format('\x{%X}', cp))
+      end
+    end
+    out.force_encoding(Encoding::US_ASCII)
+  end
+end
+
 class String
   alias __oruby_mrb_each_byte each_byte
   def each_byte(&block)
