@@ -100,6 +100,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@binmode");
   (void)mrb_intern_lit(mrb, "@broadaddr");
   (void)mrb_intern_lit(mrb, "@closed");
+  (void)mrb_intern_lit(mrb, "@default_external");
+  (void)mrb_intern_lit(mrb, "@default_internal");
   (void)mrb_intern_lit(mrb, "@dstaddr");
   (void)mrb_intern_lit(mrb, "@encoding");
   (void)mrb_intern_lit(mrb, "@exit_value");

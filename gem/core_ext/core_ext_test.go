@@ -67,6 +67,28 @@ func TestStringDedupCopiesSubclassContents(t *testing.T) {
 	}
 }
 
+func TestHashCopiesEncodedStringKeys(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	v, err := mrb.Eval(`
+      enc = Encoding::UTF_16LE
+      utf16 = ->(ascii) { ascii.bytes.pack("v*").force_encoding(enc) }
+      key = utf16.call("e")
+      key.instance_variable_set(:@tag, true)
+      replacements = {}
+      replacements[key] = utf16.call("EH!")
+      stored = replacements.keys.first
+      key.clear
+      result = utf16.call("hello").tr(replacements)
+      stored.frozen? && stored.instance_variables.empty? && stored.encoding == enc &&
+        result == utf16.call("hEH!llo") && result.encoding == enc
+    `)
+	if err != nil || !v.Bool() {
+		t.Fatalf("encoded hash key and translation = %v, %v; want true", v, err)
+	}
+}
+
 func TestCoreExt(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

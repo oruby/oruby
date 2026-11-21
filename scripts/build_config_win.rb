@@ -1,4 +1,6 @@
-MRuby::Build.new do |conf|
+require_relative "mruby_hash_keys"
+
+oruby_build = MRuby::Build.new do |conf|
   # load specific toolchain settings
 
   # Gets set by the VS command prompts.
@@ -90,6 +92,8 @@ MRuby::Build.new do |conf|
   # file separetor
   # conf.file_separator = '/'
 end
+
+oruby_hash_key_rules(oruby_build)
 
 # Define cross build settings
 # MRuby::CrossBuild.new('32bit') do |conf|

@@ -2442,9 +2442,11 @@ struct inspect_buffer {
   mrb_value kernel;
   mrb_bool normalize;
   mrb_bool ascii;
+  mrb_bool tagged;
 };
 
 static mrb_bool inspect_ascii(mrb_value str) {
+  if (RSTR_CODERANGE(mrb_str_ptr(str)) == MRB_STR_CODERANGE_7BIT) return TRUE;
   const unsigned char *p = (const unsigned char *)RSTRING_PTR(str);
   for (mrb_int i = 0; i < RSTRING_LEN(str); i++) {
     if (p[i] >= 0x80) return FALSE;
@@ -2452,29 +2454,47 @@ static mrb_bool inspect_ascii(mrb_value str) {
   return TRUE;
 }
 
-static void inspect_append(mrb_state *mrb, struct inspect_buffer *b, mrb_value part, mrb_bool first) {
+/* A fragment already in US-ASCII never needs encoding normalization.
+   Other untagged ASCII fragments only need it for a wide target encoding. */
+static mrb_bool inspect_needs_normalize(mrb_state *mrb, mrb_value part, mrb_bool ascii) {
+  if (!ascii) return TRUE;
+  int enc = RSTR_ENCODING(mrb_str_ptr(part));
+  if (enc == ORB_STR_ENCODING_US_ASCII) return FALSE;
+  if (enc == MRB_STR_ENCODING_BINARY && !mrb_nil_p(mrb_iv_get(mrb, part, MRB_SYM(__encoding)))) return TRUE;
+
+  mrb_value encoding = mrb_obj_value(mrb_class_get_id(mrb, MRB_SYM(Encoding)));
+  mrb_value target = mrb_iv_get(mrb, encoding, MRB_IVSYM(default_internal));
+  if (mrb_nil_p(target)) target = mrb_iv_get(mrb, encoding, MRB_IVSYM(default_external));
+  return mrb_nil_p(target) || !mrb_test(mrb_iv_get(mrb, target, MRB_IVSYM(ascii_compatible)));
+}
+
+static void inspect_append(mrb_state *mrb, struct inspect_buffer *b, mrb_value part,
+                           mrb_bool first, mrb_bool normalize) {
   mrb_bool ascii = inspect_ascii(part);
-  if (first || (b->ascii && (!ascii || RSTR_ENCODING(mrb_str_ptr(b->str)) == ORB_STR_ENCODING_US_ASCII))) {
+  if (normalize && b->normalize && inspect_needs_normalize(mrb, part, ascii)) {
+    part = mrb_funcall_id(mrb, b->kernel, MRB_SYM(__oruby_inspect_part), 1, part);
+    ascii = inspect_ascii(part);
+  }
+  int current = RSTR_ENCODING(mrb_str_ptr(b->str));
+  int encoding = RSTR_ENCODING(mrb_str_ptr(part));
+  if ((encoding != current || encoding == MRB_STR_ENCODING_BINARY) &&
+      (first || (b->ascii && (!ascii || current == ORB_STR_ENCODING_US_ASCII)))) {
     mrb_sym sym = MRB_SYM(__encoding);
-    mrb_value tag = mrb_iv_get(mrb, part, sym);
-    RSTR_ENCODING_SET(mrb_str_ptr(b->str), RSTR_ENCODING(mrb_str_ptr(part)));
+    mrb_value tag = encoding == MRB_STR_ENCODING_BINARY ? mrb_iv_get(mrb, part, sym) : mrb_nil_value();
+    RSTR_ENCODING_SET(mrb_str_ptr(b->str), encoding);
     if (!mrb_nil_p(tag)) mrb_iv_set(mrb, b->str, sym, tag);
-    else if (mrb_iv_defined(mrb, b->str, sym)) mrb_iv_remove(mrb, b->str, sym);
+    else if (b->tagged) mrb_iv_remove(mrb, b->str, sym);
+    b->tagged = !mrb_nil_p(tag);
   }
   mrb_str_cat(mrb, b->str, RSTRING_PTR(part), RSTRING_LEN(part));
   b->ascii = b->ascii && ascii;
-}
-
-static mrb_value inspect_part(mrb_state *mrb, struct inspect_buffer *b, mrb_value part) {
-  if (!b->normalize) return part;
-  return mrb_funcall_id(mrb, b->kernel, MRB_SYM(__oruby_inspect_part), 1, part);
 }
 
 static struct inspect_buffer inspect_buffer_new(mrb_state *mrb, mrb_value str) {
   mrb_value kernel = mrb_obj_value(mrb->kernel_module);
   struct inspect_buffer b = {
     us_ascii_str(mrb, str), kernel,
-    mrb_respond_to(mrb, kernel, MRB_SYM(__oruby_inspect_part)), TRUE
+    mrb_respond_to(mrb, kernel, MRB_SYM(__oruby_inspect_part)), TRUE, FALSE
   };
   return b;
 }
@@ -2488,9 +2508,9 @@ static mrb_value array_inspect_w(mrb_state *mrb, mrb_value self) {
   mrb_str_ptr(b.str)->c = NULL; /* hide the buffer from ObjectSpace.each_object */
   int ai = mrb_gc_arena_save(mrb);
   for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-    mrb_value part = inspect_part(mrb, &b, mrb_inspect(mrb, RARRAY_PTR(self)[i]));
+    mrb_value part = mrb_inspect(mrb, RARRAY_PTR(self)[i]);
     if (i > 0) mrb_str_cat_lit(mrb, b.str, ", ");
-    inspect_append(mrb, &b, part, i == 0);
+    inspect_append(mrb, &b, part, i == 0, TRUE);
     mrb_gc_arena_restore(mrb, ai);
   }
   mrb_str_cat_lit(mrb, b.str, "]");
@@ -2511,6 +2531,14 @@ sym_key_needs_quote(mrb_state *mrb, mrb_sym sym)
   return strchr("+-*/`%^&|]<=>~@", s[len - 1]) != NULL;
 }
 
+static mrb_bool plain_symbol_key(const char *name, mrb_int len) {
+  if (len == 0 || (!ISALPHA((unsigned char)name[0]) && name[0] != '_')) return FALSE;
+  for (mrb_int i = 1; i < len; i++) {
+    if (!ISALNUM((unsigned char)name[i]) && name[i] != '_') return FALSE;
+  }
+  return TRUE;
+}
+
 static int hash_inspect_entry(mrb_state *mrb, mrb_value key, mrb_value value, void *data) {
   struct inspect_buffer *b = data;
   int ai = mrb_gc_arena_save(mrb);
@@ -2519,33 +2547,37 @@ static int hash_inspect_entry(mrb_state *mrb, mrb_value key, mrb_value value, vo
   if (!first) mrb_str_cat_lit(mrb, b->str, ", ");
   if (mrb_symbol_p(key)) {
     mrb_sym sym = mrb_symbol(key);
-    mrb_value name = mrb_sym_str(mrb, sym);
-    mrb_bool ascii = inspect_ascii(name);
-    if (ascii) us_ascii_str(mrb, name);
+    mrb_int len = 0;
+    const char *bytes = mrb_sym_name_len(mrb, sym, &len);
+    if (plain_symbol_key(bytes, len)) {
+      mrb_str_cat(mrb, b->str, bytes, len);
+    }
     else {
-      mrb_value tags = mrb_iv_get(mrb, mrb_obj_value(mrb->symbol_class), MRB_IVSYM(__sym_encodings));
-      if (mrb_hash_p(tags)) {
-        mrb_value tag = mrb_hash_get(mrb, tags, key);
-        if (!mrb_nil_p(tag)) {
-          RSTR_ENCODING_SET(mrb_str_ptr(name), MRB_STR_ENCODING_BINARY);
-          mrb_iv_set(mrb, name, MRB_SYM(__encoding), tag);
+      mrb_value name = mrb_sym_str(mrb, sym);
+      mrb_bool ascii = inspect_ascii(name);
+      if (ascii) us_ascii_str(mrb, name);
+      else {
+        mrb_value tags = mrb_iv_get(mrb, mrb_obj_value(mrb->symbol_class), MRB_IVSYM(__sym_encodings));
+        if (mrb_hash_p(tags)) {
+          mrb_value tag = mrb_hash_get(mrb, tags, key);
+          if (!mrb_nil_p(tag)) {
+            RSTR_ENCODING_SET(mrb_str_ptr(name), MRB_STR_ENCODING_BINARY);
+            mrb_iv_set(mrb, name, MRB_SYM(__encoding), tag);
+          }
         }
       }
+      mrb_bool quote = ascii || !b->normalize ? sym_key_needs_quote(mrb, sym) :
+        mrb_test(mrb_funcall_id(mrb, b->kernel, MRB_SYM_Q(__oruby_inspect_symbol_quote), 1, name));
+      mrb_value part = quote ? mrb_str_inspect(mrb, name) : name;
+      inspect_append(mrb, b, part, first, quote);
     }
-    mrb_value part = name;
-    mrb_bool quote = ascii || !b->normalize ? sym_key_needs_quote(mrb, sym) :
-      mrb_test(mrb_funcall_id(mrb, b->kernel, MRB_SYM_Q(__oruby_inspect_symbol_quote), 1, name));
-    if (quote) {
-      part = inspect_part(mrb, b, mrb_str_inspect(mrb, name));
-    }
-    inspect_append(mrb, b, part, first);
     mrb_str_cat_lit(mrb, b->str, ": ");
   }
   else {
-    inspect_append(mrb, b, inspect_part(mrb, b, mrb_inspect(mrb, key)), first);
+    inspect_append(mrb, b, mrb_inspect(mrb, key), first, TRUE);
     mrb_str_cat_lit(mrb, b->str, " => ");
   }
-  inspect_append(mrb, b, inspect_part(mrb, b, mrb_inspect(mrb, value)), FALSE);
+  inspect_append(mrb, b, mrb_inspect(mrb, value), FALSE, TRUE);
   mrb_gc_arena_restore(mrb, ai);
   return 0;
 }
