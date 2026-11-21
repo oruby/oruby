@@ -36,7 +36,10 @@ module Ruby
 
       # a Proc's or a Method's range: the block, lambda, for body or def
       # starting at line (a def named name first)
-      def __oruby_of(loc, name = nil)
+      def __oruby_of(loc, name = nil) = __oruby_of_typed(loc, name)&.first
+
+      # [range, node type] of a Proc's or a Method's code (__oruby_of)
+      def __oruby_of_typed(loc, name = nil)
         return nil unless loc
         path, line = loc
         return nil if path.nil? || path.start_with?("<internal:", "mrblib/", "mrbgems/")
@@ -58,7 +61,7 @@ module Ruby
         at = nodes.select { |n| n[1] == line - off }
         node = (name && at.find { |n| n[0] == "DefNode" && n[5] == name }) ||
                at.find { |n| (name ? METHOD_NODES : PROC_NODES).include?(n[0]) }
-        node && __oruby_new(path, abs, node, off)
+        node && [__oruby_new(path, abs, node, off), node[0]]
       end
 
       # instructions that are a call of an operator method
@@ -175,21 +178,27 @@ module Ruby
 end
 
 class Proc
-  def source_range
+  def source_range = __oruby_range_typed&.first
+
+  # [range, Prism node type] (Ruby::SourceRange.__oruby_syntax_tree)
+  def __oruby_range_typed
     if (m = instance_variable_get(:@__oruby_method))
-      return m.source_range
+      return m.__oruby_range_typed
     end
-    Ruby::SourceRange.__oruby_of(source_location)
+    Ruby::SourceRange.__oruby_of_typed(source_location)
   end
 end
 
 class Method
-  def source_range = Ruby::SourceRange.__oruby_of(source_location, original_name)
+  def source_range = __oruby_range_typed&.first
+  def __oruby_range_typed = Ruby::SourceRange.__oruby_of_typed(source_location, original_name)
 end
 
 class UnboundMethod
-  def source_range
-    Ruby::SourceRange.__oruby_of(source_location, respond_to?(:original_name) ? original_name : name)
+  def source_range = __oruby_range_typed&.first
+
+  def __oruby_range_typed
+    Ruby::SourceRange.__oruby_of_typed(source_location, respond_to?(:original_name) ? original_name : name)
   end
 end
 
@@ -202,7 +211,10 @@ module Kernel
 end
 
 class Thread::Backtrace::Location
-  def source_range
+  def source_range = __oruby_range_typed&.first
+
+  # [range, Prism node type] (Ruby::SourceRange.__oruby_syntax_tree)
+  def __oruby_range_typed
     path = self.path
     line = lineno
     site = @__oruby_site
@@ -230,6 +242,64 @@ class Thread::Backtrace::Location
       node = Ruby::SourceRange.__oruby_pick(Kernel.__oruby_prism_nodes(src, line - off, c[3]), site, line - off)
     end
     raise RuntimeError, "source has been modified" unless node
-    Ruby::SourceRange.__oruby_new(path, abs, node, off)
+    [Ruby::SourceRange.__oruby_new(path, abs, node, off), node[0]]
   end
+end
+
+# MRI 4.1's #syntax_tree: the Ruby::Prism node of the code. Ruby::Prism is the
+# library scripts/gen_prism.rb generates into lib/oruby/4.1.0/ruby/.
+module Ruby
+  autoload :Prism, "ruby/prism"
+
+  class SourceRange
+    # The node of callable's #source_range, the file parsed again: the one of
+    # that span and of the type #source_range picked (several nodes can share
+    # a span: a block and its implicit `it`, `*a` and its implicit Array).
+    # Prism's NodeFind takes the deepest instead. MRI finds the node by the
+    # iseq's node_id, which for a Proc's or a define_method's block is the
+    # call the block is passed to (a CallNode, not the BlockNode).
+    def self.__oruby_syntax_tree(callable)
+      begin
+        range, type = callable.__oruby_range_typed
+      rescue ArgumentError # eval
+        return nil
+      end
+      path = range&.absolute_path
+      return nil unless path && File.readable?(path)
+      result = Ruby::Prism.parse_file(path)
+      return nil unless result.success?
+      from = result.source.byte_offset(range.start_line, range.start_column)
+      to = result.source.byte_offset(range.end_line, range.end_column)
+      nodes = result.value.tunnel(range.start_line, range.start_column)
+      name = "Ruby::Prism::#{type}"
+      hit = ->(n) { n.start_offset == from && n.end_offset == to && n.class.name == name }
+      block = !callable.is_a?(Thread::Backtrace::Location)
+      if (i = nodes.index(&hit))
+        return i > 0 && block && nodes[i].type == :block_node ? nodes[i - 1] : nodes[i]
+      end
+      # the tunnel follows the first child at the offset: `f(x:)` has the
+      # implicit call x under the key x:, both starting there
+      node = result.value.breadth_first_search(&hit)
+      if node && block && node.type == :block_node
+        node = result.value.breadth_first_search { |n| n.respond_to?(:block) && n.block.equal?(node) } || node
+      end
+      node
+    end
+  end
+end
+
+class Proc
+  def syntax_tree = Ruby::SourceRange.__oruby_syntax_tree(self)
+end
+
+class Method
+  def syntax_tree = Ruby::SourceRange.__oruby_syntax_tree(self)
+end
+
+class UnboundMethod
+  def syntax_tree = Ruby::SourceRange.__oruby_syntax_tree(self)
+end
+
+class Thread::Backtrace::Location
+  def syntax_tree = Ruby::SourceRange.__oruby_syntax_tree(self)
 end

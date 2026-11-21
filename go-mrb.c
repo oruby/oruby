@@ -1186,13 +1186,34 @@ static mrb_callinfo *svar_start(mrb_state *mrb, mrb_bool *moved) {
   return ci;
 }
 
+/* A bare private/protected/public/module_function gives the scope proc of
+   the frame it runs in (a class body, a method) the env of that very frame
+   (class.c's vis_scope_persist). vm.c's svar_owner_from then no longer takes
+   the frame for a scope owning its slot, and looking below it for the env's
+   frame finds none: a read answers nil and a write is dropped, although a
+   block of that frame resolves to the frame. With the env flag cleared for
+   the call the frame owns its slot again, the one its blocks find (both are
+   mrb_ci_svar of the frame), and the env it keeps on return is the same. */
+static struct RProc *svar_persisted_scope(mrb_callinfo *ci) {
+  struct RProc *p = (struct RProc *)ci->proc;
+  if (p && !MRB_PROC_CFUNC_P(p) && MRB_PROC_SCOPE_P(p) && MRB_PROC_ENV_P(p) &&
+      MRB_PROC_ENV(p) == mrb_vm_ci_env(ci))
+    return p;
+  return NULL;
+}
+
 static mrb_value svar_get(mrb_state *mrb, enum mrb_svar_index key) {
   mrb_bool moved;
   mrb_callinfo *start = svar_start(mrb, &moved);
-  if (!moved) return mrb_vm_svar_get(mrb, key);
+  struct RProc *ps = start > mrb->c->cibase ? svar_persisted_scope(start) : NULL;
+  if (!moved && !ps) return mrb_vm_svar_get(mrb, key);
+  /* a read allocates nothing: no GC runs while ci is lowered or the flag
+     is off (the proc's e.env then reads as its target class) */
   mrb_callinfo *saved = mrb->c->ci;
-  mrb->c->ci = start; /* a read allocates nothing */
+  mrb->c->ci = start;
+  if (ps) ps->flags &= ~MRB_PROC_ENVSET;
   mrb_value v = mrb_vm_svar_get(mrb, key);
+  if (ps) ps->flags |= MRB_PROC_ENVSET;
   mrb->c->ci = saved;
   return v;
 }
@@ -1200,17 +1221,21 @@ static mrb_value svar_get(mrb_state *mrb, enum mrb_svar_index key) {
 static void svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v) {
   mrb_bool moved;
   mrb_callinfo *start = svar_start(mrb, &moved);
-  if (!moved) {
+  struct RProc *ps = start > mrb->c->cibase ? svar_persisted_scope(start) : NULL;
+  if (!moved && !ps) {
     mrb_vm_svar_set(mrb, key, v);
     return;
   }
   /* A first write allocates the scope's container. With ci lowered the GC
-     would not mark the frames above it, so none may run meanwhile. */
+     would not mark the frames above it, and with the env flag off it would
+     mark the proc's env as its target class, so none may run meanwhile. */
   mrb_callinfo *saved = mrb->c->ci;
   mrb_bool gc_off = mrb->gc.disabled;
   mrb->gc.disabled = TRUE;
   mrb->c->ci = start;
+  if (ps) ps->flags &= ~MRB_PROC_ENVSET;
   mrb_vm_svar_set(mrb, key, v);
+  if (ps) ps->flags |= MRB_PROC_ENVSET;
   mrb->c->ci = saved;
   mrb->gc.disabled = gc_off;
 }
@@ -2263,6 +2288,7 @@ install_num_to_s(mrb_state *mrb)
 
 /* runs under coreMu (mruby.go): it fills the process-wide tables */
 void _orb_srcrange_init(mrb_state *mrb);
+void _orb_prism_serialize_init(mrb_state *mrb);
 void _orb_trace_init(mrb_state *mrb);
 
 void _orb_fast_capture(mrb_state *mrb);
@@ -4018,6 +4044,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_method_id(mrb, mrb_exc_get_id(mrb, MRB_ERROR_SYM(FrozenError)), MRB_SYM(to_s), frozen_error_to_s, MRB_ARGS_NONE());
   _orb_bt_init(mrb);
   _orb_srcrange_init(mrb);
+  _orb_prism_serialize_init(mrb);
   _orb_trace_init(mrb);
   mrb_define_class_method(mrb, mrb->symbol_class, "all_symbols", sym_all_symbols_m, MRB_ARGS_NONE());
   if (mrb_class_defined(mrb, "Complex")) {

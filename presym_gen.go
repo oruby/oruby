@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "9c40f6c07e367c9f"
+const presymTable = "b431a6de92c83199"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -173,6 +173,7 @@ const (
 	SymQ___oruby_core_proc                      MrbSym = C.MRB_SYM_Q____oruby_core_proc                     // "__oruby_core_proc?"
 	SymQ___oruby_own_hook                       MrbSym = C.MRB_SYM_Q____oruby_own_hook                      // "__oruby_own_hook?"
 	SymQ___oruby_popen_duplex                   MrbSym = C.MRB_SYM_Q____oruby_popen_duplex                  // "__oruby_popen_duplex?"
+	SymQ___oruby_prism_success                  MrbSym = C.MRB_SYM_Q____oruby_prism_success                 // "__oruby_prism_success?"
 	SymQ___oruby_readable                       MrbSym = C.MRB_SYM_Q____oruby_readable                      // "__oruby_readable?"
 	SymQ___oruby_str_comparable                 MrbSym = C.MRB_SYM_Q____oruby_str_comparable                // "__oruby_str_comparable?"
 	SymQ___oruby_writable                       MrbSym = C.MRB_SYM_Q____oruby_writable                      // "__oruby_writable?"
@@ -678,7 +679,11 @@ const (
 	Sym___oruby_popen_pid                       MrbSym = C.MRB_SYM____oruby_popen_pid                       // "__oruby_popen_pid"
 	Sym___oruby_popen_start                     MrbSym = C.MRB_SYM____oruby_popen_start                     // "__oruby_popen_start"
 	Sym___oruby_post                            MrbSym = C.MRB_SYM____oruby_post                            // "__oruby_post"
+	Sym___oruby_prism_errors                    MrbSym = C.MRB_SYM____oruby_prism_errors                    // "__oruby_prism_errors"
 	Sym___oruby_prism_nodes                     MrbSym = C.MRB_SYM____oruby_prism_nodes                     // "__oruby_prism_nodes"
+	Sym___oruby_prism_query                     MrbSym = C.MRB_SYM____oruby_prism_query                     // "__oruby_prism_query"
+	Sym___oruby_prism_serialize                 MrbSym = C.MRB_SYM____oruby_prism_serialize                 // "__oruby_prism_serialize"
+	Sym___oruby_prism_version                   MrbSym = C.MRB_SYM____oruby_prism_version                   // "__oruby_prism_version"
 	Sym___oruby_push                            MrbSym = C.MRB_SYM____oruby_push                            // "__oruby_push"
 	Sym___oruby_rand_slow                       MrbSym = C.MRB_SYM____oruby_rand_slow                       // "__oruby_rand_slow"
 	Sym___oruby_rbuf                            MrbSym = C.MRB_SYM____oruby_rbuf                            // "__oruby_rbuf"

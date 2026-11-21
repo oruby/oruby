@@ -23,8 +23,11 @@ all : libmruby.a $(DYN_LIB) bin
 	ruby scripts/check_api.rb
 	go build .
 
-# bin/ next to lib/oruby is the install layout, so bin/oruby runs in-tree
+# bin/ next to lib/oruby is the install layout, so bin/oruby runs in-tree.
+# scripts/gen_prism.rb writes Ruby::Prism and Ripper into lib/oruby/4.1.0
+# (generated from mruby's vendored Prism, ignored by git).
 bin : libmruby.a
+	ruby scripts/gen_prism.rb
 	go build -o bin/oruby ./cmd/oruby
 	go build -o bin/orbi ./cmd/orbi
 	go build -o bin/orubyc ./cmd/orubyc

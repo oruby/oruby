@@ -581,7 +581,12 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_popen_pid");
   (void)mrb_intern_lit(mrb, "__oruby_popen_start");
   (void)mrb_intern_lit(mrb, "__oruby_post");
+  (void)mrb_intern_lit(mrb, "__oruby_prism_errors");
   (void)mrb_intern_lit(mrb, "__oruby_prism_nodes");
+  (void)mrb_intern_lit(mrb, "__oruby_prism_query");
+  (void)mrb_intern_lit(mrb, "__oruby_prism_serialize");
+  (void)mrb_intern_lit(mrb, "__oruby_prism_success?");
+  (void)mrb_intern_lit(mrb, "__oruby_prism_version");
   (void)mrb_intern_lit(mrb, "__oruby_push");
   (void)mrb_intern_lit(mrb, "__oruby_rand_slow");
   (void)mrb_intern_lit(mrb, "__oruby_rbuf");
