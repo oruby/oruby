@@ -63,6 +63,11 @@ Dir.mktmpdir('gen_prism') do |tmp|
     if f == File.join(stage, 'prism.rb')
       src = patch(src, "Ruby::Prism::BACKEND = :FFI\n\n  require_relative \"prism/ffi\"",
                   "Ruby::Prism::BACKEND = :ORUBY\n\n  require_relative \"prism/oruby\"", 'prism.rb')
+    elsif f == File.join(stage, 'prism/translation/ripper.rb')
+      src = patch(src, "            when :alias_argument\n",
+                  "            when :def_endless_setter\n" \
+                  "              on_parse_error(\"setter method cannot be defined in an endless method definition\")\n" \
+                  "            when :alias_argument\n", 'prism/translation/ripper.rb')
     end
     File.binwrite(f, src)
   end

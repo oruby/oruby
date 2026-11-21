@@ -159,8 +159,8 @@ static void vis_prepare_name(mrb_state *mrb, struct RClass *c, mrb_value name) {
 
 /* public/private/protected with names, as MRI's rb_export_method: an own
    method (of the origin, when the class is prepended) changes in place; an
-   inherited one already of that visibility is left alone; another is
-   copied into the class with it, and method_added hears of the copy. FALSE:
+   inherited one already of that visibility is left alone; another gets
+   an entry that changes visibility while following the ancestor's definition. FALSE:
    a name is not a method here, for mruby's own to raise about. */
 static mrb_bool vis_export(mrb_state *mrb, mrb_value self, int which) {
   static const unsigned int vis_fl[3] = {MRB_METHOD_PUBLIC_FL, MRB_METHOD_PRIVATE_FL, MRB_METHOD_PROTECTED_FL};
@@ -193,25 +193,15 @@ static mrb_bool vis_export(mrb_state *mrb, mrb_value self, int which) {
     mrb_sym mid = mrb_symbol_p(n) ? mrb_symbol(n) : mrb_intern_str(mrb, n);
     struct RClass *o = home;
     mrb_method_t m = mrb_method_search_vm(mrb, &o, mid);
-    if (o == home || (o->tt == MRB_TT_ICLASS && o == home)) {
+    if (o == home) {
       MRB_METHOD_SET_VISIBILITY(m, vis_fl[which]);
       mrb_define_method_raw(mrb, home, mid, m);
       continue;
     }
     if ((unsigned int)MRB_METHOD_VISIBILITY(m) == vis_fl[which]) continue;
-    if (MRB_METHOD_PROC_P(m) && !MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m)) && !MRB_PROC_ALIAS_P(MRB_METHOD_PROC(m))) {
-      /* MRI's ZSUPER entry: the method of where it was found, so that a
-         `super` in it goes on from there (an alias proc keeps the owner) */
-      struct RProc *pnew = MRB_OBJ_ALLOC(mrb, MRB_TT_PROC, mrb->proc_class);
-      pnew->body.mid = mid;
-      pnew->upper = MRB_METHOD_PROC(m);
-      pnew->e.target_class = o;
-      pnew->flags |= MRB_PROC_ALIAS;
-      MRB_METHOD_FROM_PROC(m, pnew);
-    }
-    MRB_METHOD_SET_VISIBILITY(m, vis_fl[which]);
-    mrb_define_method_raw(mrb, c, mid, m);
-    mrb_method_added(mrb, c, mid);
+    mrb_bool had_entry = oruby_visibility_owner(mrb, home, o, mid) == home;
+    oruby_set_inherited_visibility(mrb, c, mid, vis_fl[which]);
+    if (!had_entry) mrb_method_added(mrb, c, mid);
   }
   return TRUE;
 }

@@ -83,6 +83,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@__mt");
   (void)mrb_intern_lit(mrb, "@__nil_mesg");
   (void)mrb_intern_lit(mrb, "@__oruby_fstr");
+  (void)mrb_intern_lit(mrb, "@__oruby_keep_script_lines");
   (void)mrb_intern_lit(mrb, "@__oruby_method");
   (void)mrb_intern_lit(mrb, "@__oruby_path");
   (void)mrb_intern_lit(mrb, "@__oruby_site");

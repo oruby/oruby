@@ -84,9 +84,15 @@ module Ruby
           return nodes.select { |n| CONST_PATH_WRITES.include?(n[0]) }
         end
         return nodes.select { |n| %w[MultiWriteNode MultiTargetNode].include?(n[0]) } if mid == :__oruby_to_ary
+        return nodes.select { |n| n[0] == "MultiTargetNode" } if mid == :__oruby_ary_of
+        return nodes.select { |n| n[0] == "InterpolatedSymbolNode" } if mid == :__oruby_dsym || mid == :__oruby_dsyms
         return nodes.select { |n| n[0] == "KeywordHashNode" } if mid == :__oruby_kwsplat
         # pattern matching (core_ext's helpers)
         return nodes.select { |n| PATTERNS.include?(n[0]) } if s.start_with?("__pat")
+        if mid == :__oruby_nomatch
+          patterns = nodes.select { |n| PATTERNS.include?(n[0]) }
+          return patterns.length == 1 ? patterns : []
+        end
         return [__oruby_splat_node(nodes) || __oruby_condition(nodes)].compact if mid == :__case_eqq
         index = mid == :[] || mid == :[]=
         found = nodes.select do |n|
@@ -210,6 +216,16 @@ module Kernel
   end
 end
 
+module RubyVM
+  def self.keep_script_lines
+    !!Kernel.instance_variable_get(:@__oruby_keep_script_lines)
+  end
+
+  def self.keep_script_lines=(enabled)
+    Kernel.instance_variable_set(:@__oruby_keep_script_lines, !!enabled)
+  end
+end
+
 class Thread::Backtrace::Location
   def source_range = __oruby_range_typed&.first
 
@@ -220,7 +236,7 @@ class Thread::Backtrace::Location
     site = @__oruby_site
     return nil if site.nil? || path.start_with?("<internal:", "mrblib/", "mrbgems/")
     if site[2] # code eval ran: its kept source
-      kept = Ruby::SourceRange.__oruby_source(path, line, nil)
+      kept = Ruby::SourceRange.__oruby_source(path, line, nil) unless site[3] == false
       raise ArgumentError, "cannot get source range for location in eval" unless kept
       src, off, = kept
       abs = nil
@@ -239,7 +255,9 @@ class Thread::Backtrace::Location
     node = Ruby::SourceRange.__oruby_pick(nodes, site, line - off)
     # case/in and case/when helpers run at the case: their node is in it
     if node.nil? && (c = nodes.select { |n| n[0] == "CaseMatchNode" || n[0] == "CaseNode" }.last)
-      node = Ruby::SourceRange.__oruby_pick(Kernel.__oruby_prism_nodes(src, line - off, c[3]), site, line - off)
+      # A rewritten case can raise at its closing end. Its pattern is earlier.
+      first = site[1] == :__oruby_nomatch ? c[1] : line - off
+      node = Ruby::SourceRange.__oruby_pick(Kernel.__oruby_prism_nodes(src, first, c[3]), site, line - off)
     end
     raise RuntimeError, "source has been modified" unless node
     [Ruby::SourceRange.__oruby_new(path, abs, node, off), node[0]]

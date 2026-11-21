@@ -20,6 +20,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include "go-mrb.h"
+#include "oruby-vm-compat.h"
 
 enum { BT_NONE, BT_METHOD, BT_CLASS, BT_TOP };
 
@@ -276,6 +277,9 @@ static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value 
       /* kept as mruby's packed backtrace keeps it (copy_backtrace()) */
       f.irep = pos[at].irep;
       f.idx = pos[at].idx;
+      if (f.irep->flags & ORUBY_IREP_EVAL) {
+        f.eval = (f.irep->flags & ORUBY_IREP_RETAINED_SOURCE) ? 1 : 2;
+      }
       mrb_irep_incref(mrb, (mrb_irep*)f.irep);
     }
     if (f.owner && f.owner != last_owner) {
@@ -497,7 +501,10 @@ static mrb_value bt_location(mrb_state *mrb, struct RClass *cls, const bt_frame 
   /* the instruction the frame was at, for #source_range (go-srcrange.c) */
   {
     mrb_value site = _orb_insn_site(mrb, f->irep, f->idx);
-    if (mrb_array_p(site)) mrb_ary_push(mrb, site, mrb_bool_value(f->eval));
+    if (mrb_array_p(site)) {
+      mrb_ary_push(mrb, site, mrb_bool_value(f->eval));
+      if (f->eval == 2) mrb_ary_push(mrb, site, mrb_false_value());
+    }
     mrb_obj_iv_set_force(mrb, loc, mrb_intern_lit(mrb, "@__oruby_site"), site);
   }
   return mrb_obj_value(loc);

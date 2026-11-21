@@ -11,6 +11,82 @@ import (
 	_ "github.com/oruby/oruby/gem/thread"
 )
 
+func TestVisibilityFailureCallsMethodMissing(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      class VisibilityFailure
+        private def hidden = :unreachable
+        protected def guarded = :unreachable
+
+        private def method_missing(name, *args, **kwargs, &block)
+          return [args, kwargs, block.call] if name == :hidden
+          super
+        end
+      end
+
+      obj = VisibilityFailure.new
+      visibility_error = begin
+        obj.guarded
+      rescue NoMethodError => error
+        [error.name, error.receiver.equal?(obj), error.message.include?("protected method")]
+      end
+      expected = [[1], {key: 2}, :block]
+      obj.hidden(1, key: 2) { :block } == expected &&
+        obj.public_send(:hidden, 1, key: 2) { :block } == expected &&
+        visibility_error == [:guarded, true, true]
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("visibility and method_missing = %v, %v; want true", got, err)
+	}
+}
+
+func TestInheritedVisibilityFollowsRedefinition(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      class VisibilityParent
+        private def example = :before
+      end
+      class VisibilityChild < VisibilityParent
+        public :example
+      end
+      obj = VisibilityChild.new
+      before = obj.example
+      prior_method = obj.method(:example)
+      class VisibilityParent
+        private def example = :after
+      end
+      after = obj.example
+      class VisibilityParent
+        remove_method :example
+      end
+      before == :before && after == :after && prior_method.owner == VisibilityChild &&
+        prior_method.call == :before && !obj.respond_to?(:example)
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("inherited method visibility = %v, %v; want true", got, err)
+	}
+}
+
+func TestSplatCallsLegacyRespondTo(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      class LegacySplat
+        def respond_to?(name) = name == :to_a
+        def to_a = [1, 2, 3]
+      end
+      [*LegacySplat.new] == [1, 2, 3]
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("splat with one-argument respond_to? = %v, %v; want true", got, err)
+	}
+}
+
 func TestRuby2KeywordsPromotesOnlySplatCalls(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

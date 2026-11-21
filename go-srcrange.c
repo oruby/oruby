@@ -167,8 +167,8 @@ static mrb_value kept_sources(mrb_state *mrb) {
 void _orb_keep_source(mrb_state *mrb, mrb_value file, mrb_int line, mrb_value src) {
   if (!mrb_string_p(src)) return;
   mrb_value ary = kept_sources(mrb);
-  if (!mrb_string_p(file)) file = mrb_nil_value();
-  mrb_value rec[3] = {file, mrb_fixnum_value(line > 0 ? line : 1), src};
+  file = mrb_string_p(file) ? mrb_str_dup(mrb, file) : mrb_nil_value();
+  mrb_value rec[3] = {file, mrb_fixnum_value(line > 0 ? line : 1), mrb_str_dup(mrb, src)};
   mrb_ary_push(mrb, ary, mrb_ary_new_from_values(mrb, 3, rec));
   if (RARRAY_LEN(ary) > ORB_KEPT_SOURCES) mrb_ary_shift(mrb, ary);
 }
@@ -247,6 +247,8 @@ mrb_value _orb_insn_site(mrb_state *mrb, const mrb_irep *irep, uint32_t idx) {
 }
 
 void _orb_srcrange_init(mrb_state *mrb) {
+  /* Used by the vendored eval override when tagging compiled code. */
+  (void)mrb_intern_lit(mrb, "@__oruby_keep_script_lines");
   struct RClass *k = mrb->kernel_module;
   mrb_define_module_function(mrb, k, "__oruby_prism_nodes", prism_nodes_m, MRB_ARGS_ARG(2, 1));
   mrb_define_module_function(mrb, k, "__oruby_kept_sources", kept_sources_m, MRB_ARGS_NONE());

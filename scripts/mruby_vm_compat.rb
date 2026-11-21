@@ -9,8 +9,102 @@ module ORubyVMCompat
     source[index, before.bytesize] = after
   end
 
+  def self.missing_dispatch(source)
+    replace(source, "mrb_bool super)\n{\n  mrb_sym missing = MRB_SYM(method_missing);",
+      "mrb_bool super, uint8_t visibility)\n{\n  mrb_sym missing = MRB_SYM(method_missing);")
+    replace(source, '    if (super) mrb_no_method_error_recv', <<~'C'.chomp.gsub(/^/, "    "))
+      if (visibility) {
+        mrb_no_method_error_recv(mrb, mid, recv, args, "%s method '%n' called for %T",
+          visibility == ORUBY_MISSING_PRIVATE ? "private" : "protected", mid, recv);
+      }
+      if (super) mrb_no_method_error_recv
+    C
+    replace(source, "  ci->mid = missing;\n  return m;", "  ci->mid = missing;\n  ci->vis |= visibility;\n  return m;")
+    replace(source, 'prepare_missing(mrb, ci, self, mid, FALSE)', 'prepare_missing(mrb, ci, self, mid, FALSE, 0)')
+    replace(source, 'prepare_missing(mrb, ci, recv, mid, (insn == OP_SUPER))',
+      'prepare_missing(mrb, ci, recv, mid, (insn == OP_SUPER), 0)')
+    replace(source, <<~'C'.chomp.gsub(/^/, "              "), <<~'C'.chomp.gsub(/^/, "              "))
+      mrb_value args = (ci->n == 15) ? regs[1] : mrb_ary_new_from_values(mrb, ci->n, regs+1);
+      vis_error(mrb, mid, args, recv, priv);
+    C
+      m = prepare_missing(mrb, ci, recv, mid, FALSE, priv ? ORUBY_MISSING_PRIVATE : ORUBY_MISSING_PROTECTED);
+    C
+    replace(source, '      ci->u.target_class = (insn == OP_SUPER) ? CI_TARGET_CLASS(ci - 1)->super : mrb_class(mrb, recv);',
+      <<~'C'.chomp.gsub(/^/, "      "))
+      if (insn == OP_SUPER) {
+        ci->u.target_class = CI_TARGET_CLASS(ci - 1)->super;
+        if (mid == MRB_SYM(method_missing)) ci->vis |= ci[-1].vis & ORUBY_MISSING_VISIBILITY;
+      }
+      else {
+        ci->u.target_class = mrb_class(mrb, recv);
+      }
+    C
+
+    replace(source, <<~'C'.chomp, '')
+      static mrb_noreturn void
+      vis_error(mrb_state *mrb, mrb_sym mid, mrb_value args, mrb_value recv, mrb_bool priv)
+      {
+        mrb_no_method_error_recv(mrb, mid, recv, args, "%s method '%n' called for %T", (priv ? "private" : "protected"), mid, recv);
+      }
+    C
+    replace(source, "  if (MRB_METHOD_UNDEF_P(m)) {\n    /* call `method_missing` in this frame:", <<~'C'.chomp.gsub(/^/, "  "))
+      uint8_t visibility = 0;
+      if (pub && !MRB_METHOD_UNDEF_P(m)) {
+        if (m.flags & MRB_METHOD_PRIVATE_FL) visibility = ORUBY_MISSING_PRIVATE;
+        else if (m.flags & MRB_METHOD_PROTECTED_FL) visibility = ORUBY_MISSING_PROTECTED;
+      }
+      if (MRB_METHOD_UNDEF_P(m) || visibility) {
+        /* call `method_missing` in this frame:
+    C
+    replace(source, "    ci->mid = MRB_SYM(method_missing);\n    ci->u.target_class = c;\n    goto call;",
+      "    ci->mid = MRB_SYM(method_missing);\n    ci->vis |= visibility;\n    ci->u.target_class = c;\n    goto call;")
+    replace(source, <<~'C'.chomp.gsub(/^(?=.)/, "  "), '')
+      if (pub) {
+        mrb_bool priv = TRUE;
+        if (m.flags & MRB_METHOD_PRIVATE_FL) {
+        vis_err:;
+          if (n == 15) {
+            n = (int)(RARRAY_LEN(regs[0]) - 1);
+            regs = RARRAY_PTR(regs[0]);
+          }
+          vis_error(mrb, name, mrb_ary_new_from_values(mrb, n, regs+1), self, priv);
+        }
+        else if (m.flags & MRB_METHOD_PROTECTED_FL) {
+          /* `public_send` rejects protected methods unconditionally */
+          priv = FALSE;
+          goto vis_err;
+        }
+      }
+    C
+  end
+
   def self.vm(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    missing_dispatch(source)
+    replace(source, 'argc < 15 && MRB_PROC_STRICT_P(ci->proc)) {',
+      'argc < 15 && !ci->kw && MRB_PROC_STRICT_P(ci->proc)) {')
+    replace(source, 'argc+ci->kw != m1)) { /* count kdict too */', 'argc != m1)) {')
+    replace(source, <<~'C'.chomp.gsub(/^(?=.)/, "    "), <<~'C'.chomp.gsub(/^(?=.)/, "    "))
+      if (mrb_array_p(stack[m1])) {
+        struct RArray *ary = mrb_ary_ptr(stack[m1]);
+
+        pp = ARY_PTR(ary);
+        len = ARY_LEN(ary);
+      }
+    C
+      mrb_value rest_value = stack[m1];
+      if (!mrb_array_p(rest_value) && !mrb_nil_p(rest_value)) {
+        rest_value = mrb_ary_splat(mrb, rest_value);
+        ci = mrb->c->ci;
+        stack = lv == 0 ? regs + 1 : uvenv(mrb, lv-1)->stack + 1;
+      }
+      if (mrb_array_p(rest_value)) {
+        pp = RARRAY_PTR(rest_value);
+        len = RARRAY_LEN(rest_value);
+      }
+    C
+    replace(source, '      if (vm_op_argary(mrb, a, b) == VM_RAISE) goto L_RAISE;',
+      "      if (vm_op_argary(mrb, a, b) == VM_RAISE) goto L_RAISE;\n      ci = mrb->c->ci;")
     replace(source, "uint32_t h = mrb_int_hash_func(mrb, ((intptr_t)irep) ^ sym) & (MRB_CONST_CACHE_SIZE-1);",
       "/* One irep can be closed over different lexical class scopes. */\n" \
       "      const mrb_irep *scope_key = (const mrb_irep*)ci->proc;\n" \
@@ -129,11 +223,121 @@ module ORubyVMCompat
 
   def self.const_names(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <prism/internal/encoding.h>")
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, '  mrb_method_missing(mrb, name, mod, mrb_ary_new_from_values(mrb, alen, a));', <<~'C'.chomp.gsub(/^/, "  "))
+      mrb_value args = mrb_ary_new_from_values(mrb, alen, a);
+      uint8_t visibility = mrb->c->ci->vis & ORUBY_MISSING_VISIBILITY;
+      if (visibility) {
+        mrb_no_method_error_recv(mrb, name, mod, args, "%s method '%n' called for %T",
+          visibility == ORUBY_MISSING_PRIVATE ? "private" : "protected", name, mod);
+      }
+      mrb_method_missing(mrb, name, mod, args);
+    C
+    replace(source, '    mrb_check_frozen_value(mrb, v);', <<~'C'.chomp.gsub(/^/, "    "))
+      mrb_check_frozen_value(mrb, v);
+      mrb_raisef(mrb, E_FROZEN_ERROR, "can't modify frozen %T: %v", v, v);
+    C
+    inherited_visibility(source)
     replace(source, '  return len > 0 && ISUPPER(name[0]) && mrb_ident_p(name+1, len-1);', <<~'C'.chomp.gsub(/^/, "  "))
       if (len <= 0) return FALSE;
       if (ISASCII(name[0])) return ISUPPER(name[0]) && mrb_ident_p(name+1, len-1);
       return pm_encoding_utf_8_isupper_char((const uint8_t*)name, len) &&
              mrb_ident_p(name+1, len-1);
+    C
+  end
+
+  def self.inherited_visibility(source)
+    replace(source, "mrb_method_t\nmrb_vm_find_method(mrb_state *mrb,", <<~'C'.chomp)
+      static mrb_value
+      oruby_visibility_entry(mrb_state *mrb, mrb_value self)
+      {
+        mrb_raise(mrb, E_RUNTIME_ERROR, "unresolved inherited method");
+      }
+
+      void
+      oruby_set_inherited_visibility(mrb_state *mrb, struct RClass *c, mrb_sym mid, uint32_t visibility)
+      {
+        mrb_method_t m;
+        MRB_METHOD_FROM_FUNC(m, oruby_visibility_entry);
+        m.flags |= ORUBY_METHOD_VISIBILITY_ONLY;
+        MRB_METHOD_SET_VISIBILITY(m, visibility);
+        mrb_define_method_raw(mrb, c, mid, m);
+      }
+
+      /* Reflection reports the class that declared visibility. The VM keeps
+         the implementation owner so a super in the body starts there. */
+      struct RClass *
+      oruby_visibility_owner(mrb_state *mrb, struct RClass *c, struct RClass *implementation, mrb_sym mid)
+      {
+      #ifdef MRB_USE_REFINEMENTS
+        if (MRB_CLASS_REFINEMENT_P(implementation)) return implementation;
+      #endif
+        for (; c && c != implementation; c = c->super) {
+          union mrb_mt_ptr ptr;
+          uint32_t flags;
+          if (!c->mt || !mt_get(mrb, c->mt, mid, &ptr, &flags)) continue;
+          if (flags & ORUBY_METHOD_VISIBILITY_ONLY) return c;
+          break;
+        }
+        return implementation;
+      }
+
+      mrb_method_t
+      mrb_vm_find_method(mrb_state *mrb,
+    C
+    replace(source, <<~'C'.chomp.gsub(/^(?=.)/, "  "), <<~'C'.chomp.gsub(/^(?=.)/, "  "))
+      while (c) {
+        mrb_mt_tbl *h = c->mt;
+
+        if (h) {
+          union mrb_mt_ptr ptr;
+          uint32_t flags;
+          if (mt_get(mrb, h, mid, &ptr, &flags)) {
+            if (ptr.proc == 0) break;
+            *cp = c;
+            m = create_method_value(mrb, flags, ptr);
+    C
+      uint32_t visibility = MT_VDEFAULT;
+      while (c) {
+        mrb_mt_tbl *h = c->mt;
+
+        if (h) {
+          union mrb_mt_ptr ptr;
+          uint32_t flags;
+          if (mt_get(mrb, h, mid, &ptr, &flags)) {
+            if (ptr.proc == 0) break;
+            if (flags & ORUBY_METHOD_VISIBILITY_ONLY) {
+              if (visibility == MT_VDEFAULT) visibility = flags & MT_VMASK;
+              c = c->super;
+              continue;
+            }
+            if (visibility != MT_VDEFAULT) MRB_SET_VISIBILITY_FLAGS(flags, visibility);
+            *cp = c;
+            m = create_method_value(mrb, flags, ptr);
+    C
+    replace(source, "  uint32_t flags;\n\n  while (c) {\n    struct RClass *key = c;",
+      "  uint32_t flags;\n  uint32_t visibility = MT_VDEFAULT;\n\n  while (c) {\n    struct RClass *key = c;")
+    replace(source, '        return create_method_value(mrb, flags, ptr);',
+      "        if (visibility != MT_VDEFAULT) MRB_SET_VISIBILITY_FLAGS(flags, visibility);\n" \
+      "        return create_method_value(mrb, flags, ptr);")
+    replace(source, <<~'C'.chomp.gsub(/^/, "    "), <<~'C'.chomp.gsub(/^/, "    "))
+      if (h && mt_get(mrb, h, mid, &ptr, &flags)) {
+        if (ptr.proc == 0) break;
+        *cp = c;
+        return create_method_value(mrb, flags, ptr);
+      }
+    C
+      if (h && mt_get(mrb, h, mid, &ptr, &flags)) {
+        if (ptr.proc == 0) break;
+        if (flags & ORUBY_METHOD_VISIBILITY_ONLY) {
+          if (visibility == MT_VDEFAULT) visibility = flags & MT_VMASK;
+          c = c->super;
+          continue;
+        }
+        if (visibility != MT_VDEFAULT) MRB_SET_VISIBILITY_FLAGS(flags, visibility);
+        *cp = c;
+        return create_method_value(mrb, flags, ptr);
+      }
     C
   end
 
@@ -178,6 +382,7 @@ module ORubyVMCompat
   end
 
   def self.method_lookup(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     replace(source, <<~'C'.chomp, <<~'C'.chomp)
       static const struct RProc *
       method_search_vm(mrb_state *mrb, struct RClass **cp, mrb_sym mid)
@@ -199,6 +404,76 @@ module ORubyVMCompat
     replace(source, 'method_search_vm(mrb, &super, mrb_symbol(name))',
       'method_search_scoped(mrb, &super, mrb_symbol(name), FALSE)')
     replace(source, 'method_search_vm(mrb, owner, name)', 'method_search_scoped(mrb, owner, name, TRUE)')
+    replace(source, '  while ((owner)->tt == MRB_TT_ICLASS)', <<~'C'.chomp.gsub(/^/, "  "))
+      struct RClass *visibility_owner = oruby_visibility_owner(mrb, c, owner, name);
+      if (visibility_owner != owner && proc && !MRB_PROC_CFUNC_P(proc) && !MRB_PROC_ALIAS_P(proc)) {
+        /* Capture the body for this Method, including the owner used by super. */
+        struct RProc *alias = MRB_OBJ_ALLOC(mrb, MRB_TT_PROC, mrb->proc_class);
+        alias->body.mid = name;
+        alias->upper = proc;
+        alias->e.target_class = owner;
+        alias->flags |= MRB_PROC_ALIAS;
+        proc = alias;
+      }
+      owner = visibility_owner;
+      while ((owner)->tt == MRB_TT_ICLASS)
+    C
+  end
+
+  def self.eval_source(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, '  proc = mrb_generate_code(mrb, p);', <<~'C'.chomp.gsub(/^/, "  "))
+      proc = mrb_generate_code(mrb, p);
+      if (proc) {
+        uint8_t flags = ORUBY_IREP_EVAL;
+        mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+        if (mrb_test(mrb_iv_get(mrb, kernel, MRB_IVSYM(__oruby_keep_script_lines)))) {
+          flags |= ORUBY_IREP_RETAINED_SOURCE;
+        }
+        oruby_eval_irep_flags((mrb_irep*)proc->body.irep, flags);
+      }
+    C
+    replace(source, '/* provided by mruby-binding */', <<~'C'.chomp)
+      /* Only freshly compiled IREPs reach this path. Methods and blocks
+         compiled by eval keep their origin after its frame has returned. */
+      static void
+      oruby_eval_irep_flags(mrb_irep *irep, uint8_t flags)
+      {
+        irep->flags |= flags;
+        for (uint16_t i = 0; i < irep->rlen; ++i) {
+          oruby_eval_irep_flags((mrb_irep*)irep->reps[i], flags);
+        }
+      }
+
+      /* provided by mruby-binding */
+    C
+  end
+
+  def self.array_splat(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/variable.h>")
+    replace(source, '  if (!mrb_respond_to(mrb, v, MRB_SYM(to_a))) {', <<~'C'.chomp.gsub(/^/, "  "))
+      if (mrb_nil_p(v)) return mrb_ary_new(mrb);
+      mrb_sym to_a = MRB_SYM(to_a);
+      mrb_sym respond_to = MRB_SYM_Q(respond_to);
+      struct RClass *owner = mrb_class(mrb, v);
+      mrb_method_t method = mrb_method_search_vm(mrb, &owner, respond_to);
+      mrb_bool responds;
+      if (!MRB_METHOD_UNDEF_P(method)) {
+        const mrb_value args[] = {mrb_symbol_value(to_a), mrb_true_value()};
+        mrb_int argc = 2;
+        if (MRB_METHOD_PROC_P(method) && mrb_proc_arity(MRB_METHOD_PROC(method)) == 1) {
+          if (mrb_test(mrb_gv_get(mrb, MRB_GVSYM(VERBOSE)))) {
+            mrb_warn(mrb, "%T#respond_to?(:to_a) uses the deprecated method signature, which takes one parameter", v);
+          }
+          argc = 1;
+        }
+        responds = mrb_test(mrb_funcall_argv(mrb, v, respond_to, argc, args));
+      }
+      else {
+        responds = mrb_respond_to(mrb, v, to_a);
+      }
+      if (!responds) {
+    C
   end
 
   def self.install_source(original, generated, patch)
@@ -214,7 +489,10 @@ module ORubyVMCompat
     output = File.join(build.build_dir, "src")
     overrides = File.join(build.build_dir, "oruby-core")
     inputs = File.join(MRUBY_ROOT, "src")
-    { "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement, "proc" => :proc_identity }.each do |name, patch|
+    {
+      "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement,
+      "proc" => :proc_identity, "array" => :array_splat
+    }.each do |name, patch|
       original = File.join(inputs, "#{name}.c")
       generated = File.join(overrides, "#{name}.c")
       install_source(original, generated, patch)
@@ -227,7 +505,8 @@ module ORubyVMCompat
 
     {
       "mruby-objectspace-weakmap" => ["weakmap.c", :weakmap],
-      "mruby-method" => ["method.c", :method_lookup]
+      "mruby-method" => ["method.c", :method_lookup],
+      "mruby-eval" => ["eval.c", :eval_source]
     }.each do |name, (file, patch)|
       relative = File.join("mrbgems", name, "src")
       gem_output = File.join(build.build_dir, relative)
