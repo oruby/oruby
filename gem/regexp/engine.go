@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	goregexp "regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,6 +75,7 @@ type Regexp struct {
 	// the search position (^, \A, \b, \B). RE2 cannot start a search inside
 	// a string, so searches at pos > 0 use the fallback engine when present.
 	startContext bool
+	lineStart    bool
 	ctxOnce      sync.Once
 	ctxEngine    Engine
 
@@ -101,6 +103,7 @@ type compiledRe struct {
 	re2          *goregexp.Regexp
 	engine       Engine
 	startContext bool
+	lineStart    bool
 }
 
 var (
@@ -116,11 +119,11 @@ func compileRuby(source string, options int) (*Regexp, error) {
 	key := compiledKey{source, options}
 	if c, ok := compiled.Load(key); ok {
 		cr := c.(*compiledRe)
-		return &Regexp{source: source, options: options, re2: cr.re2, engine: cr.engine, startContext: cr.startContext}, nil
+		return &Regexp{source: source, options: options, re2: cr.re2, engine: cr.engine, startContext: cr.startContext, lineStart: cr.lineStart}, nil
 	}
 	r, err := compileRubyNew(source, options)
 	if err == nil && compiledCount.Load() < compiledMax {
-		compiled.Store(key, &compiledRe{r.re2, r.engine, r.startContext})
+		compiled.Store(key, &compiledRe{r.re2, r.engine, r.startContext, r.lineStart})
 		compiledCount.Add(1)
 	}
 	return r, err
@@ -131,7 +134,7 @@ func compileRubyNew(source string, options int) (*Regexp, error) {
 	if err == nil {
 		re, cerr := goregexp.Compile(tr.pattern)
 		if cerr == nil {
-			r := &Regexp{source: source, options: options, re2: re, startContext: tr.startContext}
+			r := &Regexp{source: source, options: options, re2: re, startContext: tr.startContext, lineStart: tr.lineStart}
 			r.engine = &re2Engine{re: re}
 			return r, nil
 		}
@@ -185,16 +188,7 @@ func (r *Regexp) subexpNames() []string {
 
 // find returns the first match at or after byte pos (absolute offsets).
 func (r *Regexp) find(s string, pos int) []int {
-	if pos < 0 || pos > len(s) {
-		return nil
-	}
-	if pos > 0 && r.re2 != nil && r.startContext {
-		if eng := r.contextEngine(); eng != nil {
-			m, _ := eng.FindAt(s, pos)
-			return m
-		}
-	}
-	m, err := r.engine.FindAt(s, pos)
+	m, err := r.findErr(s, pos)
 	if err != nil {
 		return nil
 	}
@@ -206,12 +200,17 @@ func (r *Regexp) findErr(s string, pos int) ([]int, error) {
 	if pos < 0 || pos > len(s) {
 		return nil, nil
 	}
-	if pos > 0 && r.re2 != nil && r.startContext {
+	return r.searchEngine(s, pos).FindAt(s, pos)
+}
+
+func (r *Regexp) searchEngine(s string, pos int) Engine {
+	// RE2 also treats the end after a final newline as a line start.
+	if r.re2 != nil && (pos > 0 && r.startContext || r.lineStart && strings.HasSuffix(s, "\n")) {
 		if eng := r.contextEngine(); eng != nil {
-			return eng.FindAt(s, pos)
+			return eng
 		}
 	}
-	return r.engine.FindAt(s, pos)
+	return r.engine
 }
 
 func (r *Regexp) contextEngine() Engine {
@@ -229,13 +228,14 @@ func (r *Regexp) contextEngine() Engine {
 // an empty match the search moves on one character; an empty match right
 // after a non-empty match is allowed.
 func (r *Regexp) findAll(s string) ([][]int, error) {
-	if e, ok := r.engine.(*re2Engine); ok {
+	eng := r.searchEngine(s, 0)
+	if e, ok := eng.(*re2Engine); ok {
 		return e.findAllRuby(s), nil
 	}
 	var out [][]int
 	pos := 0
 	for pos <= len(s) {
-		m, err := r.engine.FindAt(s, pos)
+		m, err := eng.FindAt(s, pos)
 		if err != nil {
 			return out, err
 		}
@@ -257,10 +257,12 @@ func (r *Regexp) findAll(s string) ([][]int, error) {
 }
 
 func (r *Regexp) matchString(s string) bool {
-	if r.re2 != nil {
-		return r.re2.MatchString(s)
+	eng := r.searchEngine(s, 0)
+	if re2, ok := eng.(*re2Engine); ok {
+		return re2.re.MatchString(s)
 	}
-	return r.find(s, 0) != nil
+	match, err := eng.FindAt(s, 0)
+	return err == nil && match != nil
 }
 
 // re2Engine is the Go regexp (RE2) engine.

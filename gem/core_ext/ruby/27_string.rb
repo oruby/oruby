@@ -1,13 +1,20 @@
 # String additions and MRI behaviour mruby's String lacks
 
+module Kernel
+  def self.__oruby_fstring(str)
+    plain = __oruby_plain_string?(str)
+    return str if str.frozen? && (!plain || !str.instance_variables.empty?)
+    return __oruby_frozen_string_copy(str) unless plain
+
+    t = (@__oruby_fstr ||= {})
+    by_enc = (t[str.encoding] ||= {})
+    by_enc[str] ||= str.frozen? ? str : __oruby_frozen_string_copy(str)
+  end
+end
+
 class String
-  # -"str": the deduplicated frozen string, one object per content and
-  # encoding (frozen string literals are compiled to this)
   def -@
-    t = ::Kernel.instance_variable_get(:@__oruby_fstr) || ::Kernel.instance_variable_set(:@__oruby_fstr, {})
-    enc = encoding
-    by_enc = (t[enc] ||= {})
-    by_enc[self] ||= frozen? && instance_of?(String) ? self : String.new(self).force_encoding(enc).freeze
+    ::Kernel.__oruby_fstring(self)
   end
   alias dedup -@
 end

@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "b431a6de92c83199"
+const presymTable = "0b9caa5b1174661f"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -172,6 +172,7 @@ const (
 	SymQ___oruby_buffered                       MrbSym = C.MRB_SYM_Q____oruby_buffered                      // "__oruby_buffered?"
 	SymQ___oruby_core_proc                      MrbSym = C.MRB_SYM_Q____oruby_core_proc                     // "__oruby_core_proc?"
 	SymQ___oruby_own_hook                       MrbSym = C.MRB_SYM_Q____oruby_own_hook                      // "__oruby_own_hook?"
+	SymQ___oruby_plain_string                   MrbSym = C.MRB_SYM_Q____oruby_plain_string                  // "__oruby_plain_string?"
 	SymQ___oruby_popen_duplex                   MrbSym = C.MRB_SYM_Q____oruby_popen_duplex                  // "__oruby_popen_duplex?"
 	SymQ___oruby_prism_success                  MrbSym = C.MRB_SYM_Q____oruby_prism_success                 // "__oruby_prism_success?"
 	SymQ___oruby_readable                       MrbSym = C.MRB_SYM_Q____oruby_readable                      // "__oruby_readable?"
@@ -623,7 +624,9 @@ const (
 	Sym___oruby_fd_flags                        MrbSym = C.MRB_SYM____oruby_fd_flags                        // "__oruby_fd_flags"
 	Sym___oruby_fiber                           MrbSym = C.MRB_SYM____oruby_fiber                           // "__oruby_fiber"
 	Sym___oruby_fire                            MrbSym = C.MRB_SYM____oruby_fire                            // "__oruby_fire"
+	Sym___oruby_frozen_string_copy              MrbSym = C.MRB_SYM____oruby_frozen_string_copy              // "__oruby_frozen_string_copy"
 	Sym___oruby_frz__                           MrbSym = C.MRB_SYM____oruby_frz__                           // "__oruby_frz__"
+	Sym___oruby_fstring                         MrbSym = C.MRB_SYM____oruby_fstring                         // "__oruby_fstring"
 	Sym___oruby_fwaiters                        MrbSym = C.MRB_SYM____oruby_fwaiters                        // "__oruby_fwaiters"
 	Sym___oruby_fwd                             MrbSym = C.MRB_SYM____oruby_fwd                             // "__oruby_fwd"
 	Sym___oruby_glob                            MrbSym = C.MRB_SYM____oruby_glob                            // "__oruby_glob"
@@ -654,6 +657,7 @@ const (
 	Sym___oruby_kill__                          MrbSym = C.MRB_SYM____oruby_kill__                          // "__oruby_kill__"
 	Sym___oruby_last_status                     MrbSym = C.MRB_SYM____oruby_last_status                     // "__oruby_last_status"
 	Sym___oruby_list__                          MrbSym = C.MRB_SYM____oruby_list__                          // "__oruby_list__"
+	Sym___oruby_literal_freeze                  MrbSym = C.MRB_SYM____oruby_literal_freeze                  // "__oruby_literal_freeze"
 	Sym___oruby_load                            MrbSym = C.MRB_SYM____oruby_load                            // "__oruby_load"
 	Sym___oruby_main__                          MrbSym = C.MRB_SYM____oruby_main__                          // "__oruby_main__"
 	Sym___oruby_main_binding                    MrbSym = C.MRB_SYM____oruby_main_binding                    // "__oruby_main_binding"

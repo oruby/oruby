@@ -45,6 +45,10 @@ func TestRubyOnlyConstructs(t *testing.T) {
 		{`"1234567".gsub(/(\d)(?=(\d{3})+$)/, '\1,')`, `"1,234,567"`},
 		{`"HelloWorldFoo".split(/(?=[A-Z])/)`, `["Hello", "World", "Foo"]`},
 		{`["ab".match(/^b/, 1), "a\nb".match(/^b/, 2)[0]]`, `[nil, "b"]`},
+		{`[/^/.match?(""), /\n^/.match?("a\n"), "a\n".scan(/^/)]`, `[true, false, [""]]`},
+		{`seen = []
+          patterns = eval('[1, 2].map { |i| /#{seen << i; i}/io.source }')
+          [patterns, seen]`, `[["1", "1"], [1]]`},
 		{`m = /(?<=é)(b)/.match("éb"); [m.begin(0), m.pre_match, m[1]]`, `[1, "é", "b"]`},
 	}
 	for _, c := range cases {

@@ -20,6 +20,7 @@ typedef struct {
   bool regexp_ranges;
   bool eval;    /* eval'd code: anonymous forwarding arguments are rewritten (ORB_ANON_ARG) */
   const pm_node_t *keep_re; /* the literal of a named-capture =~ (assigns locals) */
+  const pm_node_t *defined_target; /* the direct operand of defined? */
   /* warnings MRI's compiler gives that Prism does not (ORB_PARSE_WARN) */
   struct { int32_t s, e; const char *msg; int verbose; } xw[16];
   int nxw;
@@ -300,8 +301,29 @@ visit(const pm_node_t *node, void *data)
     case PM_CONSTANT_PATH_AND_WRITE_NODE:
     case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE:
       return PM_VISIT_SKIP;
+    case PM_CALL_NODE: {
+      const pm_node_t *previous = sc->defined_target;
+      sc->defined_target = v;
+      visit_child(v, data);
+      sc->defined_target = previous;
+      return PM_VISIT_SKIP;
+    }
     default:
       break;
+    }
+    break;
+  }
+  case PM_CALL_NODE: {
+    const pm_call_node_t *call = (const pm_call_node_t *)node;
+    if (node != sc->defined_target && call->receiver &&
+        PM_NODE_TYPE(call->receiver) == PM_STRING_NODE &&
+        !PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) &&
+        (!call->arguments || call->arguments->arguments.size == 0) && !call->block &&
+        call->message_loc.length == 6 &&
+        memcmp(sc->src + call->message_loc.start, "freeze", 6) == 0) {
+      r = add(sc, ORB_LITERAL_FREEZE);
+      span(r, 0, node);
+      span(r, 1, call->receiver);
     }
     break;
   }
@@ -656,6 +678,10 @@ visit(const pm_node_t *node, void *data)
     // generator passes the letter as Regexp.compile's options
     const pm_interpolated_regular_expression_node_t *re = (const pm_interpolated_regular_expression_node_t *)node;
     pm_node_flags_t f = node->flags;
+    if (f & PM_REGULAR_EXPRESSION_FLAGS_ONCE) {
+      r = add(sc, ORB_REGEXP_LITERAL);
+      span(r, 0, node);
+    }
     char letter = 0;
     if (f & PM_REGULAR_EXPRESSION_FLAGS_EUC_JP) letter = 'e';
     else if (f & PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT) letter = 'n';

@@ -414,6 +414,9 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           src_contains(s, len, ":\"") || src_contains(s, len, "%I") ||
           /* static POSIX class ranges (ORB_REGEXP_RANGE) */
           src_contains(s, len, "[:") ||
+          /* interpolated /o literals are cached even in eval */
+          (src_contains(s, len, "o") && (src_contains(s, len, "/") || src_contains(s, len, "%r"))) ||
+          src_contains(s, len, "freeze") ||
           src_bare_it(s, len) || len > 255) {
         argv[0] = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
       }
@@ -3979,7 +3982,47 @@ static void install_method_identity(mrb_state *mrb) {
   mrb_alias_method(mrb, mrb->module_class, MRB_SYM(class_eval), MRB_SYM(module_eval));
 }
 
+/* MRI optimizes literal.freeze only while the original method is installed. */
+static mrb_value literal_freeze_m(mrb_state *mrb, mrb_value self) {
+  mrb_value str, freeze_call;
+  mrb_get_args(mrb, "o&!", &str, &freeze_call);
+  struct RClass *c = mrb_class(mrb, str);
+#ifdef MRB_USE_REFINEMENTS
+  mrb_method_t method = mrb_vm_find_method_in_scope(mrb, mrb_vm_caller_refinements(mrb), c, &c, MRB_SYM(freeze));
+#else
+  mrb_method_t method = mrb_vm_find_method(mrb, c, &c, MRB_SYM(freeze));
+#endif
+  if (MRB_METHOD_CFUNC_P(method) && MRB_METHOD_CFUNC(method) == mrb_obj_freeze &&
+      MRB_METHOD_VISIBILITY(method) == MRB_METHOD_PUBLIC_FL &&
+      mrb_respond_to(mrb, self, MRB_SYM(__oruby_fstring))) {
+    return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_fstring), 1, str);
+  }
+  /* Dispatch from the original lexical scope when freeze has changed. */
+  return mrb_yield(mrb, freeze_call, str);
+}
+
+static mrb_value plain_string_p(mrb_state *mrb, mrb_value self) {
+  (void)self;
+  return mrb_bool_value(mrb_class(mrb, mrb_get_arg1(mrb)) == mrb->string_class);
+}
+
+static mrb_value frozen_string_copy_m(mrb_state *mrb, mrb_value self) {
+  (void)self;
+  mrb_value str;
+  mrb_get_args(mrb, "S", &str);
+  mrb_value copy = mrb_str_dup(mrb, str);
+  mrb_value tag = mrb_iv_get(mrb, str, MRB_SYM(__encoding));
+  if (!mrb_nil_p(tag)) enc_copy_tag(mrb, tag, str, copy);
+  struct RClass *c = mrb_obj_class(mrb, str);
+  mrb_basic_ptr(copy)->c = c;
+  mrb_field_write_barrier(mrb, mrb_basic_ptr(copy), (struct RBasic*)c);
+  return mrb_obj_freeze(mrb, copy);
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_literal_freeze), literal_freeze_m, MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_plain_string), plain_string_p, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_frozen_string_copy), frozen_string_copy_m, MRB_ARGS_REQ(1));
   _orb_fast_init(mrb);
   install_num_eq(mrb);
   install_num_to_s(mrb);

@@ -11,6 +11,62 @@ import (
 	_ "github.com/oruby/oruby/gem/thread"
 )
 
+func TestLiteralFreezeHonorsOverride(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	v, err := mrb.Eval(`
+      class String
+        def freeze = :override
+      end
+      "literal".freeze == :override && (-String.new("literal")).frozen?
+    `)
+	if err != nil || !v.Bool() {
+		t.Fatalf("literal freeze and unary minus = %v, %v; want true", v, err)
+	}
+}
+
+func TestLiteralFreezeHonorsRefinement(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	v, err := mrb.Eval(`
+      module LiteralFreezeRefinement
+        refine String do
+          def freeze = :refined
+        end
+      end
+      using LiteralFreezeRefinement
+      "literal".freeze == :refined
+    `)
+	if err != nil || !v.Bool() {
+		t.Fatalf("refined literal freeze = %v, %v; want true", v, err)
+	}
+}
+
+func TestStringDedupCopiesSubclassContents(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	v, err := mrb.Eval(`
+      class DedupString < String
+        def initialize_copy(other)
+          raise "unexpected initialize_copy"
+        end
+      end
+      string = DedupString.new("literal".encode("UTF-16LE"))
+      string.instance_variable_set(:@tag, 1)
+      def string.tag = @tag
+      copy = string.dedup
+      copy.instance_of?(DedupString) && copy == string && copy.encoding == string.encoding &&
+        copy.frozen? && copy.instance_variables.empty? && !copy.respond_to?(:tag) &&
+        !string.frozen? && string.tag == 1
+    `)
+	if err != nil || !v.Bool() {
+		t.Fatalf("subclass dedup = %v, %v; want true", v, err)
+	}
+}
+
 func TestCoreExt(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

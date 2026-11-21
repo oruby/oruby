@@ -39,6 +39,7 @@ type translation struct {
 	pattern      string
 	named        bool
 	startContext bool
+	lineStart    bool
 }
 
 // TranslateFull converts a Ruby pattern to regexp2 (.NET) syntax for the full
@@ -85,7 +86,7 @@ func translateWithStartAnchor(source string, options int, t target, startAnchor 
 		prefix += "s"
 	}
 	prefix += ")"
-	return translation{pattern: prefix + tr.out.String(), named: tr.named, startContext: tr.ctx}, nil
+	return translation{pattern: prefix + tr.out.String(), named: tr.named, startContext: tr.ctx, lineStart: tr.lineStart}, nil
 }
 
 type groupFrame struct {
@@ -103,6 +104,7 @@ type translator struct {
 	stack       []groupFrame
 	named       bool
 	ctx         bool
+	lineStart   bool
 	ncap        int
 	lastAtom    int  // out offset of the last atom; -1 if none
 	quant       bool // last token was a quantifier
@@ -222,7 +224,14 @@ func (tr *translator) run() error {
 			err = tr.interval()
 		case '^':
 			tr.ctx = true
-			tr.assertion("^")
+			tr.lineStart = true
+			if tr.t == targetFull {
+				// Ruby treats an empty string as a line, but a trailing
+				// newline does not create another line at the end.
+				tr.assertion(`(?:\A|^(?!\z))`)
+			} else {
+				tr.assertion("^")
+			}
 			tr.i++
 		case '$':
 			tr.assertion("$")

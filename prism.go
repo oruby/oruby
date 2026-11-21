@@ -68,8 +68,8 @@ type PreprocessOptions struct {
 	// SourceEncoding is the encoding of source without a magic comment
 	// (the main script under -K); empty means UTF-8
 	SourceEncoding string
-	// NoRegexpLiterals: eval'd code, whose regexp literals are made as it is
-	// compiled (no per-site object, ORB_REGEXP_LITERAL)
+	// NoRegexpLiterals skips the per-site cache for ordinary literals in
+	// eval'd code. Interpolated /o literals are still cached.
 	NoRegexpLiterals bool
 }
 
@@ -256,7 +256,7 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 		return true
 	}
 	// a regexp literal (ORB_REGEXP_LITERAL)
-	if ((opts == nil || !opts.NoRegexpLiterals) || checkRegexpRanges(src)) &&
+	if ((opts == nil || !opts.NoRegexpLiterals) || checkRegexpRanges(src) || bytes.IndexByte(src, 'o') >= 0) &&
 		(bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
@@ -270,7 +270,7 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	// "when", "defined?": parse warnings (ORB_PARSE_WARN)
 	// ":\"", "%I": interpolated symbols (ORB_DSYM)
 	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
-		"__ENCODING__", "frozen_string_literal", "coding", "when", "defined?", ":\"", "%I"} {
+		"__ENCODING__", "frozen_string_literal", "freeze", "coding", "when", "defined?", ":\"", "%I"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
 		}
@@ -662,6 +662,12 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 			})
 		case C.ORB_FROZEN_STRING:
 			r.addAfter(s[0], e[0], func(*rewriter) string { return ".-@" })
+		case C.ORB_LITERAL_FREEZE:
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_literal_freeze(" },
+				func(*rewriter) string { return " }" })
+			r.addAfter(s[1], e[1], func(*rewriter) string {
+				return ") { |__oruby_literal| __oruby_literal"
+			})
 		case C.ORB_CASE_IN:
 			// case v / in ... / end -> case (__oruby_pmN = (v)) ... else
 			// ::Kernel.__oruby_nomatch(__oruby_pmN) end
@@ -828,7 +834,7 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "{" }, func(*rewriter) string { return "}" })
 		case C.ORB_REGEXP_LITERAL:
 			// one Regexp per literal, as MRI's (mruby compiles a literal each
-			// time it is evaluated): made the first time, then cached per site
+			// time it is evaluated), including interpolated literals with /o
 			id := strconv.FormatUint(atomic.AddUint64(&regexpSiteCounter, 1), 10)
 			r.addWrap(s[0], e[0], func(*rewriter) string {
 				return "(::Kernel.__oruby_relit(" + id + ") || ::Kernel.__oruby_relit_set(" + id + ", "

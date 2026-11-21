@@ -523,7 +523,9 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_fd_flags");
   (void)mrb_intern_lit(mrb, "__oruby_fiber");
   (void)mrb_intern_lit(mrb, "__oruby_fire");
+  (void)mrb_intern_lit(mrb, "__oruby_frozen_string_copy");
   (void)mrb_intern_lit(mrb, "__oruby_frz__");
+  (void)mrb_intern_lit(mrb, "__oruby_fstring");
   (void)mrb_intern_lit(mrb, "__oruby_fwaiters");
   (void)mrb_intern_lit(mrb, "__oruby_fwd");
   (void)mrb_intern_lit(mrb, "__oruby_glob");
@@ -554,6 +556,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_kill__");
   (void)mrb_intern_lit(mrb, "__oruby_last_status");
   (void)mrb_intern_lit(mrb, "__oruby_list__");
+  (void)mrb_intern_lit(mrb, "__oruby_literal_freeze");
   (void)mrb_intern_lit(mrb, "__oruby_load");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
   (void)mrb_intern_lit(mrb, "__oruby_main_binding");
@@ -573,6 +576,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_pack_ptrs");
   (void)mrb_intern_lit(mrb, "__oruby_params");
   (void)mrb_intern_lit(mrb, "__oruby_pipe_fds");
+  (void)mrb_intern_lit(mrb, "__oruby_plain_string?");
   (void)mrb_intern_lit(mrb, "__oruby_pname");
   (void)mrb_intern_lit(mrb, "__oruby_pop");
   (void)mrb_intern_lit(mrb, "__oruby_popen_close_read");
