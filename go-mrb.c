@@ -246,22 +246,7 @@ static void set_own_visibility(mrb_state *mrb, struct RClass *c, mrb_sym mid, un
   mrb_define_method_raw(mrb, c, mid, m);
 }
 
-/* module_function of initialize and the like: the module's own copy is
-   public, as MRI's (mruby keeps them private) */
-static mrb_value vis_module_function(mrb_state *mrb, mrb_value self) {
-  mrb_value r = vis_call(mrb, self, 3);
-  if (mrb_type(self) == MRB_TT_MODULE) {
-    mrb_int argc = mrb_get_argc(mrb);
-    const mrb_value *argv = mrb_get_argv(mrb);
-    struct RClass *sc = mrb_class_ptr(mrb_singleton_class(mrb, self));
-    for (mrb_int i = 0; i < argc; i++) {
-      mrb_value n = argv[i];
-      mrb_sym mid = mrb_symbol_p(n) ? mrb_symbol(n) : mrb_string_p(n) ? mrb_intern_str(mrb, n) : 0;
-      if (mid && special_private_name(mid)) set_own_visibility(mrb, sc, mid, MRB_METHOD_PUBLIC_FL);
-    }
-  }
-  return r;
-}
+static mrb_value vis_module_function(mrb_state *mrb, mrb_value self) { return vis_call(mrb, self, 3); }
 
 // Strings carry mruby's own UTF-8/binary tag; any other encoding (core_ext's
 // Encoding) is kept in a hidden instance variable, which instance_variables
@@ -3041,6 +3026,13 @@ static mrb_value frozen_error_to_s(mrb_state *mrb, mrb_value self) {
       }
       if (mrb_string_p(insp)) mrb_str_cat_str(mrb, s, insp);
       else mrb_str_cat_lit(mrb, s, " ...");
+      if (mrb_string_p(recv)) {
+        mrb_value origin = mrb_iv_get(mrb, recv, MRB_SYM(__oruby_frozen_origin));
+        if (mrb_string_p(origin)) {
+          mrb_str_cat_lit(mrb, s, ", created at ");
+          mrb_str_cat_str(mrb, s, origin);
+        }
+      }
       mrb_exc_mesg_set(mrb, exc, s);
     }
   }
@@ -3888,13 +3880,11 @@ static mrb_value special_to_s(mrb_state *mrb, mrb_value self) {
   return s;
 }
 
-/* Module#method_added (mruby's does nothing): initialize_dup,
-   initialize_clone and respond_to_missing? are private once defined, as in
-   MRI (mruby makes initialize and initialize_copy so itself) */
+/* mruby makes the other initialize-related methods private when defined. */
 static mrb_value mod_method_added_m(mrb_state *mrb, mrb_value self) {
   mrb_sym mid;
   mrb_get_args(mrb, "n", &mid);
-  if ((mid == MRB_SYM(initialize_dup) || mid == MRB_SYM(initialize_clone) || mid == MRB_SYM_Q(respond_to_missing)) &&
+  if ((mid == MRB_SYM(initialize_dup) || mid == MRB_SYM(initialize_clone)) &&
       (mrb_class_p(self) || mrb_module_p(self)))
     set_own_visibility(mrb, mrb_class_ptr(self), mid, MRB_METHOD_PRIVATE_FL);
   return mrb_nil_value();
@@ -4068,10 +4058,10 @@ static void install_method_identity(mrb_state *mrb) {
   mrb_define_private_method_id(mrb, mrb->kernel_module, MRB_SYM(__callee__), k_callee_m, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__method__), k_method_m, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__callee__), k_callee_m, MRB_ARGS_NONE());
-  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(method_added), mod_method_added_m, MRB_ARGS_REQ(1));
   /* Fixnum is gone since Ruby 3.2 */
   if (mrb_const_defined_at(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Fixnum)))
     mrb_const_remove(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Fixnum));
+  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(method_added), mod_method_added_m, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, mrb->nil_class, MRB_SYM(to_s), special_to_s, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, mrb->true_class, MRB_SYM(to_s), special_to_s, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, mrb->false_class, MRB_SYM(to_s), special_to_s, MRB_ARGS_NONE());
@@ -4147,7 +4137,38 @@ static mrb_value regexp_part_m(mrb_state *mrb, mrb_value self) {
   return mrb_obj_as_string(mrb, mrb_get_arg1(mrb));
 }
 
+static mrb_value debug_fstring_m(mrb_state *mrb, mrb_value self) {
+  mrb_value str, site;
+  mrb_get_args(mrb, "So", &str, &site);
+  mrb_sym cache_id = MRB_SYM(__oruby_debug_fstrings);
+  mrb_value cache = mrb_iv_get(mrb, self, cache_id);
+  if (mrb_nil_p(cache)) {
+    cache = mrb_hash_new(mrb);
+    mrb_iv_set(mrb, self, cache_id, cache);
+  }
+  mrb_value literal = mrb_hash_get(mrb, cache, site);
+  if (!mrb_nil_p(literal)) return literal;
+
+  literal = mrb_str_dup(mrb, str);
+  mrb_value tag = mrb_iv_get(mrb, str, MRB_SYM(__encoding));
+  if (!mrb_nil_p(tag)) enc_copy_tag(mrb, tag, str, literal);
+  const mrb_callinfo *caller = mrb->c->ci - 1;
+  if (caller >= mrb->c->cibase && caller->proc && !MRB_PROC_CFUNC_P(caller->proc) && caller->pc) {
+    const mrb_irep *irep = caller->proc->body.irep;
+    const char *file;
+    int32_t line;
+    if (mrb_debug_get_position(mrb, irep, (uint32_t)(caller->pc - irep->iseq - 1), &line, &file) && file) {
+      mrb_value origin = mrb_format(mrb, "%s:%d", file, (int)line);
+      mrb_iv_set(mrb, literal, MRB_SYM(__oruby_frozen_origin), origin);
+    }
+  }
+  mrb_obj_freeze(mrb, literal);
+  mrb_hash_set(mrb, cache, site, literal);
+  return literal;
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_debug_fstring), debug_fstring_m, MRB_ARGS_REQ(2));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_regexp_part), regexp_part_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_literal_freeze), literal_freeze_m, MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_plain_string), plain_string_p, MRB_ARGS_REQ(1));

@@ -84,6 +84,29 @@ func TestWeakReferencesReleaseCollectedObjects(t *testing.T) {
 	}
 }
 
+func TestReopenPreservesIdentityAndAdoptsStreamClass(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	value, err := mrb.Eval(`
+      File.open(File::NULL) do |receiver|
+        def receiver.marker = true
+        raise "self-reopen lost its singleton class" unless receiver.reopen(receiver).marker
+        id = receiver.object_id
+        source = IO.new(IO.sysopen(File::NULL))
+        begin
+          receiver.reopen(source)
+        ensure
+          source.close
+        end
+        receiver.instance_of?(IO) && receiver.object_id == id && !receiver.respond_to?(:marker)
+      end
+    `)
+	if err != nil || !value.Bool() {
+		t.Fatalf("IO#reopen did not preserve identity and adopt the stream class: %v", err)
+	}
+}
+
 func TestStdlibImportRegistersProviders(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

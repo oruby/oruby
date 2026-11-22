@@ -87,6 +87,14 @@ func checkRegexpRanges(src []byte) bool {
 
 // frozenStringDefault is --enable/--disable-frozen-string-literal: -1 unset
 var frozenStringDefault int32 = -1
+var debugFrozenStringLiterals atomic.Bool
+var frozenStringSite atomic.Uint64
+
+// SetDebugFrozenStringLiterals preserves each literal's construction site
+// for FrozenError diagnostics in source compiled afterwards.
+func SetDebugFrozenStringLiterals(debug bool) {
+	debugFrozenStringLiterals.Store(debug)
+}
 
 // SetFrozenStringLiteral sets the frozen_string_literal default for all
 // source compiled afterwards, as MRI's --enable-frozen-string-literal does
@@ -677,7 +685,13 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				return "::Kernel.__oruby_end__(" + strconv.FormatUint(id, 10) + ") {"
 			})
 		case C.ORB_FROZEN_STRING:
-			r.addAfter(s[0], e[0], func(*rewriter) string { return ".-@" })
+			if debugFrozenStringLiterals.Load() {
+				id := strconv.FormatUint(frozenStringSite.Add(1), 10)
+				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_debug_fstring(" },
+					func(*rewriter) string { return ", " + id + ")" })
+			} else {
+				r.addAfter(s[0], e[0], func(*rewriter) string { return ".-@" })
+			}
 		case C.ORB_LITERAL_FREEZE:
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_literal_freeze(" },
 				func(*rewriter) string { return " }" })

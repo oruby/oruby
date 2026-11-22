@@ -231,6 +231,7 @@ module ORubyVMCompat
   def self.const_names(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <prism/internal/encoding.h>")
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    class_method_definitions(source)
     replace(source, "static mrb_value\ntop_public(mrb_state *mrb, mrb_value self)", <<~'C'.chomp)
       static struct RClass *
       top_visibility_target(mrb_state *mrb, mrb_value self)
@@ -270,6 +271,36 @@ module ORubyVMCompat
       if (ISASCII(name[0])) return ISUPPER(name[0]) && mrb_ident_p(name+1, len-1);
       return pm_encoding_utf_8_isupper_char((const uint8_t*)name, len) &&
              mrb_ident_p(name+1, len-1);
+    C
+  end
+
+  def self.class_method_definitions(source)
+    # Resolve module_function scope before enforcing private instance methods.
+    # The singleton copy keeps its own public visibility.
+    replace(source, <<~'C'.gsub(/^/, "  "), "  if ((flags & MT_VMASK) == MT_VDEFAULT) {\n")
+      if (mid == MRB_SYM(initialize) ||
+          mid == MRB_SYM(initialize_copy) ||
+          mid == MRB_SYM_Q(respond_to_missing)) {
+        MRB_SET_VISIBILITY_FLAGS(flags, MRB_METHOD_PRIVATE_FL);
+      }
+      else if ((flags & MT_VMASK) == MT_VDEFAULT) {
+    C
+    replace(source, "  mt_put(mrb, h, mid, flags, ptr);\n  if (!mrb->bootstrapping) {", <<~'C'.chomp.gsub(/^/, "  "))
+      if (named->tt != MRB_TT_SCLASS &&
+          (mid == MRB_SYM(initialize) || mid == MRB_SYM(initialize_copy) ||
+           mid == MRB_SYM_Q(respond_to_missing))) {
+        MRB_SET_VISIBILITY_FLAGS(flags, MRB_METHOD_PRIVATE_FL);
+      }
+      mt_put(mrb, h, mid, flags, ptr);
+      if (!mrb->bootstrapping) {
+    C
+    # Keep initialize and its block in the VM. Only the allocator changes.
+    replace(source, "OP_SSEND     R4  :allocate  n=0", "OP_SSEND     R4  :__oruby_allocate_instance  n=0")
+    replace(source, "MRB_PRESYM_DEFINE_VAR_AND_INITER(new_syms, 2, MRB_SYM(allocate), MRB_SYM(initialize))",
+      "MRB_PRESYM_DEFINE_VAR_AND_INITER(new_syms, 2, MRB_SYM(__oruby_allocate_instance), MRB_SYM(initialize))")
+    replace(source, "  MRB_PRESYM_INIT_SYMBOLS(mrb, new_syms);", <<~'C'.chomp.gsub(/^/, "  "))
+      MRB_PRESYM_INIT_SYMBOLS(mrb, new_syms);
+      mrb_define_private_method_id(mrb, cls, MRB_SYM(__oruby_allocate_instance), mrb_instance_alloc, MRB_ARGS_NONE());
     C
   end
 

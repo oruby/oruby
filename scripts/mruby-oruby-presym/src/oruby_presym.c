@@ -508,6 +508,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_dead");
   (void)mrb_intern_lit(mrb, "__oruby_deadlock");
   (void)mrb_intern_lit(mrb, "__oruby_deadlock_error");
+  (void)mrb_intern_lit(mrb, "__oruby_debug_fstring");
+  (void)mrb_intern_lit(mrb, "__oruby_debug_fstrings");
   (void)mrb_intern_lit(mrb, "__oruby_dec_floor_ceil");
   (void)mrb_intern_lit(mrb, "__oruby_dec_round");
   (void)mrb_intern_lit(mrb, "__oruby_deliver__");
@@ -527,6 +529,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_fd_flags");
   (void)mrb_intern_lit(mrb, "__oruby_fiber");
   (void)mrb_intern_lit(mrb, "__oruby_fire");
+  (void)mrb_intern_lit(mrb, "__oruby_frozen_origin");
   (void)mrb_intern_lit(mrb, "__oruby_frozen_string_copy");
   (void)mrb_intern_lit(mrb, "__oruby_frz__");
   (void)mrb_intern_lit(mrb, "__oruby_fstring");

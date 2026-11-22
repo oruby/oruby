@@ -373,7 +373,8 @@ class String
     if flags & decorators == 0
       if senc && senc.equal?(denc)
         if flags & Encoding::Converter::INVALID_MASK != 0 && explicitly_invalid_replace
-          return scrub(rep)
+          source = encoding.equal?(senc) ? self : dup.force_encoding(senc)
+          return source.scrub(rep)
         end
         return args.size < 2 ? self : dup.force_encoding(denc)
       end

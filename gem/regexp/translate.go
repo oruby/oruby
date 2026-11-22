@@ -345,11 +345,36 @@ func (tr *translator) interval() error {
 	if err := tr.quantifier(q); err != nil {
 		return err
 	}
+	if !comma && tr.i < len(src) && src[tr.i] == '?' {
+		return nil // {n}? repeats the entire fixed interval zero or one time.
+	}
 	return tr.quantSuffix(true)
 }
 
 func (tr *translator) push(x bool) {
 	tr.stack = append(tr.stack, groupFrame{x: x, atomStart: tr.out.Len()})
+}
+
+func (tr *translator) captureRef(ref string, delimited bool) (string, error) {
+	if n, err := strconv.Atoi(ref); err == nil {
+		if tr.named {
+			return "", tr.errorf("numbered backref/call is not allowed. (use name)")
+		}
+		if n < 0 {
+			n += tr.ncap + 1
+		}
+		if n <= 0 {
+			return "", tr.errorf("invalid backref number/name")
+		}
+		return strconv.Itoa(n), nil
+	}
+	if !delimited || ref == "" {
+		return "", tr.errorf("invalid backref number/name")
+	}
+	if strings.ContainsAny(ref, "+-") {
+		return "", tr.errorf("backreference with recursion level %s is not supported", ref)
+	}
+	return encodeGroupName(ref), nil
 }
 
 func (tr *translator) group() error {
@@ -410,9 +435,14 @@ func (tr *translator) group() error {
 			return tr.errorf("invalid conditional pattern")
 		}
 		cond := rest[3 : 3+end]
-		cond = strings.Trim(cond, "<>'")
-		if _, err := strconv.Atoi(cond); err != nil {
-			cond = encodeGroupName(cond)
+		delimited := strings.HasPrefix(cond, "<") && strings.HasSuffix(cond, ">") ||
+			strings.HasPrefix(cond, "'") && strings.HasSuffix(cond, "'") && len(cond) >= 2
+		if delimited {
+			cond = cond[1 : len(cond)-1]
+		}
+		cond, err := tr.captureRef(cond, delimited)
+		if err != nil {
+			return err
 		}
 		return open("", "(?("+cond+")", 3+end+1)
 	case strings.HasPrefix(rest, "(?<"), strings.HasPrefix(rest, "(?'"), strings.HasPrefix(rest, "(?P<"):
@@ -428,7 +458,7 @@ func (tr *translator) group() error {
 			return tr.errorf("invalid group name")
 		}
 		name := encodeGroupName(rest[start : start+end])
-		if r := rest[start]; r >= '0' && r <= '9' {
+		if r := rest[start]; r == '-' || r >= '0' && r <= '9' {
 			return tr.errorf("invalid group name <%s>", rest[start:start+end])
 		}
 		tr.ncap++
@@ -565,11 +595,30 @@ func (tr *translator) escape() error {
 		}
 		tr.atom(`\` + string(c))
 	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		first := tr.i - 1
 		j := tr.i
 		for j < len(src) && src[j] >= '0' && src[j] <= '9' {
 			j++
 		}
-		num := src[tr.i-1 : j]
+		num := src[first:j]
+		n, err := strconv.Atoi(num)
+		if len(num) > 1 && (err != nil || n > tr.ncap) {
+			end := first
+			for end < j && end-first < 3 && src[end] <= '7' {
+				end++
+			}
+			if end > first {
+				value, _ := strconv.ParseUint(src[first:end], 8, 16)
+				if value > 255 {
+					return tr.errorf("invalid octal escape")
+				}
+				tr.i = end
+				tr.atom(fmt.Sprintf(`\x%02x`, value))
+			} else {
+				tr.atom(string(c))
+			}
+			return nil
+		}
 		tr.i = j
 		if tr.named {
 			return tr.errorf("numbered backref/call is not allowed. (use name)")
@@ -595,18 +644,9 @@ func (tr *translator) escape() error {
 		if err := tr.full(`backreference \k<` + ref + `>`); err != nil {
 			return err
 		}
-		if n, err := strconv.Atoi(ref); err == nil {
-			if n < 0 {
-				n = tr.ncap + 1 + n
-			}
-			if n <= 0 {
-				return tr.errorf("invalid backref number/name")
-			}
-			ref = strconv.Itoa(n)
-		} else if strings.ContainsAny(ref, "+") || strings.HasSuffix(ref, "-0") {
-			return tr.errorf("backreference with recursion level \\k<%s> is not supported", ref)
-		} else {
-			ref = encodeGroupName(ref)
+		ref, err := tr.captureRef(ref, true)
+		if err != nil {
+			return err
 		}
 		tr.atom(`\k<` + ref + `>`)
 	case 'g':

@@ -22,11 +22,9 @@ The mruby submodule tracks upstream `master`, which provides `$!` and re-raising
 
 Numbers are mruby's numeric tower, as in MRI: `Integer` with arbitrary precision (mruby-bigint; big literals, overflow promotion and the C core all use it), `Rational` (mruby-rational) and `Complex` with exact parts (mruby-complex). `BigDecimal` is Go-backed (`gem/bigdecimal`). The earlier Go `Bignum` class (`gem/bigint`) is kept for a future Go-backed bigint implementation and AOT use but is not loaded; Go code converts Integers with `MrbState.BigInt` / `BigIntValue`.
 
-Known gaps that affect these libraries: Bundler's parallel workers need `Thread.new`, which is unsupported (they are only started for git sources). The sources are not yet vendored into ORuby's stdlib.
-
 Regular expressions: `gem/regexp` runs every pattern Go's RE2 can express exactly, after translating Ruby syntax and semantics, and `gem/stdlib` also imports `gem/regexp/full`, a pure-Go backtracking fallback (`github.com/dlclark/regexp2/v2`) for Ruby-only syntax such as lookaround, atomic groups, possessive quantifiers and backreferences. Embedded users who import only `gem/regexp` do not link the fallback and get a `RegexpError` naming any unsupported construct. Subexpression calls (`\g<name>`), the absent operator and byte-wise matching of binary strings are not supported; see `gem/regexp/README.md`.
 
-Ruby `Thread.new` is not supported (see `gem/thread`), so providers that MRI implements with helper threads differ: `Open3` returns a waiter object with `value`, `join` and `pid` rather than a `Thread`, and `Process.detach` is unavailable.
+`Open3` uses `Process.detach` for its waiter. The returned Ruby thread exposes the child PID through `pid` and returns its `Process::Status` through `value`.
 
 The `gem/marshal` package implements a bounded Marshal 4.8 subset; see its README for support limits and the critical warning that `Marshal.load` is unsafe for untrusted input.
 

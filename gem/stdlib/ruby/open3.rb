@@ -1,34 +1,6 @@
 module Open3
   VERSION = "0.2.1"
 
-  # Waits for the child process; stands in for the waiter Thread of MRI
-  # (oruby has no Ruby threads).
-  class Waiter
-    attr_reader :pid
-
-    def initialize(pid)
-      @pid = pid
-      @status = nil
-    end
-
-    def value
-      @status ||= Process.wait2(@pid)[1]
-    end
-
-    def join(_limit = nil)
-      value
-      self
-    end
-
-    def alive?
-      @status.nil?
-    end
-
-    def [](key)
-      key.to_s == "pid" ? @pid : nil
-    end
-  end
-
   def self.__split_args(cmd)
     env = cmd.first.is_a?(Hash) ? cmd.shift : nil
     opts = cmd.last.is_a?(Hash) ? cmd.pop.dup : {}
@@ -45,7 +17,7 @@ module Open3
     i.sync = true
     o = IO.for_fd(out_fd, "r")
     e = err_fd ? IO.for_fd(err_fd, "r") : nil
-    waiter = Waiter.new(pid)
+    waiter = Process.detach(pid)
     [i, o, e, waiter, stdin_data, binmode]
   end
 

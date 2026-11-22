@@ -124,6 +124,12 @@ class Fiber
 
   alias_method :__oruby_transfer, :transfer
   define_method(:transfer) do |*args|
+    # Transferring to the running fiber returns the arguments immediately.
+    # No context switch is needed, including from within a native iterator.
+    if equal?(Fiber.current)
+      return args if args.size > 1
+      return args[0]
+    end
     ::Kernel.raise FiberError, "fiber called across threads" unless __oruby_same_thread?
     ::Kernel.raise FiberError, "attempt to transfer to a terminated fiber" if __oruby_status == "terminated"
     r = check.call(__oruby_transfer(*args))

@@ -512,11 +512,13 @@ class IO
   # in the IO's own
   def reopen(*args, **kw)
     raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 1..2)" unless (1..2) === args.size
+    raise FrozenError.new("can't modify frozen #{self.class}: #{inspect}", receiver: self) if frozen?
     other = args[0]
     if args.size == 1 && !(String === other)
       io = IO === other ? other : IO.try_convert(other)
       if io
         raise IOError, "closed stream" if closed? || io.closed?
+        return self if equal?(io)
         __oruby_reopen_io(io)
         %i[@__fmode @__enc @__enc2 @__binmode @__ecopts].each do |iv|
           instance_variable_set(iv, io.instance_variable_get(iv))

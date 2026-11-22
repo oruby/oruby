@@ -627,6 +627,7 @@ func run() int {
 	if v, ok := o.features["frozen-string-literal"]; ok {
 		oruby.SetFrozenStringLiteral(v)
 	}
+	oruby.SetDebugFrozenStringLiterals(o.debug)
 
 	ai := mrb.GCArenaSave()
 	// Capture the main source path before startup code can change directories.

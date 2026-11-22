@@ -212,5 +212,7 @@ func (mrb *MrbState) ObjSetClass(obj MrbValue, c RClass) {
 	if !v.HasBasic() || c.p == nil {
 		return
 	}
-	v.RBasic().p.c = c.p
+	objBasic := v.RBasic()
+	objBasic.p.c = c.p
+	mrb.FieldWriteBarrierValue(objBasic, c)
 }

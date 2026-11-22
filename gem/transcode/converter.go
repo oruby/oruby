@@ -452,6 +452,9 @@ func (rawEnc) reset()                   {}
 // start, length pairs (MRI's scrub units), or answers false when ORuby has
 // no codec for enc.
 func InvalidSpans(str []byte, enc string) ([][2]int, bool) {
+	if strings.EqualFold(enc, "Emacs-Mule") {
+		return emacsMuleInvalidSpans(str), true
+	}
 	cd, ok := lookup(enc)
 	if !ok {
 		return nil, false
@@ -472,4 +475,31 @@ func InvalidSpans(str []byte, enc string) ([][2]int, bool) {
 		pos += n
 	}
 	return spans, true
+}
+
+// Emacs-Mule has character boundaries even though there is no Unicode codec.
+func emacsMuleInvalidSpans(str []byte) [][2]int {
+	var spans [][2]int
+	for pos := 0; pos < len(str); {
+		lead := str[pos]
+		width := 1
+		switch {
+		case lead < 0x80:
+			pos++
+			continue
+		case lead >= 0x81 && lead <= 0x8f:
+			width = 2
+		case lead >= 0x90 && lead <= 0x99:
+			width = 3
+		}
+		n := 1
+		for n < width && pos+n < len(str) && str[pos+n] >= 0xa0 {
+			n++
+		}
+		if width == 1 || n < width {
+			spans = append(spans, [2]int{pos, n})
+		}
+		pos += n
+	}
+	return spans
 }

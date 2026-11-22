@@ -500,6 +500,7 @@ func ioReopenIO(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		_ = gemIO.SetCloseOnExec(f, true)
 	}
 	mrb.SetIV(self, "@lineno", 0)
+	mrb.ObjSetClass(self, mrb.ObjClass(other))
 	return self
 }
 
