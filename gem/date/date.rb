@@ -247,7 +247,7 @@ class Date
     end
     if h[:wday]
       today ||= Date.today
-      return __commercial_jd(today.cwyear, today.cweek, h[:wday] == 0 ? 7 : h[:wday], sg)
+      return today.jd - today.wday + h[:wday]
     end
     nil
   end

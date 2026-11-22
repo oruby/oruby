@@ -13,6 +13,38 @@ import (
 	_ "github.com/oruby/oruby/gem/stdlib"
 )
 
+func TestDateParsesWeekdayInCurrentWeek(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      require "date"
+      def Date.today = Date.new(2026, 11, 22)
+
+      checks = [
+        [Date.strptime("Thursday", "%A"), "2026-11-26"],
+        [Date.strptime("Thu", "%a"), "2026-11-26"],
+        [Date.strptime("4", "%w"), "2026-11-26"],
+        [Date.strptime("4", "%u"), "2026-11-19"],
+        [Date.strptime("Sunday", "%A"), "2026-11-22"],
+        [Date.parse("Monday"), "2026-11-23"],
+        [DateTime.strptime("Thursday 19:23", "%A %H:%M"), "2026-11-26T19:23:00+00:00"],
+      ]
+
+      def Date.today = Date.new(2026, 11, 21)
+      checks << [Date.strptime("Thursday", "%A"), "2026-11-19"]
+      checks << [Date.strptime("Sunday", "%A"), "2026-11-15"]
+
+      checks.each do |actual, expected|
+        raise "expected #{expected}, got #{actual}" unless actual.to_s == expected
+      end
+      true
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("weekday parsing: %v", err)
+	}
+}
+
 func TestWeakReferencesReleaseCollectedObjects(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
