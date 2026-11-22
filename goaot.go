@@ -2,6 +2,10 @@ package oruby
 
 // #include "go-mrb.h"
 // #include "go-aot.h"
+// #include "oruby-vm-compat.h"
+// static inline void aot_chill_string(mrb_value value) {
+//   if (mrb_string_p(value)) mrb_basic_ptr(value)->flags |= ORUBY_STRING_CHILLED;
+// }
 import "C"
 import (
 	"errors"
@@ -1164,6 +1168,14 @@ func (mrb *MrbState) AotStrNew(s string) Value {
 // AotStrDup duplicates String (literals are copied on each evaluation)
 func (mrb *MrbState) AotStrDup(s Value) Value {
 	return Value{C.mrb_str_dup(mrb.p, s.v)}
+}
+
+// AotChilledLiteralTag identifies the compiler's chilled-string marker.
+const AotChilledLiteralTag = C.ORUBY_CHILLED_DEBUG_TAG
+
+// AotChillString marks an AOT string literal as chilled.
+func (mrb *MrbState) AotChillString(s Value) {
+	C.aot_chill_string(s.v)
 }
 
 // AotIsNil is nil check without C call (MRB_NO_BOXING layout)

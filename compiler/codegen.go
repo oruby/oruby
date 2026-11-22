@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/oruby/oruby"
 )
 
 // CodeGenOptions specifies options for Go code generation.
@@ -1656,7 +1658,12 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 	g := e.g
 	a := ins.A
 	switch ins.Op {
-	case OpNOP, OpDEBUG:
+	case OpNOP:
+
+	case OpDEBUG:
+		if ins.B == oruby.AotChilledLiteralTag && ins.C <= 1 {
+			e.w("\tmrb.AotChillString(r[%d])\n", a)
+		}
 
 	case OpENTER:
 		e.emitEnter(idx, ins)

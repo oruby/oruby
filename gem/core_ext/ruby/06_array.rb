@@ -112,8 +112,8 @@ class Array
   end
 
   def self.__has_custom_method?(item, sym)
-    sc = (class << item; self; end rescue nil)
-    if sc
+    sc = Kernel.__oruby_lookup_class(item)
+    if sc.singleton_class?
       all = (sc.instance_methods(false) rescue []) + (sc.private_instance_methods(false) rescue [])
       return true if all.include?(sym)
     end

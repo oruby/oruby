@@ -158,7 +158,7 @@ func expandCalls(src string, extended bool) (string, error) {
 				}
 			}
 			if n == 0 {
-				return groupSpan{}, fmt.Errorf("recursive subexpression call \\g<0> is not supported")
+				return groupSpan{}, recursiveCall("0", src)
 			}
 			if g, ok := byNum[n]; ok {
 				return g, nil
@@ -174,7 +174,7 @@ func expandCalls(src string, extended bool) (string, error) {
 	var inline func(g groupSpan, active map[int]bool) (string, error)
 	inline = func(g groupSpan, active map[int]bool) (string, error) {
 		if active[g.open] {
-			return "", fmt.Errorf("recursive subexpression call \\g<%s> is not supported", nameOrNum(g))
+			return "", recursiveCall(nameOrNum(g), src)
 		}
 		active[g.open] = true
 		defer delete(active, g.open)
@@ -205,13 +205,19 @@ func expandCalls(src string, extended bool) (string, error) {
 	for _, c := range calls {
 		target, err := resolve(c)
 		if err != nil {
+			if NeedsNativeSyntax(err) {
+				return "", err
+			}
 			return "", &RegexpError{err.Error() + ": /" + src + "/"}
 		}
 		if c.start > target.bodyStart && c.end <= target.bodyEnd {
-			return "", &RegexpError{fmt.Sprintf("recursive subexpression call \\g<%s> is not supported: /%s/", c.ref, src)}
+			return "", recursiveCall(c.ref, src)
 		}
 		body, err := inline(target, map[int]bool{})
 		if err != nil {
+			if NeedsNativeSyntax(err) {
+				return "", err
+			}
 			return "", &RegexpError{err.Error() + ": /" + src + "/"}
 		}
 		out.WriteString(src[last:c.start])
@@ -220,6 +226,10 @@ func expandCalls(src string, extended bool) (string, error) {
 	}
 	out.WriteString(src[last:])
 	return out.String(), nil
+}
+
+func recursiveCall(ref, source string) error {
+	return &nativeSyntaxError{&RegexpError{fmt.Sprintf("recursive subexpression call \\g<%s> requires the native fallback: /%s/", ref, source)}}
 }
 
 func nameOrNum(g groupSpan) string {

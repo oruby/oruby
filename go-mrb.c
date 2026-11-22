@@ -1474,7 +1474,7 @@ static void install_module_names(mrb_state *mrb) {
   wrap_cfunc(mrb, mrb->module_class, "set_temporary_name", mod_tmpname_w, &mod_tmpname_orig);
 }
 
-static mrb_value mod_const_added_m(mrb_state *mrb, mrb_value mod) {
+static mrb_value mod_const_record_m(mrb_state *mrb, mrb_value mod) {
   mrb_sym name = mrb_obj_to_sym(mrb, mrb_get_arg1(mrb));
   mod_name_assigned(mrb, mod, name);
   struct mrb_context *c = mrb->c;
@@ -1901,7 +1901,8 @@ static mrb_value orb_params(mrb_state *mrb, mrb_value procv, int lambda) {
   for (int i = 0; i < m1; i++, reg++) mrb_ary_push(mrb, out, param_pair(mrb, req, LV(reg)));
   for (int i = 0; i < o; i++, reg++) mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(opt), LV(reg)));
   if (r) {
-    mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(rest), LV(reg)));
+    if (LV(reg) != MRB_SYM(__oruby_implicit_rest))
+      mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(rest), LV(reg)));
     reg++;
   }
   for (int i = 0; i < m2; i++, reg++) mrb_ary_push(mrb, out, param_pair(mrb, req, LV(reg)));
@@ -4167,7 +4168,27 @@ static mrb_value debug_fstring_m(mrb_state *mrb, mrb_value self) {
   return literal;
 }
 
+/* Inspect the lookup chain without creating a singleton class as a side effect. */
+static mrb_value lookup_class_m(mrb_state *mrb, mrb_value self) {
+  return mrb_obj_value(mrb_class(mrb, mrb_get_arg1(mrb)));
+}
+
+static mrb_value rescue_splat_m(mrb_state *mrb, mrb_value self) {
+  mrb_value exc = mrb_get_arg1(mrb);
+  if (mrb_break_p(exc)) return mrb_false_value();
+  mrb_value candidates = mrb_ary_splat(mrb, self);
+  for (mrb_int i = 0; i < RARRAY_LEN(candidates); ++i) {
+    mrb_value candidate = mrb_ary_entry(candidates, i);
+    if (!mrb_class_p(candidate) && !mrb_module_p(candidate))
+      mrb_raise(mrb, E_TYPE_ERROR, "class or module required for rescue clause");
+    if (mrb_test(mrb_funcall_id(mrb, candidate, MRB_OPSYM(eqq), 1, exc))) return mrb_true_value();
+  }
+  return mrb_false_value();
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_lookup_class), lookup_class_m, MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_rescue_splat), rescue_splat_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_debug_fstring), debug_fstring_m, MRB_ARGS_REQ(2));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_regexp_part), regexp_part_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_literal_freeze), literal_freeze_m, MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
@@ -4255,7 +4276,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii!", str_enc_us_ascii_set, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_core_proc), core_proc_p_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_bta), block_to_ary_p, MRB_ARGS_ANY());
-  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(const_added), mod_const_added_m, MRB_ARGS_REQ(1));
+  mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_record), mod_const_record_m, MRB_ARGS_REQ(1));
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_location), mod_const_location_m, MRB_ARGS_REQ(1));
   if (mrb_class_defined_id(mrb, MRB_SYM(Fiber))) {
     mrb_define_private_method_id(mrb, mrb_class_get_id(mrb, MRB_SYM(Fiber)), MRB_SYM(__oruby_status), fiber_status_m, MRB_ARGS_NONE());

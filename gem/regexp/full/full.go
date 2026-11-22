@@ -10,8 +10,8 @@
 // Standalone ORuby (gem/stdlib) imports it; embedded users who only need
 // RE2-compatible patterns can import gem/regexp alone and avoid the module.
 //
-// Unsupported in both engines: subexpression calls (\g<name>), the absent
-// operator (?~...), and byte-oriented matching of invalid UTF-8.
+// The native engine handles recursive subexpression calls and the absent
+// operator.
 package full
 
 import (
@@ -41,6 +41,9 @@ type engine struct {
 
 func compile(source string, options int) (rx.Engine, error) {
 	pattern, named, err := rx.TranslateFull(source, options)
+	if rx.NeedsNativeSyntax(err) {
+		return compileNative(source, options)
+	}
 	if err != nil {
 		return nil, err
 	}

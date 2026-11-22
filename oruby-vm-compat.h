@@ -8,6 +8,11 @@
 
 /* A VM argument accumulator made by a splat, including bare super's rest. */
 #define ORUBY_ARRAY_SPLAT (1u << 13)
+/* Bit 19 is the generic ivar flag even on strings. */
+#define ORUBY_STRING_CHILLED (1u << 18)
+#define ORUBY_CHILLED_DEBUG_TAG 0xce
+
+void oruby_chilled_mutation(mrb_state *, struct RBasic *);
 
 /* Unused high bits of mrb_callinfo.vis. Only method_missing frames use these. */
 #define ORUBY_MISSING_PRIVATE (1u << 5)
@@ -18,5 +23,6 @@
 #define ORUBY_METHOD_VISIBILITY_ONLY (1u << 27)
 void oruby_set_inherited_visibility(mrb_state *, struct RClass *, mrb_sym, uint32_t);
 struct RClass *oruby_visibility_owner(mrb_state *, struct RClass *, struct RClass *, mrb_sym);
+mrb_value mrb_mod_eqq(mrb_state *, mrb_value);
 
 #endif

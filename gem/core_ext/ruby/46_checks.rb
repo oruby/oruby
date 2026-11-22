@@ -127,8 +127,7 @@ module Kernel
     elsif __responds?(obj, meth)
       return [true, obj.__send__(meth)]
     end
-    sc = (class << obj; self; end)
-    mm = sc.instance_method(:method_missing) rescue nil
+    mm = __oruby_lookup_class(obj).instance_method(:method_missing) rescue nil
     return [false, nil] if mm.nil? || mm.owner == ::BasicObject
     begin
       [true, obj.__send__(meth)]

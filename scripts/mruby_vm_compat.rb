@@ -79,7 +79,7 @@ module ORubyVMCompat
   end
 
   def self.vm(source)
-    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/debug.h>\n#include \"oruby-vm-compat.h\"")
     replace(source, '    cipush(mrb, 0, CINFO_SKIP, mrb->object_class, NULL, NULL, 0, 0);', <<~'C'.chomp.gsub(/^/, "    "))
       /* A loaded file starts its own visibility scope, like the main file. */
       mrb_bool file_scope = !MRB_PROC_CFUNC_P(proc) && MRB_PROC_CREF_P(proc);
@@ -88,6 +88,37 @@ module ORubyVMCompat
       if (file_scope) MRB_CI_SET_VISIBILITY(ci, MRB_METHOD_PRIVATE_FL >> 25);
     C
     missing_dispatch(source)
+    replace(source, "    CASE(OP_DEBUG, BBB) {", <<~'C'.chomp.gsub(/^/, "    "))
+      CASE(OP_DEBUG, BBB) {
+        if (b == ORUBY_CHILLED_DEBUG_TAG && c <= 1 && mrb_string_p(regs[a])) {
+          if (c && irep->debug_info) {
+            const char *file;
+            int32_t line;
+            if (mrb_debug_get_position(mrb, irep, (uint32_t)(ci->pc - irep->iseq - 1), &line, &file) && file) {
+              int arena = mrb_gc_arena_save(mrb);
+              mrb_value origin = mrb_format(mrb, "%s:%d", file, (int)line);
+              mrb_iv_set(mrb, regs[a], MRB_SYM(__oruby_frozen_origin), origin);
+              mrb_gc_arena_restore(mrb, arena);
+            }
+          }
+          mrb_basic_ptr(regs[a])->flags |= ORUBY_STRING_CHILLED;
+          NEXT;
+        }
+    C
+    replace(source, '      regs[b] = mrb_bool_value(!mrb_break_p(exc) && mrb_obj_is_kind_of(mrb, exc, ec));', <<~'C'.chomp.gsub(/^/, "      "))
+      mrb_bool matches = FALSE;
+      if (!mrb_break_p(exc)) {
+        if (mrb_func_basic_p(mrb, e, MRB_OPSYM(eqq), mrb_mod_eqq)) {
+          matches = mrb_obj_is_kind_of(mrb, exc, ec);
+        }
+        else {
+          matches = mrb_test(mrb_funcall_id(mrb, e, MRB_OPSYM(eqq), 1, exc));
+          ci = mrb->c->ci;
+          regs = ci->stack;
+        }
+      }
+      regs[b] = mrb_bool_value(matches);
+    C
     replace(source, 'argc < 15 && MRB_PROC_STRICT_P(ci->proc)) {',
       'argc < 15 && !ci->kw && MRB_PROC_STRICT_P(ci->proc)) {')
     replace(source, 'argc+ci->kw != m1)) { /* count kdict too */', 'argc != m1)) {')
@@ -232,6 +263,17 @@ module ORubyVMCompat
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <prism/internal/encoding.h>")
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     class_method_definitions(source)
+    replace(source, "static mrb_value\nmrb_mod_eqq(mrb_state *mrb,", "mrb_value\nmrb_mod_eqq(mrb_state *mrb,")
+    replace(source, '  if (o->c->tt == MRB_TT_SCLASS) return;', <<~'C'.chomp.gsub(/^/, "  "))
+      if (o->c->tt == MRB_TT_SCLASS) return;
+      if (o->tt == MRB_TT_STRING && (o->flags & ORUBY_STRING_CHILLED) && !mrb_frozen_p(o)) {
+        oruby_chilled_mutation(mrb, o);
+      }
+    C
+    replace(source, '  p->frozen = mrb_obj_ptr(self)->frozen;', <<~'C'.chomp.gsub(/^/, "  "))
+      p->frozen = mrb_obj_ptr(self)->frozen;
+      if (mrb_string_p(self)) p->flags |= mrb_basic_ptr(self)->flags & ORUBY_STRING_CHILLED;
+    C
     replace(source, "static mrb_value\ntop_public(mrb_state *mrb, mrb_value self)", <<~'C'.chomp)
       static struct RClass *
       top_visibility_target(mrb_state *mrb, mrb_value self)
@@ -272,6 +314,199 @@ module ORubyVMCompat
       return pm_encoding_utf_8_isupper_char((const uint8_t*)name, len) &&
              mrb_ident_p(name+1, len-1);
     C
+  end
+
+  def self.constant_observers(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, "  mrb_funcall_argv(mrb, mrb_obj_value(c), MRB_SYM(const_added), 1, &name);", <<~'C'.chomp.gsub(/^/, "  "))
+      mrb_value mod = mrb_obj_value(c);
+      if (mrb_obj_respond_to(mrb, mrb->module_class, MRB_SYM(__oruby_const_record))) {
+        mrb_funcall_argv(mrb, mod, MRB_SYM(__oruby_const_record), 1, &name);
+      }
+      mrb_funcall_argv(mrb, mod, MRB_SYM(const_added), 1, &name);
+    C
+    replace(source, "    mrb_funcall_argv(mrb, mod, MRB_SYM(const_added), 1, &name);", <<~'C'.chomp.gsub(/^/, "    "))
+      if (mrb_obj_respond_to(mrb, mrb->module_class, MRB_SYM(__oruby_const_record))) {
+        mrb_funcall_argv(mrb, mod, MRB_SYM(__oruby_const_record), 1, &name);
+      }
+      mrb_funcall_argv(mrb, mod, MRB_SYM(const_added), 1, &name);
+    C
+  end
+
+  def self.implicit_rest(source)
+    source.gsub!('#include "../include/', '#include "')
+    replace(source, '#include <assert.h>', "#include <assert.h>\n#include <stdatomic.h>\n#define MRC_TARGET_MRUBY 1\n#include <mruby.h>\n#include \"oruby-vm-compat.h\"\n\nstatic _Atomic int oruby_chilled_options;\nvoid oruby_compiler_literal_options(int options) { atomic_store(&oruby_chilled_options, options); }")
+    replace(source, <<~'C'.chomp.gsub(/^/, "        "), <<~'C'.chomp.gsub(/^/, "        "))
+      push_n(2); pop_n(2); /* space for one arg and a block */
+      pop();
+      genop_3(s, OP_SEND, cursp(), new_sym(s, MRC_SYM_1(__case_eqq)), 1);
+    C
+      push_n(2); pop_n(2); /* space for one arg and a block */
+      pop();
+      static const uint8_t rescue_match[] = "__oruby_rescue_splat";
+      genop_3(s, OP_SEND, cursp(), new_sym(s, nsym(s->c->p, rescue_match, sizeof(rescue_match)-1)), 1);
+    C
+    replace(source, "        err_begin = s->pc;\n        /* rescue */", <<~'C'.chomp.gsub(/^/, "        "))
+      err_begin = s->pc;
+      /* Exceptions from evaluating a rescue expression inherit this cause. */
+      genop_2(s, OP_SETGV, exc, new_sym(s, MRC_SYM_2(errinfo)));
+      /* rescue */
+    C
+    replace(source, <<~'C'.chomp.gsub(/^/, "      "), <<~'C'.chomp.gsub(/^/, "      "))
+      } else {
+        /* anonymous rest (*) or implicit rest from a trailing comma (|a,|) */
+        pm_constant_id_t astr = MRC_OPSYM_2(mul);
+        mrc_constant_id_list_append(s, lv, astr);
+    C
+      } else {
+        /* Retain the destructuring slot and distinguish it for reflection. */
+        static const uint8_t implicit[] = "__oruby_implicit_rest";
+        pm_constant_id_t astr = nint(parameters->rest) == PM_IMPLICIT_REST_NODE
+          ? nsym(s->c->p, implicit, sizeof(implicit) - 1)
+          : MRC_OPSYM_2(mul);
+        mrc_constant_id_list_append(s, lv, astr);
+    C
+    replace(source, "        genop_2(s, OP_STRING, cursp(), off);\n        push();\n      }\n      break;\n    }\n    case PM_X_STRING_NODE:", <<~'C'.chomp.gsub(/^(?=.)/, "    "))
+          genop_2(s, OP_STRING, cursp(), off);
+          int options = atomic_load(&oruby_chilled_options);
+          if (!(options & 1) && !(tree->flags & (PM_STRING_FLAGS_MUTABLE | PM_STRING_FLAGS_FROZEN))) {
+            genop_3(s, OP_DEBUG, cursp(), ORUBY_CHILLED_DEBUG_TAG, (options >> 1) & 1);
+          }
+          push();
+        }
+        break;
+      }
+      case PM_X_STRING_NODE:
+    C
+    replace(source, "      if (nt == PM_INTERPOLATED_SYMBOL_NODE) {\n        if (val) {", <<~'C'.chomp.gsub(/^/, "      "))
+      if (val && nt == PM_INTERPOLATED_STRING_NODE &&
+          !(tree->flags & (PM_INTERPOLATED_STRING_NODE_FLAGS_MUTABLE | PM_INTERPOLATED_STRING_NODE_FLAGS_FROZEN))) {
+        int options = atomic_load(&oruby_chilled_options);
+        if (!(options & 1)) {
+          size_t part = 0;
+          while (part < size && nint(nodes[part]) == PM_STRING_NODE) part++;
+          if (part == size) genop_3(s, OP_DEBUG, cursp() - 1, ORUBY_CHILLED_DEBUG_TAG, (options >> 1) & 1);
+        }
+      }
+      if (nt == PM_INTERPOLATED_SYMBOL_NODE) {
+        if (val) {
+    C
+  end
+
+  def self.chilled_mutation(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/hash.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, "MRB_API void\nmrb_check_frozen(mrb_state", <<~'C'.chomp)
+      void
+      oruby_chilled_mutation(mrb_state *mrb, struct RBasic *obj)
+      {
+        obj->flags &= ~ORUBY_STRING_CHILLED;
+        mrb_value verbose = mrb_gv_get(mrb, MRB_GVSYM(VERBOSE));
+        if (mrb_nil_p(verbose) || !mrb_class_defined_id(mrb, MRB_SYM(Warning))) return;
+        mrb_value category = mrb_symbol_value(MRB_SYM(deprecated));
+        mrb_value warning = mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(Warning)));
+        mrb_value settings = mrb_iv_get(mrb, warning, MRB_IVSYM(settings));
+        mrb_bool enabled = mrb_hash_p(settings) && mrb_hash_key_p(mrb, settings, category)
+          ? mrb_test(mrb_hash_get(mrb, settings, category)) : mrb_test(verbose);
+        if (!enabled) return;
+        if (!mrb_obj_respond_to(mrb, mrb_class(mrb, mrb_obj_value(mrb->kernel_module)), MRB_SYM(__oruby_warn_here))) return;
+        int arena = mrb_gc_arena_save(mrb);
+        mrb_value origin = mrb_iv_get(mrb, mrb_obj_value(obj), MRB_SYM(__oruby_frozen_origin));
+        mrb_value message = mrb_string_p(origin)
+          ? mrb_format(mrb, "literal string will be frozen in the future\n%v: info: the string was created here", origin)
+          : mrb_str_new_lit(mrb, "literal string will be frozen in the future (run with --debug-frozen-string-literal for more information)");
+        mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_warn_here), 2,
+                       message, category);
+        mrb_gc_arena_restore(mrb, arena);
+      }
+
+      MRB_API void
+      mrb_check_frozen(mrb_state
+    C
+    replace(source, "    mrb_frozen_error(mrb, o);\n  }\n}", <<~'C'.chomp.gsub(/^/, ""))
+          mrb_frozen_error(mrb, o);
+        }
+        struct RBasic *obj = o;
+        if (mrb_unlikely((obj->flags & ORUBY_STRING_CHILLED) && obj->tt == MRB_TT_STRING)) {
+          oruby_chilled_mutation(mrb, obj);
+        }
+      }
+    C
+  end
+
+  def self.chilled_uplus(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, "  if (mrb_frozen_p(mrb_obj_ptr(str))) {\n    return str_copy_with_class(mrb, str);", <<~'C'.chomp.gsub(/^/, "  "))
+      if (mrb_frozen_p(mrb_obj_ptr(str)) || (mrb_basic_ptr(str)->flags & ORUBY_STRING_CHILLED)) {
+        return str_copy_with_class(mrb, str);
+    C
+  end
+
+  def self.fiber_root_transfer(source)
+    replace(source, '#define CINFO_RESUMED 3', "#define CINFO_RESUMED 3\n#define ORUBY_FIBER_TRANSFER_LINK (1u << 1)")
+    replace(source, '"resuming transferred fiber"', '"attempt to resume a transferring fiber"')
+    replace(source, '  case MRB_FIBER_RUNNING:' + "\n  case MRB_FIBER_RESUMED:", <<~'C'.chomp.gsub(/^/, "  "))
+      case MRB_FIBER_SUSPENDED:
+        if (!resume) return fiber_error(mrb, "attempt to transfer to a yielding fiber");
+        break;
+      case MRB_FIBER_RUNNING:
+      case MRB_FIBER_RESUMED:
+    C
+    replace(source, "    c->prev = mrb->c;\n  }\n  else {\n    old_c->status = MRB_FIBER_TRANSFERRED;\n    // c->prev = mrb->root_c;\n    c->prev = NULL;", <<~'C'.chomp.gsub(/^/, "  "))
+        c->prev = old_c;
+        c->fib->flags &= ~ORUBY_FIBER_TRANSFER_LINK;
+      }
+      else {
+        old_c->status = MRB_FIBER_TRANSFERRED;
+        mrb_bool linked = old_c->fib && (old_c->fib->flags & ORUBY_FIBER_TRANSFER_LINK);
+        /* An onward transfer inherits the resumed link. Returning to that
+           link restores the target's own resumer and avoids a cycle. */
+        if (!linked || old_c->prev != c) {
+          c->prev = linked ? old_c->prev : (old_c->prev ? old_c : NULL);
+          c->fib->flags |= ORUBY_FIBER_TRANSFER_LINK;
+        }
+    C
+    replace(source, '  fiber_switch_context(mrb, c);' + "\n  if (status == MRB_FIBER_CREATED) {", <<~'C'.chomp.gsub(/^/, "  "))
+      /* A chain of transfers shares the nested VM that the root entered. */
+      if (!resume && !vmexec && old_c->vmexec && !old_c->prev) {
+        old_c->vmexec = FALSE;
+        c->vmexec = TRUE;
+      }
+      fiber_switch_context(mrb, c);
+      if (status == MRB_FIBER_CREATED) {
+    C
+    replace(source, '  fiber_check_cfunc_recursive(mrb, mrb->c);', <<~'C'.chomp.gsub(/^/, "  "))
+      /* A nested VM can drive a transfer while the root's C frames stay
+         on their own stack. Non-root callers still need the normal guard. */
+      mrb_bool drive = FALSE;
+      if (mrb->c == mrb->root_c) {
+        for (mrb_callinfo *ci = mrb->c->ci; ci >= mrb->c->cibase; --ci) {
+          if (ci->cci > 0) { drive = TRUE; break; }
+        }
+      }
+      else if (mrb->c->prev && c != mrb->root_c) {
+        /* The target will return through this fiber to its resumer. */
+        fiber_check_cfunc(mrb, mrb->c);
+      }
+      else if (c != mrb->root_c) {
+        fiber_check_cfunc_recursive(mrb, mrb->c);
+      }
+    C
+    replace(source, "    mrb->c->status = MRB_FIBER_TRANSFERRED;\n    fiber_switch_context(mrb, c);", <<~'C'.chomp.gsub(/^/, "    "))
+      struct mrb_context *from = mrb->c;
+      struct mrb_context *driver = from;
+      while (driver != c && driver->prev) driver = driver->prev;
+      if (driver != c && driver->vmexec) {
+        driver->vmexec = FALSE;
+        c->ci->cci = CINFO_RESUMED;
+      }
+      else {
+        fiber_check_cfunc_recursive(mrb, from);
+      }
+      from->status = MRB_FIBER_TRANSFERRED;
+      fiber_switch_context(mrb, c);
+    C
+    replace(source, '  return fiber_switch(mrb, self, len, a, FALSE, FALSE);',
+      '  return fiber_switch(mrb, self, len, a, FALSE, drive);')
   end
 
   def self.class_method_definitions(source)
@@ -409,6 +644,10 @@ module ORubyVMCompat
   end
 
   def self.proc_identity(source)
+    replace(source, '  if (ra) return -(min + 1);', <<~'C'.chomp.gsub(/^/, "  "))
+      if (ra && (!irep->lv || ma + op >= irep->nlocals - 1 ||
+                 irep->lv[ma + op] != MRB_SYM(__oruby_implicit_rest))) return -(min + 1);
+    C
     replace(source, '  else if (MRB_PROC_ENV(p1) != MRB_PROC_ENV(p2)) return FALSE;', <<~'C'.chomp.gsub(/^/, "  "))
       else if (MRB_PROC_ENV(p1) != MRB_PROC_ENV(p2)) return FALSE;
       #ifdef MRB_USE_REFINEMENTS
@@ -544,12 +783,16 @@ module ORubyVMCompat
   end
 
   def self.install(build)
+    # The regexp fallback uses mruby's Unicode case tables, without loading
+    # the mruby Regexp and MatchData classes into ORuby.
+    build.cc.defines << "HAVE_MRUBY_REGEXP_GEM"
     output = File.join(build.build_dir, "src")
     overrides = File.join(build.build_dir, "oruby-core")
     inputs = File.join(MRUBY_ROOT, "src")
     {
       "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement,
-      "proc" => :proc_identity, "array" => :array_splat
+      "proc" => :proc_identity, "array" => :array_splat, "variable" => :constant_observers,
+      "error" => :chilled_mutation
     }.each do |name, patch|
       original = File.join(inputs, "#{name}.c")
       generated = File.join(overrides, "#{name}.c")
@@ -558,11 +801,17 @@ module ORubyVMCompat
     build.cc.include_paths << inputs
     build.cc.include_paths << File.expand_path("..", __dir__)
     build.cc.include_paths << File.join(MRUBY_ROOT, "mrbgems/mruby-compiler/lib/prism/include")
+    build.cc.include_paths << File.join(MRUBY_ROOT, "build/prism/include")
+    build.cc.include_paths << File.join(MRUBY_ROOT, "mrbgems/mruby-compiler/include")
+    build.cc.include_paths << File.join(MRUBY_ROOT, "mrbgems/mruby-string-ext/src")
     build.cc.define_rules(output, overrides, build.exts.object)
     build.cc.define_rules(output, overrides, build.exts.presym_preprocessed)
 
     {
       "mruby-objectspace-weakmap" => ["weakmap.c", :weakmap],
+      "mruby-compiler" => ["codegen.c", :implicit_rest],
+      "mruby-string-ext" => ["string.c", :chilled_uplus],
+      "mruby-fiber" => ["fiber.c", :fiber_root_transfer],
       "mruby-method" => ["method.c", :method_lookup],
       "mruby-eval" => ["eval.c", :eval_source]
     }.each do |name, (file, patch)|

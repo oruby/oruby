@@ -32,8 +32,8 @@ module Kernel
       if ::Kernel === obj
         obj.respond_to?(meth, true)
       else # BasicObject: no respond_to?
-        sc = (class << obj; self; end)
-        sc.method_defined?(meth) || sc.private_method_defined?(meth)
+        klass = __oruby_lookup_class(obj)
+        klass.method_defined?(meth) || klass.private_method_defined?(meth)
       end
     end
 

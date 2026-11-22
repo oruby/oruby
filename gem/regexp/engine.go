@@ -91,6 +91,15 @@ func (e *RegexpError) Error() string { return e.msg }
 // NewRegexpError returns an error raised in Ruby as RegexpError.
 func NewRegexpError(msg string) error { return &RegexpError{msg} }
 
+// nativeSyntaxError identifies Ruby syntax the Go translators cannot express.
+type nativeSyntaxError struct{ *RegexpError }
+
+// NeedsNativeSyntax reports whether err calls for a native regexp engine.
+func NeedsNativeSyntax(err error) bool {
+	var native *nativeSyntaxError
+	return errors.As(err, &native)
+}
+
 // compileRuby compiles a Ruby regexp: RE2 when the pattern can be expressed
 // exactly, otherwise the registered fallback engine.
 // compiled: the engine of each (source, options) compiled so far (engines are
@@ -142,7 +151,7 @@ func compileRubyNew(source string, options int) (*Regexp, error) {
 		err = &needsFullError{construct: cerr.Error()}
 	}
 	var nf *needsFullError
-	if !errors.As(err, &nf) {
+	if !errors.As(err, &nf) && !NeedsNativeSyntax(err) {
 		return nil, err
 	}
 	fb := getFallback()
@@ -152,6 +161,9 @@ func compileRubyNew(source string, options int) (*Regexp, error) {
 		return &Regexp{source: source, options: options, re2: re, engine: &re2Engine{re: re}}, nil
 	}
 	if fb == nil {
+		if nf == nil {
+			return nil, err
+		}
 		return nil, &RegexpError{fmt.Sprintf(
 			"%s: not supported by the RE2 regexp engine (load the full regexp engine, gem/regexp/full): /%s/",
 			nf.construct, source)}

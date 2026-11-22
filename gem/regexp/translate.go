@@ -425,7 +425,7 @@ func (tr *translator) group() error {
 	case strings.HasPrefix(rest, "(?>"):
 		return open("atomic group (?>...)", "(?>", 3)
 	case strings.HasPrefix(rest, "(?~"):
-		return tr.errorf("absent operator (?~...) is not supported")
+		return &nativeSyntaxError{&RegexpError{"absent operator (?~...) requires the native fallback: /" + tr.src + "/"}}
 	case strings.HasPrefix(rest, "(?("):
 		if err := tr.full("conditional (?(cond)...)"); err != nil {
 			return err

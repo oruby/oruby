@@ -450,12 +450,19 @@ func (rawEnc) reset()                   {}
 
 // InvalidSpans lists the invalid byte sequences of str in encoding enc as
 // start, length pairs (MRI's scrub units), or answers false when ORuby has
-// no codec for enc.
+// no byte validator for enc.
 func InvalidSpans(str []byte, enc string) ([][2]int, bool) {
-	if strings.EqualFold(enc, "Emacs-Mule") {
+	enc = strings.ToUpper(enc)
+	switch enc {
+	case "EMACS-MULE", "STATELESS-ISO-2022-JP", "STATELESS-ISO-2022-JP-KDDI":
 		return emacsMuleInvalidSpans(str), true
+	case "EUC-TW":
+		return eucTWInvalidSpans(str), true
+	case "GB12345":
+		// GB12345 uses GB2312's byte structure with a different character map.
+		enc = "GB2312"
 	}
-	cd, ok := lookup(enc)
+	cd, ok := codecs[enc]
 	if !ok {
 		return nil, false
 	}
@@ -475,6 +482,43 @@ func InvalidSpans(str []byte, enc string) ([][2]int, bool) {
 		pos += n
 	}
 	return spans, true
+}
+
+// EUC-TW encodes plane 1 in two bytes, and uses SS2 followed by a plane
+// byte and two graphic bytes for the four-byte form.
+func eucTWInvalidSpans(str []byte) [][2]int {
+	var spans [][2]int
+	for pos := 0; pos < len(str); {
+		lead := str[pos]
+		if lead < 0x80 {
+			pos++
+			continue
+		}
+		width := 0
+		switch {
+		case lead == 0x8e:
+			width = 4
+		case lead >= 0xa1 && lead <= 0xfe:
+			width = 2
+		}
+		n := 1
+		for n < width && pos+n < len(str) {
+			b := str[pos+n]
+			limit := byte(0xfe)
+			if width == 4 && n == 1 {
+				limit = 0xb0
+			}
+			if b < 0xa1 || b > limit {
+				break
+			}
+			n++
+		}
+		if n != width {
+			spans = append(spans, [2]int{pos, n})
+		}
+		pos += n
+	}
+	return spans
 }
 
 // Emacs-Mule has character boundaries even though there is no Unicode codec.

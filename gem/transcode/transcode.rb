@@ -454,6 +454,7 @@ class String
   def valid_encoding?
     enc = encoding
     return __enc_valid_encoding? if enc.equal?(Encoding::UTF_8) || enc.equal?(Encoding::BINARY) || enc.equal?(Encoding::US_ASCII)
+    return true if enc.dummy?
     spans = Encoding::Converter.__invalid_spans(b, enc.name)
     spans.nil? || spans.empty?
   end

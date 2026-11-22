@@ -4,6 +4,7 @@ package oruby
 #cgo CFLAGS: -I${SRCDIR}/mruby/build/prism/include -I${SRCDIR}/mruby/mrbgems/mruby-compiler/lib/prism/include
 #include <stdlib.h>
 #include "go-prism.h"
+void oruby_compiler_literal_options(int);
 */
 import "C"
 
@@ -94,6 +95,7 @@ var frozenStringSite atomic.Uint64
 // for FrozenError diagnostics in source compiled afterwards.
 func SetDebugFrozenStringLiterals(debug bool) {
 	debugFrozenStringLiterals.Store(debug)
+	updateCompilerLiteralOptions()
 }
 
 // SetFrozenStringLiteral sets the frozen_string_literal default for all
@@ -104,6 +106,18 @@ func SetFrozenStringLiteral(frozen bool) {
 	} else {
 		atomic.StoreInt32(&frozenStringDefault, 0)
 	}
+	updateCompilerLiteralOptions()
+}
+
+func updateCompilerLiteralOptions() {
+	var options C.int
+	if atomic.LoadInt32(&frozenStringDefault) >= 0 {
+		options |= 1
+	}
+	if debugFrozenStringLiterals.Load() {
+		options |= 2
+	}
+	C.oruby_compiler_literal_options(options)
 }
 
 func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {

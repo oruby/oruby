@@ -10,7 +10,7 @@ Ruby `Regexp`, `MatchData`, and the regexp-aware `String` methods (`=~`,
 | Package | Engine | Imported by | Use |
 |---|---|---|---|
 | `gem/regexp` | Go `regexp` (RE2) | everything that needs regexps | embedded oruby in Go apps |
-| `gem/regexp/full` | [`github.com/dlclark/regexp2/v2`](https://github.com/dlclark/regexp2) (pure Go backtracking, no dependencies) | `gem/stdlib` (standalone ORuby, compiler) | full Ruby syntax |
+| `gem/regexp/full` | regexp2 and mruby's native regexp engine | `gem/stdlib` (standalone ORuby, compiler) | additional Ruby syntax |
 
 Every pattern is first translated from Ruby (Onigmo) syntax. If RE2 can express
 it exactly, RE2 runs it: linear time, safe for untrusted input. Only patterns
@@ -38,11 +38,12 @@ RE2 cannot start a search part-way through a string, so `match(re, pos)` with
 `pos > 0` and a pattern using `^`, `\A` or `\b` also uses the full engine when
 it is loaded.
 
-### Not supported
+Recursive subexpression calls (`\g<name>`) and the absent operator
+(`(?~...)`) use the native engine in `gem/regexp/full`. It compiles from
+the pinned mruby source and uses the same ORuby Regexp and MatchData classes.
 
-Subexpression calls `\g<name>`, the absent operator `(?~...)`, and byte-wise
-matching of invalid UTF-8 or binary (`/n`) strings. These raise `RegexpError`
-or match by character.
+Byte-wise matching of invalid UTF-8 and binary (`/n`) strings still has
+compatibility gaps.
 
 ### Regexp.timeout
 

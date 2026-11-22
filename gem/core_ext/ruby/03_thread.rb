@@ -303,7 +303,7 @@ class Thread
     return nil unless r
     e = @__oruby_exception
     # re-raised as it is: the joiner's $! is not its cause
-    ::Kernel.raise e, cause: e.cause if e && !(SystemExit === e)
+    ::Kernel.raise e, cause: e.cause if e
     self
   end
 

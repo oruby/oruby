@@ -22,7 +22,7 @@ func eval(t *testing.T, code string) string {
 	return mrb.String(mrb.Call(v, "inspect"))
 }
 
-// Ruby-only constructs run on the regexp2 fallback; expected values are MRI's
+// Ruby-only constructs run on the full fallback; expected values are MRI's.
 func TestRubyOnlyConstructs(t *testing.T) {
 	cases := []struct{ code, want string }{
 		{`"ab ac".index(/a(?=c)/)`, `3`},
@@ -51,6 +51,8 @@ func TestRubyOnlyConstructs(t *testing.T) {
           [patterns, seen]`, `[["1", "1"], [1]]`},
 		{`[defined?((/#{missing_method}/)), defined?((obj.x, y = a, b))]`, `["expression", "assignment"]`},
 		{`m = /(?<=é)(b)/.match("éb"); [m.begin(0), m.pre_match, m[1]]`, `[1, "é", "b"]`},
+		{`m = /(?<pair>a\g<pair>?b)/.match("xaaabbb"); [m.byteoffset(0), m.names, $~.equal?(m)]`, `[[1, 7], ["pair"], true]`},
+		{`/(?~abc)/.match("xyzabc")[0]`, `"xyzab"`},
 	}
 	for _, c := range cases {
 		if got := eval(t, c.code); got != c.want {
@@ -70,8 +72,8 @@ func TestRubyGemsVersionPattern(t *testing.T) {
 	}
 }
 
-func TestUnsupportedConstructsRaise(t *testing.T) {
-	for _, src := range []string{`(?<a>x\g<a>?)`, `(?~abc)`} {
+func TestInvalidNativeConstructsRaise(t *testing.T) {
+	for _, src := range []string{`(?<a>\g<a>)`, `(?~abc`} {
 		got := eval(t, `begin; Regexp.new('`+src+`'); :no_error; rescue RegexpError => e; e.class; end`)
 		if got != "RegexpError" {
 			t.Errorf("%s: %s", src, got)
