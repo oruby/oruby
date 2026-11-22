@@ -69,6 +69,7 @@ test:
 	(cd gem/objspace && go test)
 	(cd gem/process && go test)
 	(cd gem/pty && go test)
+	(cd gem/racc && go test)
 	(cd gem/regexp && go test)
 	(cd gem/regexp/full && go test)
 #	(cd gem/signal && go test)

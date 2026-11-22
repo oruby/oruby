@@ -155,6 +155,27 @@ module Fiddle
     @__dlwrap_i2o[addr]
   end
 
+  class Pinned
+    def initialize(object)
+      @ref = object
+    end
+
+    def ref
+      raise ClearedReferenceError, "ref called on a cleared object" if @cleared
+      @ref
+    end
+
+    def clear
+      @cleared = true
+      @ref = nil
+      self
+    end
+
+    def cleared?
+      !!@cleared
+    end
+  end
+
   def self.dlopen(library)
     Handle.new(library)
   end
@@ -960,6 +981,11 @@ module Fiddle
 
     def import_symbol(name)
       Pointer.new(handler.sym(name.to_s))
+    end
+
+    def import_value(ty, name)
+      s = struct(["#{ty} value"])
+      s.new(import_symbol(name))
     end
   end
 

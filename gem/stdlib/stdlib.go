@@ -40,6 +40,7 @@ import (
 	_ "github.com/oruby/oruby/gem/objspace"
 	_ "github.com/oruby/oruby/gem/process"
 	_ "github.com/oruby/oruby/gem/pty"
+	_ "github.com/oruby/oruby/gem/racc"
 	_ "github.com/oruby/oruby/gem/regexp"
 	_ "github.com/oruby/oruby/gem/regexp/full"
 	_ "github.com/oruby/oruby/gem/socket"
