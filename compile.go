@@ -490,9 +490,7 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	return mrb.protectedResult(v, status)
 }
 
-// LoadBytesWrapped runs buf as Kernel#load(file, wrap) does: compiled with
-// klass as its target class (where its methods, constants and classes go)
-// and run with self
+// LoadBytesWrapped compiles Ruby source and runs it with self in klass's scope.
 func (mrb *MrbState) LoadBytesWrapped(buf []byte, context *MrbCcontext, klass RClass, self MrbValue) (Value, error) {
 	if len(buf) == 0 {
 		return nilValue, nil
@@ -501,8 +499,20 @@ func (mrb *MrbState) LoadBytesWrapped(buf []byte, context *MrbCcontext, klass RC
 	if err != nil {
 		return mrb.NilValue(), err
 	}
+	return mrb.loadWrapped(buf, context, klass, self, false)
+}
+
+// LoadIrepBytesWrapped runs bytecode with self in klass's scope.
+func (mrb *MrbState) LoadIrepBytesWrapped(buf []byte, context *MrbCcontext, klass RClass, self MrbValue) (Value, error) {
+	if len(buf) == 0 {
+		return nilValue, errors.New("empty bytecode")
+	}
+	return mrb.loadWrapped(buf, context, klass, self, true)
+}
+
+func (mrb *MrbState) loadWrapped(buf []byte, context *MrbCcontext, klass RClass, self MrbValue, bytecode bool) (Value, error) {
 	var result C.mrb_value
-	status := C._mrb_load_nstring_wrapped(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p, klass.p, self.Value().v, &result)
+	status := C._mrb_load_wrapped(mrb.p, (*C.char)(unsafe.Pointer(unsafe.SliceData(buf))), C.size_t(len(buf)), context.p, klass.p, self.Value().v, iifmb(bytecode), &result)
 	runtime.KeepAlive(buf)
 	return mrb.protectedResult(Value{result}, status)
 }

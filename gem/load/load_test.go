@@ -1,6 +1,7 @@
 package load
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -8,6 +9,84 @@ import (
 
 	"github.com/oruby/oruby"
 )
+
+func TestLoadStartsPrivateVisibilityScope(t *testing.T) {
+	const source = `
+      def loader_default_private = :private
+      raise "visible during load" unless method(:loader_default_private).owner.private_method_defined?(:loader_default_private)
+
+      def loader_named_public = :named
+      public :loader_named_public
+      public
+      def loader_scope_public = :scope
+      def loader_named_protected = :protected
+      protected :loader_named_protected
+      private
+      def loader_explicit_private = :explicit
+    `
+	for _, mode := range []struct {
+		name     string
+		call     string
+		wrapped  bool
+		bytecode bool
+	}{
+		{name: "source load", call: "load"},
+		{name: "source require", call: "require"},
+		{name: "source wrapped load", call: "load", wrapped: true},
+		{name: "bytecode load", call: "load", bytecode: true},
+		{name: "bytecode require", call: "require", bytecode: true},
+		{name: "bytecode wrapped load", call: "load", wrapped: true, bytecode: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			mrb := openLoadTestState(t)
+			filename := "visibility.rb"
+			data := []byte(source)
+			if mode.bytecode {
+				context := mrb.MrbCcontextNew()
+				defer context.Free()
+				context.Filename(filename)
+				parser, err := mrb.ParseString(source, context)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer parser.Free()
+				proc, err := mrb.GenerateCode(parser)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var buf bytes.Buffer
+				if _, err := mrb.DumpIrep(proc.IRep(), oruby.DumpDebugInfo, &buf); err != nil {
+					t.Fatal(err)
+				}
+				filename, data = "visibility.mrb", buf.Bytes()
+			}
+			path := filepath.Join(t.TempDir(), filename)
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			target := "Object"
+			call := mode.call + "(" + strconv.Quote(path)
+			prefix := ""
+			if mode.wrapped {
+				target = "LoaderVisibilityFixture"
+				prefix = target + " = Module.new\n"
+				call += ", " + target
+			}
+			v, err := mrb.Eval(prefix + "public\n" + call + ")\nowner = " + target + `
+              def loader_caller_public = :caller
+              owner.private_method_defined?(:loader_default_private) &&
+                owner.private_method_defined?(:loader_explicit_private) &&
+                owner.public_method_defined?(:loader_named_public) &&
+                owner.public_method_defined?(:loader_scope_public) &&
+                owner.protected_method_defined?(:loader_named_protected) &&
+                Object.public_method_defined?(:loader_caller_public)
+            `)
+			if err != nil || !v.Bool() {
+				t.Fatalf("loaded visibility = %v, %v; want true", v, err)
+			}
+		})
+	}
+}
 
 func Test_fullName(t *testing.T) {
 	//

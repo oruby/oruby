@@ -230,32 +230,21 @@ func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error 
 	if _, err := mrb.Funcall(self, oruby.Sym_extend, mod); err != nil {
 		return err
 	}
-	before := map[string]bool{}
-	if ms, err := mrb.Funcall(mod, oruby.Sym_instance_methods, false); err == nil && ms.IsArray() {
-		for i := 0; i < oruby.RArrayLen(ms); i++ {
-			before[mrb.String(mrb.AryEntry(ms, i))] = true
-		}
-	}
-
-	if src, ok := coverageSource(mrb, fullName); ok {
-		data = src
+	if err := mrb.IVSet(self, oruby.Sym___oruby_load_wrapper, mod); err != nil {
+		return err
 	}
 	cxt := mrb.MrbCcontextNew()
 	defer cxt.Free()
 	cxt.Filename(fullName)
-	if _, err := mrb.LoadBytesWrapped(data, cxt, mrb.ClassPtr(mod), self); err != nil {
+	if filepath.Ext(fullName) == ".mrb" {
+		_, err := mrb.LoadIrepBytesWrapped(data, cxt, mrb.ClassPtr(mod), self)
 		return err
 	}
-
-	if ms, err := mrb.Funcall(mod, oruby.Sym_instance_methods, false); err == nil && ms.IsArray() {
-		for i := 0; i < oruby.RArrayLen(ms); i++ {
-			m := mrb.AryEntry(ms, i)
-			if !before[mrb.String(m)] {
-				_, _ = mrb.Funcall(mod, mrb.Intern("private"), m)
-			}
-		}
+	if src, ok := coverageSource(mrb, fullName); ok {
+		data = src
 	}
-	return nil
+	_, err = mrb.LoadBytesWrapped(data, cxt, mrb.ClassPtr(mod), self)
+	return err
 }
 
 // loadLock is MRI's per-feature load lock: the thread requiring a file

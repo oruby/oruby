@@ -80,6 +80,13 @@ module ORubyVMCompat
 
   def self.vm(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, '    cipush(mrb, 0, CINFO_SKIP, mrb->object_class, NULL, NULL, 0, 0);', <<~'C'.chomp.gsub(/^/, "    "))
+      /* A loaded file starts its own visibility scope, like the main file. */
+      mrb_bool file_scope = !MRB_PROC_CFUNC_P(proc) && MRB_PROC_CREF_P(proc);
+      struct RClass *target = file_scope ? MRB_PROC_TARGET_CLASS(proc) : mrb->object_class;
+      mrb_callinfo *ci = cipush(mrb, 0, CINFO_SKIP, target, NULL, NULL, 0, 0);
+      if (file_scope) MRB_CI_SET_VISIBILITY(ci, MRB_METHOD_PRIVATE_FL >> 25);
+    C
     missing_dispatch(source)
     replace(source, 'argc < 15 && MRB_PROC_STRICT_P(ci->proc)) {',
       'argc < 15 && !ci->kw && MRB_PROC_STRICT_P(ci->proc)) {')
@@ -224,6 +231,26 @@ module ORubyVMCompat
   def self.const_names(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <prism/internal/encoding.h>")
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, "static mrb_value\ntop_public(mrb_state *mrb, mrb_value self)", <<~'C'.chomp)
+      static struct RClass *
+      top_visibility_target(mrb_state *mrb, mrb_value self)
+      {
+        /* Only the copy of main supplied by a wrapped load carries a
+           module. An ordinary clone still addresses Object. */
+        if (!mrb_obj_eq(mrb, self, mrb_top_self(mrb))) {
+          mrb_value target = mrb_iv_get(mrb, self, MRB_SYM(__oruby_load_wrapper));
+          if (mrb_module_p(target)) return mrb_class_ptr(target);
+        }
+        return mrb->object_class;
+      }
+
+      static mrb_value
+      top_public(mrb_state *mrb, mrb_value self)
+    C
+    %w[MRB_METHOD_PUBLIC_FL MRB_METHOD_PRIVATE_FL MT_PROTECTED].each do |visibility|
+      replace(source, "  return mrb_mod_visibility(mrb, mrb_obj_value(mrb->object_class), #{visibility});",
+        "  return mrb_mod_visibility(mrb, mrb_obj_value(top_visibility_target(mrb, self)), #{visibility});")
+    end
     replace(source, '  mrb_method_missing(mrb, name, mod, mrb_ary_new_from_values(mrb, alen, a));', <<~'C'.chomp.gsub(/^/, "  "))
       mrb_value args = mrb_ary_new_from_values(mrb, alen, a);
       uint8_t visibility = mrb->c->ci->vis & ORUBY_MISSING_VISIBILITY;

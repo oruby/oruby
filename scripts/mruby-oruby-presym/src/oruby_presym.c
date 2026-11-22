@@ -564,6 +564,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_list__");
   (void)mrb_intern_lit(mrb, "__oruby_literal_freeze");
   (void)mrb_intern_lit(mrb, "__oruby_load");
+  (void)mrb_intern_lit(mrb, "__oruby_load_wrapper");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
   (void)mrb_intern_lit(mrb, "__oruby_main_binding");
   (void)mrb_intern_lit(mrb, "__oruby_max");
@@ -1009,7 +1010,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "inspect");
   (void)mrb_intern_lit(mrb, "instance_eval");
   (void)mrb_intern_lit(mrb, "instance_method");
-  (void)mrb_intern_lit(mrb, "instance_methods");
   (void)mrb_intern_lit(mrb, "instance_variable_get");
   (void)mrb_intern_lit(mrb, "instance_variables");
   (void)mrb_intern_lit(mrb, "instance_variables_to_inspect");

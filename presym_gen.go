@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "8098d0a306bf5333"
+const presymTable = "3ad085a226d748ac"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -665,6 +665,7 @@ const (
 	Sym___oruby_list__                          MrbSym = C.MRB_SYM____oruby_list__                          // "__oruby_list__"
 	Sym___oruby_literal_freeze                  MrbSym = C.MRB_SYM____oruby_literal_freeze                  // "__oruby_literal_freeze"
 	Sym___oruby_load                            MrbSym = C.MRB_SYM____oruby_load                            // "__oruby_load"
+	Sym___oruby_load_wrapper                    MrbSym = C.MRB_SYM____oruby_load_wrapper                    // "__oruby_load_wrapper"
 	Sym___oruby_main__                          MrbSym = C.MRB_SYM____oruby_main__                          // "__oruby_main__"
 	Sym___oruby_main_binding                    MrbSym = C.MRB_SYM____oruby_main_binding                    // "__oruby_main_binding"
 	Sym___oruby_max                             MrbSym = C.MRB_SYM____oruby_max                             // "__oruby_max"
@@ -1055,7 +1056,6 @@ const (
 	Sym_inspect                                 MrbSym = C.MRB_SYM__inspect                                 // "inspect"
 	Sym_instance_eval                           MrbSym = C.MRB_SYM__instance_eval                           // "instance_eval"
 	Sym_instance_method                         MrbSym = C.MRB_SYM__instance_method                         // "instance_method"
-	Sym_instance_methods                        MrbSym = C.MRB_SYM__instance_methods                        // "instance_methods"
 	Sym_instance_variable_get                   MrbSym = C.MRB_SYM__instance_variable_get                   // "instance_variable_get"
 	Sym_instance_variables                      MrbSym = C.MRB_SYM__instance_variables                      // "instance_variables"
 	Sym_instance_variables_to_inspect           MrbSym = C.MRB_SYM__instance_variables_to_inspect           // "instance_variables_to_inspect"
