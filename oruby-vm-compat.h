@@ -12,7 +12,20 @@
 #define ORUBY_STRING_CHILLED (1u << 18)
 #define ORUBY_CHILLED_DEBUG_TAG 0xce
 
-void oruby_chilled_mutation(mrb_state *, struct RBasic *);
+/* A spare class flag on the state's Kernel module. */
+#define ORUBY_KERNEL_CHILLED_WARNING (1u << 15)
+void oruby_chilled_warning_refresh(mrb_state *, mrb_value);
+void oruby_chilled_warn(mrb_state *, struct RBasic *);
+
+static inline void
+oruby_chilled_mutation(mrb_state *mrb, struct RBasic *obj)
+{
+  obj->flags &= ~ORUBY_STRING_CHILLED;
+  struct RBasic *kernel = (struct RBasic*)mrb->kernel_module;
+  if (mrb_unlikely(kernel && (kernel->flags & ORUBY_KERNEL_CHILLED_WARNING))) {
+    oruby_chilled_warn(mrb, obj);
+  }
+}
 
 /* Unused high bits of mrb_callinfo.vis. Only method_missing frames use these. */
 #define ORUBY_MISSING_PRIVATE (1u << 5)

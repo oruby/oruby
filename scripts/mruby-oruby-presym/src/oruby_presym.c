@@ -733,6 +733,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_read");
   (void)mrb_intern_lit(mrb, "__oruby_readable?");
   (void)mrb_intern_lit(mrb, "__oruby_reentry");
+  (void)mrb_intern_lit(mrb, "__oruby_refresh_chilled_warning");
   (void)mrb_intern_lit(mrb, "__oruby_regexp_part");
   (void)mrb_intern_lit(mrb, "__oruby_release_held");
   (void)mrb_intern_lit(mrb, "__oruby_relit");

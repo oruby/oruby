@@ -37,7 +37,9 @@ module Warning
     raise TypeError, "no implicit conversion of #{category.class} into Symbol" unless category.is_a?(Symbol)
     raise ArgumentError, "unknown category: #{category}" unless CATEGORIES.include?(category)
     @settings ||= {}
-    @settings[category] = !!val
+    enabled = @settings[category] = !!val
+    ::Kernel.__oruby_refresh_chilled_warning if category == :deprecated
+    enabled
   end
 
   def warn(msg, category: nil)
@@ -45,4 +47,5 @@ module Warning
   end
 
   extend self
+  ::Kernel.__oruby_refresh_chilled_warning
 end

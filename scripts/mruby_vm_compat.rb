@@ -316,7 +316,7 @@ module ORubyVMCompat
     C
   end
 
-  def self.constant_observers(source)
+  def self.variable(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     replace(source, "  mrb_funcall_argv(mrb, mrb_obj_value(c), MRB_SYM(const_added), 1, &name);", <<~'C'.chomp.gsub(/^/, "  "))
       mrb_value mod = mrb_obj_value(c);
@@ -330,6 +330,22 @@ module ORubyVMCompat
         mrb_funcall_argv(mrb, mod, MRB_SYM(__oruby_const_record), 1, &name);
       }
       mrb_funcall_argv(mrb, mod, MRB_SYM(const_added), 1, &name);
+    C
+    replace(source, <<~'C'.chomp.gsub(/^/, "  "), <<~'C'.chomp.gsub(/^/, "  "))
+      if (vt) {
+        vt->set(mrb, v);
+      }
+    C
+      if (vt) {
+        vt->set(mrb, v);
+      }
+      else if (sym == MRB_GVSYM(VERBOSE)) {
+        oruby_chilled_warning_refresh(mrb, v);
+      }
+    C
+    replace(source, '  iv_del(mrb, mrb->globals, sym, NULL);', <<~'C'.chomp.gsub(/^/, "  "))
+      iv_del(mrb, mrb->globals, sym, NULL);
+      if (sym == MRB_GVSYM(VERBOSE)) oruby_chilled_warning_refresh(mrb, mrb_nil_value());
     C
   end
 
@@ -397,17 +413,25 @@ module ORubyVMCompat
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/hash.h>\n#include \"oruby-vm-compat.h\"")
     replace(source, "MRB_API void\nmrb_check_frozen(mrb_state", <<~'C'.chomp)
       void
-      oruby_chilled_mutation(mrb_state *mrb, struct RBasic *obj)
+      oruby_chilled_warning_refresh(mrb_state *mrb, mrb_value verbose)
       {
-        obj->flags &= ~ORUBY_STRING_CHILLED;
-        mrb_value verbose = mrb_gv_get(mrb, MRB_GVSYM(VERBOSE));
+        struct RClass *kernel = mrb->kernel_module;
+        if (!kernel) return;
+        kernel->flags &= ~ORUBY_KERNEL_CHILLED_WARNING;
         if (mrb_nil_p(verbose) || !mrb_class_defined_id(mrb, MRB_SYM(Warning))) return;
-        mrb_value category = mrb_symbol_value(MRB_SYM(deprecated));
-        mrb_value warning = mrb_obj_value(mrb_module_get_id(mrb, MRB_SYM(Warning)));
+        mrb_value warning = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Warning));
+        if (!mrb_module_p(warning)) return;
         mrb_value settings = mrb_iv_get(mrb, warning, MRB_IVSYM(settings));
+        mrb_value category = mrb_symbol_value(MRB_SYM(deprecated));
         mrb_bool enabled = mrb_hash_p(settings) && mrb_hash_key_p(mrb, settings, category)
           ? mrb_test(mrb_hash_get(mrb, settings, category)) : mrb_test(verbose);
-        if (!enabled) return;
+        if (enabled) kernel->flags |= ORUBY_KERNEL_CHILLED_WARNING;
+      }
+
+      void
+      oruby_chilled_warn(mrb_state *mrb, struct RBasic *obj)
+      {
+        mrb_value category = mrb_symbol_value(MRB_SYM(deprecated));
         if (!mrb_obj_respond_to(mrb, mrb_class(mrb, mrb_obj_value(mrb->kernel_module)), MRB_SYM(__oruby_warn_here))) return;
         int arena = mrb_gc_arena_save(mrb);
         mrb_value origin = mrb_iv_get(mrb, mrb_obj_value(obj), MRB_SYM(__oruby_frozen_origin));
@@ -791,7 +815,7 @@ module ORubyVMCompat
     inputs = File.join(MRUBY_ROOT, "src")
     {
       "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement,
-      "proc" => :proc_identity, "array" => :array_splat, "variable" => :constant_observers,
+      "proc" => :proc_identity, "array" => :array_splat, "variable" => :variable,
       "error" => :chilled_mutation
     }.each do |name, patch|
       original = File.join(inputs, "#{name}.c")

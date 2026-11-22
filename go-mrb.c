@@ -904,6 +904,11 @@ static mrb_bool gv_plain_value(mrb_state *mrb, const char *canon, mrb_value v) {
   return FALSE;
 }
 
+static mrb_value chilled_warning_refresh_m(mrb_state *mrb, mrb_value self) {
+  oruby_chilled_warning_refresh(mrb, mrb_gv_get(mrb, MRB_GVSYM(VERBOSE)));
+  return mrb_nil_value();
+}
+
 static void gv_slot_set(mrb_state *mrb, int i, mrb_value v) {
   mrb_value kernel = mrb_obj_value(mrb->kernel_module);
   mrb_value name = mrb_symbol_value(mrb_intern_cstr(mrb, gv_names[i]));
@@ -913,6 +918,9 @@ static void gv_slot_set(mrb_state *mrb, int i, mrb_value v) {
     if (mrb_respond_to(mrb, kernel, check)) v = mrb_funcall_id(mrb, kernel, check, 2, name, v);
   }
   mrb_hash_set(mrb, gv_storage(mrb), mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i])), v);
+  if (strcmp(gv_canon[i], "$VERBOSE") == 0) {
+    oruby_chilled_warning_refresh(mrb, mrb_gv_get(mrb, MRB_GVSYM(VERBOSE)));
+  }
   mrb_value hooks = mrb_iv_get(mrb, kernel, MRB_IVSYM(__oruby_trace_var));
   if (mrb_hash_p(hooks) && mrb_hash_key_p(mrb, hooks, name)) {
     mrb_funcall_id(mrb, kernel, MRB_SYM(__oruby_trace_fire), 2, name, v);
@@ -4187,6 +4195,7 @@ static mrb_value rescue_splat_m(mrb_state *mrb, mrb_value self) {
 }
 
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_refresh_chilled_warning), chilled_warning_refresh_m, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_lookup_class), lookup_class_m, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_rescue_splat), rescue_splat_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_debug_fstring), debug_fstring_m, MRB_ARGS_REQ(2));
