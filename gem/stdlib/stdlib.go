@@ -25,9 +25,11 @@ import (
 	_ "github.com/oruby/oruby/gem/erubi"
 	_ "github.com/oruby/oruby/gem/etc"
 	_ "github.com/oruby/oruby/gem/ffi"
+	_ "github.com/oruby/oruby/gem/fiddle"
 	_ "github.com/oruby/oruby/gem/http"
 	"github.com/oruby/oruby/gem/internal/rb"
 	_ "github.com/oruby/oruby/gem/io"
+	_ "github.com/oruby/oruby/gem/io/console"
 	_ "github.com/oruby/oruby/gem/io/file"
 	_ "github.com/oruby/oruby/gem/io/popen"
 	_ "github.com/oruby/oruby/gem/json"
@@ -35,7 +37,9 @@ import (
 	_ "github.com/oruby/oruby/gem/marshal"
 	_ "github.com/oruby/oruby/gem/msgpack"
 	_ "github.com/oruby/oruby/gem/nethttp"
+	_ "github.com/oruby/oruby/gem/objspace"
 	_ "github.com/oruby/oruby/gem/process"
+	_ "github.com/oruby/oruby/gem/pty"
 	_ "github.com/oruby/oruby/gem/regexp"
 	_ "github.com/oruby/oruby/gem/regexp/full"
 	_ "github.com/oruby/oruby/gem/socket"
@@ -81,11 +85,6 @@ func init() {
 	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "io/nonblock", "io/wait", "English"} {
 		oruby.LazyGem(name, func(*oruby.MrbState) interface{} { return nil })
 	}
-	oruby.LazyGem("io/console", func(mrb *oruby.MrbState) interface{} {
-		mrb.Require("stringio")
-		load(mrb, "console")
-		return nil
-	})
 	oruby.LazyGem("prettyprint", func(mrb *oruby.MrbState) interface{} {
 		load(mrb, "prettyprint")
 		return nil
