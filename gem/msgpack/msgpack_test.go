@@ -1,0 +1,272 @@
+package msgpack_test
+
+import (
+	"testing"
+
+	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/core_ext"
+	_ "github.com/oruby/oruby/gem/load"
+	_ "github.com/oruby/oruby/gem/msgpack"
+	_ "github.com/oruby/oruby/gem/time"
+)
+
+func TestMessagePackVectors(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+		require "msgpack"
+		require "msgpack/bigint"
+
+		vectors = [
+			[nil, "c0"],
+			[true, "c3"],
+			[false, "c2"],
+			[42, "2a"],
+			[-17, "ef"],
+			[-100, "d09c"],
+			[-20000, "d1b1e0"],
+			[-1000000, "d2fff0bdc0"],
+			[-(1 << 60), "d3f000000000000000"],
+			[200, "ccc8"],
+			[50000, "cdc350"],
+			[3_000_000_000, "ceb2d05e00"],
+			[(1 << 63) + 12345, "cf8000000000003039"],
+			[3.141592653589793, "cb400921fb54442d18"],
+			["hello \u2603", "a968656c6c6f20e29883"],
+			["\x00\x01\xff".b, "c4030001ff"],
+			[[1, "two", [3.5, true, nil]], "9301a374776f93cb400c000000000000c3c0"],
+			[{"a" => 1, "b" => [2, 3]}, "82a16101a162920203"],
+		]
+
+		vectors.each do |val, expected_hex|
+			packed = MessagePack.pack(val)
+			raise "not binary" unless packed.encoding == Encoding::BINARY
+			hex = packed.unpack1("H*")
+			raise "pack mismatch for #{val.inspect}: got #{hex}, want #{expected_hex}" unless hex == expected_hex
+
+			unpacked = MessagePack.unpack(packed)
+			raise "unpack mismatch for #{val.inspect}: got #{unpacked.inspect}" unless unpacked == val
+
+			# CoreExt #to_msgpack
+			raise "to_msgpack mismatch for #{val.inspect}" unless val.to_msgpack == packed
+		end
+
+		# Verify string vs binary encoding preserved on unpack
+		u_str = MessagePack.unpack(MessagePack.pack("utf8"))
+		u_bin = MessagePack.unpack(MessagePack.pack("bin".b))
+		raise "expected UTF-8, got #{u_str.encoding}" unless u_str.encoding == Encoding::UTF_8
+		raise "expected BINARY, got #{u_bin.encoding}" unless u_bin.encoding == Encoding::BINARY
+
+		# Large strings, bins, arrays, maps (str8/16, bin8/16, array16, map16)
+		[40, 300].each do |n|
+			s = "a" * n
+			raise "str #{n}" unless MessagePack.unpack(MessagePack.pack(s)) == s
+			b = ("\x01" * n).b
+			rb_b = MessagePack.unpack(MessagePack.pack(b))
+			raise "bin #{n}" unless rb_b == b && rb_b.encoding == Encoding::BINARY
+			a = Array.new(n) { |i| i }
+			raise "ary #{n}" unless MessagePack.unpack(MessagePack.pack(a)) == a
+			h = {}
+			n.times { |i| h["k#{i}"] = i }
+			raise "map #{n}" unless MessagePack.unpack(MessagePack.pack(h)) == h
+		end
+	`)
+	if err != nil {
+		t.Fatalf("MessagePack vectors test failed: %v", err)
+	}
+}
+
+func TestMessagePackStreamingAndOptions(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+		require "msgpack"
+
+		# Streaming unpacker byte-by-byte
+		stream = MessagePack.pack({"name" => "alice", "scores" => [10, 20]}) +
+			MessagePack.pack([1, 2, 3]) +
+			MessagePack.pack("done")
+
+		u = MessagePack::Unpacker.new(symbolize_keys: true)
+		results = []
+		stream.bytes.each do |b|
+			u.feed_each(b.chr) { |obj| results << obj }
+		end
+		raise "stream count: #{results.size}" unless results.size == 3
+		raise "symbolize_keys failed: #{results[0].inspect}" unless results[0] == { name: "alice", scores: [10, 20] }
+		raise "stream[1] failed" unless results[1] == [1, 2, 3]
+		raise "stream[2] failed" unless results[2] == "done"
+
+		# freeze: true
+		frozen_val = MessagePack.unpack(MessagePack.pack({"a" => ["b", 1]}), freeze: true)
+		raise "hash not frozen" unless frozen_val.frozen?
+		raise "key not frozen" unless frozen_val.keys.first.frozen?
+		raise "ary not frozen" unless frozen_val["a"].frozen?
+		raise "elem not frozen" unless frozen_val["a"][0].frozen?
+
+		# Manual headers & skip & skip_nil
+		p = MessagePack::Packer.new
+		p.write_array_header(3)
+		p.write_nil
+		p.write({"skip" => [1, 2, 3]})
+		p.write(99)
+		p.write_float32(1.5)
+		raw = p.full_pack
+
+		u2 = MessagePack::Unpacker.new
+		u2.feed(raw)
+		raise "array header" unless u2.read_array_header == 3
+		raise "skip_nil true" unless u2.skip_nil == true
+		raise "skip_nil false" unless u2.skip_nil == false
+		u2.skip
+		raise "after skip" unless u2.read == 99
+		raise "float32" unless (u2.read - 1.5).abs < 1e-6
+
+		# Extra bytes error in full_unpack
+		raised = false
+		begin
+			MessagePack.unpack(MessagePack.pack(1) + MessagePack.pack(2))
+		rescue MessagePack::MalformedFormatError
+			raised = true
+		end
+		raise "expected MalformedFormatError for trailing bytes" unless raised
+
+		# Reserved 0xc1 byte
+		raised = false
+		begin
+			MessagePack.unpack("\xc1".b)
+		rescue MessagePack::MalformedFormatError
+			raised = true
+		end
+		raise "expected MalformedFormatError for 0xc1" unless raised
+
+		# UnexpectedTypeError (also is_a? MessagePack::TypeError)
+		raised = false
+		begin
+			u3 = MessagePack::Unpacker.new
+			u3.feed(MessagePack.pack(123))
+			u3.read_map_header
+		rescue MessagePack::TypeError => e
+			raised = e.is_a?(MessagePack::UnexpectedTypeError)
+		end
+		raise "expected UnexpectedTypeError" unless raised
+
+		# EOFError on truncated input
+		raised = false
+		begin
+			MessagePack.unpack("\xda\x00\x05abc".b)
+		rescue EOFError
+			raised = true
+		end
+		raise "expected EOFError on truncated input" unless raised
+
+		# UnknownExtTypeError vs allow_unknown_ext: true
+		ext_bytes = "\xc7\x02\x05hi".b
+		raised = false
+		begin
+			MessagePack.unpack(ext_bytes)
+		rescue MessagePack::UnknownExtTypeError
+			raised = true
+		end
+		raise "expected UnknownExtTypeError" unless raised
+
+		ev = MessagePack.unpack(ext_bytes, allow_unknown_ext: true)
+		raise "ExtensionValue mismatch: #{ev.inspect}" unless ev.is_a?(MessagePack::ExtensionValue) && ev.type == 5 && ev.payload == "hi"
+		raise "ExtensionValue repack" unless MessagePack.pack(ev) == "\xd5\x05hi".b
+	`)
+	if err != nil {
+		t.Fatalf("MessagePack streaming/options test failed: %v", err)
+	}
+}
+
+func TestMessagePackFactoryAndExtensions(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+		require "msgpack"
+		require "msgpack/bigint"
+
+		f = MessagePack::Factory.new
+		f.register_type(
+			MessagePack::Timestamp::TYPE,
+			Time,
+			packer: MessagePack::Time::Packer,
+			unpacker: MessagePack::Time::Unpacker
+		)
+		f.register_type(0x00, Symbol)
+		f.register_type(
+			0x01,
+			Integer,
+			packer: MessagePack::Bigint.method(:to_msgpack_ext),
+			unpacker: MessagePack::Bigint.method(:from_msgpack_ext),
+			oversized_integer_extension: true
+		)
+
+		raise "type_registered? Symbol" unless f.type_registered?(Symbol)
+		raise "type_registered? -1" unless f.type_registered?(-1)
+
+		# Exact MRI hex vectors for Time32, Time64, Time96, Symbol, Bigint
+		t32 = Time.at(1700000000, 0)
+		p32 = f.pack(t32)
+		raise "time32 hex: #{p32.unpack1('H*')}" unless p32.unpack1("H*") == "d6ff6553f100"
+		raise "time32 roundtrip" unless f.unpack(p32) == t32
+
+		t64 = Time.at(1700000000, 123456789, :nanosecond)
+		p64 = f.pack(t64)
+		raise "time64 hex: #{p64.unpack1('H*')}" unless p64.unpack1("H*") == "d7ff1d6f34546553f100"
+		u64 = f.unpack(p64)
+		raise "time64 roundtrip" unless u64.tv_sec == t64.tv_sec && u64.tv_nsec == t64.tv_nsec
+
+		t96 = Time.at(-100, 500, :nanosecond)
+		p96 = f.pack(t96)
+		raise "time96 hex: #{p96.unpack1('H*')}" unless p96.unpack1("H*") == "c70cff000001f4ffffffffffffff9c"
+		u96 = f.unpack(p96)
+		raise "time96 roundtrip" unless u96.tv_sec == t96.tv_sec && u96.tv_nsec == t96.tv_nsec
+
+		psym = f.pack(:hello)
+		raise "sym_ext hex: #{psym.unpack1('H*')}" unless psym.unpack1("H*") == "c7050068656c6c6f"
+		raise "sym_ext roundtrip" unless f.unpack(psym) == :hello
+
+		big_pos = 1 << 100
+		pbig = f.pack(big_pos)
+		raise "bigint_ext hex: #{pbig.unpack1('H*')}" unless pbig.unpack1("H*") == "c711010000000000000000000000000000000010"
+		raise "bigint_ext roundtrip" unless f.unpack(pbig) == big_pos
+
+		big_neg = -(1 << 100)
+		pnbig = f.pack(big_neg)
+		raise "neg_bigint_ext hex: #{pnbig.unpack1('H*')}" unless pnbig.unpack1("H*") == "c711010100000000000000000000000000000010"
+		raise "neg_bigint_ext roundtrip" unless f.unpack(pnbig) == big_neg
+
+		# Custom class with recursive: true
+		Point = Struct.new(:x, :y)
+		f.register_type(
+			0x02,
+			Point,
+			recursive: true,
+			packer: ->(pt, packer) { packer.write(pt.x); packer.write(pt.y) },
+			unpacker: ->(unpacker) { Point.new(unpacker.read, unpacker.read) }
+		)
+		pt = Point.new(10, 20)
+		raise "recursive ext roundtrip" unless f.unpack(f.pack(pt)) == pt
+
+		# Pool
+		pool = f.pool(2)
+		raise "pool roundtrip" unless pool.load(pool.dump([:ok, pt, big_pos])) == [:ok, pt, big_pos]
+
+		# Buffer operations
+		buf = MessagePack::Buffer.new
+		buf << "hello"
+		buf.write(" world")
+		raise "buf size" unless buf.size == 11
+		raise "buf read(5)" unless buf.read(5) == "hello"
+		raise "buf skip(1)" unless buf.skip(1) == 1
+		raise "buf read_all(5)" unless buf.read_all(5) == "world"
+		raise "buf empty" unless buf.empty?
+	`)
+	if err != nil {
+		t.Fatalf("MessagePack factory/extensions test failed: %v", err)
+	}
+}
