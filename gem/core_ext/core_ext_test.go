@@ -182,6 +182,104 @@ func TestHashCopiesEncodedStringKeys(t *testing.T) {
 	}
 }
 
+func TestHashKeepsCustomCodesAcrossTableChanges(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      class StoredHashKey
+        attr_accessor :code
+        attr_reader :calls
+
+        def initialize(code)
+          @code = code
+          @calls = 0
+        end
+
+        def hash
+          @calls += 1
+          raise "rehash stopped" if @code == :raise
+          @code
+        end
+
+        def eql?(other)
+          raise "eql? called for a different code" if other.is_a?(StoredHashKey)
+          false
+        end
+      end
+
+      key = StoredHashKey.new(7)
+      table = {key => :value}
+      raise "wrong insert count" unless key.calls == 1
+      raise "truncated hash code" if table.key?(StoredHashKey.new((1 << 32) + 7))
+
+      128.times { |i| table[i] = i }
+      96.times { |i| table.delete(i) }
+      128.times { |i| table[i + 256] = i }
+      copy = table.dup
+      raise "resize or copy rehashed the key" unless key.calls == 1
+      raise "lost key on resize or copy" unless table[key] == :value && copy[key] == :value
+
+      key.code = :raise
+      begin
+        table.rehash
+        raise "expected a rehash failure"
+      rescue RuntimeError => error
+        raise unless error.message == "rehash stopped"
+      end
+      key.code = 7
+      raise "rehash failure damaged the table" unless table[key] == :value && table[257] == 1
+      key.code = 12
+      raise "lookup ignored stored code" if table.key?(key)
+      raise "shift ignored stored code" unless copy.shift == [key, :value]
+
+      calls = key.calls
+      table.compare_by_identity
+      raise "identity conversion called hash" unless table[key] == :value && key.calls == calls
+      lone = StoredHashKey.new(1)
+      empty = {lone => true}
+      empty.delete(lone)
+      calls = lone.calls
+      raise "empty lookup called hash" unless empty[lone].nil? && lone.calls == calls
+      begin
+        {}[StoredHashKey.new(nil)] = 1
+        false
+      rescue TypeError
+        true
+      end
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("custom Hash codes = %v, %v; want true", got, err)
+	}
+}
+
+func TestHashComparesCustomKeysWithBuiltinKeys(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	got, err := mrb.Eval(`
+      key = Object.new
+      def key.hash = :match.hash
+      def key.eql?(other) = other.equal?(:match)
+
+      small = {match: :value}
+      large = small.dup
+      64.times { |i| large[i] = i }
+      32.times { |i| large.delete(i) }
+      raise "missing builtin match" unless small[key] == :value && large[key] == :value
+      raise "failed to delete a builtin match" unless large.delete(key) == :value && !large.key?(:match)
+
+      large[:match] = :old
+      large[key] = :new
+      small[key] = :new
+      small.keys == [:match] && small[:match] == :new &&
+        large.size == 33 && large[:match] == :new && large[key] == :new
+    `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("mixed Hash keys = %v, %v; want true", got, err)
+	}
+}
+
 func TestCoreExt(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
