@@ -52,6 +52,7 @@ test:
 	(cd gem/database && go test)
 	(cd gem/ed25519 && go test)
 	(cd gem/env && go test)
+	(cd gem/ffi && go test)
 	(cd gem/fullcore && go test)
 	(cd gem/stdlib && go test)
 	(cd gem/http && go test)

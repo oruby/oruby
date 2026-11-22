@@ -24,6 +24,7 @@ import (
 	_ "github.com/oruby/oruby/gem/env"
 	_ "github.com/oruby/oruby/gem/erubi"
 	_ "github.com/oruby/oruby/gem/etc"
+	_ "github.com/oruby/oruby/gem/ffi"
 	_ "github.com/oruby/oruby/gem/http"
 	"github.com/oruby/oruby/gem/internal/rb"
 	_ "github.com/oruby/oruby/gem/io"
