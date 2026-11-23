@@ -488,8 +488,9 @@ class Thread
     @__oruby_priority = n.clamp(-3, 3)
   end
 
+  # a thread that ended keeps its group, as MRI 4.1's (ThreadGroup#list
+  # leaves it out)
   def group
-    return nil unless alive?
     @__oruby_group || ThreadGroup::Default
   end
 

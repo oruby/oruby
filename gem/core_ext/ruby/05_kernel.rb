@@ -272,3 +272,11 @@ module Kernel
     nil
   end
 end
+
+# main.include: into Object, or into the wrapper module of a wrapped load
+# (load(file, true) runs the file with a copy of main that carries it)
+class << TOPLEVEL_BINDING.receiver
+  def include(*modules)
+    Kernel.__oruby_top_target(self).include(*modules)
+  end
+end

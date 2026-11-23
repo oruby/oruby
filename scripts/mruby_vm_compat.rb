@@ -640,6 +640,16 @@ module ORubyVMCompat
   # answer is the enclosing scope's, so the walk goes on through that env.
   def self.block_given_define_method(source)
     replace(source, '    if (MRB_PROC_SCOPE_P(p)) break;', '    if (MRB_PROC_SCOPE_P(p) && !MRB_PROC_ENV_P(p)) break;')
+    # Kernel#autoload in a method defined in a Class.new block: CRuby's cref
+    # is that class, the method's own; mruby's lexical cref is the top level
+    replace(source, "  if (ci >= mrb->c->cibase && ci->proc) c = mrb_vm_cref_class(mrb, ci);\n", <<~'C')
+        if (ci >= mrb->c->cibase && ci->proc) c = mrb_vm_cref_class(mrb, ci);
+        if ((!c || c == mrb->object_class) && ci >= mrb->c->cibase && ci->proc) {
+          const struct RProc *sp = ci->proc;
+          while (sp && !MRB_PROC_CFUNC_P(sp) && !MRB_PROC_SCOPE_P(sp)) sp = sp->upper;
+          if (sp && !MRB_PROC_CFUNC_P(sp) && sp->upper && MRB_PROC_TARGET_CLASS(sp)) c = MRB_PROC_TARGET_CLASS(sp);
+        }
+    C
   end
 
   # singleton_methods: an inherited metaclass class holds none of the object's

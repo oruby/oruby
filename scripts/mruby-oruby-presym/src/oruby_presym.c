@@ -968,6 +968,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_timeout_start");
   (void)mrb_intern_lit(mrb, "__oruby_timeout_stop");
   (void)mrb_intern_lit(mrb, "__oruby_to_s");
+  (void)mrb_intern_lit(mrb, "__oruby_top_target");
   (void)mrb_intern_lit(mrb, "__oruby_tparent");
   (void)mrb_intern_lit(mrb, "__oruby_tpath");
   (void)mrb_intern_lit(mrb, "__oruby_trace_exc");

@@ -1933,6 +1933,18 @@ static mrb_value block_to_ary_p(mrb_state *mrb, mrb_value self) {
   return mrb_true_value();
 }
 
+/* Kernel.__oruby_top_target(main): the module a top-level include adds to,
+   the wrapper of a wrapped load (gem/load gives its copy of main the
+   module), else Object */
+static mrb_value top_target_m(mrb_state *mrb, mrb_value self) {
+  mrb_value obj = mrb_get_arg1(mrb);
+  if (!mrb_immediate_p(obj) && !mrb_obj_eq(mrb, obj, mrb_top_self(mrb))) {
+    mrb_value target = mrb_iv_get(mrb, obj, MRB_SYM(__oruby_load_wrapper));
+    if (mrb_module_p(target)) return target;
+  }
+  return mrb_obj_value(mrb->object_class);
+}
+
 /* Kernel.__oruby_masgn_ary(obj) for ORB_MASGN_VALUE (prism.go) where the
    assignment's value is unused: a, b = obj as MRI takes obj, an Array as
    is, anything else as Kernel.__oruby_ary_of (#to_ary) does */
@@ -4428,6 +4440,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_core_proc), core_proc_p_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_bta), block_to_ary_p, MRB_ARGS_ANY());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_masgn_ary), masgn_ary_m, MRB_ARGS_REQ(1));
+  mrb_define_module_function(mrb, mrb->kernel_module, "__oruby_top_target", top_target_m, MRB_ARGS_REQ(1));
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_record), mod_const_record_m, MRB_ARGS_REQ(1));
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_location), mod_const_location_m, MRB_ARGS_REQ(1));
   if (mrb_class_defined_id(mrb, MRB_SYM(Fiber))) {

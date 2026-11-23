@@ -180,8 +180,49 @@ class IO
 
   alias __oruby_go_write write
   def write(*objs)
+    # MRI would hold this in its write buffer (sync off) until a flush
+    @__oruby_wpending = true if !@__oruby_sync && !equal?(STDERR)
     return __oruby_go_write(*objs) unless @__enc || @__enc2 || @__ecopts
     __oruby_go_write(*objs.map { |o| __oruby_write_conv(String === o ? o : o.to_s) })
+  end
+
+  # syswrite after a buffered write warns, as MRI's does while its write
+  # buffer holds data (oruby writes through; the pending flag stands for it)
+  alias __oruby_go_syswrite syswrite
+  def syswrite(obj)
+    Kernel.__oruby_warn_here("syswrite for buffered IO") if @__oruby_wpending
+    __oruby_go_syswrite(obj)
+  end
+
+  # what empties MRI's write buffer clears the flag
+  alias __oruby_wp_flush flush
+  def flush
+    @__oruby_wpending = nil
+    __oruby_wp_flush
+  end
+
+  alias __oruby_wp_fsync fsync
+  def fsync
+    @__oruby_wpending = nil
+    __oruby_wp_fsync
+  end
+
+  alias __oruby_wp_rewind rewind
+  def rewind
+    @__oruby_wpending = nil
+    __oruby_wp_rewind
+  end
+
+  alias __oruby_wp_seek seek
+  def seek(offset, whence = IO::SEEK_SET)
+    @__oruby_wpending = nil
+    __oruby_wp_seek(offset, whence)
+  end
+
+  alias __oruby_wp_sync_set sync=
+  def sync=(v)
+    @__oruby_wpending = nil if v
+    __oruby_wp_sync_set(v)
   end
 
   def set_encoding(*args, **opts)
