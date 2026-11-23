@@ -22,26 +22,28 @@ const (
 )
 
 type mrbcArgs struct {
-	prog        string
-	outfile     string
-	outdir      string
-	orbfile     string
-	entrypoint  string
-	gemfile     string
-	noGems      bool
-	initname    string
-	argv        []string
-	idx         int
-	dumpStruct  bool
-	checkSyntax bool
-	verbose     bool
-	removeLv    bool
-	noExtOps    bool
-	noOptimize  bool
-	recursive   bool
-	inplaceRb   bool
-	rmSource    bool
-	flags       uint8
+	prog         string
+	outfile      string
+	outdir       string
+	orbfile      string
+	entrypoint   string
+	gemfile      string
+	noGems       bool
+	initname     string
+	argv         []string
+	idx          int
+	dumpStruct   bool
+	checkSyntax  bool
+	verbose      bool
+	removeLv     bool
+	noExtOps     bool
+	noOptimize   bool
+	recursive    bool
+	inplaceRb    bool
+	rmSource     bool
+	flags        uint8
+	gatheredBins int
+	gatheredLibs int
 
 	closer func()
 }

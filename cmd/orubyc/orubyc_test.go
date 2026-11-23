@@ -393,3 +393,110 @@ require_relative "app/models/user"
 		t.Fatalf("expected public/robots.txt to be embedded when --embed-public is set")
 	}
 }
+
+func TestOrubyBuildGathersNativeGemBinariesAndTwoStageDockerfile(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	gemRoot := t.TempDir()
+	thrusterDir := filepath.Join(gemRoot, "gems", "thruster-0.1.27")
+	if err := os.MkdirAll(filepath.Join(thrusterDir, "lib"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(thrusterDir, "exe", "arm64-darwin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(thrusterDir, "lib", "thruster.rb"), []byte("module Thruster; end\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(thrusterDir, "exe", "thrust"), []byte("#!/usr/bin/env ruby\nputs 'launcher'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	fakeMachO := []byte{0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01, 't', 'h', 'r', 'u', 's', 't'}
+	if err := os.WriteFile(filepath.Join(thrusterDir, "exe", "arm64-darwin", "thrust"), fakeMachO, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fakeELFSo := []byte{0x7f, 'E', 'L', 'F', 0x02, 0x01, 0x01, 0x00, 'v', 'i', 'p', 's'}
+	if err := os.WriteFile(filepath.Join(thrusterDir, "lib", "libvips.so.42"), fakeELFSo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GEM_PATH", gemRoot)
+
+	appDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(appDir, "Gemfile"), []byte("source 'https://rubygems.org'\ngem 'thruster'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "app.rb"), []byte("require 'thruster'\n'ok'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runInitSubcommand([]string{"--docker", appDir}); code != 0 {
+		t.Fatalf("runInitSubcommand exited with %d", code)
+	}
+	dfBytes, err := os.ReadFile(filepath.Join(appDir, "Dockerfile.oruby"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := string(dfBytes)
+	for _, want := range []string{
+		"AS builder",
+		"AS runtime",
+		"/usr/local/bin/oruby build",
+		"COPY --from=builder /src/build/bin/ /app/bin/",
+		"COPY --from=builder /src/build/lib/ /app/lib/",
+		`LD_LIBRARY_PATH="/app/lib"`,
+	} {
+		if !strings.Contains(df, want) {
+			t.Fatalf("expected Dockerfile.oruby to contain %q, got:\n%s", want, df)
+		}
+	}
+
+	if code := runBuildSubcommand(mrb, "oruby", []string{appDir}); code != 0 {
+		t.Fatalf("runBuildSubcommand exited with %d", code)
+	}
+
+	// Native binary should be gathered into build/bin/thrust
+	gatheredPath := filepath.Join(appDir, "build", "bin", "thrust")
+	gotBin, err := os.ReadFile(gatheredPath)
+	if err != nil {
+		t.Fatalf("expected gathered binary at %s: %v", gatheredPath, err)
+	}
+	if string(gotBin) != string(fakeMachO) {
+		t.Fatalf("gathered binary mismatch: got %x, want %x", gotBin, fakeMachO)
+	}
+	fi, err := os.Stat(gatheredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&0111 == 0 {
+		t.Fatalf("expected gathered binary to be executable, mode=%v", fi.Mode())
+	}
+
+	// Shared library should be gathered into build/lib/libvips.so.42
+	gatheredLibPath := filepath.Join(appDir, "build", "lib", "libvips.so.42")
+	gotLib, err := os.ReadFile(gatheredLibPath)
+	if err != nil {
+		t.Fatalf("expected gathered shared library at %s: %v", gatheredLibPath, err)
+	}
+	if string(gotLib) != string(fakeELFSo) {
+		t.Fatalf("gathered shared library mismatch: got %x, want %x", gotLib, fakeELFSo)
+	}
+
+	// Native binary and shared library must NOT be packed inside .orb; lib/thruster.rb MUST be packed.
+	orbPath := filepath.Join(appDir, "build", filepath.Base(appDir)+".orb")
+	orbFile, err := oruby.ReadOrbFile(orbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, excluded := range []string{
+		"gems/thruster-0.1.27/exe/arm64-darwin/thrust",
+		"gems/thruster-0.1.27/lib/libvips.so.42",
+	} {
+		if _, ok := orbFile.Lookup(excluded); ok {
+			t.Fatalf("expected %q to be excluded from .orb", excluded)
+		}
+	}
+	if _, ok := orbFile.Lookup("gems/thruster-0.1.27/lib/thruster.rb"); !ok {
+		t.Fatalf("expected gems/thruster-0.1.27/lib/thruster.rb to be packed in .orb")
+	}
+}

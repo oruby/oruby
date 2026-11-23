@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -521,6 +522,106 @@ func shouldSkipGemFile(relPath string) bool {
 	return false
 }
 
+// hasNativeMagic reports whether path begins with an ELF, Mach-O, or (when allowPE is true) Windows PE header.
+func hasNativeMagic(path string, allowPE bool) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	var hdr [4]byte
+	n, err := io.ReadFull(f, hdr[:])
+	if err != nil || n < 4 {
+		return false
+	}
+
+	// ELF: 0x7F 'E' 'L' 'F'
+	if hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F' {
+		return true
+	}
+	// Mach-O 32/64-bit & universal fat binaries
+	switch {
+	case hdr[0] == 0xfe && hdr[1] == 0xed && hdr[2] == 0xfa && (hdr[3] == 0xce || hdr[3] == 0xcf),
+		(hdr[0] == 0xce || hdr[0] == 0xcf) && hdr[1] == 0xfa && hdr[2] == 0xed && hdr[3] == 0xfe,
+		hdr[0] == 0xca && hdr[1] == 0xfe && hdr[2] == 0xba && hdr[3] == 0xbe,
+		hdr[0] == 0xbe && hdr[1] == 0xba && hdr[2] == 0xfe && hdr[3] == 0xca:
+		return true
+	}
+	// Windows PE executable / DLL
+	if allowPE && hdr[0] == 'M' && hdr[1] == 'Z' {
+		return true
+	}
+	return false
+}
+
+// isNativeSharedLibrary reports whether path is a runtime shared library
+// (.so, .so.*, .dylib, or .dll) rather than an MRI C-extension .bundle or static archive.
+func isNativeSharedLibrary(path string, info os.FileInfo) bool {
+	if info == nil || info.IsDir() || info.Size() < 4 {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(path))
+	ext := strings.ToLower(filepath.Ext(base))
+	isSharedExt := ext == ".so" || ext == ".dylib" || ext == ".dll" || strings.Contains(base, ".so.")
+	if !isSharedExt {
+		return false
+	}
+	return hasNativeMagic(path, ext == ".dll")
+}
+
+// isNativeExecutableBinary reports whether path is a compiled native executable
+// (ELF, Mach-O, or Windows PE .exe) rather than a Ruby script, shared library, or data file.
+func isNativeExecutableBinary(path string, info os.FileInfo) bool {
+	if info == nil || info.IsDir() || info.Size() < 4 {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(path))
+	if strings.Contains(base, ".so.") {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(base))
+	switch ext {
+	case ".rb", ".rake", ".gemspec", ".yml", ".yaml", ".json", ".md", ".txt",
+		".c", ".h", ".cpp", ".hpp", ".o", ".so", ".bundle", ".dll", ".dylib", ".a", ".jar", ".java", ".rbs":
+		return false
+	}
+	return hasNativeMagic(path, ext == ".exe")
+}
+
+func gatherNativeArtifact(src, outDir, projectGuardDir string, mode os.FileMode) (string, bool, error) {
+	if outDir == "" {
+		return "", false, nil
+	}
+	dst := filepath.Join(outDir, filepath.Base(src))
+	if filepath.Clean(outDir) == filepath.Clean(projectGuardDir) {
+		if _, err := os.Stat(dst); err == nil {
+			return "", false, nil
+		}
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return "", false, err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return "", false, err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return "", false, err
+	}
+	if err := out.Close(); err != nil {
+		return "", false, err
+	}
+	return dst, true, nil
+}
+
 // generateBundlerSetupSource creates the virtual bundler/setup.rb and bundler.rb content
 // for a self-contained .orb bundle so `require "bundler/setup"` and `Bundler.require(*Rails.groups)` work seamlessly.
 func generateBundlerSetupSource(entries []gemfileEntry) []byte {
@@ -796,6 +897,15 @@ func packGemfileGemsWithGroups(
 		return resolved[i].Name < resolved[j].Name
 	})
 
+	var binOutDir, libOutDir string
+	if args != nil && args.orbfile != "" {
+		outDir := filepath.Dir(args.orbfile)
+		binOutDir = filepath.Join(outDir, "bin")
+		libOutDir = filepath.Join(outDir, "lib")
+	}
+	projectBinDir := filepath.Join(projectRoot, "bin")
+	projectLibDir := filepath.Join(projectRoot, "lib")
+
 	for _, g := range resolved {
 		gemVirtBase := "gems/" + g.Name + "-" + g.Version
 		reqPaths := g.RequirePaths
@@ -820,13 +930,38 @@ func packGemfileGemsWithGroups(
 			if rel == "." {
 				return nil
 			}
-			if shouldSkipGemFile(rel) {
-				if d.IsDir() {
+			if d.IsDir() {
+				if shouldSkipGemFile(rel) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if d.IsDir() {
+			if info, iErr := d.Info(); iErr == nil {
+				if isNativeSharedLibrary(p, info) {
+					if dst, copied, gErr := gatherNativeArtifact(p, libOutDir, projectLibDir, 0755); gErr != nil {
+						return fmt.Errorf("copying gem shared library %s: %w", p, gErr)
+					} else if copied {
+						args.gatheredLibs++
+						if args.verbose {
+							fmt.Fprintf(os.Stderr, "orubyc: gathered library %s -> %s\n", p, dst)
+						}
+					}
+					return nil
+				}
+				if isNativeExecutableBinary(p, info) {
+					// Native executables cannot be exec()'d from inside .orb; gather them into <outDir>/bin/ instead.
+					if dst, copied, gErr := gatherNativeArtifact(p, binOutDir, projectBinDir, 0755); gErr != nil {
+						return fmt.Errorf("copying gem binary %s: %w", p, gErr)
+					} else if copied {
+						args.gatheredBins++
+						if args.verbose {
+							fmt.Fprintf(os.Stderr, "orubyc: gathered binary %s -> %s\n", p, dst)
+						}
+					}
+					return nil
+				}
+			}
+			if shouldSkipGemFile(rel) {
 				return nil
 			}
 			vpath := oruby.NormalizeOrbPath(gemVirtBase + "/" + filepath.ToSlash(rel))
