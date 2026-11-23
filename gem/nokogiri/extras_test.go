@@ -165,9 +165,9 @@ func TestNodeNodeSetNamespaceAndHTMLHelpers(t *testing.T) {
 			doc2.root.namespace.href,
 			old_enc,
 			new_enc,
-			h5_std.quirks_mode.to_s,
+			h5_std.quirks_mode == Nokogiri::HTML5::QuirksMode::NO_QUIRKS,
 			h5_std.parse_noscript_content_as_text,
-			h5_quirks.quirks_mode.to_s,
+			h5_quirks.quirks_mode == Nokogiri::HTML5::QuirksMode::QUIRKS,
 			h5_deep.errors.length <= 1 && h5_deep.errors.length > 0,
 			rdr_info,
 		]
@@ -197,7 +197,7 @@ func TestNodeNodeSetNamespaceAndHTMLHelpers(t *testing.T) {
 	if res[24] != "iso-8859-1" || res[25] != "UTF-8" {
 		t.Fatalf("meta_encoding failed: %v %v", res[24], res[25])
 	}
-	if res[26] != "no_quirks" || res[27] != true || res[28] != "quirks" || res[29] != true {
+	if res[26] != true || res[27] != true || res[28] != true || res[29] != true {
 		t.Fatalf("HTML5 options/quirks failed: %v", res[26:30])
 	}
 	rdrInfo := res[30].([]any)

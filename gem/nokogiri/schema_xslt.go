@@ -2,8 +2,10 @@ package nokogiri
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jacoelho/xsd"
@@ -21,8 +23,133 @@ type xsdSchemaData struct {
 }
 
 type xsltStylesheetData struct {
-	source  string
-	baseDir string
+	source     string
+	baseDir    string
+	hasExtCall bool
+}
+
+var (
+	reXMLNSBinding = regexp.MustCompile(`xmlns:([A-Za-z_][A-Za-z0-9._-]*)\s*=\s*["']([^"']+)["']`)
+	reXSLValueOf   = regexp.MustCompile(`<xsl:value-of\s+select\s*=\s*(?:"([^"]+)"|'([^']+)')\s*/>`)
+	reExtCallOut   = regexp.MustCompile(`(?s)<__oruby_ext_call__\s+uri="([^"]+)"\s+fn="([^"]+)">(.*?)</__oruby_ext_call__>`)
+	reExtArgOut    = regexp.MustCompile(`(?s)<__oruby_ext_arg__>(.*?)</__oruby_ext_arg__>`)
+)
+
+func registeredXSLTExtURIs(mrb *oruby.MrbState, xsltMod oruby.RClass) map[string]oruby.Value {
+	reg, err := mrb.Funcall(xsltMod, mrb.Intern("registered_extensions"))
+	if err != nil || reg.IsNil() || !reg.IsHash() {
+		return nil
+	}
+	keys := mrb.HashKeys(reg)
+	n := oruby.RArrayLen(keys)
+	if n == 0 {
+		return nil
+	}
+	out := make(map[string]oruby.Value, n)
+	for i := 0; i < n; i++ {
+		k := mrb.AryRef(keys, i)
+		v, err := mrb.Funcall(reg, mrb.Intern("[]"), k)
+		if err == nil && !v.IsNil() {
+			out[k.String()] = v
+		}
+	}
+	return out
+}
+
+func rewriteXSLTExtensions(src string, regURIs map[string]oruby.Value) (string, bool) {
+	if len(regURIs) == 0 {
+		return src, false
+	}
+	prefToURI := map[string]string{}
+	for _, m := range reXMLNSBinding.FindAllStringSubmatch(src, -1) {
+		if _, ok := regURIs[m[2]]; ok {
+			prefToURI[m[1]] = m[2]
+		}
+	}
+	if len(prefToURI) == 0 {
+		return src, false
+	}
+	rewrote := false
+	out := reXSLValueOf.ReplaceAllStringFunc(src, func(match string) string {
+		sm := reXSLValueOf.FindStringSubmatch(match)
+		sel := sm[1]
+		if sel == "" {
+			sel = sm[2]
+		}
+		sel = strings.TrimSpace(sel)
+		colon := strings.IndexByte(sel, ':')
+		open := strings.IndexByte(sel, '(')
+		if colon <= 0 || open <= colon || !strings.HasSuffix(sel, ")") {
+			return match
+		}
+		pref := sel[:colon]
+		uri, ok := prefToURI[pref]
+		if !ok {
+			return match
+		}
+		fnName := sel[colon+1 : open]
+		argsRaw := strings.TrimSpace(sel[open+1 : len(sel)-1])
+		var sb strings.Builder
+		sb.WriteString(`<__oruby_ext_call__ uri="`)
+		sb.WriteString(html.EscapeString(uri))
+		sb.WriteString(`" fn="`)
+		sb.WriteString(html.EscapeString(fnName))
+		sb.WriteString(`">`)
+		if argsRaw != "" {
+			for _, ae := range splitTopLevel(argsRaw, ',') {
+				ae = strings.TrimSpace(ae)
+				sb.WriteString(`<__oruby_ext_arg__><xsl:value-of select="`)
+				sb.WriteString(html.EscapeString(ae))
+				sb.WriteString(`"/></__oruby_ext_arg__>`)
+			}
+		}
+		sb.WriteString(`</__oruby_ext_call__>`)
+		rewrote = true
+		return sb.String()
+	})
+	return out, rewrote
+}
+
+func resolveXSLTExtCalls(mrb *oruby.MrbState, out string, regURIs map[string]oruby.Value, method string) (string, error) {
+	if !strings.Contains(out, "<__oruby_ext_call__") {
+		return out, nil
+	}
+	var firstErr error
+	replaced := reExtCallOut.ReplaceAllStringFunc(out, func(match string) string {
+		if firstErr != nil {
+			return match
+		}
+		sm := reExtCallOut.FindStringSubmatch(match)
+		uri := html.UnescapeString(sm[1])
+		fn := html.UnescapeString(sm[2])
+		body := sm[3]
+		cls, ok := regURIs[uri]
+		if !ok {
+			firstErr = fmt.Errorf("no XSLT extension registered for %s", uri)
+			return match
+		}
+		inst, err := mrb.Funcall(cls, mrb.Intern("new"))
+		if err != nil {
+			firstErr = err
+			return match
+		}
+		argMatches := reExtArgOut.FindAllStringSubmatch(body, -1)
+		rubyArgs := make([]any, 0, len(argMatches))
+		for _, am := range argMatches {
+			rubyArgs = append(rubyArgs, mrb.StrNew(html.UnescapeString(am[1])))
+		}
+		res, err := mrb.Funcall(inst, mrb.Intern(fn), rubyArgs...)
+		if err != nil {
+			firstErr = err
+			return match
+		}
+		s := mrb.String(res)
+		if method == "text" {
+			return s
+		}
+		return html.EscapeString(s)
+	})
+	return replaced, firstErr
 }
 
 func compileXSDSchema(src, filePath string) (*xsdSchemaData, error) {
@@ -236,9 +363,11 @@ func defineSchemaAndXSLT(mrb *oruby.MrbState, mod, xmlMod oruby.RClass) {
 		if len(a) >= 2 && !a[1].IsNil() && a[1].String() != "" {
 			baseDir = filepath.Dir(a[1].String())
 		}
+		regURIs := registeredXSLTExtURIs(mrb, xsltMod)
+		rewritten, hasExt := rewriteXSLTExtensions(src, regURIs)
 		// Validate compilation immediately so bad stylesheets raise RuntimeError like Nokogiri::XSLT
 		_, diags := engine.Compile(engine.Request{
-			Stylesheet: src,
+			Stylesheet: rewritten,
 			BaseDir:    baseDir,
 			Features:   engine.Features{BackwardsCompatible: true},
 		})
@@ -248,7 +377,7 @@ func defineSchemaAndXSLT(mrb *oruby.MrbState, mod, xmlMod oruby.RClass) {
 			}
 		}
 		obj := mrb.ObjAlloc(oruby.MrbTTCData, ssCls)
-		rb.Set(mrb, obj.Value(), &xsltStylesheetData{source: src, baseDir: baseDir})
+		rb.Set(mrb, obj.Value(), &xsltStylesheetData{source: rewritten, baseDir: baseDir, hasExtCall: hasExt})
 		return obj
 	}, mrb.ArgsArg(1, 1))
 
@@ -283,8 +412,17 @@ func defineSchemaAndXSLT(mrb *oruby.MrbState, mod, xmlMod oruby.RClass) {
 				}
 			}
 		}
+		outStr := res.Output
+		if ss.hasExtCall {
+			regURIs := registeredXSLTExtURIs(mrb, xsltMod)
+			var err error
+			outStr, err = resolveXSLTExtCalls(mrb, outStr, regURIs, res.Method)
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+		}
 		pair := mrb.AryNewCapa(2)
-		mrb.AryPush(pair, mrb.StrNew(res.Output))
+		mrb.AryPush(pair, mrb.StrNew(outStr))
 		mrb.AryPush(pair, mrb.StrNew(res.Method))
 		return pair
 	}, mrb.ArgsArg(1, 1))

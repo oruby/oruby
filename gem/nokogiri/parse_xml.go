@@ -24,14 +24,17 @@ type xmlParser struct {
 func parseXMLDocument(src, url, encoding string, strict, noblanks, nocdata bool) *domNode {
 	doc := newDocument(false, false)
 	doc.url = url
+	decoded, detectedEnc := decodeToUTF8(src, encoding, false)
 	if encoding != "" {
 		doc.encoding = encoding
+	} else if detectedEnc != "" {
+		doc.encoding = detectedEnc
 	}
-	if strings.TrimSpace(src) == "" {
+	if strings.TrimSpace(decoded) == "" {
 		return doc
 	}
 	p := &xmlParser{
-		src:      src,
+		src:      decoded,
 		line:     1,
 		doc:      doc,
 		strict:   strict,

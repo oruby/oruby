@@ -78,7 +78,114 @@ func evalXPathWithHandler(mrb *oruby.MrbState, ctx *domNode, expr string, nsMap 
 		}
 	}
 
+	// Case 3: Mid-path predicate calling a custom function: `<prefix>[<custom_pred>]<suffix>`
+	// e.g. `//a[eq(b, '2')]/b` or `//div[has_class(., 'x')]//span`.
+	if prefix, fnName, argsRaw, neg, suffix, ok := findCustomPredicate(mrb, trimmed, handler); ok {
+		var candidates []*domNode
+		if subVal, handled, err := evalXPathWithHandler(mrb, ctx, prefix, nsMap, vars, handler); err != nil {
+			return mrb.NilValue(), true, err
+		} else if handled {
+			if ns, ok := getNodeSet(mrb, subVal); ok {
+				candidates = ns.nodes
+			}
+		} else {
+			res, err := evalXPath(ctx, prefix, nsMap, vars)
+			if err != nil {
+				return mrb.NilValue(), true, err
+			}
+			if res.isSet {
+				candidates = res.nodes
+			}
+		}
+		var matched []*domNode
+		for _, cand := range candidates {
+			rv, err := invokeXPathHandler(mrb, cand, nsMap, vars, handler, fnName, argsRaw)
+			if err != nil {
+				return mrb.NilValue(), true, err
+			}
+			truthy := isXPathTruthy(mrb, rv)
+			if neg {
+				truthy = !truthy
+			}
+			if truthy {
+				matched = append(matched, cand)
+			}
+		}
+		if suffix == "" {
+			return wrapNodeSet(mrb, ctx.doc, matched), true, nil
+		}
+		var out []*domNode
+		seen := map[*domNode]bool{}
+		subExpr := suffix
+		if strings.HasPrefix(subExpr, "/") {
+			subExpr = "." + subExpr
+		} else if strings.HasPrefix(subExpr, "[") {
+			subExpr = "." + subExpr
+		}
+		for _, m := range matched {
+			if subVal, handled, err := evalXPathWithHandler(mrb, m, subExpr, nsMap, vars, handler); err != nil {
+				return mrb.NilValue(), true, err
+			} else if handled {
+				if ns, ok := getNodeSet(mrb, subVal); ok {
+					for _, n := range ns.nodes {
+						if !seen[n] {
+							seen[n] = true
+							out = append(out, n)
+						}
+					}
+				}
+			} else {
+				res, err := evalXPath(m, subExpr, nsMap, vars)
+				if err != nil {
+					return mrb.NilValue(), true, err
+				}
+				if res.isSet {
+					for _, n := range res.nodes {
+						if !seen[n] {
+							seen[n] = true
+							out = append(out, n)
+						}
+					}
+				}
+			}
+		}
+		return wrapNodeSet(mrb, ctx.doc, out), true, nil
+	}
+
 	return mrb.NilValue(), false, nil
+}
+
+func findCustomPredicate(mrb *oruby.MrbState, s string, handler oruby.Value) (prefix, fnName, argsRaw string, neg bool, suffix string, ok bool) {
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			continue
+		}
+		if c == '[' {
+			closeIdx := findMatching(s, i, '[', ']')
+			if closeIdx > i {
+				pred := strings.TrimSpace(s[i+1 : closeIdx])
+				isNeg := false
+				inner := pred
+				if strings.HasPrefix(inner, "not(") && strings.HasSuffix(inner, ")") {
+					isNeg = true
+					inner = strings.TrimSpace(inner[4 : len(inner)-1])
+				}
+				if fn, args, parsed := parseTopLevelCall(inner); parsed && !isStdXPathFunc(fn) && mrb.RespondTo(handler, mrb.Intern(fn)) {
+					return strings.TrimSpace(s[:i]), fn, args, isNeg, strings.TrimSpace(s[closeIdx+1:]), true
+				}
+			}
+		}
+	}
+	return "", "", "", false, "", false
 }
 
 func isXPathTruthy(mrb *oruby.MrbState, v oruby.Value) bool {
@@ -855,4 +962,373 @@ func emitStreamingXMLSAX(mrb *oruby.MrbState, handler oruby.Value, src string) e
 		}
 	}
 	return call("end_document")
+}
+
+// ---------------------------------------------------------------------------
+// True Incremental XML PushParser (emits SAX events on each `<<` chunk)
+// ---------------------------------------------------------------------------
+
+type xmlPushScanner struct {
+	buf     string
+	started bool
+	ended   bool
+	nsStack []map[string]string
+}
+
+func newXMLPushScanner() *xmlPushScanner {
+	return &xmlPushScanner{
+		nsStack: []map[string]string{{"xml": "http://www.w3.org/XML/1998/namespace"}},
+	}
+}
+
+func (s *xmlPushScanner) lookupNS(prefix string) string {
+	for i := len(s.nsStack) - 1; i >= 0; i-- {
+		if uri, ok := s.nsStack[i][prefix]; ok {
+			return uri
+		}
+	}
+	return ""
+}
+
+func (s *xmlPushScanner) write(mrb *oruby.MrbState, handler oruby.Value, chunk string) error {
+	call := func(name string, args ...any) error {
+		if !mrb.RespondTo(handler, mrb.Intern(name)) {
+			return nil
+		}
+		_, err := mrb.Funcall(handler, mrb.Intern(name), args...)
+		return err
+	}
+	if !s.started {
+		s.started = true
+		if err := call("start_document"); err != nil {
+			return err
+		}
+	}
+	s.buf += chunk
+	return s.drain(mrb, handler, call, false)
+}
+
+func (s *xmlPushScanner) finish(mrb *oruby.MrbState, handler oruby.Value) error {
+	call := func(name string, args ...any) error {
+		if !mrb.RespondTo(handler, mrb.Intern(name)) {
+			return nil
+		}
+		_, err := mrb.Funcall(handler, mrb.Intern(name), args...)
+		return err
+	}
+	if !s.started {
+		s.started = true
+		if err := call("start_document"); err != nil {
+			return err
+		}
+	}
+	if err := s.drain(mrb, handler, call, true); err != nil {
+		return err
+	}
+	if !s.ended {
+		s.ended = true
+		return call("end_document")
+	}
+	return nil
+}
+
+func (s *xmlPushScanner) drain(mrb *oruby.MrbState, handler oruby.Value, call func(string, ...any) error, eof bool) error {
+	attrCls := rb.ClassPath(mrb, "Nokogiri::XML::SAX::Parser::Attribute")
+	for len(s.buf) > 0 {
+		lt := strings.IndexByte(s.buf, '<')
+		if lt < 0 {
+			if eof {
+				txt := decodeXMLEntities(s.buf)
+				s.buf = ""
+				if txt != "" {
+					if err := call("characters", mrb.StrNew(txt)); err != nil {
+						return err
+					}
+				}
+			} else {
+				// Emit all text up to any trailing '&' (potential partial entity)
+				cut := len(s.buf)
+				if amp := strings.LastIndexByte(s.buf, '&'); amp >= 0 && len(s.buf)-amp < 12 {
+					cut = amp
+				}
+				if cut > 0 {
+					txt := decodeXMLEntities(s.buf[:cut])
+					s.buf = s.buf[cut:]
+					if txt != "" {
+						if err := call("characters", mrb.StrNew(txt)); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			return nil
+		}
+		if lt > 0 {
+			txt := decodeXMLEntities(s.buf[:lt])
+			s.buf = s.buf[lt:]
+			if txt != "" {
+				if err := call("characters", mrb.StrNew(txt)); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Now s.buf[0] == '<'
+		if len(s.buf) < 2 {
+			return nil
+		}
+		// Comment
+		if strings.HasPrefix(s.buf, "<!--") {
+			end := strings.Index(s.buf[4:], "-->")
+			if end < 0 {
+				return nil
+			}
+			body := s.buf[4 : 4+end]
+			s.buf = s.buf[4+end+3:]
+			if err := call("comment", mrb.StrNew(body)); err != nil {
+				return err
+			}
+			continue
+		}
+		if strings.HasPrefix("<!--", s.buf) {
+			return nil
+		}
+		// CDATA
+		if strings.HasPrefix(s.buf, "<![CDATA[") {
+			end := strings.Index(s.buf[9:], "]]>")
+			if end < 0 {
+				return nil
+			}
+			body := s.buf[9 : 9+end]
+			s.buf = s.buf[9+end+3:]
+			if err := call("cdata_block", mrb.StrNew(body)); err != nil {
+				return err
+			}
+			continue
+		}
+		if strings.HasPrefix("<![CDATA[", s.buf) {
+			return nil
+		}
+		// Processing instruction / XML decl
+		if strings.HasPrefix(s.buf, "<?") {
+			end := strings.Index(s.buf[2:], "?>")
+			if end < 0 {
+				return nil
+			}
+			inner := strings.TrimSpace(s.buf[2 : 2+end])
+			s.buf = s.buf[2+end+2:]
+			target := inner
+			content := ""
+			if sp := strings.IndexAny(inner, " \t\r\n"); sp >= 0 {
+				target = inner[:sp]
+				content = strings.TrimSpace(inner[sp+1:])
+			}
+			if target == "xml" {
+				if err := call("xmldecl", mrb.StrNew("1.0"), mrb.StrNew("UTF-8"), mrb.NilValue()); err != nil {
+					return err
+				}
+			} else {
+				if err := call("processing_instruction", mrb.StrNew(target), mrb.StrNew(content)); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		// DOCTYPE / declaration
+		if strings.HasPrefix(s.buf, "<!") {
+			inBracket := false
+			end := -1
+			for i := 2; i < len(s.buf); i++ {
+				if s.buf[i] == '[' {
+					inBracket = true
+				} else if s.buf[i] == ']' {
+					inBracket = false
+				} else if s.buf[i] == '>' && !inBracket {
+					end = i
+					break
+				}
+			}
+			if end < 0 {
+				return nil
+			}
+			s.buf = s.buf[end+1:]
+			continue
+		}
+		// Closing tag </name>
+		if strings.HasPrefix(s.buf, "</") {
+			gt := strings.IndexByte(s.buf, '>')
+			if gt < 0 {
+				return nil
+			}
+			qname := strings.TrimSpace(s.buf[2:gt])
+			s.buf = s.buf[gt+1:]
+			pref, local := splitQName(qname)
+			uri := s.lookupNS(pref)
+			var prefVal, uriVal oruby.Value = mrb.NilValue(), mrb.NilValue()
+			if pref != "" {
+				prefVal = mrb.StrNew(pref)
+			}
+			if uri != "" {
+				uriVal = mrb.StrNew(uri)
+			}
+			if err := call("end_element_namespace", mrb.StrNew(local), prefVal, uriVal); err != nil {
+				return err
+			}
+			if err := call("end_element", mrb.StrNew(qname)); err != nil {
+				return err
+			}
+			if len(s.nsStack) > 1 {
+				s.nsStack = s.nsStack[:len(s.nsStack)-1]
+			}
+			continue
+		}
+		// Opening or self-closing tag <name ...>
+		gt := findTagEnd(s.buf)
+		if gt < 0 {
+			return nil
+		}
+		rawTag := s.buf[1:gt]
+		s.buf = s.buf[gt+1:]
+		selfClosing := false
+		trimmed := strings.TrimSpace(rawTag)
+		if strings.HasSuffix(trimmed, "/") {
+			selfClosing = true
+			trimmed = strings.TrimSpace(trimmed[:len(trimmed)-1])
+		}
+		qname, attrs := parseTagAttrs(trimmed)
+		scope := map[string]string{}
+		nsAry := mrb.AryNew()
+		attrsAry := mrb.AryNewCapa(len(attrs))
+		nsAttrsAry := mrb.AryNew()
+
+		for _, kv := range attrs {
+			p := mrb.AryNewCapa(2)
+			mrb.AryPush(p, mrb.StrNew(kv[0]))
+			mrb.AryPush(p, mrb.StrNew(kv[1]))
+			mrb.AryPush(attrsAry, p)
+			if kv[0] == "xmlns" {
+				scope[""] = kv[1]
+				np := mrb.AryNewCapa(2)
+				mrb.AryPush(np, mrb.NilValue())
+				mrb.AryPush(np, mrb.StrNew(kv[1]))
+				mrb.AryPush(nsAry, np)
+			} else if strings.HasPrefix(kv[0], "xmlns:") {
+				pref := kv[0][6:]
+				scope[pref] = kv[1]
+				np := mrb.AryNewCapa(2)
+				mrb.AryPush(np, mrb.StrNew(pref))
+				mrb.AryPush(np, mrb.StrNew(kv[1]))
+				mrb.AryPush(nsAry, np)
+			}
+		}
+		s.nsStack = append(s.nsStack, scope)
+		for _, kv := range attrs {
+			if kv[0] == "xmlns" || strings.HasPrefix(kv[0], "xmlns:") {
+				continue
+			}
+			ap, al := splitQName(kv[0])
+			var apVal, auVal oruby.Value = mrb.NilValue(), mrb.NilValue()
+			if ap != "" {
+				apVal = mrb.StrNew(ap)
+				if u := s.lookupNS(ap); u != "" {
+					auVal = mrb.StrNew(u)
+				}
+			}
+			if obj, err := mrb.Funcall(attrCls, mrb.Intern("new"), mrb.StrNew(al), apVal, auVal, mrb.StrNew(kv[1])); err == nil {
+				mrb.AryPush(nsAttrsAry, obj)
+			}
+		}
+		pref, local := splitQName(qname)
+		uri := s.lookupNS(pref)
+		var prefVal, uriVal oruby.Value = mrb.NilValue(), mrb.NilValue()
+		if pref != "" {
+			prefVal = mrb.StrNew(pref)
+		}
+		if uri != "" {
+			uriVal = mrb.StrNew(uri)
+		}
+		if err := call("start_element_namespace", mrb.StrNew(local), nsAttrsAry, prefVal, uriVal, nsAry); err != nil {
+			return err
+		}
+		if err := call("start_element", mrb.StrNew(qname), attrsAry); err != nil {
+			return err
+		}
+		if selfClosing {
+			if err := call("end_element_namespace", mrb.StrNew(local), prefVal, uriVal); err != nil {
+				return err
+			}
+			if err := call("end_element", mrb.StrNew(qname)); err != nil {
+				return err
+			}
+			s.nsStack = s.nsStack[:len(s.nsStack)-1]
+		}
+	}
+	return nil
+}
+
+func findTagEnd(s string) int {
+	var q byte
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if q != 0 {
+			if c == q {
+				q = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			q = c
+		} else if c == '>' {
+			return i
+		}
+	}
+	return -1
+}
+
+func parseTagAttrs(s string) (string, [][2]string) {
+	i := 0
+	for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' {
+		i++
+	}
+	name := s[:i]
+	var attrs [][2]string
+	for i < len(s) {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+			i++
+		}
+		if i >= len(s) {
+			break
+		}
+		kStart := i
+		for i < len(s) && s[i] != '=' && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' {
+			i++
+		}
+		k := s[kStart:i]
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+			i++
+		}
+		val := ""
+		if i < len(s) && s[i] == '=' {
+			i++
+			for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+				i++
+			}
+			if i < len(s) && (s[i] == '"' || s[i] == '\'') {
+				q := s[i]
+				i++
+				vStart := i
+				for i < len(s) && s[i] != q {
+					i++
+				}
+				val = decodeXMLEntities(s[vStart:i])
+				if i < len(s) {
+					i++
+				}
+			}
+		}
+		if k != "" {
+			attrs = append(attrs, [2]string{k, val})
+		}
+	}
+	return name, attrs
 }

@@ -14,15 +14,18 @@ func parseHTMLDocument(src, url, encoding string, isHTML5 bool, noblanks bool) *
 func parseHTMLDocumentOpts(src, url, encoding string, isHTML5 bool, noblanks bool, maxErrors int, maxTreeDepth int) *domNode {
 	doc := newDocument(true, isHTML5)
 	doc.url = url
+	decoded, detectedEnc := decodeToUTF8(src, encoding, true)
 	if encoding != "" {
 		doc.encoding = encoding
+	} else if detectedEnc != "" {
+		doc.encoding = detectedEnc
 	}
-	if strings.TrimSpace(src) == "" {
+	if strings.TrimSpace(decoded) == "" {
 		doc.quirksMode = "quirks"
 		return doc
 	}
 
-	root, err := html.Parse(strings.NewReader(src))
+	root, err := html.Parse(strings.NewReader(decoded))
 	if err != nil {
 		doc.errors = append(doc.errors, domError{message: err.Error(), level: 2})
 		return doc

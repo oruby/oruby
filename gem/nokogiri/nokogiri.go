@@ -142,7 +142,13 @@ func initNokogiri(mrb *oruby.MrbState) any {
 		"NOTATION_NODE":      NotationNode,
 		"HTML_DOCUMENT_NODE": HTMLDocumentNode,
 		"DTD_NODE":           DTDNode,
+		"ELEMENT_DECL":       ElementDecl,
+		"ATTRIBUTE_DECL":     AttributeDecl,
+		"ENTITY_DECL":        EntityDecl,
 		"NAMESPACE_DECL":     NamespaceDecl,
+		"XINCLUDE_START":     XIncludeStart,
+		"XINCLUDE_END":       XIncludeEnd,
+		"DOCB_DOCUMENT_NODE": DocbDocumentNode,
 	} {
 		mrb.ConstSet(nodeCls, mrb.Intern(name), mrb.FixnumValue(val))
 	}
@@ -1310,7 +1316,14 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		if qm == "" {
 			qm = detectHTMLQuirksMode(d)
 		}
-		return mrb.Intern(qm).Value()
+		switch qm {
+		case "quirks":
+			return mrb.FixnumValue(1)
+		case "limited_quirks":
+			return mrb.FixnumValue(2)
+		default:
+			return mrb.FixnumValue(0)
+		}
 	}, mrb.ArgsNone())
 
 	html5DocCls.DefineMethod("parse_noscript_content_as_text", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -1860,6 +1873,27 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 		return mrb.NilValue()
 	}, mrb.ArgsReq(2))
 
+	pushStateCls := rb.DataClass(mrb.DefineClassUnder(saxMod, "PushState", mrb.ObjectClass()))
+	pushStateCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		rb.Set(mrb, self, newXMLPushScanner())
+		return self
+	}, mrb.ArgsNone())
+	pushStateCls.DefineMethod("write", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		st, _ := rb.Get[*xmlPushScanner](mrb, self)
+		args := mrb.GetArgs()
+		if err := st.write(mrb, args.Item(0), args.Item(1).String()); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.NilValue()
+	}, mrb.ArgsReq(2))
+	pushStateCls.DefineMethod("finish", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		st, _ := rb.Get[*xmlPushScanner](mrb, self)
+		if err := st.finish(mrb, mrb.GetArgsFirst()); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.NilValue()
+	}, mrb.ArgsReq(1))
+
 	_ = mrb.DefineModuleUnder(html4Mod, "SAX")
 
 	// XML::Reader
@@ -1873,12 +1907,19 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 		"TYPE_ATTRIBUTE":              readerTypeAttribute,
 		"TYPE_TEXT":                   readerTypeText,
 		"TYPE_CDATA":                  readerTypeCDATA,
+		"TYPE_ENTITY_REFERENCE":       5,
+		"TYPE_ENTITY":                 6,
 		"TYPE_PROCESSING_INSTRUCTION": readerTypeProcessingInstruction,
 		"TYPE_COMMENT":                readerTypeComment,
 		"TYPE_DOCUMENT":               readerTypeDocument,
 		"TYPE_DOCUMENT_TYPE":          readerTypeDocumentType,
+		"TYPE_DOCUMENT_FRAGMENT":      11,
+		"TYPE_NOTATION":               12,
+		"TYPE_WHITESPACE":             13,
 		"TYPE_SIGNIFICANT_WHITESPACE": readerTypeSignificantWhitespace,
 		"TYPE_END_ELEMENT":            readerTypeEndElement,
+		"TYPE_END_ENTITY":             16,
+		"TYPE_XML_DECLARATION":        17,
 	} {
 		mrb.ConstSet(readerCls, mrb.Intern(name), mrb.FixnumValue(val))
 	}

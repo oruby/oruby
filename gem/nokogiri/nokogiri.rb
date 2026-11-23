@@ -68,6 +68,14 @@ module Nokogiri
     end
   end
 
+  def self.make(input = nil, opts = {}, &blk)
+    if input
+      HTML4::DocumentFragment.parse(input.to_s)
+    else
+      yield HTML4::DocumentFragment.parse("") if blk
+    end
+  end
+
   def self.Slop(*args, &block)
     doc = XML(*args, &block)
     doc.slop!
@@ -79,6 +87,43 @@ module Nokogiri
   end
 
   module XML
+    def self.parse(thing, url = nil, encoding = nil, options = ParseOptions::DEFAULT_XML, &block)
+      Document.parse(thing, url, encoding, options, &block)
+    end
+
+    def self.fragment(string, encoding = nil, &block)
+      frag = DocumentFragment.parse(string, encoding)
+      yield frag if block
+      frag
+    end
+
+    class XPathContext
+      def initialize(node)
+        @node = node
+        @namespaces = {}
+        @variables = {}
+      end
+
+      def register_ns(prefix, uri)
+        @namespaces[prefix.to_s] = uri.to_s
+        self
+      end
+
+      def register_namespaces(namespaces)
+        namespaces.each { |k, v| register_ns(k, v) }
+        self
+      end
+
+      def register_variable(name, value)
+        @variables[name.to_s] = value
+        self
+      end
+
+      def evaluate(search_path, handler = nil)
+        @node.xpath(search_path, @namespaces.empty? ? nil : @namespaces, handler, @variables.empty? ? nil : @variables)
+      end
+    end
+
     class SyntaxError
       attr_reader :line, :column, :level
 
@@ -557,7 +602,7 @@ module Nokogiri
       end
 
       def description
-        nil
+        html? ? HTML4::ElementDescription[name] : nil
       end
 
       def decorate!
@@ -942,6 +987,7 @@ module Nokogiri
     end
 
     class Builder
+      DEFAULT_DOCUMENT_OPTIONS = { encoding: "UTF-8" }.freeze
       attr_accessor :doc, :parent, :context, :arity
 
       def self.with(root, &block)
@@ -1099,19 +1145,19 @@ module Nokogiri
 
         def initialize(doc = Document.new, _file_name = nil, _encoding = "UTF-8")
           @document = doc
-          @buf = +""
+          @state = SAX::PushState.new
         end
 
         def write(chunk, last_chunk = false)
-          @buf << chunk.to_s if chunk
+          @state.write(@document, chunk.to_s) if chunk && !chunk.empty?
           finish if last_chunk
           self
         end
         alias << write
 
         def finish
-          SAX.__emit_stream(@document, @buf)
-          @buf = +""
+          @state.finish(@document)
+          @state = SAX::PushState.new
           self
         end
       end
@@ -1249,6 +1295,92 @@ module Nokogiri
   end
 
   module HTML4
+    def self.parse(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, &block)
+      Document.parse(thing, url, encoding, options, &block)
+    end
+
+    def self.fragment(string, encoding = nil, &block)
+      frag = DocumentFragment.parse(string, encoding)
+      yield frag if block
+      frag
+    end
+
+    class ElementDescription
+      VOID_ELEMENTS = %w[area base basefont br col command embed frame hr img input isindex keygen link meta param source track wbr].freeze
+      BLOCK_ELEMENTS = %w[
+        address article aside blockquote canvas dd div dl dt fieldset figcaption figure
+        footer form h1 h2 h3 h4 h5 h6 header hgroup hr li main nav noscript ol output p
+        pre section table tfoot ul video
+      ].freeze
+      DEPRECATED_ELEMENTS = %w[applet basefont center dir font isindex menu s strike u big blink marquee tt].freeze
+
+      attr_reader :name
+
+      def self.[](tag_name)
+        return nil unless tag_name
+        @cache ||= {}
+        key = tag_name.to_s.downcase
+        @cache[key] ||= new(key)
+      end
+
+      def initialize(name)
+        @name = name.to_s.downcase
+      end
+
+      def empty?
+        VOID_ELEMENTS.include?(@name)
+      end
+
+      def block?
+        BLOCK_ELEMENTS.include?(@name)
+      end
+
+      def inline?
+        !block?
+      end
+
+      def deprecated?
+        DEPRECATED_ELEMENTS.include?(@name)
+      end
+
+      def save_end_tag?
+        !empty?
+      end
+
+      def implied_start_tag?
+        @name == "html" || @name == "head" || @name == "body" || @name == "tbody"
+      end
+
+      def implied_end_tag?
+        %w[p li dt dd option thead tbody tfoot tr td th].include?(@name)
+      end
+
+      def sub_elements
+        []
+      end
+
+      def default_sub_element
+        nil
+      end
+
+      def optional_attributes
+        []
+      end
+
+      def deprecated_attributes
+        []
+      end
+
+      def required_attributes
+        []
+      end
+
+      def inspect
+        "#<#{self.class}: #{@name}>"
+      end
+      alias to_s inspect
+    end
+
     class Document
       def self.parse(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, &block)
         opts = options.is_a?(XML::ParseOptions) ? options : XML::ParseOptions.new(options || XML::ParseOptions::DEFAULT_HTML)
@@ -1362,6 +1494,18 @@ module Nokogiri
       end
 
       class PushParser < XML::SAX::PushParser
+        def initialize(doc = XML::SAX::Document.new, _file_name = nil, _encoding = "UTF-8")
+          @document = doc
+          @buf = +""
+        end
+
+        def write(chunk, last_chunk = false)
+          @buf << chunk.to_s if chunk
+          finish if last_chunk
+          self
+        end
+        alias << write
+
         def finish
           XML::SAX.__emit(@document, @buf, true)
           @buf = +""
@@ -1372,6 +1516,35 @@ module Nokogiri
   end
 
   module HTML5
+    module QuirksMode
+      NO_QUIRKS      = 0
+      QUIRKS         = 1
+      LIMITED_QUIRKS = 2
+    end
+
+    class Builder < HTML4::Builder
+      def initialize(options = {}, root = nil, &block)
+        @ns = nil
+        @context = nil
+        @arity = block ? block.arity : 0
+        if root
+          @doc = root.document
+          @parent = root
+        else
+          @doc = HTML5::Document.new
+          @doc.encoding = options[:encoding] if options[:encoding]
+          @parent = @doc
+        end
+        if block
+          if block.arity == 1
+            block.call(self)
+          else
+            instance_eval(&block)
+          end
+        end
+      end
+    end
+
     class Document
       def self.parse(thing, url = nil, encoding = nil, **options, &block)
         src = thing.respond_to?(:read) ? thing.read : thing.to_s
@@ -1385,16 +1558,16 @@ module Nokogiri
         doc
       end
 
-      def self.fragment(tags, encoding = nil, **options)
-        DocumentFragment.parse(tags, encoding, **options)
+      def self.fragment(tags, encoding = nil, context: nil, **options)
+        DocumentFragment.parse(tags, encoding, context: context, **options)
       end
     end
 
     class DocumentFragment
-      def self.parse(tags, encoding = nil, **_options)
+      def self.parse(tags, encoding = nil, context: nil, **_options)
         doc = HTML5::Document.new
         doc.encoding = encoding if encoding
-        new(doc, tags)
+        new(doc, tags, context)
       end
     end
 
@@ -1402,12 +1575,52 @@ module Nokogiri
       Document.parse(thing, url, encoding, **options, &block)
     end
 
-    def self.fragment(tags, encoding = nil, **options)
-      DocumentFragment.parse(tags, encoding, **options)
+    def self.fragment(tags, encoding = nil, context: nil, **options)
+      DocumentFragment.parse(tags, encoding, context: context, **options)
+    end
+
+    def self.read_and_encode(string, encoding)
+      src = string.respond_to?(:read) ? string.read : string.to_s
+      encoding ? src.dup.force_encoding(encoding) : src
     end
   end
 
   module CSS
+    class Node
+      attr_reader :selector
+
+      def initialize(selector)
+        @selector = selector.to_s
+      end
+
+      def to_xpath(prefix = "//", _visitor = nil)
+        CSS.__xpath_for(@selector, prefix)
+      end
+
+      def to_s
+        @selector
+      end
+    end
+
+    class Parser
+      def initialize(namespaces = {})
+        @namespaces = namespaces || {}
+      end
+
+      def parse(selector)
+        selector.to_s.split(",").map { |part| Node.new(part.strip) }
+      end
+
+      def xpath_for(selector, options = {})
+        prefix = options[:prefix] || "//"
+        [CSS.__xpath_for(selector.to_s, prefix)]
+      end
+    end
+
+    def self.parse(selector)
+      Parser.new.parse(selector)
+    end
+
     def self.xpath_for(*rules)
       opts = rules.last.is_a?(Hash) ? rules.pop : {}
       prefix = opts[:prefix] || "//"
