@@ -1131,4 +1131,5 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 	initOpenSSLExt(mrb, mod, osslErr, pkeyMod, pkeyErr, pkeyBase, rsaCls, certCls)
 	initOpenSSLCipherPKCS5ASN1(mrb, mod, osslErr, cipherCls, asn1Mod)
 	initOpenSSLPKCS12(mrb, mod, osslErr)
+	initOpenSSLKDFX509PKey(mrb, mod, osslErr, kdfMod, kdfErr, pkeyMod, pkeyErr, pkeyBase, rsaCls, x509Mod, nameCls)
 }

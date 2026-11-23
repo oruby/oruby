@@ -103,6 +103,30 @@ func (mrb *MrbState) Resolve(name string) (bool, error) {
 	return true, nil
 }
 
+// GemSpec describes a compiled-in Go gem so RubyGems and Bundler can discover
+// and satisfy dependencies on it without external gemspec files or C builds.
+type GemSpec struct {
+	Name    string   // Gem name (e.g. "nokogiri", "oruby-vips", "ruby-vips")
+	Version string   // Gem version string (e.g. "1.19.7")
+	Feature string   // Registered Go gem/lazyGem feature name to verify availability
+	Summary string   // Short one-line summary
+	Files   []string // Requirable library files (e.g. "lib/nokogiri.rb")
+}
+
+var builtinGemSpecs []GemSpec
+
+// RegisterGemSpec registers metadata for a built-in Go gem.
+func RegisterGemSpec(spec GemSpec) {
+	builtinGemSpecs = append(builtinGemSpecs, spec)
+}
+
+// BuiltinGemSpecs returns a copy of all registered built-in gem specs.
+func BuiltinGemSpecs() []GemSpec {
+	out := make([]GemSpec, len(builtinGemSpecs))
+	copy(out, builtinGemSpecs)
+	return out
+}
+
 // GemAvailable reports whether name is a registered Go gem (initialized or
 // not); it initializes nothing
 func (mrb *MrbState) GemAvailable(name string) bool {

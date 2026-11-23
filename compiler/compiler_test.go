@@ -2,7 +2,7 @@ package compiler
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -359,7 +359,7 @@ func compiledExceptionOutcome(t *testing.T, source string) exceptionOutcome {
 	mainSrc := `package main
 
 import (
-	"encoding/json"
+	json "encoding/json/v2"
 	"os"
 
 	"github.com/oruby/oruby"
@@ -378,7 +378,7 @@ func main() {
 			value = exc.Value()
 		} else {
 			out.Message = err.Error()
-			json.NewEncoder(os.Stdout).Encode(out)
+			json.MarshalWrite(os.Stdout, out)
 			return
 		}
 	}
@@ -395,7 +395,7 @@ func main() {
 	} else {
 		out.Message = mrb.String(value)
 	}
-	json.NewEncoder(os.Stdout).Encode(out)
+	json.MarshalWrite(os.Stdout, out)
 }
 `
 	for name, content := range map[string]string{"go.mod": goMod, "compiled.go": source, "main.go": mainSrc} {

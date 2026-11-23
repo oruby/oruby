@@ -32,6 +32,7 @@ func init() {
 	oruby.LazyGem("racc/cparse", initCparse)
 	oruby.LazyGem("racc/info", initInfo)
 	oruby.LazyGem("racc/parser", initParser)
+	oruby.GemAlias("racc", "racc/parser")
 }
 
 func initInfo(mrb *oruby.MrbState) any {

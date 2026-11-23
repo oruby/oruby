@@ -3,7 +3,9 @@ package nethttp
 import (
 	"bufio"
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -1332,6 +1334,14 @@ func initOpenSSLPKeyExt(mrb *oruby.MrbState, pkeyMod, pkeyErr, pkeyBase, rsaCls 
 				obj := mrb.ObjAlloc(oruby.MrbTTCData, ecCls)
 				rb.Set(mrb, obj.Value(), &ecKey{priv: kt, pub: &kt.PublicKey, curve: kt.Curve, curveName: canonicalCurveName(kt.Curve)})
 				return obj
+			case ed25519.PrivateKey:
+				obj := mrb.ObjAlloc(oruby.MrbTTCData, pkeyBase)
+				rb.Set(mrb, obj.Value(), &rawPKey{alg: "ED25519", edPriv: kt, edPub: kt.Public().(ed25519.PublicKey)})
+				return obj
+			case *ecdh.PrivateKey:
+				obj := mrb.ObjAlloc(oruby.MrbTTCData, pkeyBase)
+				rb.Set(mrb, obj.Value(), &rawPKey{alg: "X25519", ecdhPriv: kt, ecdhPub: kt.PublicKey()})
+				return obj
 			}
 		}
 		if k, err := x509.ParsePKIXPublicKey(der); err == nil {
@@ -1343,6 +1353,14 @@ func initOpenSSLPKeyExt(mrb *oruby.MrbState, pkeyMod, pkeyErr, pkeyBase, rsaCls 
 			case *ecdsa.PublicKey:
 				obj := mrb.ObjAlloc(oruby.MrbTTCData, ecCls)
 				rb.Set(mrb, obj.Value(), &ecKey{pub: kt, curve: kt.Curve, curveName: canonicalCurveName(kt.Curve)})
+				return obj
+			case ed25519.PublicKey:
+				obj := mrb.ObjAlloc(oruby.MrbTTCData, pkeyBase)
+				rb.Set(mrb, obj.Value(), &rawPKey{alg: "ED25519", edPub: kt})
+				return obj
+			case *ecdh.PublicKey:
+				obj := mrb.ObjAlloc(oruby.MrbTTCData, pkeyBase)
+				rb.Set(mrb, obj.Value(), &rawPKey{alg: "X25519", ecdhPub: kt})
 				return obj
 			}
 		}

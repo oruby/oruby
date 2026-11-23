@@ -69,4 +69,17 @@ func TestRubyGemsAndBundlerFromInstallTree(t *testing.T) {
 	if want := "4.1.0.beta2\nbundler"; got != want {
 		t.Fatalf("bundler/setup = %q, want %q", got, want)
 	}
+
+	// Verify compiled-in ORuby native gems are registered as default Gem::Specifications
+	got = runOruby(t, exe, dir, "-e", `
+%w[nokogiri oruby-vips ruby-vips cbor yajl-ruby snappy lz4-ruby ox redcarpet xxhash digest-crc].each do |name|
+  spec = Gem::Specification.find_by_name(name)
+  gem name
+  raise "not default: #{name}" unless spec.default_gem?
+end
+puts "ok:#{Gem.loaded_specs["nokogiri"].version}:#{Gem.loaded_specs["ruby-vips"].version}:#{Gem.loaded_specs["cbor"].version}"
+`)
+	if want := "ok:1.19.7:2.3.0:0.5.9.8"; got != want {
+		t.Fatalf("builtin gemspecs = %q, want %q", got, want)
+	}
 }

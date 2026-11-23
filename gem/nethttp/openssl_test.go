@@ -411,3 +411,66 @@ raise "ecdsa asn1" unless asn_sig.is_a?(OpenSSL::ASN1::Sequence) && asn_sig.valu
 		t.Fatalf("OpenSSL Cipher/PKCS5/ASN1 test failed: %v", err)
 	}
 }
+
+func TestOpenSSLKDFX509RequestCRLEd25519(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`
+require "openssl"
+
+# 1. OpenSSL::KDF.hkdf & scrypt
+hk = OpenSSL::KDF.hkdf("secret-ikm", salt: "my-salt", info: "app-ctx", length: 32, hash: "SHA256")
+raise "hkdf len" unless hk.bytesize == 32
+hk2 = OpenSSL::KDF.hkdf("secret-ikm", salt: "my-salt", info: "app-ctx", length: 32, hash: "SHA256")
+raise "hkdf det" unless hk == hk2
+
+sc = OpenSSL::KDF.scrypt("password", salt: "salt1234", N: 1024, r: 8, p: 1, length: 32)
+raise "scrypt len" unless sc.bytesize == 32
+
+# 2. Ed25519 & X25519 via OpenSSL::PKey
+ed = OpenSSL::PKey.generate_key("ED25519")
+raise "ed oid" unless ed.oid == "ED25519" && ed.private? && ed.public?
+sig = ed.sign(nil, "hello ed25519")
+raise "ed verify" unless ed.verify(nil, sig, "hello ed25519")
+raise "ed bad verify" if ed.verify(nil, sig, "tampered")
+ed_pub = OpenSSL::PKey.read(ed.public_to_pem)
+raise "ed pub verify" unless !ed_pub.private? && ed_pub.verify(nil, sig, "hello ed25519")
+ed_raw = OpenSSL::PKey.new_raw_private_key("ED25519", ed.raw_private_key)
+raise "ed raw" unless ed_raw.raw_public_key == ed.raw_public_key
+
+x1 = OpenSSL::PKey.generate_key("X25519")
+x2 = OpenSSL::PKey.generate_key("X25519")
+s1 = x1.derive(OpenSSL::PKey.new_raw_public_key("X25519", x2.raw_public_key))
+s2 = x2.derive(OpenSSL::PKey.read(x1.public_to_pem))
+raise "x25519 derive" unless s1 == s2 && s1.bytesize == 32
+
+# 3. X509::Request (CSR)
+csr_key = OpenSSL::PKey::EC.generate("prime256v1")
+req = OpenSSL::X509::Request.new
+req.version = 0
+req.subject = OpenSSL::X509::Name.parse("/CN=invoice.example.com/O=Acme")
+req.public_key = csr_key
+req.sign(csr_key, "SHA256")
+req2 = OpenSSL::X509::Request.new(req.to_pem)
+raise "csr verify" unless req2.verify(csr_key)
+raise "csr subject" unless req2.subject.to_s.include?("invoice.example.com")
+
+# 4. X509::CRL & X509::Revoked
+crl = OpenSSL::X509::CRL.new
+crl.version = 1
+crl.issuer = OpenSSL::X509::Name.parse("/CN=Acme CA")
+crl.last_update = Time.now - 60
+crl.next_update = Time.now + 86400
+rev = OpenSSL::X509::Revoked.new
+rev.serial = 42
+rev.time = Time.now
+crl.add_revoked(rev)
+crl.sign(csr_key, "SHA256")
+crl2 = OpenSSL::X509::CRL.new(crl.to_pem)
+raise "crl verify" unless crl2.verify(csr_key)
+raise "crl revoked" unless crl2.revoked.length == 1 && crl2.revoked.first.serial.to_i == 42
+`)
+	if err != nil {
+		t.Fatalf("OpenSSL KDF/X509/Ed25519 test failed: %v", err)
+	}
+}
