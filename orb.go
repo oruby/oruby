@@ -326,6 +326,24 @@ type OrbFile struct {
 	Entries   []OrbEntry
 	byPath    map[string]int
 	raw       []byte
+	aotFuncs  map[string]func(*MrbState) (Value, error)
+}
+
+// RegisterAotFunc attaches a compiled native Go AOT function to a virtual entry path in the OrbFile.
+func (o *OrbFile) RegisterAotFunc(vpath string, fn func(*MrbState) (Value, error)) {
+	if o == nil || fn == nil {
+		return
+	}
+	if o.aotFuncs == nil {
+		o.aotFuncs = make(map[string]func(*MrbState) (Value, error))
+	}
+	norm := NormalizeOrbPath(vpath)
+	o.aotFuncs[norm] = fn
+	if strings.HasSuffix(norm, ".rb") {
+		o.aotFuncs[strings.TrimSuffix(norm, ".rb")+".mrb"] = fn
+	} else if strings.HasSuffix(norm, ".mrb") {
+		o.aotFuncs[strings.TrimSuffix(norm, ".mrb")+".rb"] = fn
+	}
 }
 
 // ReadOrbFile reads and parses an .orb archive from disk.
@@ -1026,6 +1044,19 @@ func (mrb *MrbState) ExecuteOrbEntry(orb *OrbFile, entry *OrbEntry, cxt *MrbCcon
 	mrb.SetGV(`$"__`, mrb.StrNew(vpath))
 	defer mrb.SetGV(`$"__`, prevLoader)
 
+	if orb.aotFuncs != nil {
+		if fn, ok := orb.aotFuncs[NormalizeOrbPath(entry.Path)]; ok && fn != nil {
+			sc := mrb.AotScopePush(mrb.ObjectClass().Value(), true)
+			res, err := fn(mrb)
+			mrb.AotScopePop(sc)
+			if err != nil {
+				mrb.AotLocalJumpCheck()
+				return res, mrb.AotBoundaryErr()
+			}
+			return res, nil
+		}
+	}
+
 	data := orb.EntryData(entry)
 	switch entry.Kind {
 	case OrbKindMrb:
@@ -1050,6 +1081,19 @@ func (mrb *MrbState) ExecuteOrbEntryWrapped(orb *OrbFile, entry *OrbEntry, mod, 
 	prevLoader := mrb.GetGV(`$"__`)
 	mrb.SetGV(`$"__`, mrb.StrNew(vpath))
 	defer mrb.SetGV(`$"__`, prevLoader)
+
+	if orb.aotFuncs != nil {
+		if fn, ok := orb.aotFuncs[NormalizeOrbPath(entry.Path)]; ok && fn != nil {
+			sc := mrb.AotScopePush(mrb.ObjectClass().Value(), true)
+			res, err := fn(mrb)
+			mrb.AotScopePop(sc)
+			if err != nil {
+				mrb.AotLocalJumpCheck()
+				return res, mrb.AotBoundaryErr()
+			}
+			return res, nil
+		}
+	}
 
 	data := orb.EntryData(entry)
 	switch entry.Kind {

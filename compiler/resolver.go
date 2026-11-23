@@ -12,12 +12,13 @@ import (
 
 // ModuleUnit represents a single precompiled Ruby file.
 type ModuleUnit struct {
-	FilePath  string    // Absolute path on disk (or virtual path anchor)
-	RelPath   string    // Normalized relative path (e.g. "calculator.rb", "models/user.rb")
-	FuncName  string    // Name of the Go entry function
-	Root      *IRepUnit // Root IRepUnit of this file
-	LoadPaths []string  // Search paths for resolving relative require paths
-	Hash32    uint32    // FNV-1a 32-bit hash of the module bytecode/source payload
+	FilePath  string         // Absolute path on disk (or virtual path anchor)
+	RelPath   string         // Normalized relative path (e.g. "calculator.rb", "models/user.rb")
+	FuncName  string         // Name of the Go entry function
+	Root      *IRepUnit      // Root IRepUnit of this file
+	LoadPaths []string       // Search paths for resolving relative require paths
+	Hash32    uint32         // FNV-1a 32-bit hash of the module bytecode/source payload
+	SourceOrb *oruby.OrbFile // Non-nil when module was resolved from an .orb archive
 }
 
 // DependencyResolver finds and resolves all require/require_relative dependencies.
@@ -197,11 +198,11 @@ func (r *DependencyResolver) resolveOrbBytes(absOrbPath, rootDir string, content
 	}
 
 	orbLoadPaths := append([]string{}, r.loadPaths...)
-	orbLoadPaths = append(orbLoadPaths, rootDir, filepath.Join(rootDir, "lib"))
+	orbLoadPaths = append(orbLoadPaths, oruby.OrbVirtualRoot+"/0", oruby.OrbVirtualRoot+"/0/lib")
 	for i := range orb.Entries {
 		e := &orb.Entries[i]
 		if e.Flags&oruby.OrbFlagLoadPath != 0 && e.Kind == oruby.OrbKindDir {
-			orbLoadPaths = append(orbLoadPaths, filepath.Join(rootDir, filepath.FromSlash(e.Path)))
+			orbLoadPaths = append(orbLoadPaths, oruby.OrbVirtualRoot+"/0/"+filepath.ToSlash(e.Path))
 		}
 	}
 
@@ -261,12 +262,13 @@ func (r *DependencyResolver) resolveOrbBytes(absOrbPath, rootDir string, content
 		idx := *counter
 		*counter++
 		mod := &ModuleUnit{
-			FilePath:  vfile,
+			FilePath:  oruby.OrbVirtualRoot + "/0/" + filepath.ToSlash(e.Path),
 			RelPath:   filepath.FromSlash(e.Path),
 			FuncName:  fmt.Sprintf("FileModule_%d", idx),
 			Root:      unit,
 			LoadPaths: orbLoadPaths,
 			Hash32:    e.Hash32,
+			SourceOrb: orb,
 		}
 		r.visited[vfile] = mod
 		*list = append(*list, mod)
@@ -418,15 +420,29 @@ func addPathVariants(keys *[]string, p string) {
 // CanonicalKeys generates lookup keys for the module in the require registry.
 func (m *ModuleUnit) CanonicalKeys() []string {
 	var keys []string
+	relSlash := filepath.ToSlash(m.RelPath)
 	addPathVariants(&keys, m.RelPath)
+	addPathVariants(&keys, relSlash)
+	addPathVariants(&keys, oruby.OrbVirtualRoot+"/0/"+relSlash)
 	addPathVariants(&keys, m.FilePath)
+	if strings.HasPrefix(relSlash, "lib/") {
+		addPathVariants(&keys, strings.TrimPrefix(relSlash, "lib/"))
+	}
 
 	// If the file is inside any load path, add relative path to that load path!
 	for _, lp := range m.LoadPaths {
+		lpSlash := filepath.ToSlash(lp)
+		if strings.HasPrefix(lpSlash, oruby.OrbVirtualRoot+"/") {
+			if strings.HasPrefix(m.FilePath, lpSlash+"/") {
+				addPathVariants(&keys, strings.TrimPrefix(m.FilePath, lpSlash+"/"))
+			}
+			continue
+		}
 		absLP, err := filepath.Abs(lp)
 		if err == nil {
 			if rel, err := filepath.Rel(absLP, m.FilePath); err == nil && !strings.HasPrefix(rel, "..") {
 				addPathVariants(&keys, rel)
+				addPathVariants(&keys, filepath.ToSlash(rel))
 			}
 		}
 	}

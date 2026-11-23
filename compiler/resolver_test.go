@@ -285,9 +285,10 @@ func TestCompiler_OrbBundleToMultiFileGoPackage(t *testing.T) {
 		return buf.Bytes()
 	}
 
-	// 1. Build a single .orb archive containing multiple compiled .mrb modules
+	// 1. Build a single .orb archive containing multiple compiled .mrb modules + a static asset
 	orbBuilder := oruby.NewOrbBuilder(oruby.OrbHdrDebugInfo)
 	_ = orbBuilder.AddDir("lib", true)
+	_ = orbBuilder.AddEntry("config/version.txt", oruby.OrbKindAsset, 0, 0644, []byte("v2.5"))
 	_ = orbBuilder.AddEntry("lib/math_service.rb", oruby.OrbKindMrb, 0, 0644, compileRite("lib/math_service.rb", `
 class MathService
   def compute(x, y)
@@ -295,11 +296,20 @@ class MathService
   end
 end
 `))
+	_ = orbBuilder.AddEntry("lib/lazy_tax.rb", oruby.OrbKindMrb, 0, 0644, compileRite("lib/lazy_tax.rb", `
+module LazyTax
+  def self.rate = "TAX10"
+end
+`))
 	_ = orbBuilder.AddEntry("app/models/invoice.rb", oruby.OrbKindMrb, 0, 0644, compileRite("app/models/invoice.rb", `
 require "math_service"
+Object.autoload(:LazyTax, "lazy_tax")
+
 class Invoice
   def total(a, b)
-    "INV-#{MathService.new.compute(a, b)}"
+    ver = File.read(File.expand_path("../../config/version.txt", __dir__)).strip
+    models = Dir.children(__dir__).join(",")
+    "INV-#{MathService.new.compute(a, b)}-#{LazyTax.rate}-#{ver}-#{models}-#{__dir__}"
   end
 end
 `))
@@ -325,9 +335,20 @@ puts Invoice.new.total(5, 8)
 	if err != nil {
 		t.Fatalf("CompilePackageDir(.orb) error: %v", err)
 	}
-	// Expect aot_runtime.go + 3 aot_mod_NNN.go files = 4 Go files
-	if len(written) != 4 {
-		t.Fatalf("expected 4 generated Go files, got %d: %v", len(written), written)
+	// Expect aot_runtime.go + 4 aot_mod_NNN.go files = 5 Go files
+	if len(written) != 5 {
+		t.Fatalf("expected 5 generated Go files, got %d: %v", len(written), written)
+	}
+
+	// Ensure zero build-machine absolute paths (orbDir) leaked into generated Go files!
+	for _, gf := range written {
+		srcBytes, rerr := os.ReadFile(gf)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if strings.Contains(string(srcBytes), orbDir) {
+			t.Fatalf("build-machine path %q leaked into generated Go file %s", orbDir, gf)
+		}
 	}
 
 	// 3. Compile the multi-file Go package into a native executable
@@ -357,7 +378,8 @@ puts Invoice.new.total(5, 8)
 	if err != nil {
 		t.Fatalf("run error: %v\nOutput: %s", err, string(out))
 	}
-	if got := strings.TrimSpace(string(out)); got != "INV-42" {
-		t.Fatalf("got %q, want %q", got, "INV-42")
+	want := "INV-42-TAX10-v2.5-invoice.rb-/@orb/0/app/models"
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

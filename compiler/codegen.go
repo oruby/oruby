@@ -490,7 +490,7 @@ func collectUnits(u *IRepUnit, list *[]*IRepUnit) {
 
 // analyze assigns kinds and names to the irep tree.
 func (g *CodeGen) analyze(u *IRepUnit, parent *IRepUnit, kind unitKind, childIdx int, prefix, file string) {
-	if u.File != "" && (filepath.IsAbs(u.File) || file == "") {
+	if u.File != "" && (filepath.IsAbs(u.File) || file == "") && !oruby.IsOrbVirtualPath(file) {
 		file = u.File
 	}
 	inf := &unitInfo{
@@ -951,14 +951,71 @@ func fastSetIdx(mrb *oruby.MrbState, self, recv, key, val oruby.Value) error {
 `, symIdx, symSetIdx))
 }
 
+// buildEmbeddedVirtualOrb constructs a lightweight .orb archive containing the
+// virtual directory tree and non-code assets for all bundled modules.
+// Code entries are included with zero-length payloads because their execution
+// is handled directly by registered native Go AOT functions via OrbFile.RegisterAotFunc.
+func buildEmbeddedVirtualOrb(modules []*ModuleUnit) ([]byte, error) {
+	builder := oruby.NewOrbBuilder(oruby.OrbHdrDebugInfo)
+	var srcOrb *oruby.OrbFile
+	for _, m := range modules {
+		if m.SourceOrb != nil {
+			srcOrb = m.SourceOrb
+			break
+		}
+	}
+	if srcOrb != nil {
+		for i := range srcOrb.Entries {
+			e := &srcOrb.Entries[i]
+			switch e.Kind {
+			case oruby.OrbKindDir:
+				_ = builder.AddEntry(e.Path, oruby.OrbKindDir, e.Flags, e.Mode, nil)
+			case oruby.OrbKindAsset:
+				_ = builder.AddEntry(e.Path, oruby.OrbKindAsset, e.Flags, e.Mode, srcOrb.EntryData(e))
+			default:
+				// Code entry: 1-byte placeholder so virtual File.stat / Dir.children / autoload see it
+				_ = builder.AddEntry(e.Path, oruby.OrbKindMrb, e.Flags, e.Mode, []byte{0})
+			}
+		}
+	}
+	for i, m := range modules {
+		vpath := oruby.NormalizeOrbPath(filepath.ToSlash(m.RelPath))
+		if vpath == "" {
+			continue
+		}
+		var flags uint8
+		if i == 0 {
+			flags |= oruby.OrbFlagEntrypoint
+			builder.SetEntrypoint(vpath)
+		}
+		_ = builder.AddEntry(vpath, oruby.OrbKindMrb, flags, 0644, []byte{0})
+		if strings.HasPrefix(vpath, "lib/") {
+			_ = builder.AddDir("lib", true)
+		}
+	}
+	return builder.Bytes()
+}
+
 func (g *CodeGen) emitRequireHooks(b *bytes.Buffer, modules []*ModuleUnit) {
+	orbBytes, _ := buildEmbeddedVirtualOrb(modules)
+
 	b.WriteString(`type compiledModule struct {
 	id string
+	vpath string
 	run func(*oruby.MrbState) (oruby.Value, error)
 }
 
 var compiledRegistry map[string]compiledModule
+var compiledOrbImage = []byte{`)
+	for i, byt := range orbBytes {
+		if i%16 == 0 {
+			b.WriteString("\n\t")
+		}
+		b.WriteString(fmt.Sprintf("0x%02x, ", byt))
+	}
+	b.WriteString("\n}\n")
 
+	b.WriteString(`
 func compiledFeatureSet(mrb *oruby.MrbState) oruby.Value {
 	features := mrb.GetGV("$__ORUBY_COMPILED_FEATURES")
 	if features.IsNil() {
@@ -970,28 +1027,47 @@ func compiledFeatureSet(mrb *oruby.MrbState) oruby.Value {
 
 func compiledBegin(mrb *oruby.MrbState, id string) {
 	mrb.HashSet(compiledFeatureSet(mrb), mrb.AotStrNew(id), mrb.TrueValue())
+	if mod, ok := compiledRegistry[id]; ok && mod.vpath != "" {
+		vp := oruby.OrbVirtualRoot + "/0/" + mod.vpath
+		mrb.HashSet(compiledFeatureSet(mrb), mrb.AotStrNew(vp), mrb.TrueValue())
+	}
 }
 
 func compiledFinish(mrb *oruby.MrbState, id string, success bool) {
 	features := compiledFeatureSet(mrb)
 	key := mrb.AotStrNew(id)
+	var vpathKey oruby.Value
+	hasVpath := false
+	if mod, ok := compiledRegistry[id]; ok && mod.vpath != "" {
+		vp := oruby.OrbVirtualRoot + "/0/" + mod.vpath
+		if vp != id {
+			vpathKey = mrb.AotStrNew(vp)
+			hasVpath = true
+		}
+	}
 	if !success {
 		mrb.HashDeleteKey(features, key)
+		if hasVpath {
+			mrb.HashDeleteKey(features, vpathKey)
+		}
 		return
 	}
 	mrb.FeatureAdd(id)
 	loaded := mrb.GVGet(mrb.Intern("$LOADED_FEATURES"))
 	if loaded.Type() == oruby.MrbTTArray {
-		found := false
-		for i := 0; i < loaded.Len(); i++ {
-			item := mrb.AryEntry(loaded, i)
-			if item.Type() == oruby.MrbTTString && item.String() == id {
-				found = true
-				break
+		pushUnique := func(k oruby.Value) {
+			ks := k.String()
+			for i := 0; i < loaded.Len(); i++ {
+				item := mrb.AryEntry(loaded, i)
+				if item.Type() == oruby.MrbTTString && item.String() == ks {
+					return
+				}
 			}
+			mrb.AryPush(loaded, k)
 		}
-		if !found {
-			mrb.AryPush(loaded, key)
+		pushUnique(key)
+		if hasVpath {
+			pushUnique(vpathKey)
 		}
 	}
 }
@@ -1000,21 +1076,22 @@ func compiledFinish(mrb *oruby.MrbState, id string, success bool) {
 	b.WriteString("func init() {\n")
 	b.WriteString("\tcompiledRegistry = map[string]compiledModule{\n")
 	seenKeys := make(map[string]bool)
-	addKey := func(key, id, fnName string) {
+	addKey := func(key, id, vpath, fnName string) {
 		if key == "" || seenKeys[key] {
 			return
 		}
 		seenKeys[key] = true
-		b.WriteString(fmt.Sprintf("\t\t%q: compiledModule{id: %q, run: func(mrb *oruby.MrbState) (oruby.Value, error) { return %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil) }},\n", key, id, fnName))
+		b.WriteString(fmt.Sprintf("\t\t%q: compiledModule{id: %q, vpath: %q, run: func(mrb *oruby.MrbState) (oruby.Value, error) { return %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil) }},\n", key, id, vpath, fnName))
 	}
 	for _, mod := range modules {
 		id := mod.FilePath
 		if id == "" {
 			id = mod.RelPath
 		}
-		addKey(id, id, g.info[mod.Root].fn)
+		vpath := oruby.NormalizeOrbPath(filepath.ToSlash(mod.RelPath))
+		addKey(id, id, vpath, g.info[mod.Root].fn)
 		for _, key := range mod.CanonicalKeys() {
-			addKey(key, id, g.info[mod.Root].fn)
+			addKey(key, id, vpath, g.info[mod.Root].fn)
 		}
 	}
 	b.WriteString("\t}\n}\n\n")
@@ -1060,19 +1137,25 @@ func compiledRun(mrb *oruby.MrbState, key string, once bool) (oruby.Value, error
 	}
 	id := mod.id
 	if once {
-	features := compiledFeatureSet(mrb)
+		features := compiledFeatureSet(mrb)
 		featureKey := mrb.AotStrNew(id)
 		if mrb.HashKeyP(features, featureKey) {
 			return mrb.FalseValue(), nil
 		}
-		mrb.HashSet(features, featureKey, mrb.TrueValue())
+		if mod.vpath != "" {
+			vpKey := mrb.AotStrNew(oruby.OrbVirtualRoot + "/0/" + mod.vpath)
+			if mrb.HashKeyP(features, vpKey) {
+				return mrb.FalseValue(), nil
+			}
+		}
+		compiledBegin(mrb, id)
 	}
 	_sc := mrb.AotScopePush(mrb.ObjectClass().Value(), true)
 	_, err := mod.run(mrb)
 	mrb.AotScopePop(_sc)
 	if err != nil {
 		if once {
-			mrb.HashDeleteKey(compiledFeatureSet(mrb), mrb.AotStrNew(id))
+			compiledFinish(mrb, id, false)
 		}
 		return mrb.NilValue(), err
 	}
@@ -1103,6 +1186,15 @@ func doCompiledRequire(mrb *oruby.MrbState, self, feature oruby.Value, dir strin
 }
 
 func initCompiledRequire(mrb *oruby.MrbState) {
+	if len(compiledOrbImage) > 0 {
+		if orb, err := mrb.MountOrbBytes("<aot:orb>", compiledOrbImage); err == nil && orb != nil {
+			for _, mod := range compiledRegistry {
+				if mod.vpath != "" {
+					orb.RegisterAotFunc(mod.vpath, mod.run)
+				}
+			}
+		}
+	}
 	kernel := mrb.KernelModule().Value()
 	for _, pair := range [][2]oruby.MrbSym{{%s, %s}, {%s, %s}, {%s, %s}} {
 		mrb.AotCall(kernel, kernel, %s, []oruby.Value{mrb.AotSym(pair[1]), mrb.AotSym(pair[0])}, mrb.NilValue(), true, false)
