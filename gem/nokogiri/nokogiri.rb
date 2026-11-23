@@ -1697,7 +1697,7 @@ module Nokogiri
       end
     end
 
-    class Parser
+    class Parser < (defined?(::Racc::Parser) ? ::Racc::Parser : Object)
       def initialize(namespaces = {})
         @namespaces = namespaces || {}
       end
@@ -1709,6 +1709,10 @@ module Nokogiri
       def xpath_for(selector, options = {})
         prefix = options[:prefix] || "//"
         [CSS.__xpath_for(selector.to_s, prefix)]
+      end
+
+      def unescape_css_element_name(name)
+        name.to_s.gsub(/\\(.)/, '\1')
       end
     end
 

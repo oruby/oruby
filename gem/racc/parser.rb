@@ -84,6 +84,19 @@ module Racc
     def racc_next_state(curstate, state)
       @racc_debug_out.puts "goto    #{curstate}\n\n"
     end
+
+    def racc_print_stacks(t, v)
+      out = @racc_debug_out
+      out.print "        ["
+      t.each_index do |i|
+        out.print " (", racc_token2str(t[i]), " ", v[i].inspect, ")"
+      end
+      out.puts " ]\n\n"
+    end
+
+    def racc_print_states(s)
+      @racc_debug_out.puts "        [ #{s.join(' ')} ]\n\n"
+    end
   end
 end
 

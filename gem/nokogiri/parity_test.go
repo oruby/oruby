@@ -140,6 +140,8 @@ raise "coerce reject doc" unless bad_coerce
 ent = xdoc.create_entity("copy", 1, nil, nil, "(c)")
 raise "create_entity" unless ent.name == "copy" && ent.node_type == Nokogiri::XML::Node::ENTITY_DECL
 raise "safe_process_xinclude" unless xdoc.safe_process_xinclude == xdoc
+raise "css parser racc" unless Nokogiri::CSS::Parser < Racc::Parser
+raise "unescape css" unless Nokogiri::CSS::Parser.new.unescape_css_element_name('foo\:bar') == "foo:bar"
 `)
 	if err != nil {
 		t.Fatalf("entrypoints/parity test failed: %v", err)

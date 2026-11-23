@@ -8,6 +8,7 @@ import (
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/internal/rb"
+	_ "github.com/oruby/oruby/gem/racc"
 )
 
 //go:embed nokogiri.rb
@@ -52,6 +53,7 @@ func init() {
 }
 
 func initNokogiri(mrb *oruby.MrbState) any {
+	_, _ = mrb.Resolve("racc/parser")
 	mod := mrb.DefineModule("Nokogiri")
 	mrb.ConstSet(mod, mrb.Intern("VERSION"), mrb.StrNew("1.19.7"))
 
