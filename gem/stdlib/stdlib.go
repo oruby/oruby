@@ -46,6 +46,7 @@ import (
 	_ "github.com/oruby/oruby/gem/nokogiri"
 	_ "github.com/oruby/oruby/gem/objspace"
 	_ "github.com/oruby/oruby/gem/oj"
+	_ "github.com/oruby/oruby/gem/oruby-vips"
 	_ "github.com/oruby/oruby/gem/pg"
 	_ "github.com/oruby/oruby/gem/process"
 	_ "github.com/oruby/oruby/gem/pty"

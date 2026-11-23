@@ -23,5 +23,6 @@ require (
 	github.com/klauspost/compress v1.20.5 // indirect
 	github.com/yuin/goldmark v1.8.7 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/image v0.48.0 // indirect
 	golang.org/x/net v0.63.0 // indirect
 )

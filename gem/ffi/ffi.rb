@@ -38,20 +38,29 @@ module FFI
     uchar: Type::UINT8,
     int8: Type::INT8,
     uint8: Type::UINT8,
+    int8_t: Type::INT8,
+    uint8_t: Type::UINT8,
     short: Type::INT16,
     ushort: Type::UINT16,
     int16: Type::INT16,
     uint16: Type::UINT16,
+    int16_t: Type::INT16,
+    uint16_t: Type::UINT16,
     int: Type::INT32,
     uint: Type::UINT32,
     int32: Type::INT32,
     uint32: Type::UINT32,
+    int32_t: Type::INT32,
+    uint32_t: Type::UINT32,
     long: Type::LONG,
     ulong: Type::ULONG,
     long_long: Type::INT64,
     ulong_long: Type::UINT64,
     int64: Type::INT64,
     uint64: Type::UINT64,
+    int64_t: Type::INT64,
+    uint64_t: Type::UINT64,
+    ptrdiff_t: Platform::ADDRESS_SIZE == 64 ? Type::INT64 : Type::INT32,
     float: Type::FLOAT32,
     float32: Type::FLOAT32,
     double: Type::FLOAT64,
@@ -549,6 +558,46 @@ module FFI
     end
 
     class << self
+      def enclosing_module
+        n = name
+        return nil unless n && n.include?("::")
+        parts = n.split("::")[0..-2]
+        mod = Object
+        parts.each do |part|
+          return nil unless mod.const_defined?(part)
+          mod = mod.const_get(part)
+        end
+        mod
+      end
+
+      def find_struct_type(raw_type)
+        # Walk enclosing modules (e.g., GObject::GParamSpec -> GObject) for module-scoped typedefs
+        n = name
+        if n && n.include?("::")
+          parts = n.split("::")[0..-2]
+          while !parts.empty?
+            mod = Object
+            ok = true
+            parts.each do |part|
+              if mod.const_defined?(part)
+                mod = mod.const_get(part)
+              else
+                ok = false
+                break
+              end
+            end
+            if ok && mod.respond_to?(:find_type)
+              begin
+                return mod.find_type(raw_type)
+              rescue TypeError
+              end
+            end
+            parts.pop
+          end
+        end
+        FFI.find_type(raw_type)
+      end
+
       def layout(*spec)
         is_union = self <= Union
         fields = []
@@ -581,7 +630,7 @@ module FFI
               fsize = elem_raw.size * array_len
               falign = elem_raw.alignment
             else
-              ftype = FFI.find_type(elem_raw)
+              ftype = find_struct_type(elem_raw)
               fsize = ftype.size * array_len
               falign = ftype.alignment
             end
@@ -590,7 +639,7 @@ module FFI
             fsize = raw_type.size
             falign = raw_type.alignment
           else
-            ftype = FFI.find_type(raw_type)
+            ftype = find_struct_type(raw_type)
             fsize = ftype.size
             falign = ftype.alignment
           end
@@ -670,6 +719,11 @@ module FFI
       when Type::STRING
         p = ptr.get_pointer(off)
         p.null? ? nil : p.read_string
+      when StructByReference
+        p = ptr.get_pointer(off)
+        ftype.from_native(p)
+      when FunctionType
+        ptr.get_pointer(off)
       else
         raise TypeError, "unsupported struct field type #{ftype.inspect}"
       end
@@ -694,6 +748,8 @@ module FFI
       when Type::FLOAT32 then ptr.put_float32(off, val)
       when Type::FLOAT64 then ptr.put_float64(off, val)
       when Type::POINTER then ptr.put_pointer(off, val)
+      when StructByReference then ptr.put_pointer(off, ftype.to_native(val))
+      when FunctionType  then ptr.put_pointer(off, ftype.to_native(val))
       else
         raise TypeError, "unsupported struct field type #{ftype.inspect}"
       end
@@ -783,6 +839,27 @@ module FFI
   # -------------------------------------------------------------------------
   # Function & VariadicInvoker
   # -------------------------------------------------------------------------
+
+  class FunctionType
+    attr_accessor :param_types, :ret_type
+
+    def to_native(val, _ctx = nil)
+      return val if val.nil? || val.is_a?(Pointer)
+      p_types = @param_types
+      r_type = @ret_type
+      needs_p = p_types && p_types.any? { |t| t.respond_to?(:from_native) }
+      needs_r = r_type && r_type.respond_to?(:to_native)
+      return val unless needs_p || needs_r
+      proc do |*raw_args|
+        conv_args = raw_args.each_with_index.map do |a, i|
+          pt = p_types && p_types[i]
+          pt && pt.respond_to?(:from_native) ? pt.from_native(a) : a
+        end
+        res = val.call(*conv_args)
+        needs_r ? r_type.to_native(res) : res
+      end
+    end
+  end
 
   class Function
     def self.new(ret_type, arg_types, ptr = nil, options = nil, &block)
@@ -877,7 +954,13 @@ module FFI
           candidates.each do |cand|
             mapped = FFI.map_library_name(cand)
             paths = [cand.to_s, mapped]
-            if Platform.windows? && (cand.to_s == "c" || cand.to_s == Platform::LIBC)
+            if Platform.mac? && !mapped.include?("/")
+              paths << "/opt/homebrew/lib/#{mapped}"
+              paths << "/usr/local/lib/#{mapped}"
+              paths << "/opt/local/lib/#{mapped}"
+            elsif Platform.unix? && !Platform.mac? && !mapped.include?("/")
+              paths << "/usr/local/lib/#{mapped}"
+            elsif Platform.windows? && (cand.to_s == "c" || cand.to_s == Platform::LIBC)
               paths << "msvcrt.dll"
             end
             paths.uniq.each do |path|
@@ -946,6 +1029,8 @@ module FFI
       r_native = r.respond_to?(:native_type) ? r.native_type : r
       p_natives = p_types.map { |t| t.respond_to?(:native_type) ? t.native_type : t }
       ft = FunctionType.new(r_native, p_natives)
+      ft.param_types = p_types
+      ft.ret_type = r
       @ffi_typedefs[name.to_sym] = ft if name
       ft
     end

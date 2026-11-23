@@ -309,3 +309,105 @@ raise "reply=#{reply.inspect}" unless reply == "ECHO:hello tls\n"
 		t.Fatalf("OpenSSL TLS server/client test failed: %v", err)
 	}
 }
+
+func TestOpenSSLCipherPKCS5AndASN1(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`
+require "openssl"
+
+# AES-256-GCM (Rails MessageEncryptor / ActiveRecord::Encryption)
+enc = OpenSSL::Cipher.new("aes-256-gcm")
+enc.encrypt
+raise "gcm auth?" unless enc.authenticated?
+key = enc.random_key
+iv  = enc.random_iv
+enc.auth_data = "aad-header"
+ct  = enc.update("secret payload ") + enc.update("part 2") + enc.final
+tag = enc.auth_tag
+raise "tag len" unless tag.bytesize == 16
+
+dec = OpenSSL::Cipher.new("aes-256-gcm")
+dec.decrypt
+dec.key = key
+dec.iv  = iv
+dec.auth_tag = tag
+dec.auth_data = "aad-header"
+plain = dec.update(ct) + dec.final
+raise "gcm roundtrip=#{plain.inspect}" unless plain == "secret payload part 2"
+
+# Tampered tag raises CipherError
+bad = false
+begin
+  dec2 = OpenSSL::Cipher.new("aes-256-gcm")
+  dec2.decrypt
+  dec2.key = key
+  dec2.iv = iv
+  dec2.auth_tag = "\x00".b * 16
+  dec2.auth_data = "aad-header"
+  dec2.update(ct) + dec2.final
+rescue OpenSSL::Cipher::CipherError
+  bad = true
+end
+raise "expected CipherError on tampered tag" unless bad
+
+# AES-256-CBC with PKCS#7 padding
+cbc = OpenSSL::Cipher::AES256.new(:CBC)
+cbc.encrypt
+k2 = cbc.random_key
+iv2 = cbc.random_iv
+ct2 = cbc.update("hello cbc world!") + cbc.final
+cbc_d = OpenSSL::Cipher.new("AES-256-CBC")
+cbc_d.decrypt
+cbc_d.key = k2
+cbc_d.iv = iv2
+raise "cbc roundtrip" unless (cbc_d.update(ct2) + cbc_d.final) == "hello cbc world!"
+
+# AES-128-CTR & ChaCha20-Poly1305
+ctr = OpenSSL::Cipher.new("aes-128-ctr").encrypt
+k3 = ctr.random_key
+iv3 = ctr.random_iv
+ct3 = ctr.update("streaming ctr") + ctr.final
+ctr_d = OpenSSL::Cipher.new("aes-128-ctr").decrypt
+ctr_d.key = k3; ctr_d.iv = iv3
+raise "ctr roundtrip" unless (ctr_d.update(ct3) + ctr_d.final) == "streaming ctr"
+
+cc = OpenSSL::Cipher.new("chacha20-poly1305").encrypt
+k4 = cc.random_key; iv4 = cc.random_iv
+cc.auth_data = "x"
+ct4 = cc.update("chacha") + cc.final
+tag4 = cc.auth_tag
+cc_d = OpenSSL::Cipher.new("chacha20-poly1305").decrypt
+cc_d.key = k4; cc_d.iv = iv4; cc_d.auth_tag = tag4; cc_d.auth_data = "x"
+raise "chacha roundtrip" unless (cc_d.update(ct4) + cc_d.final) == "chacha"
+
+# OpenSSL::PKCS5 (Rails ActiveSupport::KeyGenerator)
+dk1 = OpenSSL::PKCS5.pbkdf2_hmac("password", "salt", 100, 32, "SHA256")
+dk2 = OpenSSL::PKCS5.pbkdf2_hmac_sha1("password", "salt", 100, 20)
+raise "pkcs5" unless dk1.bytesize == 32 && dk2.bytesize == 20
+
+# OpenSSL::ASN1 encode & decode (JWT ES256 DER signatures)
+seq = OpenSSL::ASN1::Sequence.new([
+  OpenSSL::ASN1::Integer.new(OpenSSL::BN.new("12345678901234567890")),
+  OpenSSL::ASN1::Integer.new(OpenSSL::BN.new("98765432109876543210")),
+  OpenSSL::ASN1::OctetString.new("abc"),
+  OpenSSL::ASN1::ObjectId.new("1.2.840.10045.3.1.7"),
+])
+der = seq.to_der
+dec_seq = OpenSSL::ASN1.decode(der)
+raise "asn1 seq" unless dec_seq.is_a?(OpenSSL::ASN1::Sequence) && dec_seq.value.length == 4
+raise "asn1 int 0" unless dec_seq.value[0].value.to_s == "12345678901234567890"
+raise "asn1 int 1" unless dec_seq.value[1].value.to_s == "98765432109876543210"
+raise "asn1 octet" unless dec_seq.value[2].value == "abc"
+raise "asn1 oid" unless dec_seq.value[3].value == "1.2.840.10045.3.1.7"
+
+# Decode real ECDSA signature via ASN1
+ec = OpenSSL::PKey::EC.generate("prime256v1")
+esig = ec.sign("SHA256", "jwt payload")
+asn_sig = OpenSSL::ASN1.decode(esig)
+raise "ecdsa asn1" unless asn_sig.is_a?(OpenSSL::ASN1::Sequence) && asn_sig.value.length == 2
+`)
+	if err != nil {
+		t.Fatalf("OpenSSL Cipher/PKCS5/ASN1 test failed: %v", err)
+	}
+}

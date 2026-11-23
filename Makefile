@@ -75,6 +75,7 @@ test:
 	(cd gem/nokogiri && go test)
 	(cd gem/objspace && go test)
 	(cd gem/oj && go test)
+	(cd gem/oruby-vips && go test)
 	(cd gem/pg && go test)
 	(cd gem/process && go test)
 	(cd gem/pty && go test)

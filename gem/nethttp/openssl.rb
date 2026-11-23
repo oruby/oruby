@@ -292,6 +292,139 @@ module OpenSSL
   def self.secure_compare(a, b)
     OpenSSL.__secure_compare(a, b)
   end
+
+  class Cipher
+    class AES < Cipher
+      def initialize(*args)
+        case args.length
+        when 1 then super("AES-#{args[0]}-CBC")
+        when 2 then super("AES-#{args[0]}-#{args[1]}")
+        else raise ArgumentError, "wrong number of arguments"
+        end
+      end
+    end
+
+    class AES128 < Cipher
+      def initialize(mode = "CBC"); super("AES-128-#{mode}"); end
+    end
+
+    class AES192 < Cipher
+      def initialize(mode = "CBC"); super("AES-192-#{mode}"); end
+    end
+
+    class AES256 < Cipher
+      def initialize(mode = "CBC"); super("AES-256-#{mode}"); end
+    end
+  end
+
+  module ASN1
+    TAG_CLASSES = {
+      UNIVERSAL: 0,
+      APPLICATION: 1,
+      CONTEXT_SPECIFIC: 2,
+      PRIVATE: 3,
+    }.freeze
+
+    class ASN1Data
+      attr_accessor :value, :tag, :tag_class
+
+      def initialize(value, tag, tag_class = :UNIVERSAL)
+        @value = value
+        @tag = tag
+        @tag_class = tag_class
+      end
+
+      def to_der
+        tc = TAG_CLASSES[@tag_class] || 0
+        if @value.is_a?(Array)
+          body = +"".b
+          @value.each { |el| body << el.to_der }
+          ASN1.__encode_elem(tc, @tag, true, body)
+        else
+          ASN1.__encode_elem(tc, @tag, false, @value.to_s.b)
+        end
+      end
+    end
+
+    class Primitive < ASN1Data
+      def initialize(value, tag = nil, tagging = nil, tag_class = :UNIVERSAL)
+        super(value, tag || self.class::TAG, tag_class)
+      end
+    end
+
+    class Constructive < ASN1Data
+      include Enumerable
+
+      def initialize(value, tag = nil, tagging = nil, tag_class = :UNIVERSAL)
+        super(value, tag || self.class::TAG, tag_class)
+      end
+
+      def each(&block)
+        @value.each(&block)
+      end
+    end
+
+    class Boolean < Primitive
+      TAG = 1
+      def to_der
+        ASN1.__encode_elem(0, 1, false, @value ? "\xFF".b : "\x00".b)
+      end
+    end
+
+    class Integer < Primitive
+      TAG = 2
+      def initialize(value, tag = nil, tagging = nil, tag_class = :UNIVERSAL)
+        v = value.is_a?(OpenSSL::BN) ? value : OpenSSL::BN.new(value)
+        super(v, tag || 2, tagging, tag_class)
+      end
+
+      def to_der
+        ASN1.__encode_int(@value)
+      end
+    end
+
+    class BitString < Primitive
+      TAG = 3
+      attr_accessor :unused_bits
+
+      def initialize(value, tag = nil, tagging = nil, tag_class = :UNIVERSAL)
+        @unused_bits = 0
+        super(value, tag || 3, tagging, tag_class)
+      end
+
+      def to_der
+        ASN1.__encode_elem(0, 3, false, (@unused_bits || 0).chr.b + @value.to_s.b)
+      end
+    end
+
+    class OctetString < Primitive
+      TAG = 4
+    end
+
+    class Null < Primitive
+      TAG = 5
+      def initialize(value = nil, tag = nil, tagging = nil, tag_class = :UNIVERSAL)
+        super(nil, tag || 5, tagging, tag_class)
+      end
+      def to_der
+        "\x05\x00".b
+      end
+    end
+
+    class ObjectId < Primitive
+      TAG = 6
+      alias oid value
+      def to_der
+        ASN1.__encode_oid(@value.to_s)
+      end
+    end
+
+    class UTF8String < Primitive; TAG = 12; end
+    class PrintableString < Primitive; TAG = 19; end
+    class IA5String < Primitive; TAG = 22; end
+    class Sequence < Constructive; TAG = 16; end
+    class Set < Constructive; TAG = 17; end
+  end
 end
 
 class Integer
