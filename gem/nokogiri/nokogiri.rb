@@ -74,6 +74,10 @@ module Nokogiri
     doc
   end
 
+  def self.XSLT(stylesheet, modules = {})
+    XSLT.parse(stylesheet, modules)
+  end
+
   module XML
     class SyntaxError
       attr_reader :line, :column, :level
@@ -803,6 +807,95 @@ module Nokogiri
     class Reader
       def self.from_io(io, url = nil, encoding = nil, options = 0)
         from_memory(io.read, url, encoding, options)
+      end
+    end
+
+    def self.Schema(string_or_io, options = ParseOptions::DEFAULT_SCHEMA)
+      Schema.new(string_or_io, options)
+    end
+
+    class Schema
+      def self.new(string_or_io, _options = ParseOptions::DEFAULT_SCHEMA)
+        file_path = string_or_io.respond_to?(:path) ? string_or_io.path : nil
+        src = string_or_io.respond_to?(:read) ? string_or_io.read : string_or_io.to_s
+        __compile(src, file_path)
+      end
+
+      def self.from_document(doc, _options = ParseOptions::DEFAULT_SCHEMA)
+        __compile(doc.to_xml, doc.respond_to?(:url) ? doc.url : nil)
+      end
+
+      def self.read_memory(string, _options = ParseOptions::DEFAULT_SCHEMA)
+        __compile(string.to_s, nil)
+      end
+
+      def validate(thing, &block)
+        xml_str =
+          if thing.is_a?(Node)
+            thing.to_xml
+          elsif thing.is_a?(String) && File.exist?(thing)
+            File.read(thing)
+          elsif thing.respond_to?(:read)
+            thing.read
+          else
+            thing.to_s
+          end
+        errs = __validate_xml(xml_str)
+        errs.each(&block) if block
+        errs
+      end
+
+      def valid?(thing)
+        validate(thing).empty?
+      end
+    end
+  end
+
+  module XSLT
+    def self.parse(string, _modules = {})
+      file_path = string.respond_to?(:path) ? string.path : nil
+      src = string.respond_to?(:read) ? string.read : string.to_s
+      Stylesheet.__compile(src, file_path)
+    end
+
+    def self.quote_params(params)
+      parray = params.flatten
+      parray.each_with_index do |v, i|
+        next if i.even?
+        s = v.to_s
+        if s.include?("'")
+          parts = s.split("'", -1).map { |p| "'#{p}'" }.join(%(, "'", ))
+          parray[i] = "concat(#{parts})"
+        else
+          parray[i] = "'#{s}'"
+        end
+      end
+      parray
+    end
+
+    class Stylesheet
+      def self.parse_stylesheet_doc(doc)
+        __compile(doc.to_xml, doc.respond_to?(:url) ? doc.url : nil)
+      end
+
+      def apply_to(document, params = [])
+        xml_src = document.is_a?(XML::Node) ? document.to_xml : document.to_s
+        out, _method = __apply(xml_src, params)
+        out
+      end
+
+      def transform(document, params = [])
+        xml_src = document.is_a?(XML::Node) ? document.to_xml : document.to_s
+        out, method = __apply(xml_src, params)
+        if method == "html"
+          HTML4::Document.parse(out)
+        else
+          XML::Document.parse(out)
+        end
+      end
+
+      def serialize(document)
+        document.to_s
       end
     end
   end

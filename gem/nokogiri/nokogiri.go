@@ -152,6 +152,7 @@ func initNokogiri(mrb *oruby.MrbState) any {
 	defineNamespaceMethods(mrb, nsCls)
 	defineNodeSetMethods(mrb, nsSetCls)
 	defineSAXAndReader(mrb, xmlMod, html4Mod)
+	defineSchemaAndXSLT(mrb, mod, xmlMod)
 
 	rb.LoadRuby(mrb, "<internal:nokogiri>", nokogiriRb)
 	return nil

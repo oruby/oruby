@@ -830,7 +830,15 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 	}, mrb.ArgsReq(1))
 
 	certCls.DefineMethod("subject", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.GetIV(self, "@subject")
+		if v := mrb.GetIV(self, "@subject"); !v.IsNil() {
+			return v
+		}
+		if c, _ := rb.Get[*x509Cert](mrb, self); c != nil && c.parsed != nil {
+			v := pkixNameToRuby(mrb, c.parsed.Subject)
+			mrb.SetIV(self, "@subject", v)
+			return v
+		}
+		return mrb.NilValue()
 	}, mrb.ArgsNone())
 	certCls.DefineMethod("subject=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
@@ -847,7 +855,15 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 	}, mrb.ArgsReq(1))
 
 	certCls.DefineMethod("issuer", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.GetIV(self, "@issuer")
+		if v := mrb.GetIV(self, "@issuer"); !v.IsNil() {
+			return v
+		}
+		if c, _ := rb.Get[*x509Cert](mrb, self); c != nil && c.parsed != nil {
+			v := pkixNameToRuby(mrb, c.parsed.Issuer)
+			mrb.SetIV(self, "@issuer", v)
+			return v
+		}
+		return mrb.NilValue()
 	}, mrb.ArgsNone())
 	certCls.DefineMethod("issuer=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
@@ -864,7 +880,15 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 	}, mrb.ArgsReq(1))
 
 	certCls.DefineMethod("public_key", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.GetIV(self, "@public_key")
+		if v := mrb.GetIV(self, "@public_key"); !v.IsNil() {
+			return v
+		}
+		if c, _ := rb.Get[*x509Cert](mrb, self); c != nil && c.parsed != nil {
+			v := wrapPKey(mrb, c.parsed.PublicKey)
+			mrb.SetIV(self, "@public_key", v)
+			return v
+		}
+		return mrb.NilValue()
 	}, mrb.ArgsNone())
 	certCls.DefineMethod("public_key=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
@@ -1106,4 +1130,5 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	initOpenSSLExt(mrb, mod, osslErr, pkeyMod, pkeyErr, pkeyBase, rsaCls, certCls)
 	initOpenSSLCipherPKCS5ASN1(mrb, mod, osslErr, cipherCls, asn1Mod)
+	initOpenSSLPKCS12(mrb, mod, osslErr)
 }
