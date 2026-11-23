@@ -247,3 +247,24 @@ func TestYAMLDumpSymbol(t *testing.T) {
 		t.Fatalf("YAML.dump(:locked) = %q; want %q", output, "--- :locked\n")
 	}
 }
+
+func TestPsychTagsAndMetadata(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`
+		require "yaml"
+		raise "load_tags" unless Psych.load_tags.is_a?(Hash)
+		raise "dump_tags" unless Psych.dump_tags.is_a?(Hash)
+		raise "domain_types" unless Psych.domain_types.is_a?(Hash)
+		Psych.add_builtin_type("custom") { |type, val| val }
+		raise "builtin added" unless Psych.domain_types.key?("yaml.org,2002:custom")
+		Psych.remove_type("yaml.org,2002:custom")
+		raise "builtin removed" if Psych.domain_types.key?("yaml.org,2002:custom")
+		Psych.add_domain_type("example.com,2026", "thing") { |type, val| val }
+		raise "domain added" unless Psych.domain_types.key?("example.com,2026:thing")
+		raise "libyaml_version" unless Psych.libyaml_version.is_a?(Array) && Psych.libyaml_version.length == 3
+	`)
+	if err != nil {
+		t.Fatalf("Psych tags/metadata failed: %v", err)
+	}
+}

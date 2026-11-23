@@ -947,6 +947,44 @@ func normalizeProp(s string) string {
 	return strings.NewReplacer(" ", "", "_", "", "-", "").Replace(s)
 }
 
+func rangeTableFragment(rt *unicode.RangeTable) string {
+	var sb strings.Builder
+	writeHex := func(r rune) {
+		if r < 0x100 {
+			fmt.Fprintf(&sb, `\x%02x`, r)
+		} else {
+			fmt.Fprintf(&sb, `\x{%x}`, r)
+		}
+	}
+	for _, r16 := range rt.R16 {
+		if r16.Stride == 1 {
+			writeHex(rune(r16.Lo))
+			if r16.Hi > r16.Lo {
+				sb.WriteByte('-')
+				writeHex(rune(r16.Hi))
+			}
+		} else {
+			for r := uint32(r16.Lo); r <= uint32(r16.Hi); r += uint32(r16.Stride) {
+				writeHex(rune(r))
+			}
+		}
+	}
+	for _, r32 := range rt.R32 {
+		if r32.Stride == 1 {
+			writeHex(rune(r32.Lo))
+			if r32.Hi > r32.Lo {
+				sb.WriteByte('-')
+				writeHex(rune(r32.Hi))
+			}
+		} else {
+			for r := r32.Lo; r <= r32.Hi; r += r32.Stride {
+				writeHex(rune(r))
+			}
+		}
+	}
+	return sb.String()
+}
+
 // propertyFragment maps a Ruby character property or POSIX class name to
 // a class fragment. single is set when the fragment is one \p{X}.
 func propertyFragment(name string) (frag, single string, ok bool) {
@@ -957,6 +995,29 @@ func propertyFragment(name string) (frag, single string, ok bool) {
 	if c, ok := categoryLongNames[n]; ok {
 		return `\p{` + c + `}`, c, true
 	}
+	switch n {
+	case "defaultignorablecodepoint":
+		// Unicode DerivedCoreProperties: Default_Ignorable_Code_Point =
+		// Other_Default_Ignorable_Code_Point + Cf + Variation_Selector (minus White_Space/non-ignorable)
+		f := `\p{Cf}`
+		if rt, exists := unicode.Properties["Other_Default_Ignorable_Code_Point"]; exists {
+			f += rangeTableFragment(rt)
+		}
+		if rt, exists := unicode.Properties["Variation_Selector"]; exists {
+			f += rangeTableFragment(rt)
+		}
+		return f, "", true
+	case "assigned":
+		return `\P{Cn}`, "", true
+	case "alphabetic":
+		return `\p{L}\p{Nl}`, "", true
+	case "uppercase":
+		return `\p{Lu}`, "Lu", true
+	case "lowercase":
+		return `\p{Ll}`, "Ll", true
+	case "math":
+		return `\p{Sm}`, "Sm", true
+	}
 	for k := range unicode.Categories {
 		if normalizeProp(k) == n {
 			return `\p{` + k + `}`, k, true
@@ -965,6 +1026,11 @@ func propertyFragment(name string) (frag, single string, ok bool) {
 	for k := range unicode.Scripts {
 		if normalizeProp(k) == n {
 			return `\p{` + k + `}`, k, true
+		}
+	}
+	for k, rt := range unicode.Properties {
+		if normalizeProp(k) == n {
+			return rangeTableFragment(rt), "", true
 		}
 	}
 	return "", "", false

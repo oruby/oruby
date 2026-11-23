@@ -641,3 +641,33 @@ func TestStdlibStdoutCapture(t *testing.T) {
 		t.Errorf("captured %q, want %q", got, want)
 	}
 }
+
+func TestStdlibConcurrentSynchronizedMapBackend(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`
+		module Concurrent
+			module Collection
+				class NonConcurrentMapBackend
+					def initialize(*); @backend = {}; end
+					def [](k); @backend[k]; end
+					def []=(k, v); @backend[k] = v; end
+					def compute_if_absent(k)
+						@backend.key?(k) ? @backend[k] : (@backend[k] = yield)
+					end
+				end
+			end
+		end
+		$LOADED_FEATURES << "concurrent/collection/map/non_concurrent_map_backend.rb"
+		require "concurrent/collection/map/synchronized_map_backend"
+		b = Concurrent::Collection::SynchronizedMapBackend.new
+		# Reentrant compute_if_absent must not deadlock
+		val = b.compute_if_absent(:outer) do
+			b.compute_if_absent(:inner) { 42 } + 1
+		end
+		raise "reentrant val=#{val}" unless val == 43 && b[:inner] == 42 && b[:outer] == 43
+	`)
+	if err != nil {
+		t.Fatalf("SynchronizedMapBackend failed: %v", err)
+	}
+}

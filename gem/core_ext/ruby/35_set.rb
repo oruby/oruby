@@ -151,6 +151,10 @@ class Set
 
   def each(&block)
     return to_enum(:each) { size } unless block
+    if frozen?
+      to_a.each(&block)
+      return self
+    end
     @__iter = (@__iter || 0) + 1
     begin
       to_a.each(&block)

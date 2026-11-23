@@ -150,6 +150,7 @@ func initSQLite3(mrb *oruby.MrbState) any {
 	dbCls.DefineMethod("results_as_hash=", dbSetResultsAsHash, mrb.ArgsReq(1))
 	dbCls.DefineMethod("busy_timeout", dbBusyTimeout, mrb.ArgsNone())
 	dbCls.DefineMethod("busy_timeout=", dbSetBusyTimeout, mrb.ArgsReq(1))
+	dbCls.DefineMethod("busy_handler_timeout=", dbSetBusyTimeout, mrb.ArgsReq(1))
 	dbCls.DefineMethod("execute", dbExecute, mrb.ArgsReq(1)|mrb.ArgsRest()|mrb.ArgsBlock())
 	dbCls.DefineMethod("execute2", dbExecute2, mrb.ArgsReq(1)|mrb.ArgsRest()|mrb.ArgsBlock())
 	dbCls.DefineMethod("execute_batch", dbExecuteBatch, mrb.ArgsReq(1)|mrb.ArgsRest())
@@ -167,6 +168,99 @@ func initSQLite3(mrb *oruby.MrbState) any {
 	dbCls.DefineMethod("errmsg", dbErrmsg, mrb.ArgsNone())
 	dbCls.DefineMethod("create_function", dbCreateFunction, mrb.ArgsArg(2, 1)|mrb.ArgsBlock())
 
+	// SQLite3::ForkSafety (Rails 8.1 ActiveRecord SQLite3 adapter calls suppress_warnings!)
+	fsMod := mrb.DefineModuleUnder(mod, "ForkSafety")
+	noop := func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue { return mrb.NilValue() }
+	fsMod.DefineClassMethod("suppress_warnings!", noop, mrb.ArgsNone())
+	fsMod.DefineClassMethod("hook!", noop, mrb.ArgsNone())
+	fsMod.DefineClassMethod("discard", noop, mrb.ArgsNone())
+
+	// SQLite3::Constants::Open and SQLite3::Pragmas
+	_, _ = mrb.Eval(`
+module SQLite3
+  module Constants
+    module Open
+      READONLY      = 0x00000001
+      READWRITE     = 0x00000002
+      CREATE        = 0x00000004
+      URI           = 0x00000040
+      MEMORY        = 0x00000080
+      NOMUTEX       = 0x00008000
+      FULLMUTEX     = 0x00010000
+      SHAREDCACHE   = 0x00020000
+      PRIVATECACHE  = 0x00040000
+      NOFOLLOW      = 0x01000000
+    end
+  end
+
+  module Pragmas
+    def get_boolean_pragma(name)
+      val = get_first_value("PRAGMA #{name}")
+      val == 1 || val == true || val.to_s.downcase == "on"
+    end
+
+    def set_boolean_pragma(name, mode)
+      case mode
+      when true, 1, "1", "on", "ON", "yes", "YES", "true", "TRUE", :on
+        execute("PRAGMA #{name} = ON")
+      when false, 0, "0", "off", "OFF", "no", "NO", "false", "FALSE", :off
+        execute("PRAGMA #{name} = OFF")
+      else
+        raise SQLite3::Exception, "unrecognized #{name} #{mode.inspect}"
+      end
+    end
+
+    def get_int_pragma(name)
+      get_first_value("PRAGMA #{name}").to_i
+    end
+
+    def set_int_pragma(name, value)
+      execute("PRAGMA #{name} = #{value.to_i}")
+    end
+
+    def get_enum_pragma(name)
+      get_first_value("PRAGMA #{name}")
+    end
+
+    def set_enum_pragma(name, value)
+      execute("PRAGMA #{name} = #{value}")
+    end
+
+    %w[
+      automatic_index case_sensitive_like cell_size_check checkpoint_fullfsync
+      defer_foreign_keys foreign_keys fullfsync ignore_check_constraints
+      legacy_alter_table legacy_file_format query_only read_uncommitted
+      recursive_triggers reverse_unordered_selects trusted_schema
+    ].each do |p|
+      define_method(p) { get_boolean_pragma(p) }
+      define_method("#{p}=") { |v| set_boolean_pragma(p, v) }
+    end
+
+    %w[
+      analysis_limit application_id busy_timeout cache_size cache_spill
+      hard_heap_limit incremental_vacuum journal_size_limit max_page_count
+      mmap_size page_size schema_version soft_heap_limit threads user_version
+      wal_autocheckpoint
+    ].each do |p|
+      define_method(p) { get_int_pragma(p) }
+      define_method("#{p}=") { |v| set_int_pragma(p, v) }
+    end
+
+    %w[
+      auto_vacuum encoding journal_mode locking_mode secure_delete
+      synchronous temp_store
+    ].each do |p|
+      define_method(p) { get_enum_pragma(p) }
+      define_method("#{p}=") { |v| set_enum_pragma(p, v) }
+    end
+  end
+
+  class Database
+    include Pragmas
+  end
+end
+`)
+
 	// SQLite3::Statement
 	stmtCls := rb.DataClass(mrb.DefineClassUnder(mod, "Statement", mrb.ObjectClass()))
 	mrb.IncludeModule(stmtCls, mrb.ModuleGet("Enumerable"))
@@ -183,6 +277,7 @@ func initSQLite3(mrb *oruby.MrbState) any {
 	stmtCls.DefineMethod("active?", stmtActiveP, mrb.ArgsNone())
 	stmtCls.DefineMethod("done?", stmtDoneP, mrb.ArgsNone())
 	stmtCls.DefineMethod("columns", stmtColumns, mrb.ArgsNone())
+	stmtCls.DefineMethod("column_count", stmtColumnCount, mrb.ArgsNone())
 	stmtCls.DefineMethod("types", stmtTypes, mrb.ArgsNone())
 
 	// SQLite3::ResultSet
@@ -1426,7 +1521,7 @@ func stmtStep(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return raiseSQLiteError(mrb, s.db, err)
 	}
-	return rowToRuby(mrb, s.activeCols, vals, s.db.resultsAsHash)
+	return rowToRuby(mrb, s.activeCols, vals, false)
 }
 
 func stmtEach(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -1459,6 +1554,8 @@ func stmtReset(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		_ = s.activeRows.Close()
 		s.activeRows = nil
 	}
+	s.activeCols = nil
+	s.activeTypes = nil
 	s.done = false
 	return self
 }
@@ -1496,10 +1593,117 @@ func stmtDoneP(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.BoolValue(s.done)
 }
 
+// sqlReturnsRows reports whether a SQLite statement may produce result columns.
+// DML/DDL without RETURNING produce 0 columns, so column_count can return 0
+// without prematurely executing the statement before step/bind_params.
+func sqlReturnsRows(query string) bool {
+	i := 0
+	n := len(query)
+	for i < n {
+		for i < n && (query[i] == ' ' || query[i] == '\t' || query[i] == '\n' || query[i] == '\r' || query[i] == ';') {
+			i++
+		}
+		if i+1 < n && query[i] == '-' && query[i+1] == '-' {
+			i += 2
+			for i < n && query[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if i+1 < n && query[i] == '/' && query[i+1] == '*' {
+			i += 2
+			for i+1 < n && !(query[i] == '*' && query[i+1] == '/') {
+				i++
+			}
+			if i+1 < n {
+				i += 2
+			}
+			continue
+		}
+		break
+	}
+	start := i
+	for i < n && ((query[i] >= 'A' && query[i] <= 'Z') || (query[i] >= 'a' && query[i] <= 'z')) {
+		i++
+	}
+	kw := strings.ToUpper(query[start:i])
+	switch kw {
+	case "SELECT", "WITH", "EXPLAIN", "VALUES", "PRAGMA":
+		return true
+	}
+	upper := strings.ToUpper(query[i:])
+	for idx := strings.Index(upper, "RETURNING"); idx >= 0; {
+		beforeOK := idx == 0 || !isSQLIdentChar(upper[idx-1])
+		end := idx + len("RETURNING")
+		afterOK := end == len(upper) || !isSQLIdentChar(upper[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		next := strings.Index(upper[end:], "RETURNING")
+		if next < 0 {
+			break
+		}
+		idx = end + next
+	}
+	return false
+}
+
+func isSQLIdentChar(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+func (s *sqliteStmt) ensureColumns() error {
+	if s.activeCols != nil {
+		return nil
+	}
+	if !sqlReturnsRows(s.query) {
+		s.activeCols = []string{}
+		return nil
+	}
+	rows, err := s.stmt.QueryContext(context.Background(), s.collectBoundArgs()...)
+	if err != nil {
+		return err
+	}
+	cols, err := rows.Columns()
+	if err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if len(cols) == 0 {
+		_ = rows.Next()
+		err := rows.Err()
+		_ = rows.Close()
+		s.activeCols = []string{}
+		s.activeTypes = []string{}
+		s.done = true
+		return err
+	}
+	s.activeRows = rows
+	s.activeCols = cols
+	s.activeTypes = columnTypeNames(rows)
+	return nil
+}
+
+func stmtColumnCount(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	s := requireOpenStmt(mrb, self)
+	if s == nil {
+		return mrb.NilValue()
+	}
+	if err := s.ensureColumns(); err != nil {
+		return raiseSQLiteError(mrb, s.db, err)
+	}
+	return mrb.FixnumValue(len(s.activeCols))
+}
+
 func stmtColumns(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s := requireOpenStmt(mrb, self)
 	if s == nil {
 		return mrb.NilValue()
+	}
+	if s.activeCols == nil && sqlReturnsRows(s.query) {
+		if err := s.ensureColumns(); err != nil {
+			return raiseSQLiteError(mrb, s.db, err)
+		}
 	}
 	if s.activeCols != nil {
 		return stringsToAry(mrb, s.activeCols)
@@ -1511,6 +1715,11 @@ func stmtTypes(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	s := requireOpenStmt(mrb, self)
 	if s == nil {
 		return mrb.NilValue()
+	}
+	if s.activeTypes == nil && sqlReturnsRows(s.query) {
+		if err := s.ensureColumns(); err != nil {
+			return raiseSQLiteError(mrb, s.db, err)
+		}
 	}
 	if s.activeTypes != nil {
 		return stringsToAry(mrb, s.activeTypes)

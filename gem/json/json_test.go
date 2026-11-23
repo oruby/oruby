@@ -44,4 +44,19 @@ func TestParse(t *testing.T) {
 	assert(t, "parse array", `JSON::parse('[true, "foo"]')[1] == "foo"`)
 	assert(t, "parse numbers", `JSON::parse('[1, 2, 3]') == [1, 2, 3]`)
 	assert(t, "parse nested", `JSON::parse('{"a": {"b": [1, false]}}')["a"]["b"][0] == 1`)
+	assert(t, "parse symbolize_names", `JSON.parse('{"a": {"b": 1}}', symbolize_names: true) == {a: {b: 1}}`)
+	assert(t, "parse raises ParserError", `begin; JSON.parse("{bad"); false; rescue JSON::ParserError; true; end`)
+}
+
+func TestStateAndStdlibCompat(t *testing.T) {
+	assert(t, "JSON::State and Ext alias", `
+		s = JSON::State.new(indent: "  ")
+		s.is_a?(JSON::State) &&
+		JSON::Ext::Generator::State == JSON::State &&
+		s.generate({"a" => 1}).include?("\n") &&
+		JSON.generate(JSON::Fragment.new('{"raw":1}')) == '{"raw":1}' &&
+		JSON.load('{"k":2}') == {"k" => 2} &&
+		JSON.dump({"k" => 2}) == '{"k":2}' &&
+		({"x" => 1}.to_json == '{"x":1}')
+	`)
 }

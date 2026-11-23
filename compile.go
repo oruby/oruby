@@ -442,7 +442,8 @@ func (mrb *MrbState) LoadFile(fileName string) (Value, error) {
 
 // LoadString loads string to oruby value
 func (mrb *MrbState) LoadString(s string) (Value, error) {
-	buf, err := preprocessRuby([]byte(s), nil)
+	orig := []byte(s)
+	buf, err := preprocessRuby(orig, nil)
 	if err != nil {
 		return mrb.NilValue(), err
 	}
@@ -451,6 +452,12 @@ func (mrb *MrbState) LoadString(s string) (Value, error) {
 
 	var result C.mrb_value
 	status := C._mrb_load_nstring_cxt(mrb.p, cs, C.size_t(len(buf)), nil, &result)
+	if status != 0 && strings.Contains(mrb.String(mrb.ExcMessage(Value{result})), "too big jump offset") {
+		if fb, err2 := preprocessRuby(orig, &PreprocessOptions{NoRegexpLiterals: true, NoFrozenLiterals: true}); err2 == nil && len(fb) > 0 {
+			status = C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&fb[0])), C.size_t(len(fb)), nil, &result)
+			runtime.KeepAlive(fb)
+		}
+	}
 	v := Value{result}
 	return mrb.protectedResult(v, status)
 
@@ -470,7 +477,6 @@ func (mrb *MrbState) LoadFileCxt(fileName string, context *MrbCcontext) (Value, 
 
 // LoadStringCxt loads string into oruby context
 func (mrb *MrbState) LoadStringCxt(s string, context *MrbCcontext) (Value, error) {
-	s = PreprocessRuby(s)
 	return mrb.LoadBytesCxt([]byte(s), context)
 }
 
@@ -479,6 +485,7 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	if len(buf) == 0 {
 		return nilValue, errors.New("empty buffer")
 	}
+	orig := buf
 	buf, err := preprocessRuby(buf, nil)
 	if err != nil {
 		return mrb.NilValue(), err
@@ -486,6 +493,12 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	var result C.mrb_value
 	status := C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p, &result)
 	runtime.KeepAlive(buf)
+	if status != 0 && strings.Contains(mrb.String(mrb.ExcMessage(Value{result})), "too big jump offset") {
+		if fb, err2 := preprocessRuby(orig, &PreprocessOptions{NoRegexpLiterals: true, NoFrozenLiterals: true}); err2 == nil && len(fb) > 0 {
+			status = C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&fb[0])), C.size_t(len(fb)), context.p, &result)
+			runtime.KeepAlive(fb)
+		}
+	}
 	v := Value{result}
 	return mrb.protectedResult(v, status)
 }

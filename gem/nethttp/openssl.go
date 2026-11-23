@@ -509,6 +509,17 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 	pkeyErr := mrb.DefineClassUnder(pkeyMod, "PKeyError", osslErr)
 	pkeyBase := rb.DataClass(mrb.DefineClassUnder(pkeyMod, "PKey", mrb.ObjectClass()))
 	rsaCls := rb.DataClass(mrb.DefineClassUnder(pkeyMod, "RSA", pkeyBase))
+	rsaCls.DefineClassMethod("generate", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs().Slice()
+		if len(args) == 0 {
+			return mrb.Call(self, "new", mrb.FixnumValue(2048))
+		}
+		vals := make([]any, len(args))
+		for i, a := range args {
+			vals[i] = a
+		}
+		return mrb.Call(self, "new", vals...)
+	}, mrb.ArgsOpt(2))
 
 	rsaCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args := mrb.GetArgs().Slice()

@@ -227,6 +227,96 @@ func init() {
 		load(mrb, "sizeof")
 		return nil
 	})
+	// Reentrant SynchronizedMapBackend for concurrent-ruby (which falls back
+	// to a non-reentrant Mutex backend on non-MRI RUBY_ENGINE, deadlocking on
+	// Rails's ActiveSupport::Notifications::Fanout nested compute_if_absent).
+	oruby.LazyGem("concurrent/collection/map/synchronized_map_backend", func(mrb *oruby.MrbState) interface{} {
+		rb.LoadRuby(mrb, "<internal:concurrent_sync_map>", []byte(`
+require "monitor"
+require "concurrent/collection/map/non_concurrent_map_backend"
+
+module Concurrent
+  module Collection
+    class SynchronizedMapBackend < NonConcurrentMapBackend
+      def initialize(*args, &block)
+        super
+        @monitor = Monitor.new
+      end
+
+      def [](key)
+        @monitor.synchronize { super }
+      end
+
+      def []=(key, value)
+        @monitor.synchronize { super }
+      end
+
+      def compute_if_absent(key)
+        @monitor.synchronize { super }
+      end
+
+      def compute_if_present(key)
+        @monitor.synchronize { super }
+      end
+
+      def compute(key)
+        @monitor.synchronize { super }
+      end
+
+      def merge_pair(key, value)
+        @monitor.synchronize { super }
+      end
+
+      def replace_pair(key, old_value, new_value)
+        @monitor.synchronize { super }
+      end
+
+      def replace_if_exists(key, new_value)
+        @monitor.synchronize { super }
+      end
+
+      def get_and_set(key, value)
+        @monitor.synchronize { super }
+      end
+
+      def key?(key)
+        @monitor.synchronize { super }
+      end
+
+      def delete(key)
+        @monitor.synchronize { super }
+      end
+
+      def delete_pair(key, value)
+        @monitor.synchronize { super }
+      end
+
+      def clear
+        @monitor.synchronize { super }
+      end
+
+      def size
+        @monitor.synchronize { super }
+      end
+
+      def get_or_default(key, default_value)
+        @monitor.synchronize { super }
+      end
+
+      def dup
+        @monitor.synchronize { super }
+      end
+
+      def initialize_copy(other)
+        super
+        @monitor = Monitor.new
+      end
+    end
+  end
+end
+`))
+		return nil
+	})
 }
 
 func secureBytes(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

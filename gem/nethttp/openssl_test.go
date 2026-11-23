@@ -469,6 +469,10 @@ crl.sign(csr_key, "SHA256")
 crl2 = OpenSSL::X509::CRL.new(crl.to_pem)
 raise "crl verify" unless crl2.verify(csr_key)
 raise "crl revoked" unless crl2.revoked.length == 1 && crl2.revoked.first.serial.to_i == 42
+
+# 5. RSA.generate
+rsa = OpenSSL::PKey::RSA.generate(2048)
+raise "rsa generate" unless rsa.private? && rsa.public_key.public?
 `)
 	if err != nil {
 		t.Fatalf("OpenSSL KDF/X509/Ed25519 test failed: %v", err)

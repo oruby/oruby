@@ -1392,7 +1392,7 @@ static void mod_set_perm(mrb_state *mrb, mrb_value c, mrb_value path, mrb_value 
 static void mod_name_assigned(mrb_state *mrb, mrb_value mod, mrb_sym name) {
   if (!mod_namespace_p(mod) && !mrb_sclass_p(mod)) return;
   mrb_value v = mrb_iv_get(mrb, mod, name);
-  if (!mod_namespace_p(v) || mrb_obj_eq(mrb, v, mod)) return;
+  if (!mod_namespace_p(v) || mrb_obj_eq(mrb, v, mod) || mrb_frozen_p(mrb_basic_ptr(v))) return;
   mrb_value cn = mrb_iv_get(mrb, v, MRB_SYM(__classname__));
   if (mrb_string_p(cn) && RSTRING_LEN(cn) > 0 && RSTRING_PTR(cn)[0] == '#')
     mrb_iv_remove(mrb, v, MRB_SYM(__classname__));  /* mruby's anonymous path */
@@ -1475,11 +1475,33 @@ static mrb_value mod_tmpname_w(mrb_state *mrb, mrb_value self) {
   return r;
 }
 
+static mrb_func_t mod_append_features_orig, mod_prepend_features_orig;
+
+static mrb_value mod_append_features_w(mrb_state *mrb, mrb_value mod) {
+  mrb_value base = mrb_get_arg1(mrb);
+  if (mrb_sclass_p(base)) {
+    mrb_include_module(mrb, mrb_class_ptr(base), mrb_class_ptr(mod));
+    return mod;
+  }
+  return mod_append_features_orig(mrb, mod);
+}
+
+static mrb_value mod_prepend_features_w(mrb_state *mrb, mrb_value mod) {
+  mrb_value base = mrb_get_arg1(mrb);
+  if (mrb_sclass_p(base)) {
+    mrb_prepend_module(mrb, mrb_class_ptr(base), mrb_class_ptr(mod));
+    return mod;
+  }
+  return mod_prepend_features_orig(mrb, mod);
+}
+
 static void install_module_names(mrb_state *mrb) {
   wrap_cfunc(mrb, mrb->module_class, "name", mod_name_w, &mod_name_orig);
   wrap_cfunc(mrb, mrb->module_class, "to_s", mod_to_s_w, &mod_to_s_orig);
   mrb_alias_method(mrb, mrb->module_class, MRB_SYM(inspect), MRB_SYM(to_s));
   wrap_cfunc(mrb, mrb->module_class, "set_temporary_name", mod_tmpname_w, &mod_tmpname_orig);
+  wrap_cfunc(mrb, mrb->module_class, "append_features", mod_append_features_w, &mod_append_features_orig);
+  wrap_cfunc(mrb, mrb->module_class, "prepend_features", mod_prepend_features_w, &mod_prepend_features_orig);
 }
 
 static mrb_value mod_const_record_m(mrb_state *mrb, mrb_value mod) {
@@ -1502,6 +1524,7 @@ static mrb_value mod_const_record_m(mrb_state *mrb, mrb_value mod) {
     if (!mrb_debug_get_position(mrb, irep, (uint32_t)(&ci->pc[-1] - irep->iseq), &line, &file) || !file) {
       return mrb_nil_value();
     }
+    if (mrb_frozen_p(mrb_basic_ptr(mod))) return mrb_nil_value();
     mrb_value h = mrb_iv_get(mrb, mod, MRB_SYM(__oruby_csl));
     if (!mrb_hash_p(h)) {
       h = mrb_hash_new(mrb);
@@ -3893,9 +3916,30 @@ static mrb_value special_to_s(mrb_state *mrb, mrb_value self) {
 static mrb_value mod_method_added_m(mrb_state *mrb, mrb_value self) {
   mrb_sym mid;
   mrb_get_args(mrb, "n", &mid);
-  if ((mid == MRB_SYM(initialize_dup) || mid == MRB_SYM(initialize_clone)) &&
-      (mrb_class_p(self) || mrb_module_p(self)))
-    set_own_visibility(mrb, mrb_class_ptr(self), mid, MRB_METHOD_PRIVATE_FL);
+  if (mrb_class_p(self) || mrb_module_p(self)) {
+    struct RClass *c = mrb_class_ptr(self);
+    if (mid == MRB_SYM(initialize_dup) || mid == MRB_SYM(initialize_clone))
+      set_own_visibility(mrb, c, mid, MRB_METHOD_PRIVATE_FL);
+    /* Work around upstream mruby bug in mrb_define_method_raw: when a
+       module_function method is defined on a prepended module, mruby passes
+       the origin ICLASS (not the module) to define_modfunc_copy, which calls
+       mrb_singleton_class_ptr(origin) and overwrites origin->c with an SCLASS.
+       Restore origin->c = c and copy the method onto c's real singleton class. */
+    if (c->flags & MRB_FL_CLASS_IS_PREPENDED) {
+      struct RClass *origin = c->super;
+      while (origin && !(origin->flags & MRB_FL_CLASS_IS_ORIGIN)) origin = origin->super;
+      if (origin && origin->c != c && origin->c->tt == MRB_TT_SCLASS) {
+        struct RClass *bad_sc = origin->c;
+        origin->c = c;
+        struct RClass *found = bad_sc;
+        mrb_method_t m = mrb_method_search_vm(mrb, &found, mid);
+        if (!MRB_METHOD_UNDEF_P(m) && found == bad_sc) {
+          struct RClass *real_sc = mrb_singleton_class_ptr(mrb, self);
+          mrb_define_method_raw(mrb, real_sc, mid, m);
+        }
+      }
+    }
+  }
   return mrb_nil_value();
 }
 

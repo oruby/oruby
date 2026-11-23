@@ -1,4 +1,25 @@
 class Hash
+  # Avoid calling self.size or self[] inside each: Hash subclasses (e.g.
+  # Zip::ExtraField overriding #size, Mail::ParameterHash overriding #[])
+  # otherwise infinitely recurse through Hash#each.
+  alias __oruby_hash_keys keys
+  alias __oruby_hash_aref []
+  private :__oruby_hash_keys, :__oruby_hash_aref
+
+  def each(&block)
+    return to_enum(:each) { size } unless block
+    ks = __oruby_hash_keys
+    i = 0
+    len = ks.length
+    while i < len
+      k = ks[i]
+      yield [k, __oruby_hash_aref(k)]
+      i += 1
+    end
+    self
+  end
+  alias each_pair each
+
   alias __orig_hash hash
   def hash
     Thread.current[:__hash_hash_stack] ||= []

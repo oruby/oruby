@@ -474,3 +474,67 @@ func TestCoreExtEncoding(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreExtRailsEcosystemRegressions(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	mrb.Require("core_ext")
+
+	_, err := mrb.Eval(`
+		# 1. Frozen Set#each must not raise FrozenError
+		s = Set[1, 2, 3].freeze
+		out = []
+		s.each { |x| out << x }
+		raise "frozen set" unless out.sort == [1, 2, 3]
+
+		# 2. Hash subclass overriding #size or #[] must not recurse in #each
+		class SizeHash < Hash
+			def size; keys.sum { |k| self[k].to_s.bytesize }; end
+		end
+		sh = SizeHash.new
+		sh["a"] = "hello"
+		pairs = []
+		sh.each { |k, v| pairs << [k, v] }
+		raise "size hash" unless pairs == [["a", "hello"]]
+
+		class ArefHash < Hash
+			def [](k)
+				each { |ek, ev| return ev if ek.to_s.downcase == k.to_s.downcase }
+				nil
+			end
+		end
+		ah = ArefHash.new
+		ah["Content-Type"] = "text/plain"
+		raise "aref hash" unless ah["content-type"] == "text/plain"
+
+		# 3. Frozen anonymous Module assigned to a constant (Zeitwerk pattern)
+		FROZEN_MOD_CONST = Module.new.freeze
+		raise "frozen const" unless FROZEN_MOD_CONST.frozen?
+
+		# 4. Module#append_features / prepend_features on singleton class (ActiveJob pattern)
+		module SingletonMixin; def ping; :pong; end; end
+		class SingletonHost
+			class << self
+				include SingletonMixin
+			end
+		end
+		raise "sclass include" unless SingletonHost.ping == :pong
+
+		# 5. prepend + module_function must not corrupt ancestors or instance_method.owner
+		module PrepMod; end
+		module TargetMod
+			def helper; :ok; end
+		end
+		TargetMod.prepend(PrepMod)
+		module TargetMod
+			module_function
+			def mf; :mf_ok; end
+		end
+		raise "prepend+mf ancestors" unless TargetMod.ancestors == [PrepMod, TargetMod]
+		raise "prepend+mf owner" unless TargetMod.instance_method(:helper).owner == TargetMod
+		raise "prepend+mf call" unless TargetMod.mf == :mf_ok
+	`)
+	if err != nil {
+		t.Fatalf("Rails ecosystem regressions failed: %v", err)
+	}
+}

@@ -183,3 +183,17 @@ func TestRegexp_RE2OnlyEngine(t *testing.T) {
 	    "aaa\naa".gsub(/^a/, "b") == "baa\nba" &&
 	    /(?<a>x)(y)/.match("xy").to_a == ["xy", "x"]`)
 }
+
+func TestRegexp_UnicodeProperties(t *testing.T) {
+	assert(t, "derived and Unicode properties", `
+	  ("\u200B" =~ /\p{Default_Ignorable_Code_Point}/) == 0 &&
+	  ("a" =~ /\p{Default_Ignorable_Code_Point}/).nil? &&
+	  ("a" =~ /\p{Assigned}/) == 0 &&
+	  ("a" =~ /\p{Alphabetic}/) == 0 &&
+	  ("A" =~ /\p{Uppercase}/) == 0 &&
+	  ("a" =~ /\p{Lowercase}/) == 0 &&
+	  ("+" =~ /\p{Math}/) == 0 &&
+	  ("a" =~ /\p{White_Space}/).nil? &&
+	  (" " =~ /\p{White_Space}/) == 0
+	`)
+}

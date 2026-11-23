@@ -170,6 +170,7 @@ module Kernel
     singleton_methods(false)
   end
 
+  __oruby_sc = Kernel.instance_method(:singleton_class)
   %i[public private protected].each do |vis|
     orig = :"__oruby_#{vis}_methods"
     alias_method orig, :"#{vis}_methods"
@@ -177,7 +178,7 @@ module Kernel
     define_method(:"#{vis}_methods") do |all = true|
       return __send__(orig, all) if all
       out = []
-      Kernel.instance_method(:singleton_class).bind_call(self).ancestors.each do |m|
+      __oruby_sc.bind_call(self).ancestors.each do |m|
         out.concat(m.__send__(lister, false))
         break if Class === m && !m.singleton_class?
       end

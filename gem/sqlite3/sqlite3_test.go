@@ -156,6 +156,27 @@ func TestSQLite3StatementAndResultSetAndCustomFunc(t *testing.T) {
 			# Custom SQL function
 			db.create_function("double_it", 1) { |func, x| func.result = x * 2 }
 			raise "custom func" unless db.get_first_value("SELECT double_it(21)") == 42
+
+			# ForkSafety, Constants::Open, Pragmas, Statement#column_count
+			SQLite3::ForkSafety.suppress_warnings!
+			raise "sharedcache" unless SQLite3::Constants::Open::SHAREDCACHE > 0
+			raise "pragmas" unless SQLite3::Pragmas.method_defined?(:foreign_keys=)
+			db.foreign_keys = true
+			raise "fk pragma" unless db.foreign_keys == true
+
+			db.results_as_hash = true
+			s_ins = db.prepare("INSERT INTO nums (n) VALUES (?)")
+			raise "insert column_count" unless s_ins.column_count == 0
+			s_ins.bind_params(40)
+			s_ins.step
+			s_ins.close
+
+			s_sel = db.prepare("SELECT n FROM nums WHERE n = ?")
+			s_sel.bind_params(40)
+			raise "select column_count" unless s_sel.column_count == 1
+			raise "step returns array" unless s_sel.to_a == [[40]]
+			s_sel.close
+			db.results_as_hash = false
 		end
 	`)
 }

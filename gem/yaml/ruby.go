@@ -857,6 +857,31 @@ func (e *renc) encode(v oruby.Value, depth int) (*yamllib.Node, error) {
 // for !!timestamp scalars
 const psychTimestampRb = `
 module Psych
+  @load_tags = {}
+  @dump_tags = {}
+  @domain_types = {}
+
+  class << self
+    attr_accessor :load_tags, :dump_tags, :domain_types
+
+    def add_builtin_type(type_tag, &block)
+      @domain_types["yaml.org,2002:#{type_tag}"] = ["yaml.org,2002:#{type_tag}", block]
+    end
+
+    def add_domain_type(domain, type_tag, &block)
+      key = "#{domain}:#{type_tag}"
+      @domain_types[key] = [key, block]
+    end
+
+    def remove_type(type_tag)
+      @domain_types.delete(type_tag)
+    end
+
+    def libyaml_version
+      [0, 2, 5]
+    end
+  end
+
   def self.__oruby_timestamp(string)
     unless string.match?(/[ tT]/)
       require "date"

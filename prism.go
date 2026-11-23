@@ -72,6 +72,9 @@ type PreprocessOptions struct {
 	// NoRegexpLiterals skips the per-site cache for ordinary literals in
 	// eval'd code. Interpolated /o literals are still cached.
 	NoRegexpLiterals bool
+	// NoFrozenLiterals skips per-literal `.-@` rewrites (used as a fallback
+	// when huge generated table files overflow mruby's 16-bit jump offset).
+	NoFrozenLiterals bool
 }
 
 var regexpRangeValidator func(string, bool) error
@@ -701,6 +704,9 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				return "::Kernel.__oruby_end__(" + strconv.FormatUint(id, 10) + ") {"
 			})
 		case C.ORB_FROZEN_STRING:
+			if opts != nil && opts.NoFrozenLiterals {
+				continue
+			}
 			if debugFrozenStringLiterals.Load() {
 				id := strconv.FormatUint(frozenStringSite.Add(1), 10)
 				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_debug_fstring(" },
