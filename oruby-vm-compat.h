@@ -41,4 +41,10 @@ void oruby_set_inherited_visibility(mrb_state *, struct RClass *, mrb_sym, uint3
 struct RClass *oruby_visibility_owner(mrb_state *, struct RClass *, struct RClass *, mrb_sym);
 mrb_value mrb_mod_eqq(mrb_state *, mrb_value);
 
+/* Whether o->c is o's own singleton class. A metaclass (the singleton class
+   of a class or of a singleton class) without one has as its class the
+   singleton class it inherits from MRI's meta^n chain (class.c,
+   ORubyVMCompat.metaclass_class), not a singleton class of its own. */
+mrb_bool oruby_own_sclass_p(mrb_state *, const struct RBasic *);
+
 #endif

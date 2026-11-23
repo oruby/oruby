@@ -385,6 +385,126 @@ module ORubyVMCompat
       return pm_encoding_utf_8_isupper_char((const uint8_t*)name, len) &&
              mrb_ident_p(name+1, len-1);
     C
+    metaclass_class(source)
+  end
+
+  # The class of a metaclass, as MRI's meta^n chain: mruby gives every new
+  # singleton class Class as its class, so a metaclass without a singleton of
+  # its own missed the methods of #<Class:Class> (and of a superclass's
+  # metaclass of a metaclass), and #<Class:A>.is_a?(#<Class:Class>) was false.
+  # Such a metaclass now has as its class the singleton of the nearest
+  # metaclass up its superclass chain that has one (#<Class:Class> at the top);
+  # one gained later refreshes those below it. "Has a singleton of its own" is
+  # therefore o->c's __attached__ being o, not o->c being a singleton class.
+  def self.metaclass_class(source)
+    replace(source, "/* Prepares and creates a singleton class for an object */\nstatic void\nprepare_singleton_class(", <<~'C'.chomp)
+      mrb_bool
+      oruby_own_sclass_p(mrb_state *mrb, const struct RBasic *o)
+      {
+        struct RClass *sc = o->c;
+
+        if (!sc || sc->tt != MRB_TT_SCLASS) return FALSE;
+        if (o->tt != MRB_TT_CLASS && o->tt != MRB_TT_SCLASS) return TRUE;
+        mrb_value a = mrb_obj_iv_get(mrb, (struct RObject*)sc, MRB_SYM(__attached__));
+        return !mrb_immediate_p(a) && mrb_basic_ptr(a) == o;
+      }
+
+      /* the singleton class of a class, or of such a singleton class */
+      static mrb_bool
+      oruby_metaclass_p(mrb_state *mrb, struct RClass *s)
+      {
+        if (s->tt != MRB_TT_SCLASS) return FALSE;
+        mrb_value a = mrb_obj_iv_get(mrb, (struct RObject*)s, MRB_SYM(__attached__));
+        return mrb_type(a) == MRB_TT_CLASS || mrb_type(a) == MRB_TT_SCLASS;
+      }
+
+      /* The class of metaclass s that has no singleton class of its own: the
+         singleton of the nearest metaclass up s's superclass chain that has one,
+         or, above the metaclasses, the class of Class (#<Class:Class>). */
+      static struct RClass*
+      oruby_metaclass_class(mrb_state *mrb, struct RClass *s)
+      {
+        for (struct RClass *x = s->super; x; x = x->super) {
+          if (x->tt == MRB_TT_ICLASS) continue;
+          if (x->tt != MRB_TT_SCLASS) return x->c ? x->c : mrb->class_class;
+          if (oruby_own_sclass_p(mrb, (struct RBasic*)x)) return x->c;
+        }
+        return mrb->class_class;
+      }
+
+      static int
+      oruby_metaclass_refresh_i(mrb_state *mrb, struct RBasic *obj, void *ud)
+      {
+        (void)ud;
+        if (obj->tt != MRB_TT_SCLASS) return MRB_EACH_OBJ_OK;
+        struct RClass *s = (struct RClass*)obj;
+        if (!s->c || oruby_own_sclass_p(mrb, obj) || !oruby_metaclass_p(mrb, s)) return MRB_EACH_OBJ_OK;
+        struct RClass *k = oruby_metaclass_class(mrb, s);
+        if (k != s->c) {
+          s->c = k;
+          mrb_field_write_barrier(mrb, obj, (struct RBasic*)k);
+        }
+        return MRB_EACH_OBJ_OK;
+      }
+
+      /* Prepares and creates a singleton class for an object */
+      static void
+      prepare_singleton_class(
+    C
+    replace(source, '  if (o->c->tt == MRB_TT_SCLASS) return;', '  if (oruby_own_sclass_p(mrb, o)) return;')
+    replace(source, "  sc->frozen = o->frozen;\n}", <<~'C'.chomp)
+        sc->frozen = o->frozen;
+        if (o->tt == MRB_TT_CLASS || oruby_metaclass_p(mrb, (struct RClass*)o)) {
+          sc->c = oruby_metaclass_class(mrb, sc);
+          mrb_field_write_barrier(mrb, (struct RBasic*)sc, (struct RBasic*)sc->c);
+          /* the metaclasses below a new meta^n class (and all of them, once
+             Class has its own) take it as their class; it is rare, so a walk
+             over the heap does */
+          if (o->tt == MRB_TT_SCLASS || o == (struct RBasic*)mrb->class_class) {
+            mrb_gc_each_live_object(mrb, oruby_metaclass_refresh_i, NULL);
+          }
+        }
+      }
+    C
+    # A metaclass's class is now #<Class:Class>, where mruby defines Class.new
+    replace(source, "mrb_class_new_class(mrb_state *mrb, mrb_value cv)\n{\n  mrb_value super, blk;\n", <<~'C')
+      mrb_class_new_class(mrb_state *mrb, mrb_value cv)
+      {
+        mrb_value super, blk;
+        if (mrb_sclass_p(cv)) mrb_raise(mrb, E_TYPE_ERROR, "can't create instance of singleton class");
+    C
+    replace(source, "  struct RClass *klass = mrb_basic_ptr(obj)->c;\n\n  if (klass->tt != MRB_TT_SCLASS)\n    return klass;",
+      "  struct RClass *klass = mrb_basic_ptr(obj)->c;\n\n  if (!oruby_own_sclass_p(mrb, mrb_basic_ptr(obj)))\n    return klass;")
+    replace(source, "    clone->super = klass->super;\n", <<~'C'.gsub(/^/, "    "))
+      clone->super = klass->super;
+      if (mrb_type(obj) == MRB_TT_CLASS || mrb_type(obj) == MRB_TT_SCLASS) {
+        clone->c = oruby_metaclass_class(mrb, clone);
+      }
+    C
+    # A large Integer has no singleton class, as in MRI
+    replace(source, "  case MRB_TT_INTEGER:\n#ifndef MRB_NO_FLOAT\n  case MRB_TT_FLOAT:\n#endif\n    return NULL;",
+      "  case MRB_TT_INTEGER:\n#ifdef MRB_USE_BIGINT\n  case MRB_TT_BIGINT:\n#endif\n#ifndef MRB_NO_FLOAT\n  case MRB_TT_FLOAT:\n#endif\n    return NULL;")
+  end
+
+  # kind_of?: an include class shares its module's method table, which is
+  # what the test compares; tables of two classes without methods are both
+  # NULL, so a metaclass (whose chain now runs through the method-less
+  # #<Class:Object>) was "a kind of" every method-less singleton class
+  def self.kind_of_mt(source)
+    replace(source, '    if (cl == c || cl->mt == c->mt)',
+      '    if (cl == c || (cl->tt == MRB_TT_ICLASS && cl->c == c) || (cl->mt && cl->mt == c->mt))')
+  end
+
+  # Object#freeze: a metaclass's inherited class is not its own to freeze
+  def self.metaclass_freeze(source)
+    replace(source, '      if (b->c->tt == MRB_TT_SCLASS) b->c->frozen = 1;', '      if (oruby_own_sclass_p(mrb, b)) b->c->frozen = 1;')
+  end
+
+  # singleton_methods: an inherited metaclass class holds none of the object's
+  def self.metaclass_singleton_methods(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, "  if (klass && (klass->tt == MRB_TT_SCLASS)) {",
+      "  if (klass && klass->tt == MRB_TT_SCLASS && oruby_own_sclass_p(mrb, mrb_basic_ptr(obj))) {")
   end
 
   def self.defined_queries(source)
@@ -444,6 +564,7 @@ module ORubyVMCompat
         if (!mrb_test(mrb_funcall_argv(mrb, recv, rt_id, argc, args))) return mrb_nil_value();
       }
     C
+    metaclass_freeze(source)
   end
 
   def self.variable(source)
@@ -1051,7 +1172,7 @@ module ORubyVMCompat
     {
       "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement,
       "proc" => :proc_identity, "array" => :array_splat, "variable" => :variable,
-      "error" => :chilled_mutation, "kernel" => :defined_queries
+      "error" => :chilled_mutation, "kernel" => :defined_queries, "object" => :kind_of_mt
     }.each do |name, patch|
       original = File.join(inputs, "#{name}.c")
       generated = File.join(overrides, "#{name}.c")
@@ -1073,7 +1194,8 @@ module ORubyVMCompat
       "mruby-string-ext" => ["string.c", :chilled_uplus],
       "mruby-fiber" => ["fiber.c", :fiber_root_transfer],
       "mruby-method" => ["method.c", :method_lookup],
-      "mruby-eval" => ["eval.c", :eval_source]
+      "mruby-eval" => ["eval.c", :eval_source],
+      "mruby-metaprog" => ["metaprog.c", :metaclass_singleton_methods]
     }.each do |name, (file, patch)|
       relative = File.join("mrbgems", name, "src")
       gem_output = File.join(build.build_dir, relative)
