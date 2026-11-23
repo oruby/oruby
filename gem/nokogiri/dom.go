@@ -38,6 +38,7 @@ const (
 type domNS struct {
 	prefix string
 	href   string
+	doc    *domNode
 }
 
 type domAttr struct {
@@ -76,16 +77,18 @@ type domNode struct {
 	nsDefs []*domNS
 
 	// Document-level metadata (only populated on Document / HTMLDocument / Fragment)
-	isHTML        bool
-	isHTML5       bool
-	rbClass       oruby.RClass
-	hasClass      bool
-	hasDecorators bool
-	decoratorsVal oruby.Value
-	encoding      string
-	url           string
-	version       string
-	errors        []domError
+	isHTML              bool
+	isHTML5             bool
+	rbClass             oruby.RClass
+	hasClass            bool
+	hasDecorators       bool
+	decoratorsVal       oruby.Value
+	encoding            string
+	url                 string
+	version             string
+	quirksMode          string
+	parseNoScriptAsText bool
+	errors              []domError
 }
 
 func newDocument(isHTML, isHTML5 bool) *domNode {
@@ -157,7 +160,13 @@ func (n *domNode) unlink() {
 }
 
 func (n *domNode) inheritDefaultNS() {
-	if n.kind != ElementNode || n.prefix != "" || n.nsURI != "" || n.parent == nil || n.isHTMLDoc() {
+	if n.kind != ElementNode || n.nsURI != "" || n.parent == nil || n.isHTMLDoc() {
+		return
+	}
+	if n.prefix != "" {
+		if href := n.parent.lookupNS(n.prefix); href != "" {
+			n.nsURI = href
+		}
 		return
 	}
 	for _, ns := range n.nsDefs {
@@ -459,12 +468,45 @@ func (n *domNode) addNamespaceDef(prefix, href string) *domNS {
 	for _, ns := range n.nsDefs {
 		if ns.prefix == prefix {
 			ns.href = href
+			ns.doc = n.doc
 			return ns
 		}
 	}
-	ns := &domNS{prefix: prefix, href: href}
+	ns := &domNS{prefix: prefix, href: href, doc: n.doc}
 	n.nsDefs = append(n.nsDefs, ns)
 	return ns
+}
+
+func (n *domNode) namespaceScopes() []*domNS {
+	seen := map[string]bool{}
+	var out []*domNS
+	for cur := n; cur != nil; cur = cur.parent {
+		for _, ns := range cur.nsDefs {
+			if !seen[ns.prefix] {
+				seen[ns.prefix] = true
+				out = append(out, ns)
+			}
+		}
+	}
+	return out
+}
+
+func (n *domNode) getAttrWithNS(name, nsURI string) (*domAttr, bool) {
+	for _, a := range n.attrs {
+		if a.name == name {
+			if nsURI == "" && a.nsURI == "" && a.prefix == "" {
+				return a, true
+			}
+			uri := a.nsURI
+			if uri == "" && a.prefix != "" {
+				uri = n.lookupNS(a.prefix)
+			}
+			if nsURI != "" && uri == nsURI {
+				return a, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func (n *domNode) lookupNS(prefix string) string {
@@ -699,20 +741,58 @@ func escapeAttrVal(s string) string {
 }
 
 func (n *domNode) serialize(asHTML bool, indent int, includeXMLDecl bool) string {
+	return n.serializeWithOpts(asHTML, indent, includeXMLDecl, false)
+}
+
+func (n *domNode) serializeWithOpts(asHTML bool, indent int, includeXMLDecl, noEmptyTags bool) string {
 	var sb strings.Builder
-	n.writeTo(&sb, asHTML, indent, 0, includeXMLDecl)
+	n.writeTo(&sb, asHTML, indent, 0, includeXMLDecl, noEmptyTags)
 	return sb.String()
 }
 
 func (n *domNode) innerHTML(asHTML bool) string {
 	var sb strings.Builder
 	for c := n.first; c != nil; c = c.next {
-		c.writeTo(&sb, asHTML, 0, 0, false)
+		c.writeTo(&sb, asHTML, 0, 0, false, false)
 	}
 	return sb.String()
 }
 
-func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, includeXMLDecl bool) {
+func (n *domNode) cssPath() string {
+	if n.kind != ElementNode {
+		return ""
+	}
+	var parts []string
+	for cur := n; cur != nil && cur.kind == ElementNode; cur = cur.parent {
+		seg := cur.name
+		if id, ok := cur.getAttr("id"); ok && id.value != "" {
+			parts = append(parts, "#"+id.value)
+			break
+		}
+		if cur.parent != nil && cur.parent.kind == ElementNode {
+			idx := 1
+			total := 0
+			for s := cur.parent.first; s != nil; s = s.next {
+				if s.kind == ElementNode && s.name == cur.name {
+					total++
+					if s == cur {
+						idx = total
+					}
+				}
+			}
+			if total > 1 {
+				seg = fmt.Sprintf("%s:nth-of-type(%d)", cur.name, idx)
+			}
+		}
+		parts = append(parts, seg)
+	}
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return strings.Join(parts, " > ")
+}
+
+func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, includeXMLDecl, noEmptyTags bool) {
 	switch n.kind {
 	case DocumentNode, HTMLDocumentNode:
 		if !asHTML && includeXMLDecl {
@@ -728,11 +808,11 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 			}
 		}
 		for c := n.first; c != nil; c = c.next {
-			c.writeTo(sb, asHTML, indent, 0, false)
+			c.writeTo(sb, asHTML, indent, 0, false, noEmptyTags)
 		}
 	case DocumentFragNode:
 		for c := n.first; c != nil; c = c.next {
-			c.writeTo(sb, asHTML, indent, depth, false)
+			c.writeTo(sb, asHTML, indent, depth, false, noEmptyTags)
 		}
 	case DocumentTypeNode, DTDNode:
 		sb.WriteString("<!DOCTYPE ")
@@ -814,6 +894,10 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 					sb.WriteString(tag)
 					sb.WriteByte('>')
 				}
+			} else if noEmptyTags {
+				sb.WriteString("></")
+				sb.WriteString(tag)
+				sb.WriteByte('>')
 			} else {
 				sb.WriteString("/>")
 			}
@@ -836,7 +920,7 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 			}
 		}
 		for c := n.first; c != nil; c = c.next {
-			c.writeTo(sb, asHTML, indent, depth+1, false)
+			c.writeTo(sb, asHTML, indent, depth+1, false, noEmptyTags)
 		}
 		if indent > 0 && hasElemChild {
 			sb.WriteString(strings.Repeat(" ", indent*depth))

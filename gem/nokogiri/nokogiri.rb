@@ -187,17 +187,18 @@ module Nokogiri
     module Searchable
       def xpath(*paths)
         return NodeSet.new(document) if paths.empty?
-        # Separate trailing ns hash / nil / vars hash from path strings
+        # Separate trailing ns hash / nil / custom handler / binds hash from path strings
         extra = []
-        while paths.length > 1 && (paths.last.is_a?(Hash) || paths.last.nil?)
+        while paths.length > 1 && !paths.last.is_a?(String)
           extra.unshift(paths.pop)
         end
+        ns, handler, binds = __split_xpath_extras(extra)
         if paths.length == 1
-          return __xpath(paths[0], *extra)
+          return __xpath(paths[0], ns, handler, binds)
         end
         out = NodeSet.new(document)
         paths.each do |p|
-          r = __xpath(p, *extra)
+          r = __xpath(p, ns, handler, binds)
           if r.is_a?(NodeSet)
             out = out | r
           else
@@ -236,14 +237,15 @@ module Nokogiri
       def search(*paths)
         return NodeSet.new(document) if paths.empty?
         extra = []
-        while paths.length > 1 && (paths.last.is_a?(Hash) || paths.last.nil?)
+        while paths.length > 1 && !paths.last.is_a?(String)
           extra.unshift(paths.pop)
         end
+        ns, handler, binds = __split_xpath_extras(extra)
         out = NodeSet.new(document)
         paths.each do |path|
           p = path.to_s
           if p.start_with?("/", "./", "(", "..")
-            r = __xpath(p, *extra)
+            r = __xpath(p, ns, handler, binds)
             out = out | r if r.is_a?(NodeSet)
           else
             out = out | __css(p)
@@ -257,16 +259,118 @@ module Nokogiri
         search(*paths).first
       end
       alias % at
+
+      def >(selector)
+        sel = selector.to_s
+        if sel.start_with?("/", "./", "(", "..")
+          xpath(sel)
+        else
+          NodeSet.new(document, element_children.select { |c| c.matches?(sel) })
+        end
+      end
+
+      private
+
+      def __split_xpath_extras(extra)
+        ns = nil
+        handler = nil
+        binds = nil
+        seen_ns_slot = false
+        extra.each do |arg|
+          if arg.nil?
+            seen_ns_slot = true
+          elsif arg.is_a?(Hash)
+            if !seen_ns_slot && handler.nil?
+              ns = arg
+              seen_ns_slot = true
+            else
+              binds = arg
+            end
+          else
+            handler = arg
+            seen_ns_slot = true
+          end
+        end
+        [ns, handler, binds]
+      end
     end
 
     class Node
       include Searchable
       include Enumerable
 
+      class SaveOptions
+        FORMAT         = 1 << 0
+        NO_DECLARATION = 1 << 1
+        NO_EMPTY_TAGS  = 1 << 2
+        NO_XHTML       = 1 << 3
+        XHTML          = 1 << 4
+        AS_XML         = 1 << 5
+        AS_HTML        = 1 << 6
+        AS_XHTML       = 1 << 7
+        AS_BUILDER     = 1 << 8
+
+        DEFAULT_XML   = FORMAT | AS_XML
+        DEFAULT_HTML  = FORMAT | NO_DECLARATION | NO_EMPTY_TAGS | AS_HTML
+        DEFAULT_XHTML = FORMAT | NO_DECLARATION | NO_EMPTY_TAGS | AS_XHTML
+
+        attr_accessor :options
+
+        def initialize(options = 0)
+          @options = options.to_i
+        end
+
+        def to_i
+          @options
+        end
+
+        def ==(other)
+          @options == other.to_i
+        end
+
+        {
+          format: FORMAT,
+          no_declaration: NO_DECLARATION,
+          no_empty_tags: NO_EMPTY_TAGS,
+          no_xhtml: NO_XHTML,
+          xhtml: XHTML,
+          as_xml: AS_XML,
+          as_html: AS_HTML,
+          as_xhtml: AS_XHTML,
+          as_builder: AS_BUILDER,
+        }.each do |name, bit|
+          define_method(name) do
+            @options |= bit
+            self
+          end
+
+          define_method("#{name}?") do
+            (@options & bit) != 0
+          end
+        end
+      end
+
       def each
         return to_enum(:each) unless block_given?
         attribute_nodes.each { |a| yield [a.name, a.value] }
         self
+      end
+
+      def child
+        children.first
+      end
+
+      def children=(node_or_tags)
+        children.each(&:unlink)
+        add_child(node_or_tags)
+      end
+
+      def next=(node_or_tags)
+        add_next_sibling(node_or_tags)
+      end
+
+      def previous=(node_or_tags)
+        add_previous_sibling(node_or_tags)
       end
 
       def <<(node_or_tags)
@@ -366,53 +470,185 @@ module Nokogiri
         yield self
       end
 
-      # CSS class attribute helpers (Nokogiri 1.11+ kwattr / classes API)
-      def classes
-        val = self["class"]
+      # CSS class & keyword-attribute helpers (Nokogiri 1.11+ kwattr / classes API)
+      def kwattr_values(attribute_name)
+        val = self[attribute_name]
         return [] if val.nil? || val.empty?
         val.split
       end
 
-      def add_class(names)
-        list = classes
-        to_add = names.is_a?(Array) ? names : names.to_s.split
+      def kwattr_add(attribute_name, keywords)
+        list = kwattr_values(attribute_name)
+        to_add = keywords.is_a?(Array) ? keywords : keywords.to_s.split
         to_add.each do |c|
           next if c.nil? || c.empty?
           list << c unless list.include?(c)
         end
-        self["class"] = list.join(" ")
+        self[attribute_name] = list.join(" ")
         self
       end
 
-      def remove_class(names = nil)
-        if names.nil?
-          delete("class")
+      def kwattr_append(attribute_name, keywords)
+        list = kwattr_values(attribute_name)
+        to_add = keywords.is_a?(Array) ? keywords : keywords.to_s.split
+        to_add.each do |c|
+          next if c.nil? || c.empty?
+          list << c
+        end
+        self[attribute_name] = list.join(" ")
+        self
+      end
+
+      def kwattr_remove(attribute_name, keywords = nil)
+        if keywords.nil?
+          delete(attribute_name)
           return self
         end
-        to_rem = names.is_a?(Array) ? names : names.to_s.split
-        remaining = classes - to_rem
+        to_rem = keywords.is_a?(Array) ? keywords : keywords.to_s.split
+        remaining = kwattr_values(attribute_name) - to_rem
         if remaining.empty?
-          delete("class")
+          delete(attribute_name)
         else
-          self["class"] = remaining.join(" ")
+          self[attribute_name] = remaining.join(" ")
         end
         self
+      end
+
+      def classes
+        kwattr_values("class")
+      end
+
+      def add_class(names)
+        kwattr_add("class", names)
+      end
+
+      def append_class(names)
+        kwattr_append("class", names)
+      end
+
+      def remove_class(names = nil)
+        kwattr_remove("class", names)
+      end
+
+      def value?(val)
+        values.include?(val.to_s)
+      end
+
+      def lang
+        cur = self
+        while cur
+          v = cur["xml:lang"] || cur["lang"]
+          return v if v
+          cur = cur.parent
+        end
+        nil
+      end
+
+      def lang=(value)
+        self["xml:lang"] = value
+      end
+
+      def read_only?
+        false
+      end
+
+      def data_ptr?
+        true
+      end
+
+      def description
+        nil
+      end
+
+      def decorate!
+        document&.decorate(self)
+        self
+      end
+
+      def accept(visitor)
+        visitor.visit(self)
+      end
+
+      def fragment(tags = nil)
+        return document.fragment(tags) if document
+        XML::DocumentFragment.parse(tags.to_s)
+      end
+
+      def parse(string_or_io, _options = nil)
+        src = string_or_io.respond_to?(:read) ? string_or_io.read : string_or_io.to_s
+        fragment(src).children
+      end
+
+      def to_str
+        content
+      end
+
+      def deconstruct_keys(_keys)
+        {
+          name: name,
+          attributes: attribute_nodes,
+          children: children,
+          content: content,
+          namespace: namespace,
+        }
+      end
+
+      def pretty_print(pp)
+        pp.text(inspect)
       end
 
       def encode_special_chars(str)
         str.to_s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;").gsub("\r", "&#13;")
       end
 
+      def __resolve_save_options(options, as_html_default, xml_decl_default)
+        opts = options || {}
+        as_html = as_html_default
+        xml_decl = xml_decl_default
+        no_empty = false
+        indent = opts[:indent]
+        if opts.key?(:save_with)
+          sw = opts[:save_with].to_i
+          as_html = true if (sw & SaveOptions::AS_HTML) != 0
+          as_html = false if (sw & SaveOptions::AS_XML) != 0 || (sw & SaveOptions::AS_XHTML) != 0
+          xml_decl = false if (sw & SaveOptions::NO_DECLARATION) != 0
+          no_empty = true if (sw & SaveOptions::NO_EMPTY_TAGS) != 0
+          indent = 2 if indent.nil? && (sw & SaveOptions::FORMAT) != 0
+        end
+        [as_html, indent || 0, xml_decl, no_empty]
+      end
+
       def to_xml(options = {})
-        indent = options[:indent] || 0
-        __serialize(false, indent, false)
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
+        __serialize(as_html, indent, xml_decl, no_empty)
       end
 
       def to_html(options = {})
-        indent = options[:indent] || 0
-        __serialize(true, indent, false)
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, true, false)
+        __serialize(as_html, indent, xml_decl, no_empty)
       end
-      alias to_xhtml to_xml
+
+      def to_xhtml(options = {})
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
+        __serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with))
+      end
+
+      def write_to(io, *options)
+        opts = options.last.is_a?(Hash) ? options.last : {}
+        io << (html? ? to_html(opts) : to_xml(opts))
+      end
+
+      def write_xml_to(io, options = {})
+        io << to_xml(options)
+      end
+
+      def write_html_to(io, options = {})
+        io << to_html(options)
+      end
+
+      def write_xhtml_to(io, options = {})
+        io << to_xhtml(options)
+      end
 
       def to_s
         html? ? to_html : to_xml
@@ -473,19 +709,48 @@ module Nokogiri
       end
 
       def to_xml(options = {})
-        indent = options[:indent] || 0
-        __serialize(false, indent, true)
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, true)
+        __serialize(as_html, indent, xml_decl, no_empty)
       end
 
       def to_html(options = {})
-        indent = options[:indent] || 0
-        __serialize(true, indent, false)
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, true, false)
+        __serialize(as_html, indent, xml_decl, no_empty)
+      end
+
+      def to_xhtml(options = {})
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
+        __serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with))
+      end
+
+      def validate
+        dtd = internal_subset
+        return nil unless dtd
+        dtd.validate(self)
+      end
+
+      def namespace_inheritance
+        @namespace_inheritance.nil? ? true : @namespace_inheritance
+      end
+
+      def namespace_inheritance=(val)
+        @namespace_inheritance = !!val
       end
 
       def slop!
         decorators(XML::Node) << ::Nokogiri::Decorators::Slop
         decorate(self)
         self
+      end
+    end
+
+    class Namespace
+      def deconstruct_keys(_keys)
+        { prefix: prefix, href: href }
+      end
+
+      def pretty_print(pp)
+        pp.text(inspect)
       end
     end
 
@@ -497,11 +762,18 @@ module Nokogiri
       end
 
       def to_html(options = {})
-        __serialize(true, options[:indent] || 0, false)
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, true, false)
+        __serialize(as_html, indent, xml_decl, no_empty)
       end
 
       def to_xml(options = {})
-        __serialize(false, options[:indent] || 0, false)
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
+        __serialize(as_html, indent, xml_decl, no_empty)
+      end
+
+      def to_xhtml(options = {})
+        as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
+        __serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with))
       end
 
       def to_s
@@ -535,16 +807,28 @@ module Nokogiri
         map(&:inner_html).join
       end
 
-      def to_html
-        map(&:to_html).join
+      def to_html(*args)
+        map { |n| n.to_html(*args) }.join
       end
 
-      def to_xml
-        map(&:to_xml).join
+      def to_xml(*args)
+        map { |n| n.to_xml(*args) }.join
+      end
+
+      def to_xhtml(*args)
+        map { |n| n.to_xhtml(*args) }.join
       end
 
       def to_s
         map(&:to_s).join
+      end
+
+      def deconstruct
+        to_a
+      end
+
+      def inspect
+        "[#{map(&:inspect).join(', ')}]"
       end
 
       def attr(key, value = nil)
@@ -561,9 +845,21 @@ module Nokogiri
         self
       end
       alias set attr
+      alias attribute attr
+
+      def remove_attr(name)
+        each { |n| n.delete(name) }
+        self
+      end
+      alias remove_attribute remove_attr
 
       def add_class(name)
         each { |n| n.add_class(name) }
+        self
+      end
+
+      def append_class(name)
+        each { |n| n.append_class(name) }
         self
       end
 
@@ -637,16 +933,25 @@ module Nokogiri
         search(*paths).first
       end
       alias % at
+
+      def >(selector)
+        out = NodeSet.new(document)
+        each { |n| out = out | (n > selector) }
+        out
+      end
     end
 
     class Builder
-      attr_accessor :doc, :parent
+      attr_accessor :doc, :parent, :context, :arity
 
       def self.with(root, &block)
         new({}, root, &block)
       end
 
       def initialize(options = {}, root = nil, &block)
+        @ns = nil
+        @context = nil
+        @arity = block ? block.arity : 0
         if root
           @doc = root.document
           @parent = root
@@ -662,6 +967,11 @@ module Nokogiri
             instance_eval(&block)
           end
         end
+      end
+
+      def [](ns)
+        @ns = ns.to_s
+        self
       end
 
       def text(str)
@@ -693,9 +1003,12 @@ module Nokogiri
       end
 
       def method_missing(method, *args, **kw, &block)
+        ns_prefix = @ns
+        @ns = nil
         tag = method.to_s
         tag = tag[0..-2] if tag.end_with?("_")
-        node = @doc.create_element(tag)
+        qname = ns_prefix && !ns_prefix.empty? ? "#{ns_prefix}:#{tag}" : tag
+        node = @doc.create_element(qname)
         args.each do |arg|
           if arg.is_a?(Hash)
             arg.each { |k, v| __apply_attr(node, k.to_s, v.to_s) }
@@ -797,10 +1110,18 @@ module Nokogiri
         alias << write
 
         def finish
-          SAX.__emit(@document, @buf, false)
+          SAX.__emit_stream(@document, @buf)
           @buf = +""
           self
         end
+      end
+    end
+
+    def self.Reader(string_or_io, url = nil, encoding = nil, options = 0)
+      if string_or_io.respond_to?(:read)
+        Reader.from_io(string_or_io, url, encoding, options)
+      else
+        Reader.from_memory(string_or_io.to_s, url, encoding, options)
       end
     end
 
@@ -814,19 +1135,31 @@ module Nokogiri
       Schema.new(string_or_io, options)
     end
 
+    def self.RelaxNG(string_or_io, options = ParseOptions::DEFAULT_SCHEMA)
+      RelaxNG.new(string_or_io, options)
+    end
+
     class Schema
-      def self.new(string_or_io, _options = ParseOptions::DEFAULT_SCHEMA)
+      attr_accessor :parse_options
+
+      def self.new(string_or_io, options = ParseOptions::DEFAULT_SCHEMA)
         file_path = string_or_io.respond_to?(:path) ? string_or_io.path : nil
         src = string_or_io.respond_to?(:read) ? string_or_io.read : string_or_io.to_s
-        __compile(src, file_path)
+        obj = __compile(src, file_path)
+        obj.parse_options = options.is_a?(ParseOptions) ? options : ParseOptions.new(options)
+        obj
       end
 
-      def self.from_document(doc, _options = ParseOptions::DEFAULT_SCHEMA)
-        __compile(doc.to_xml, doc.respond_to?(:url) ? doc.url : nil)
+      def self.from_document(doc, options = ParseOptions::DEFAULT_SCHEMA)
+        obj = __compile(doc.to_xml, doc.respond_to?(:url) ? doc.url : nil)
+        obj.parse_options = options.is_a?(ParseOptions) ? options : ParseOptions.new(options)
+        obj
       end
 
-      def self.read_memory(string, _options = ParseOptions::DEFAULT_SCHEMA)
-        __compile(string.to_s, nil)
+      def self.read_memory(string, options = ParseOptions::DEFAULT_SCHEMA)
+        obj = __compile(string.to_s, nil)
+        obj.parse_options = options.is_a?(ParseOptions) ? options : ParseOptions.new(options)
+        obj
       end
 
       def validate(thing, &block)
@@ -849,10 +1182,25 @@ module Nokogiri
         validate(thing).empty?
       end
     end
+
+    class RelaxNG < Schema
+    end
   end
 
   module XSLT
-    def self.parse(string, _modules = {})
+    @registered_extensions = {}
+
+    def self.register(uri, custom_handler_class)
+      @registered_extensions[uri.to_s] = custom_handler_class
+      nil
+    end
+
+    def self.registered_extensions
+      @registered_extensions
+    end
+
+    def self.parse(string, modules = {})
+      modules.each { |uri, cls| register(uri, cls) } if modules.is_a?(Hash)
       file_path = string.respond_to?(:path) ? string.path : nil
       src = string.respond_to?(:read) ? string.read : string.to_s
       Stylesheet.__compile(src, file_path)
@@ -930,6 +1278,38 @@ module Nokogiri
         text
       end
 
+      def meta_encoding
+        meta = at_css("meta[charset]")
+        return meta["charset"] if meta && meta["charset"]
+        css("meta").each do |m|
+          next unless m["http-equiv"]&.downcase == "content-type"
+          if m["content"] =~ /charset\s*=\s*([^\s;]+)/i
+            return $1
+          end
+        end
+        nil
+      end
+
+      def meta_encoding=(encoding)
+        if (meta = at_css("meta[charset]"))
+          meta["charset"] = encoding.to_s
+          return encoding
+        end
+        css("meta").each do |m|
+          next unless m["http-equiv"]&.downcase == "content-type"
+          if m["content"] =~ /charset\s*=\s*[^\s;]+/i
+            m["content"] = m["content"].sub(/charset\s*=\s*[^\s;]+/i, "charset=#{encoding}")
+            return encoding
+          end
+        end
+        head = at_css("head") || root
+        if head
+          m = create_element("meta", "charset" => encoding.to_s)
+          head.prepend_child(m)
+        end
+        encoding
+      end
+
       def fragment(tags = nil)
         HTML4::DocumentFragment.new(self, tags)
       end
@@ -949,6 +1329,9 @@ module Nokogiri
 
     class Builder < XML::Builder
       def initialize(options = {}, root = nil, &block)
+        @ns = nil
+        @context = nil
+        @arity = block ? block.arity : 0
         if root
           @doc = root.document
           @parent = root
@@ -992,16 +1375,23 @@ module Nokogiri
     class Document
       def self.parse(thing, url = nil, encoding = nil, **options, &block)
         src = thing.respond_to?(:read) ? thing.read : thing.to_s
-        __parse_html(src, url, encoding, XML::ParseOptions::DEFAULT_HTML, true)
+        max_errors = options[:max_errors]
+        max_tree_depth = options[:max_tree_depth]
+        doc = __parse_html(src, url, encoding, XML::ParseOptions::DEFAULT_HTML, true, max_errors, max_tree_depth)
+        if options.key?(:parse_noscript_content_as_text)
+          doc.parse_noscript_content_as_text = options[:parse_noscript_content_as_text]
+        end
+        yield doc if block
+        doc
       end
 
-      def self.fragment(tags, encoding = nil)
-        DocumentFragment.parse(tags, encoding)
+      def self.fragment(tags, encoding = nil, **options)
+        DocumentFragment.parse(tags, encoding, **options)
       end
     end
 
     class DocumentFragment
-      def self.parse(tags, encoding = nil)
+      def self.parse(tags, encoding = nil, **_options)
         doc = HTML5::Document.new
         doc.encoding = encoding if encoding
         new(doc, tags)
@@ -1012,8 +1402,8 @@ module Nokogiri
       Document.parse(thing, url, encoding, **options, &block)
     end
 
-    def self.fragment(tags, encoding = nil)
-      DocumentFragment.parse(tags, encoding)
+    def self.fragment(tags, encoding = nil, **options)
+      DocumentFragment.parse(tags, encoding, **options)
     end
   end
 

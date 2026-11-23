@@ -166,12 +166,21 @@ func defineSchemaAndXSLT(mrb *oruby.MrbState, mod, xmlMod oruby.RClass) {
 	}, mrb.ArgsArg(1, 1))
 
 	schemaCls.DefineMethod("errors", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		if iv := mrb.IVGet(self, mrb.Intern("@errors")); !iv.IsNil() {
+			return iv
+		}
 		sd, ok := rb.Get[*xsdSchemaData](mrb, self)
 		if !ok {
 			return mrb.AryNew()
 		}
 		return makeErrorsArray(mrb, sd.errors)
 	}, mrb.ArgsNone())
+
+	schemaCls.DefineMethod("errors=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		v := mrb.GetArgsFirst()
+		mrb.IVSet(self, mrb.Intern("@errors"), v)
+		return v
+	}, mrb.ArgsReq(1))
 
 	schemaCls.DefineMethod("__validate_xml", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		sd, ok := rb.Get[*xsdSchemaData](mrb, self)
@@ -183,6 +192,34 @@ func defineSchemaAndXSLT(mrb *oruby.MrbState, mod, xmlMod oruby.RClass) {
 		mrb.Blocking(func() {
 			errs = sd.validateXML(mrb, xmlStr)
 		})
+		return makeErrorsArray(mrb, errs)
+	}, mrb.ArgsReq(1))
+
+	// -------------------------------------------------------------------------
+	// Nokogiri::XML::RelaxNG (inherits from Schema)
+	// -------------------------------------------------------------------------
+	rngCls := rb.DataClass(mrb.DefineClassUnder(xmlMod, "RelaxNG", schemaCls))
+
+	rngCls.DefineClassMethod("__compile", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		a := mrb.GetArgs().Slice()
+		src := a[0].String()
+		g, err := compileRelaxNG(src)
+		if err != nil {
+			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", err.Error())
+		}
+		obj := mrb.ObjAlloc(oruby.MrbTTCData, rngCls)
+		rb.Set(mrb, obj.Value(), g)
+		return obj
+	}, mrb.ArgsArg(1, 1))
+
+	rngCls.DefineMethod("__validate_xml", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		g, ok := rb.Get[*rngGrammar](mrb, self)
+		if !ok {
+			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "RelaxNG schema not initialized")
+		}
+		xmlStr := mrb.GetArgsFirst().String()
+		doc := parseXMLDocument(xmlStr, "", "UTF-8", false, false, false)
+		errs := g.validate(doc)
 		return makeErrorsArray(mrb, errs)
 	}, mrb.ArgsReq(1))
 

@@ -8,12 +8,17 @@ import (
 )
 
 func parseHTMLDocument(src, url, encoding string, isHTML5 bool, noblanks bool) *domNode {
+	return parseHTMLDocumentOpts(src, url, encoding, isHTML5, noblanks, -1, -1)
+}
+
+func parseHTMLDocumentOpts(src, url, encoding string, isHTML5 bool, noblanks bool, maxErrors int, maxTreeDepth int) *domNode {
 	doc := newDocument(true, isHTML5)
 	doc.url = url
 	if encoding != "" {
 		doc.encoding = encoding
 	}
 	if strings.TrimSpace(src) == "" {
+		doc.quirksMode = "quirks"
 		return doc
 	}
 
@@ -22,8 +27,39 @@ func parseHTMLDocument(src, url, encoding string, isHTML5 bool, noblanks bool) *
 		doc.errors = append(doc.errors, domError{message: err.Error(), level: 2})
 		return doc
 	}
-	convertHTMLChildren(doc, doc, root, noblanks)
+	convertHTMLChildrenDepth(doc, doc, root, noblanks, 0, maxTreeDepth)
+	doc.quirksMode = detectHTMLQuirksMode(doc)
+	if maxErrors >= 0 && len(doc.errors) > maxErrors {
+		doc.errors = doc.errors[:maxErrors]
+	}
 	return doc
+}
+
+func detectHTMLQuirksMode(doc *domNode) string {
+	var dt *domNode
+	for c := doc.first; c != nil; c = c.next {
+		if c.kind == DocumentTypeNode {
+			dt = c
+			break
+		}
+	}
+	if dt == nil {
+		return "quirks"
+	}
+	if !strings.EqualFold(dt.name, "html") {
+		return "quirks"
+	}
+	pub := strings.ToLower(dt.pubID)
+	if pub == "" && dt.sysID == "" {
+		return "no_quirks"
+	}
+	if strings.Contains(pub, "transitional") || strings.Contains(pub, "frameset") {
+		if dt.sysID == "" {
+			return "quirks"
+		}
+		return "limited_quirks"
+	}
+	return "no_quirks"
 }
 
 func parseHTMLFragment(doc *domNode, src string, ctxTag string, noblanks bool) *domNode {
@@ -58,17 +94,29 @@ func parseHTMLFragment(doc *domNode, src string, ctxTag string, noblanks bool) *
 }
 
 func convertHTMLChildren(doc, parent *domNode, hn *html.Node, noblanks bool) {
+	convertHTMLChildrenDepth(doc, parent, hn, noblanks, 0, -1)
+}
+
+func convertHTMLChildrenDepth(doc, parent *domNode, hn *html.Node, noblanks bool, depth, maxDepth int) {
+	if maxDepth >= 0 && depth > maxDepth {
+		doc.errors = append(doc.errors, domError{message: "Document tree depth limit exceeded", level: 2})
+		return
+	}
 	for c := hn.FirstChild; c != nil; c = c.NextSibling {
-		if dn := convertHTMLNode(doc, c, noblanks); dn != nil {
+		if dn := convertHTMLNodeDepth(doc, c, noblanks, depth, maxDepth); dn != nil {
 			parent.appendChild(dn)
 		}
 	}
 }
 
 func convertHTMLNode(doc *domNode, hn *html.Node, noblanks bool) *domNode {
+	return convertHTMLNodeDepth(doc, hn, noblanks, 0, -1)
+}
+
+func convertHTMLNodeDepth(doc *domNode, hn *html.Node, noblanks bool, depth, maxDepth int) *domNode {
 	switch hn.Type {
 	case html.DocumentNode:
-		convertHTMLChildren(doc, doc, hn, noblanks)
+		convertHTMLChildrenDepth(doc, doc, hn, noblanks, depth, maxDepth)
 		return nil
 	case html.DoctypeNode:
 		dn := newNode(doc, DocumentTypeNode, hn.Data, "")
@@ -108,7 +156,7 @@ func convertHTMLNode(doc *domNode, hn *html.Node, noblanks bool) *domNode {
 			}
 			dn.attrs = append(dn.attrs, attr)
 		}
-		convertHTMLChildren(doc, dn, hn, noblanks)
+		convertHTMLChildrenDepth(doc, dn, hn, noblanks, depth+1, maxDepth)
 		return dn
 	default:
 		return nil

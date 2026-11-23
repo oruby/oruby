@@ -161,9 +161,14 @@ type readerEvent struct {
 }
 
 type xmlReader struct {
-	doc    *domNode
-	events []readerEvent
-	idx    int
+	doc          *domNode
+	events       []readerEvent
+	idx          int
+	source       string
+	url          string
+	encoding     string
+	hasCustomErr bool
+	customErrs   oruby.Value
 }
 
 func buildReaderEvents(doc *domNode) *xmlReader {
