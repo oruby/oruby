@@ -301,8 +301,9 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	// "when", "defined?": parse warnings (ORB_PARSE_WARN)
 	// ":\"", "%I": interpolated symbols (ORB_DSYM)
 	// "super": a bare super outside a def (ORB_ZSUPER_NODEF)
-	// "lambda": lambda(&x) (ORB_LAMBDA_BLOCK_ARG); "`", "%x": ORB_XSTRING_FROZEN
-	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::", "super", "lambda", "`", "%x",
+	// "lambda": lambda(&x) (ORB_LAMBDA_BLOCK_ARG); "`", "%x": ORB_XSTRING_FROZEN;
+	// "using": f(&x) under refinements (ORB_REFINED_BLOCK_ARG)
+	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::", "super", "lambda", "`", "%x", "using",
 		"__ENCODING__", "frozen_string_literal", "freeze", "coding", "when", "defined?", ":\"", "%I"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
@@ -821,6 +822,13 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_dsym(" }, func(*rewriter) string { return ")" })
 				r.add(s[0], s[0]+1, func(*rewriter) string { return "" })
 			}
+		case C.ORB_REFINED_BLOCK_ARG:
+			// &x -> &(t = (x); ::NilClass === t || ::Proc === t ? t : t.to_proc)
+			t := "__oruby_ba" + strconv.FormatUint(nextSiteID(prefix, &masgnSiteCounter), 10)
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "(" + t + " = (" },
+				func(*rewriter) string {
+					return "); ::NilClass === " + t + " || ::Proc === " + t + " ? " + t + " : " + t + ".to_proc)"
+				})
 		case C.ORB_INVALID_YIELD:
 			r.add(s[0], e[0], func(*rewriter) string {
 				return `::Kernel.raise(::SyntaxError, "#{__FILE__}:#{__LINE__}: Invalid yield")`

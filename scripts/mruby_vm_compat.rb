@@ -329,6 +329,35 @@ module ORubyVMCompat
       ret = mrb_obj_as_string_nomethod(mrb, regs[a+1]);
     C
     svar_scope_frame(source)
+    strcat_encoding_check(source)
+  end
+
+  # "#{a}#{b}": a BINARY and a UTF-8 string, both with other than ASCII, do
+  # not combine (Encoding::CompatibilityError, as String#+); the bytes are
+  # read only when the two flags differ
+  def self.strcat_encoding_check(source)
+    replace(source, "      if (mrb_string_p(ret)) {\n        mrb_str_cat_str(mrb, regs[a], ret);\n", <<~'C'.gsub(/^/, "      "))
+      if (mrb_string_p(ret)) {
+        struct RString *sa = mrb_str_ptr(regs[a]), *sb = mrb_str_ptr(ret);
+        if (RSTR_BINARY_P(sa) != RSTR_BINARY_P(sb) && RSTR_LEN(sa) > 0 && RSTR_LEN(sb) > 0 &&
+            !oruby_ascii_bytes_p(RSTR_PTR(sa), RSTR_LEN(sa)) && !oruby_ascii_bytes_p(RSTR_PTR(sb), RSTR_LEN(sb))) {
+          mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_enc_concat), 2, regs[a], ret);
+          ci = mrb->c->ci;
+        }
+        mrb_str_cat_str(mrb, regs[a], ret);
+    C
+    replace(source, "static mrb_value
+prepare_exec_strcat_post_func(", <<~'C'.chomp)
+      static mrb_bool
+      oruby_ascii_bytes_p(const char *p, mrb_int n)
+      {
+        for (mrb_int i = 0; i < n; i++) if ((unsigned char)p[i] >= 0x80) return FALSE;
+        return TRUE;
+      }
+
+      static mrb_value
+      prepare_exec_strcat_post_func(
+    C
   end
 
   # $~ and $_ after a bare private/public/protected/module_function: that
@@ -477,6 +506,7 @@ module ORubyVMCompat
     metaclass_class(source)
     bop_redefined_warning(source)
     prepend_fixes(source)
+    class_initialize_removed(source)
     # the message names the class: a BasicObject superclass has no #inspect
     # (go-mrb.c's classdef_fix gives MRI's words)
     replace(source, '      mrb_raisef(mrb, E_TYPE_ERROR, "superclass must be a Class (%!v given)", super);',
@@ -591,6 +621,21 @@ module ORubyVMCompat
     # a conversion method's wrong result (&obj's #to_proc, ...): CRuby's message
     replace(source, '    mrb_raisef(mrb, E_TYPE_ERROR, "%v cannot be converted to %s by #%n", val, tname, method);',
       '    mrb_raisef(mrb, E_TYPE_ERROR, "can\'t convert %T into %s (%T#%n gives %T)", val, tname, val, method, v);')
+  end
+
+  # Class#initialize is not defined in CRuby 4.1: Class.new initializes the
+  # class itself, unless a Class#initialize has been defined since
+  def self.class_initialize_removed(source)
+    replace(source, "  MRB_MT_ENTRY(mrb_class_initialize, MRB_SYM(initialize), MRB_ARGS_OPT(1) | MRB_MT_PRIVATE),  /* 15.2.3.3.1 */\n", "")
+    replace(source, "  if (mrb_func_basic_p(mrb, new_class, mid, mrb_class_initialize)) {\n    mrb_class_initialize(mrb, new_class);\n  }",
+      <<~'C'.chomp)
+        struct RClass *iowner = mrb_class(mrb, new_class);
+        mrb_method_t im = mrb_method_search_vm(mrb, &iowner, mid);
+        if (MRB_METHOD_UNDEF_P(im) || iowner == mrb->module_class || iowner == mrb->object_class ||
+            iowner == mrb->kernel_module || mrb_func_basic_p(mrb, new_class, mid, mrb_class_initialize)) {
+          mrb_class_initialize(mrb, new_class);
+        }
+    C
   end
 
   # Module#dup of a prepended module: the copy keeps the prepended chain it

@@ -54,6 +54,7 @@ enum {
   ORB_CLASS_BASE,         // s0: the expression qualifying class expr::Foo / module expr::Foo (not a constant): checked as MRI's
   ORB_INVALID_YIELD,      // s0: a yield in a class body of eval'd code (Prism allows it there): MRI's SyntaxError
   ORB_SCLASS_RETURN,      // s0: a return in class << obj inside a def, s1: that class << obj, s2: its arguments; flags 1: one plain argument
+  ORB_REFINED_BLOCK_ARG,  // s0: x of f(&x) in a source calling using: converted by x.to_proc in the caller's frame
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

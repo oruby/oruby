@@ -35,6 +35,7 @@ typedef struct {
   int in_class; /* scope_visit: directly in a class, module or sclass body */
   const pm_node_t *ret_sclass; /* scope_visit: the class << obj in a def a return leaves */
   int32_t first_stmt; /* the program's first statement (ORB_BEGIN_BLOCK) */
+  bool has_using; /* the source calls using (ORB_REFINED_BLOCK_ARG) */
 } orb_scan;
 
 static void
@@ -549,6 +550,17 @@ visit(const pm_node_t *node, void *data)
       r = add(sc, ORB_LITERAL_FREEZE);
       span(r, 0, node);
       span(r, 1, call->receiver);
+    }
+    /* f(&x) in a source that activates refinements: x.to_proc is called in
+       the caller's frame, which sees them (mruby's VM converts unrefined)
+       (ORB_REFINED_BLOCK_ARG) */
+    if (sc->has_using && call->block && PM_NODE_TYPE(call->block) == PM_BLOCK_ARGUMENT_NODE) {
+      const pm_node_t *x = ((const pm_block_argument_node_t *)call->block)->expression;
+      if (x && PM_NODE_TYPE(x) != PM_SYMBOL_NODE && PM_NODE_TYPE(x) != PM_NIL_NODE &&
+          PM_NODE_TYPE(x) != PM_LOCAL_VARIABLE_READ_NODE) {
+        r = add(sc, ORB_REFINED_BLOCK_ARG);
+        span(r, 0, x);
+      }
     }
     /* lambda(&pr): MRI takes a lambda only from a literal block, which
        mruby cannot tell from a block argument (ORB_LAMBDA_BLOCK_ARG) */
@@ -1157,6 +1169,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
     sc.nonutf8 = en && strcmp(en, "UTF-8") != 0;
   }
   sc.first_stmt = -1;
+  sc.has_using = has_bytes(src, len, "using", 5);
   if (root && PM_NODE_TYPE(root) == PM_PROGRAM_NODE) {
     const pm_statements_node_t *st = ((const pm_program_node_t *)root)->statements;
     if (st && st->body.size > 0) sc.first_stmt = (int32_t)st->body.nodes[0]->location.start;
