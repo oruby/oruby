@@ -811,6 +811,30 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 	nodeCls.DefineMethod("dup", dupFn, mrb.ArgsOpt(2))
 	nodeCls.DefineMethod("clone", dupFn, mrb.ArgsOpt(2))
 
+	nodeCls.DefineMethod("initialize_copy_with_args", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs()
+		other, ok := getDOMNode(mrb, args.Item(0))
+		if !ok {
+			return mrb.ETypeError().Raise("expected Nokogiri::XML::Node")
+		}
+		deep := true
+		if args.Len() >= 2 && !args.Item(1).IsNil() {
+			if args.Item(1).IsInt() {
+				deep = args.Item(1).Int() != 0
+			} else {
+				deep = args.Item(1).Bool()
+			}
+		}
+		targetDoc := other.doc
+		if args.Len() >= 3 && !args.Item(2).IsNil() {
+			if d, ok := getDOMNode(mrb, args.Item(2)); ok {
+				targetDoc = d
+			}
+		}
+		rb.Set(mrb, self, other.clone(deep, targetDoc))
+		return self
+	}, mrb.ArgsReq(1)|mrb.ArgsOpt(2))
+
 	// Namespaces
 	nodeCls.DefineMethod("namespace", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
@@ -1519,6 +1543,26 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		d.removeNamespacesRecursive()
 		return self
 	}, mrb.ArgsNone())
+
+	docCls.DefineMethod("create_entity", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		d, _ := getDOMNode(mrb, self)
+		args := mrb.GetArgs()
+		name := args.Item(0).String()
+		pubID, sysID, content := "", "", ""
+		if args.Len() >= 3 && !args.Item(2).IsNil() {
+			pubID = args.Item(2).String()
+		}
+		if args.Len() >= 4 && !args.Item(3).IsNil() {
+			sysID = args.Item(3).String()
+		}
+		if args.Len() >= 5 && !args.Item(4).IsNil() {
+			content = args.Item(4).String()
+		}
+		ent := newNode(d, EntityDecl, name, content)
+		ent.pubID = pubID
+		ent.sysID = sysID
+		return wrapNode(mrb, ent)
+	}, mrb.ArgsReq(1)|mrb.ArgsOpt(4))
 
 	// Suppress unused warning on html4/html5 fragment classes
 	_ = html4FragCls

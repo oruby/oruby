@@ -661,6 +661,26 @@ module Nokogiri
         fragment(src).children
       end
 
+      def coerce(data)
+        case data
+        when XML::NodeSet
+          return data
+        when XML::DocumentFragment
+          return data.children
+        when String
+          return fragment(data).children
+        when Document, XML::Attr
+          # unacceptable
+        when XML::Node
+          return data
+        end
+        raise ArgumentError, "Requires a Node, NodeSet or String argument, and cannot accept a #{data.class}."
+      end
+
+      def safe_process_xinclude(options = nil)
+        do_xinclude(options)
+      end
+
       def to_str
         content
       end

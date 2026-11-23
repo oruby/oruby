@@ -124,6 +124,22 @@ raise "related_class frag" unless ldoc.related_class("DocumentFragment") == MyLo
 raise "subclass fragment" unless ldoc.fragment("<p>hi</p>").is_a?(MyLoofah::HTML5::DocumentFragment)
 raise "related_class builder" unless MyLoofah::HTML5::Builder.new.related_class("Document") == MyLoofah::HTML5::Document
 raise "related_class sax" unless Nokogiri::XML::SAX::Parser.new.related_class("Document") == Nokogiri::XML::SAX::Document
+
+# Final 4 methods: coerce, initialize_copy_with_args, safe_process_xinclude, create_entity
+coerced = xdoc.root.coerce("<x/>")
+raise "coerce string" unless coerced.is_a?(Nokogiri::XML::NodeSet) && coerced.first.name == "x"
+raise "coerce node" unless xdoc.root.coerce(xdoc.root) == xdoc.root
+bad_coerce = false
+begin
+  xdoc.root.coerce(xdoc)
+rescue ArgumentError
+  bad_coerce = true
+end
+raise "coerce reject doc" unless bad_coerce
+
+ent = xdoc.create_entity("copy", 1, nil, nil, "(c)")
+raise "create_entity" unless ent.name == "copy" && ent.node_type == Nokogiri::XML::Node::ENTITY_DECL
+raise "safe_process_xinclude" unless xdoc.safe_process_xinclude == xdoc
 `)
 	if err != nil {
 		t.Fatalf("entrypoints/parity test failed: %v", err)
