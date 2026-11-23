@@ -320,6 +320,25 @@ module Kernel
       raise TypeError, "can't convert #{c} into Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
     end
 
+    # class expr::Foo (ORB_CLASS_BASE): the base a class or module is
+    # defined in, which mruby would take nil for none
+    def __oruby_class_base(base)
+      return base if Module === base
+      shown = begin
+                base.inspect
+              rescue NoMethodError
+                ::Kernel.instance_method(:inspect).bind_call(base)
+              end
+      raise TypeError, "#{shown} is not a class/module"
+    end
+
+    # lambda(&x) (ORB_LAMBDA_BLOCK_ARG): MRI takes a lambda only from a
+    # literal block; other objects go on to their #to_proc
+    def __oruby_lambda_arg(x)
+      raise ArgumentError, "the lambda method requires a literal block" if Proc === x && !x.lambda?
+      x
+    end
+
     # super with implicit arguments outside a def (ORB_ZSUPER_NODEF): meth
     # is the __method__ of the block it was written in
     def __oruby_zsuper(meth)

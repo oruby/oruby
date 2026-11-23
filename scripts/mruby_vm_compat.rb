@@ -227,7 +227,7 @@ module ORubyVMCompat
       if (qualified && (mrb_class_p(base) || mrb_module_p(base) || mrb_sclass_p(base)) &&
           (mrb_const_flags(mrb, mrb_class_ptr(base), id) & MRB_CONST_PRIVATE)) {
         if (!mrb_nil_p(super) && !mrb_class_p(super)) {
-          mrb_raisef(mrb, E_TYPE_ERROR, "superclass must be a Class (%!v given)", super);
+          mrb_raisef(mrb, E_TYPE_ERROR, "superclass must be a Class (%T given)", super);
         }
         mrb_value value = mrb_vm_const_get_path(mrb, base, id);
         if (!mrb_class_p(value)) mrb_raisef(mrb, E_TYPE_ERROR, "%!v is not a class", value);
@@ -341,6 +341,30 @@ module ORubyVMCompat
       "      if (svar_own_scope_p(p) || (MRB_PROC_SCOPE_P(p) && MRB_PROC_ENV(p) == CI_ENV(ci))) {\n")
     strcat_private_to_s(source)
     class_block_return(source)
+    gvar_uninitialized_warning(source)
+    # a module method bound to an unrelated receiver runs under an ICLASS whose
+    # superclass is the receiver's class (mruby-method's mcall): self is a kind
+    # of that class
+    replace(source, "      if (!mrb_obj_is_kind_of(mrb, recv, target_class)) {\n      super_typeerror:",
+      "      if (!mrb_obj_is_kind_of(mrb, recv, target_class) &&\n" \
+      "          !(target_class->tt == MRB_TT_ICLASS && target_class->super && mrb_obj_is_kind_of(mrb, recv, target_class->super))) {\n" \
+      "      super_typeerror:")
+  end
+
+  # reading a global variable never assigned warns in verbose mode, as CRuby;
+  # the test runs only for a nil value
+  def self.gvar_uninitialized_warning(source)
+    replace(source, "      mrb_value val = mrb_gv_get(mrb, irep->syms[b]);\n      ci = mrb->c->ci;\n", <<~'C'.gsub(/^/, "      "))
+      mrb_value val = mrb_gv_get(mrb, irep->syms[b]);
+      /* not for $g ||= v, whose read is followed by its test (CRuby checks defined?) */
+      if (mrb_unlikely(mrb_nil_p(val)) && ci->pc[0] != OP_JMPIF && mrb_true_p(mrb_gv_get(mrb, MRB_GVSYM(VERBOSE))) &&
+          !mrb_gv_defined(mrb, irep->syms[b]) &&
+          mrb_respond_to(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_warn_here))) {
+        mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_warn_here), 1,
+                       mrb_format(mrb, "global variable '%n' not initialized", irep->syms[b]));
+      }
+      ci = mrb->c->ci;
+    C
   end
 
   # return in a block whose home is a class body (an OP_EXEC frame: no method
@@ -419,6 +443,12 @@ module ORubyVMCompat
              mrb_ident_p(name+1, len-1);
     C
     metaclass_class(source)
+    bop_redefined_warning(source)
+    prepend_fixes(source)
+    # the message names the class: a BasicObject superclass has no #inspect
+    # (go-mrb.c's classdef_fix gives MRI's words)
+    replace(source, '      mrb_raisef(mrb, E_TYPE_ERROR, "superclass must be a Class (%!v given)", super);',
+      '      mrb_raisef(mrb, E_TYPE_ERROR, "superclass must be a Class (%T given)", super);')
   end
 
   # The class of a metaclass, as MRI's meta^n chain: mruby gives every new
@@ -526,6 +556,44 @@ module ORubyVMCompat
   def self.kind_of_mt(source)
     replace(source, '    if (cl == c || cl->mt == c->mt)',
       '    if (cl == c || (cl->tt == MRB_TT_ICLASS && cl->c == c) || (cl->mt && cl->mt == c->mt))')
+    # a conversion method's wrong result (&obj's #to_proc, ...): CRuby's message
+    replace(source, '    mrb_raisef(mrb, E_TYPE_ERROR, "%v cannot be converted to %s by #%n", val, tname, method);',
+      '    mrb_raisef(mrb, E_TYPE_ERROR, "can\'t convert %T into %s (%T#%n gives %T)", val, tname, val, method, v);')
+  end
+
+  # Module#dup of a prepended module: the copy keeps the prepended chain it
+  # was given, whose origin stands for the copy (the last line put the
+  # original's chain back). prepend: a module already further up (included
+  # with another module's prepend) is prepended again, as CRuby checks only
+  # the class's own prepended part, up to its origin.
+  def self.prepend_fixes(source)
+    replace(source, "    c1->super = mrb_class_ptr(mrb_obj_dup(mrb, mrb_obj_value(c0)));\n    c1->super->flags |= MRB_FL_CLASS_IS_ORIGIN;\n  }",
+      "    c1->super = mrb_class_ptr(mrb_obj_dup(mrb, mrb_obj_value(c0)));\n    c1->super->flags |= MRB_FL_CLASS_IS_ORIGIN;\n" \
+      "    c1->super->c = dc;\n    mrb_field_write_barrier(mrb, (struct RBasic*)c1->super, (struct RBasic*)dc);\n  }")
+    replace(source, "  dc->super = sc->super;\n  dc->flags = sc->flags;\n  dc->frozen = 0;\n}",
+      "  if (!(sc->flags & MRB_FL_CLASS_IS_PREPENDED)) dc->super = sc->super;\n  dc->flags = sc->flags;\n  dc->frozen = 0;\n}")
+    replace(source, "  void *klass_mt = find_origin(c)->mt;\n",
+      "  void *klass_mt = find_origin(c)->mt;\n  mrb_bool prepending = !search_super && ins_pos == c;\n")
+    replace(source, "    while (p) {\n      if (c == p) original_seen = TRUE;\n",
+      "    while (p) {\n      if (c == p) original_seen = TRUE;\n      if (prepending && (p->flags & MRB_FL_CLASS_IS_ORIGIN)) break;\n")
+  end
+
+  # CRuby's performance warning when an optimised operator is redefined;
+  # Kernel#warn drops it unless Warning[:performance] is on
+  def self.bop_redefined_warning(source)
+    replace(source, "  else {\n    mrb->bop_redefined |= 1u << slot;\n  }\n}", <<~'C'.chomp)
+      else {
+        mrb_bool was = (mrb->bop_redefined & (1u << slot)) != 0;
+        mrb->bop_redefined |= 1u << slot;
+        mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+        if (!was && c && mrb_respond_to(mrb, kernel, MRB_SYM(__oruby_warn_here))) {
+          mrb_value msg = mrb_format(mrb, "Redefining '%C#%n' disables interpreter and JIT optimizations",
+                                     bop_class(mrb, slot), bop_mid(slot));
+          mrb_funcall_id(mrb, kernel, MRB_SYM(__oruby_warn_here), 2, msg, mrb_symbol_value(MRB_SYM(performance)));
+        }
+      }
+    }
+    C
   end
 
   # Object#freeze: a metaclass's inherited class is not its own to freeze
@@ -547,6 +615,8 @@ module ORubyVMCompat
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     replace(source, "  if (klass && (klass->tt == MRB_TT_SCLASS)) {",
       "  if (klass && klass->tt == MRB_TT_SCLASS && oruby_own_sclass_p(mrb, mrb_basic_ptr(obj))) {")
+    # the hook stays private, as class.c defines it and CRuby has it
+    replace(source, "MRB_SYM(method_removed), MRB_ARGS_REQ(1)),", "MRB_SYM(method_removed), MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),")
   end
 
   def self.defined_queries(source)
@@ -715,6 +785,16 @@ module ORubyVMCompat
       if (nt == PM_INTERPOLATED_SYMBOL_NODE) {
         if (val) {
     C
+    # a variable-like call (no receiver, arguments or parentheses) is the n=0
+    # form of OP_SSEND, not OP_SSEND0: go-mrb.c's raise hook tells it from
+    # foo() for MRI's NameError "undefined local variable or method"
+    replace(source, "    if (!blk && n == 0 && nk == 0) {\n      genop_2(s, OP_SSEND0, cursp(), new_sym(s, sym));\n    }",
+      "    if (!blk && n == 0 && nk == 0) {\n" \
+      "      if (PM_NODE_TYPE_P(tree, PM_CALL_NODE) && PM_NODE_FLAG_P(tree, PM_CALL_NODE_FLAGS_VARIABLE_CALL))\n" \
+      "        genop_3(s, OP_SSEND, cursp(), new_sym(s, sym), 0);\n" \
+      "      else\n" \
+      "        genop_2(s, OP_SSEND0, cursp(), new_sym(s, sym));\n" \
+      "    }")
   end
 
   def self.chilled_mutation(source)
@@ -981,6 +1061,15 @@ module ORubyVMCompat
         mrb_raisef(mrb, E_TYPE_ERROR, "wrong argument type %C (expected Class or Module)", mrb_obj_class(mrb, target));
       }
     C
+    # CRuby warns that a module's own ancestors are not imported
+    replace(source, "    arg.from = mrb_class_ptr(argv[i]);\n", <<~'C'.gsub(/^/, "    "))
+      arg.from = mrb_class_ptr(argv[i]);
+      if ((arg.from->super || (arg.from->flags & MRB_FL_CLASS_IS_PREPENDED)) &&
+          mrb_respond_to(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_warn_here))) {
+        mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_warn_here), 1,
+          mrb_format(mrb, "%v has ancestors, but Refinement#import_methods doesn't import their methods", argv[i]));
+      }
+    C
     replace(source, '  struct RProc *np = MRB_OBJ_ALLOC(mrb, MRB_TT_PROC, mrb->proc_class);',
       '  struct RProc *np = MRB_OBJ_ALLOC(mrb, MRB_TT_PROC, mrb_obj_class(mrb, self));')
     replace(source, '  if (MRB_PROC_CFUNC_P(p) || MRB_PROC_ALIAS_P(p) || (MRB_PROC_SCOPE_P(p) && MRB_PROC_STRICT_P(p))) {',
@@ -1123,6 +1212,20 @@ module ORubyVMCompat
       }
       owner = visibility_owner;
       while ((owner)->tt == MRB_TT_ICLASS)
+    C
+    # a module method bound to a receiver whose ancestry lacks the module:
+    # as in CRuby, it runs as if the module came first, so a super goes on
+    # from the receiver's class (an ICLASS made as include_class_new makes one)
+    replace(source, "    if (ic) tc = ic;\n  }\n", <<~'C'.gsub(/^/, "    "))
+      if (ic) tc = ic;
+      else {
+        struct RClass *bc = MRB_OBJ_ALLOC(mrb, MRB_TT_ICLASS, mrb->class_class);
+        bc->mt = tc->mt;
+        bc->c = tc;
+        bc->super = mrb_class(mrb, recv);
+        tc = bc;
+      }
+    }
     C
   end
 

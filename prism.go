@@ -645,6 +645,7 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 	}
 	cpathWraps := map[[2]int]*masgnPost{}   // an assignment's writes after it (ORB_MASGN_CPATH, _NESTED)
 	sclassReturnTags := map[[2]int]string{} // class << obj with returns: its catch tag (ORB_SCLASS_RETURN)
+	beginAfter := -1                        // the end of a BEGIN that is the first statement (ORB_BEGIN_BLOCK)
 	var parseWarns []string                 // ORB_PARSE_WARN, printed by one call at the first statement
 	warnAt := -1
 	for i := 0; i < len(recs); i++ {
@@ -685,11 +686,19 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 			// BEGIN { b } runs first in its code unit: a one-line body moves to
 			// the program's first statement (FIFO, no line shifts); a longer one
 			// stays where it is, as begin b end
-			if at := s[3]; at >= 0 && at <= s[0] && !bytes.Contains(src[s[0]:e[2]], []byte("\n")) {
+			// (after a BEGIN that is the first statement, which stays)
+			if at := s[3]; at >= 0 && at < s[0] && !bytes.Contains(src[s[0]:e[2]], []byte("\n")) {
 				bs, be := e[1], s[2]
-				r.add(at, at, func(r *rewriter) string { return "begin " + r.render(bs, be) + " end; " })
+				if beginAfter >= 0 {
+					r.addAfter(beginAfter, beginAfter, func(r *rewriter) string { return "; begin " + r.render(bs, be) + " end" })
+				} else {
+					r.add(at, at, func(r *rewriter) string { return "begin " + r.render(bs, be) + " end; " })
+				}
 				r.add(s[0], e[2], func(*rewriter) string { return "nil" })
 				break
+			}
+			if s[3] == s[0] {
+				beginAfter = e[2]
 			}
 			r.add(s[0], e[1], func(*rewriter) string { return "begin " })
 			r.add(s[2], e[2], func(*rewriter) string { return " end" })

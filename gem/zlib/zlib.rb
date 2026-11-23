@@ -847,3 +847,12 @@ module Zlib
     data
   end
 end
+
+module Zlib
+  # MRI's checksum functions are module functions: private instance methods
+  # too, for code that includes Zlib
+  %i[adler32 adler32_combine crc32 crc32_combine zlib_version].each do |name|
+    define_method(name) { |*args| Zlib.__send__(name, *args) }
+    private name
+  end
+end

@@ -223,7 +223,8 @@ static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value 
   ptrdiff_t n = top + 1;
   bt_pos *pos = (bt_pos*)mrb_malloc(mrb, sizeof(bt_pos) * (n > 0 ? n : 1));
   ptrdiff_t *below = (ptrdiff_t*)mrb_malloc(mrb, sizeof(ptrdiff_t) * (n > 0 ? n : 1));
-  bt_data *bt = (bt_data*)mrb_malloc(mrb, sizeof(bt_data) + sizeof(bt_frame) * (n > 0 ? n : 1));
+  /* each frame, and the C method frame a reused one stands for (2n) */
+  bt_data *bt = (bt_data*)mrb_malloc(mrb, sizeof(bt_data) + sizeof(bt_frame) * (n > 0 ? 2 * n : 1));
   mrb_int raw = 0, len = 0;
   struct RClass *last_owner = NULL;
 
@@ -287,6 +288,36 @@ static bt_data *bt_walk(mrb_state *mrb, ptrdiff_t top, mrb_int *rawp, mrb_value 
       last_owner = f.owner;
     }
     bt->frames[len++] = f;
+    /* instance_exec, instance_eval, class_exec run the block in their own
+       frame (mrb_object_exec, mrb_exec_irep): MRI shows the C method's frame
+       below the block's, at the line that called it */
+    if (ci->proc && !MRB_PROC_CFUNC_P(ci->proc) && !MRB_PROC_SCOPE_P(ci->proc) && ci->mid &&
+        MRB_CI_GIVEN_CLASS_P(ci) && ci->stack && !f.internal) {
+      struct RClass *oc = mrb_class(mrb, ci->stack[0]);
+      mrb_method_t m = mrb_method_search_vm(mrb, &oc, ci->mid);
+      if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_CFUNC_P(m)) {
+        bt_frame cf;
+        memset(&cf, 0, sizeof(cf));
+        cf.kind = BT_METHOD;
+        cf.mid = ci->mid;
+        cf.owner = bt_owner(oc);
+        cf.internal = 1;
+        ptrdiff_t cat = (i > 0) ? below[i-1] : -1;
+        if (cat >= 0 && pos[cat].irep && pos[cat].irep->refcnt < UINT16_MAX) {
+          cf.irep = pos[cat].irep;
+          cf.idx = pos[cat].idx;
+          if (cf.irep->flags & ORUBY_IREP_EVAL) {
+            cf.eval = (cf.irep->flags & ORUBY_IREP_RETAINED_SOURCE) ? 1 : 2;
+          }
+          mrb_irep_incref(mrb, (mrb_irep*)cf.irep);
+        }
+        if (cf.owner && cf.owner != last_owner) {
+          mrb_ary_push(mrb, owners, mrb_obj_value(cf.owner));
+          last_owner = cf.owner;
+        }
+        bt->frames[len++] = cf;
+      }
+    }
   }
   bt->len = len;
   mrb_free(mrb, pos);

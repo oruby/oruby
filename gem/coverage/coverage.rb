@@ -131,7 +131,7 @@ module Coverage
       code
     end
 
-    def __oruby_hit(fid, line, inc, dec, m, recv = nil)
+    def __oruby_hit(fid, line, inc, dec, m, recv = nil, callee = nil)
       return nil unless @state == :running && (f = @by_id[fid])
       if line >= 0 && (lines = f[:lines])
         if (once = f[:oneshot])
@@ -145,24 +145,27 @@ module Coverage
       end
       f[:counters][inc] += 1 if inc >= 0
       f[:counters][dec] -= 1 if dec >= 0
-      __oruby_called(f, m, recv) if m >= 0
+      __oruby_called(f, m, recv, callee) if m >= 0
       nil
     end
 
     # a call of method m on recv: counted for the owner of the copy that ran
-    # (module_function and define_method make copies MRI counts apart)
-    def __oruby_called(f, m, recv)
+    # (module_function and define_method make copies MRI counts apart; a
+    # copy under another name is told by the name it was called by)
+    def __oruby_called(f, m, recv, callee = nil)
       owners = (f[:owners][m] ||= [])
-      entry = owners.find { |o, _| o === recv }
+      name = f[:methods][m][0]
+      callee ||= name
+      entry = owners.find { |o, _, c| (c || name) == callee && o === recv }
       unless entry
-        name = f[:methods][m][0]
         owner = begin
-                  recv.singleton_class.instance_method(name).owner
+                  recv.singleton_class.instance_method(callee).owner
                 rescue NameError, TypeError
                   Module === recv ? recv.singleton_class : recv.class
                 end
         entry = owners.find { |o, _| o.equal?(owner) }
         owners << (entry = [owner, 0]) unless entry
+        entry[2] = callee if callee != name
       end
       entry[1] += 1
     end

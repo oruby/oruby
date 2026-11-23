@@ -246,7 +246,28 @@ static void set_own_visibility(mrb_state *mrb, struct RClass *c, mrb_sym mid, un
   mrb_define_method_raw(mrb, c, mid, m);
 }
 
-static mrb_value vis_module_function(mrb_state *mrb, mrb_value self) { return vis_call(mrb, self, 3); }
+/* module_function names: the module's copy is a singleton method in MRI, so
+   singleton_method_added runs for it (mruby's copies them hook-free); the
+   instance method only turning private calls no method_added */
+static mrb_value vis_module_function(mrb_state *mrb, mrb_value self) {
+  mrb_int argc = mrb_get_argc(mrb);
+  const mrb_value *argv = mrb_get_argv(mrb);
+  mrb_value names = mrb_ary_new(mrb);
+  for (mrb_int i = 0; i < argc; i++) {
+    if (mrb_array_p(argv[i])) mrb_ary_concat(mrb, names, argv[i]);
+    else mrb_ary_push(mrb, names, argv[i]);
+  }
+  mrb_value r = vis_call(mrb, self, 3);
+  if (mrb_type(self) != MRB_TT_MODULE) return r;
+  struct RClass *sc = mrb_class_ptr(self)->c;
+  if (!sc || sc->tt != MRB_TT_SCLASS) return r;
+  for (mrb_int i = 0; i < RARRAY_LEN(names); i++) {
+    mrb_value n = RARRAY_PTR(names)[i];
+    if (mrb_symbol_p(n)) mrb_method_added(mrb, sc, mrb_symbol(n));
+    else if (mrb_string_p(n)) mrb_method_added(mrb, sc, mrb_intern_str(mrb, n));
+  }
+  return r;
+}
 
 // Strings carry mruby's own UTF-8/binary tag; any other encoding (core_ext's
 // Encoding) is kept in a hidden instance variable, which instance_variables
@@ -397,6 +418,9 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
           (src_contains(s, len, ",") && src_contains(s, len, "=") &&
            (src_contains(s, len, ".") || src_contains(s, len, "["))) ||
           src_contains(s, len, "freeze") ||
+          /* yield in a class body (ORB_INVALID_YIELD), lambda(&x), `cmd` */
+          src_contains(s, len, "yield") || src_contains(s, len, "lambda") ||
+          src_contains(s, len, "`") || src_contains(s, len, "%x") ||
           src_bare_it(s, len) || len > 255) {
         mrb_value rewritten = mrb_funcall_id(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__preprocess_ruby), 1, argv[0]);
         argv = (mrb_value *)mrb_get_argv(mrb);
@@ -909,15 +933,29 @@ static mrb_value chilled_warning_refresh_m(mrb_state *mrb, mrb_value self) {
   return mrb_nil_value();
 }
 
+void _orb_setproctitle(const char *s, size_t n); /* go-proctitle.c */
+
 static void gv_slot_set(mrb_state *mrb, int i, mrb_value v) {
   mrb_value kernel = mrb_obj_value(mrb->kernel_module);
   mrb_value name = mrb_symbol_value(mrb_intern_cstr(mrb, gv_names[i]));
+  /* $0 = title in Ruby code (its OP_SETGV just ran, or a method such as
+     Process.setproctitle called from Ruby): the process title, as MRI's;
+     not the value the runner sets from Go between runs */
+  mrb_bool retitle = FALSE;
+  if (strcmp(gv_canon[i], "$0") == 0) {
+    mrb_callinfo *ci = mrb->c->ci;
+    const struct RProc *p = ci->proc;
+    if (ci > mrb->c->cibase) retitle = TRUE;
+    else if (p && !MRB_PROC_CFUNC_P(p) && ci->pc && p->body.irep &&
+             ci->pc - 3 >= p->body.irep->iseq && ci->pc[-3] == OP_SETGV) retitle = TRUE;
+  }
   if (gv_kinds[i] != 2 && !gv_plain_value(mrb, gv_canon[i], v)) {
     mrb_sym check = MRB_SYM(__oruby_gvcheck);
     /* until core_ext defines the checks, the startup values are stored as is */
     if (mrb_respond_to(mrb, kernel, check)) v = mrb_funcall_id(mrb, kernel, check, 2, name, v);
   }
   mrb_hash_set(mrb, gv_storage(mrb), mrb_symbol_value(mrb_intern_cstr(mrb, gv_canon[i])), v);
+  if (retitle && mrb_string_p(v)) _orb_setproctitle(RSTRING_PTR(v), (size_t)RSTRING_LEN(v));
   if (strcmp(gv_canon[i], "$VERBOSE") == 0) {
     oruby_chilled_warning_refresh(mrb, mrb_gv_get(mrb, MRB_GVSYM(VERBOSE)));
   }
@@ -2862,7 +2900,30 @@ static void kw_error_fix(mrb_state *mrb, struct RObject *exc, mrb_bool missing) 
   mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
 }
 
+/* a missing method called as a variable (`foo`: the n=0 OP_SSEND the code
+   generator emits for one, OP_SSEND0 being foo()): MRI's NameError
+   "undefined local variable or method" */
+static mrb_bool vcall_fix(mrb_state *mrb, struct RObject *exc) {
+  mrb_callinfo *ci = mrb->c->ci;
+  if (ci > mrb->c->cibase && (!ci->proc || MRB_PROC_CFUNC_P(ci->proc))) ci--; /* method_missing's frame */
+  const struct RProc *p = ci->proc;
+  if (!p || MRB_PROC_CFUNC_P(p) || !ci->pc) return FALSE;
+  const mrb_irep *irep = p->body.irep;
+  const mrb_code *pc = ci->pc;
+  if (pc - irep->iseq < 4 || pc[-4] != OP_SSEND || pc[-1] != 0 || pc[-2] >= irep->slen) return FALSE;
+  mrb_value name = mrb_obj_iv_get(mrb, exc, MRB_SYM(name));
+  if (!mrb_symbol_p(name) || mrb_symbol(name) != irep->syms[pc[-2]]) return FALSE;
+  mrb_value mesg = mrb_exc_mesg_get(mrb, (struct RException*)exc);
+  if (!mesg_prefix(mesg, "undefined method ")) return FALSE;
+  exc->c = E_NAME_ERROR;
+  mrb_value s = mrb_str_new_lit(mrb, "undefined local variable or method ");
+  mrb_str_cat(mrb, s, RSTRING_PTR(mesg) + 17, RSTRING_LEN(mesg) - 17);
+  mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
+  return TRUE;
+}
+
 void _orb_frozen_fix(mrb_state *mrb, struct RObject *exc) {
+  if (exc->c == E_NOMETHOD_ERROR && vcall_fix(mrb, exc)) return;
   if (exc->c == E_NOMETHOD_ERROR) {
     /* catch without a block: mruby's (bytecode, so no C pre-check) calls
        nil; MRI's LocalJumpError */
@@ -3467,6 +3528,9 @@ static mrb_value chk_run(mrb_state *mrb, mrb_value self, int i) {
   }
   case CHK_NAME_BYTES:
     for (mrb_int k = 0; k < mrb_get_argc(mrb); k++) {
+      /* a #to_str name is converted here, in place, so its bytes are checked
+         too; the name wrapper then finds a String (one #to_str call) */
+      if (k < 2 && mrb->c->ci->n < 15) name_arg(mrb, (mrb_value *)&mrb_get_argv(mrb)[k]);
       mrb_value a = mrb_get_argv(mrb)[k];
       if (mrb_string_p(a) && !RSTR_BINARY_P(mrb_str_ptr(a)) &&
           !utf8_valid((const unsigned char *)RSTRING_PTR(a), RSTRING_LEN(a)))

@@ -28,7 +28,7 @@ func init() {
 		mrb.DefineSingletonMethod(env, "clear", envClear, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "to_s", envToS, mrb.ArgsNone())
 
-		mrb.ConstSet(mrb.KernelModule(), oruby.Sym_ENV, env)
+		mrb.ConstSet(mrb.ObjectClass(), oruby.Sym_ENV, env) // Object::ENV, as MRI
 		//mrb.DefineGlobalConst("ENV", env)
 		rb.LoadRuby(mrb, "env.rb", envRb)
 		return nil

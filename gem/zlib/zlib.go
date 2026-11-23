@@ -24,7 +24,8 @@ func init() {
 		mod.DefineClassMethod("__crc32", checksum(native.CRC32), mrb.ArgsReq(2))
 		mod.DefineClassMethod("__adler32_combine", combine(native.Adler32Combine), mrb.ArgsReq(3))
 		mod.DefineClassMethod("__crc32_combine", combine(native.CRC32Combine), mrb.ArgsReq(3))
-		mod.DefineClassMethod("crc_table", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		// a module function, as MRI's (a private instance method too)
+		mod.DefineModuleFunction("crc_table", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 			return mrb.Value(native.CRCTable())
 		}, mrb.ArgsNone())
 		mod.DefineClassMethod("__gunzip", gunzipMember, mrb.ArgsReq(1))

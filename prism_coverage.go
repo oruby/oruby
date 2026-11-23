@@ -102,7 +102,7 @@ func (sc *CoverageScan) Instrument(src []byte, fid int) []byte {
 		call := "::Coverage.__oruby_hit(" + f + "," + off(line(c), sc.LineOff) + "," + off(c.T, sc.CounterOff) + "," +
 			off(c.F, sc.CounterOff) + "," + off(c.M, sc.MethodOff)
 		if c.M >= 0 {
-			call += ",self" // the receiver: which copy of the method ran
+			call += ",self,__callee__" // the receiver and name: which copy of the method ran
 		}
 		return call + ")"
 	}

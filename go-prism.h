@@ -12,7 +12,7 @@ enum {
   ORB_UNDEF_DYNAMIC,      // s0: node; names follow as ORB_LIST_ITEM
   ORB_RESCUE_SAFE_NAV,    // s0: reference (a&.b)
   ORB_FOR_SAFE_NAV,       // s0: index, s1: collection, s2: do keyword
-  ORB_BEGIN_BLOCK,        // s0: BEGIN, s1: {, s2: }
+  ORB_BEGIN_BLOCK,        // s0: BEGIN, s1: {, s2: }, s3: (zero width) the program's first statement
   ORB_FLIP_FLOP,          // s0: node, s1: left, s2: right; flags 1: ..., 2/4: left/right integer
   ORB_CPATH_OR_WRITE,     // s0: node, s1: parent, s2: name, s3: value, s4: operator
   ORB_CPATH_AND_WRITE,
@@ -49,6 +49,11 @@ enum {
   ORB_DSYM,               // s0: an interpolated :"…" (s1 its ':'), flags 1: a %I[] (s1 its "%I"): names checked as String#to_sym does
   ORB_ANON_ARG,           // s0: an anonymous *, **, & or ... argument in eval'd code; flags 1 rest, 2 keywords, 3 block, 4 all
   ORB_ZSUPER_NODEF,       // s0: a bare super with no def around it (a define_method or other block): MRI's run-time errors
+  ORB_LAMBDA_BLOCK_ARG,   // s0: x of lambda(&x): MRI's lambda takes a lambda only from a literal block
+  ORB_XSTRING_FROZEN,     // s0: `cmd` or %x(cmd) without interpolation, s1: its opening: called with a frozen String
+  ORB_CLASS_BASE,         // s0: the expression qualifying class expr::Foo / module expr::Foo (not a constant): checked as MRI's
+  ORB_INVALID_YIELD,      // s0: a yield in a class body of eval'd code (Prism allows it there): MRI's SyntaxError
+  ORB_SCLASS_RETURN,      // s0: a return in class << obj inside a def, s1: that class << obj, s2: its arguments; flags 1: one plain argument
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

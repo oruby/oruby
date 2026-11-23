@@ -31,7 +31,10 @@ typedef struct {
      statements before the last of a list, the last of a loop body */
   const pm_node_t **void_masgn;
   int nvoid, capvoid;
-  int in_def; /* zsuper_visit: defs around the node */
+  int in_def; /* scope_visit: defs around the node */
+  int in_class; /* scope_visit: directly in a class, module or sclass body */
+  const pm_node_t *ret_sclass; /* scope_visit: the class << obj in a def a return leaves */
+  int32_t first_stmt; /* the program's first statement (ORB_BEGIN_BLOCK) */
 } orb_scan;
 
 static void
@@ -138,31 +141,78 @@ has_bytes(const char *s, size_t len, const char *w, size_t wl)
 /* A bare super (implicit arguments) with no def around it, only blocks:
    mruby compiles it as super(), so a define_method body passed none and
    raised ArgumentError. MRI raises at run time (ORB_ZSUPER_NODEF). A class
-   body starts afresh: its blocks have no def either. */
+   body starts afresh: its blocks have no def either. The same walk gives
+   MRI's "END in method" parse warning. */
 static pm_visit_result_t
-zsuper_visit(const pm_node_t *node, void *data)
+scope_visit(const pm_node_t *node, void *data)
 {
   orb_scan *sc = (orb_scan *)data;
   switch (PM_NODE_TYPE(node)) {
-  case PM_DEF_NODE:
+  case PM_DEF_NODE: {
+    int saved_class = sc->in_class;
+    const pm_node_t *saved_sclass = sc->ret_sclass;
     sc->in_def++;
-    pm_visit_child_nodes(node, zsuper_visit, data);
+    sc->in_class = 0;
+    sc->ret_sclass = NULL;
+    pm_visit_child_nodes(node, scope_visit, data);
     sc->in_def--;
+    sc->in_class = saved_class;
+    sc->ret_sclass = saved_sclass;
     return PM_VISIT_SKIP;
+  }
   case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE: {
-    int saved = sc->in_def;
+    int saved = sc->in_def, saved_class = sc->in_class;
+    const pm_node_t *saved_sclass = sc->ret_sclass;
+    /* return in class << obj inside a def returns from the method
+       (ORB_SCLASS_RETURN); the walk keeps the sclass that owns it */
+    sc->ret_sclass = (PM_NODE_TYPE(node) == PM_SINGLETON_CLASS_NODE && sc->in_def > 0 && !sc->eval) ? node : NULL;
     sc->in_def = 0;
-    pm_visit_child_nodes(node, zsuper_visit, data);
+    sc->in_class = 1;
+    pm_visit_child_nodes(node, scope_visit, data);
     sc->in_def = saved;
+    sc->in_class = saved_class;
+    sc->ret_sclass = saved_sclass;
+    return PM_VISIT_SKIP;
+  }
+  case PM_BLOCK_NODE: case PM_LAMBDA_NODE: {
+    const pm_node_t *saved_sclass = sc->ret_sclass;
+    sc->ret_sclass = NULL;
+    pm_visit_child_nodes(node, scope_visit, data);
+    sc->ret_sclass = saved_sclass;
     return PM_VISIT_SKIP;
   }
   case PM_DEFINED_NODE:
     return PM_VISIT_SKIP; /* defined?(super) evaluates nothing */
+  case PM_POST_EXECUTION_NODE:
+    if (sc->in_def > 0 && !sc->eval) compile_warn(sc, node, "END in method; use at_exit", 0);
+    return PM_VISIT_DESCEND;
   case PM_FORWARDING_SUPER_NODE:
-    if (sc->in_def == 0) {
+    if (sc->in_def == 0 && !sc->eval) {
       orb_rec *r = add(sc, ORB_ZSUPER_NODEF);
       span(r, 0, node);
       return PM_VISIT_SKIP;
+    }
+    return PM_VISIT_DESCEND;
+  case PM_YIELD_NODE:
+    /* eval'd code is parsed as in a method, so Prism allows a yield in a
+       class body there; MRI's compiler rejects it (ORB_INVALID_YIELD) */
+    if (sc->eval && sc->in_class && sc->in_def == 0) {
+      orb_rec *r = add(sc, ORB_INVALID_YIELD);
+      span(r, 0, node);
+      return PM_VISIT_SKIP;
+    }
+    return PM_VISIT_DESCEND;
+  case PM_RETURN_NODE:
+    if (sc->ret_sclass) {
+      const pm_return_node_t *rn = (const pm_return_node_t *)node;
+      orb_rec *r = add(sc, ORB_SCLASS_RETURN);
+      span(r, 0, node);
+      span(r, 1, sc->ret_sclass);
+      if (rn->arguments) {
+        span(r, 2, (const pm_node_t *)rn->arguments);
+        const pm_node_list_t *l = &rn->arguments->arguments;
+        r->flags = (l->size == 1 && PM_NODE_TYPE(l->nodes[0]) != PM_SPLAT_NODE) ? 1 : 0;
+      }
     }
     return PM_VISIT_DESCEND;
   default:
@@ -500,6 +550,45 @@ visit(const pm_node_t *node, void *data)
       span(r, 0, node);
       span(r, 1, call->receiver);
     }
+    /* lambda(&pr): MRI takes a lambda only from a literal block, which
+       mruby cannot tell from a block argument (ORB_LAMBDA_BLOCK_ARG) */
+    if (call->block && PM_NODE_TYPE(call->block) == PM_BLOCK_ARGUMENT_NODE &&
+        call->message_loc.length == 6 && memcmp(sc->src + call->message_loc.start, "lambda", 6) == 0 &&
+        (!call->receiver || (PM_NODE_TYPE(call->receiver) == PM_CONSTANT_READ_NODE &&
+                             call->receiver->location.length == 6 &&
+                             memcmp(sc->src + call->receiver->location.start, "Kernel", 6) == 0))) {
+      const pm_node_t *x = ((const pm_block_argument_node_t *)call->block)->expression;
+      if (x && PM_NODE_TYPE(x) != PM_NIL_NODE) {
+        r = add(sc, ORB_LAMBDA_BLOCK_ARG);
+        span(r, 0, x);
+      }
+    }
+    break;
+  }
+  case PM_CLASS_NODE: case PM_MODULE_NODE: {
+    /* class expr::Foo: mruby takes a nil base for no base at all (it loads
+       nil for an unqualified class too); MRI raises (ORB_CLASS_BASE). A
+       constant base is looked up as before. */
+    const pm_node_t *cp = PM_NODE_TYPE(node) == PM_CLASS_NODE ? ((const pm_class_node_t *)node)->constant_path
+                                                             : ((const pm_module_node_t *)node)->constant_path;
+    if (cp && PM_NODE_TYPE(cp) == PM_CONSTANT_PATH_NODE) {
+      const pm_node_t *parent = ((const pm_constant_path_node_t *)cp)->parent;
+      if (parent && PM_NODE_TYPE(parent) != PM_CONSTANT_READ_NODE && PM_NODE_TYPE(parent) != PM_CONSTANT_PATH_NODE) {
+        r = add(sc, ORB_CLASS_BASE);
+        span(r, 0, parent);
+      }
+    }
+    break;
+  }
+  case PM_X_STRING_NODE: {
+    /* `cmd`, %x(cmd): MRI passes the method a frozen String
+       (ORB_XSTRING_FROZEN); a heredoc's opening is left alone */
+    pm_location_t o = ((const pm_x_string_node_t *)node)->opening_loc;
+    if (o.length >= 1 && (sc->src[o.start] == '`' || (o.length >= 3 && sc->src[o.start] == '%'))) {
+      r = add(sc, ORB_XSTRING_FROZEN);
+      span(r, 0, node);
+      lspan(r, 1, o);
+    }
     break;
   }
   case PM_ALIAS_METHOD_NODE: {
@@ -637,6 +726,7 @@ visit(const pm_node_t *node, void *data)
     lspan(r, 0, p->keyword_loc);
     lspan(r, 1, p->opening_loc);
     lspan(r, 2, p->closing_loc);
+    r->s[3] = r->e[3] = sc->first_stmt;
     break;
   }
   case PM_FLIP_FLOP_NODE: {
@@ -1066,9 +1156,17 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
     const char *en = pm_parser_encoding_name(parser);
     sc.nonutf8 = en && strcmp(en, "UTF-8") != 0;
   }
+  sc.first_stmt = -1;
+  if (root && PM_NODE_TYPE(root) == PM_PROGRAM_NODE) {
+    const pm_statements_node_t *st = ((const pm_program_node_t *)root)->statements;
+    if (st && st->body.size > 0) sc.first_stmt = (int32_t)st->body.nodes[0]->location.start;
+  }
   if (root && *errors == 0) pm_visit_node(root, visit, &sc);
   if (root && *errors == 0 && !sc.eval) pm_visit_node(root, toplevel_return_visit, &sc);
-  if (root && *errors == 0 && !sc.eval && has_bytes(src, len, "super", 5)) pm_visit_node(root, zsuper_visit, &sc);
+  if (root && *errors == 0 &&
+      (sc.eval ? has_bytes(src, len, "yield", 5)
+               : (has_bytes(src, len, "super", 5) || has_bytes(src, len, "END", 3) || has_bytes(src, len, "return", 6))))
+    pm_visit_node(root, scope_visit, &sc);
   /* the parse warnings MRI prints (mruby's compiler prints none), for
      prism.go to have the program print them as it starts: their texts in
      *msgs, NUL separated, one ORB_PARSE_WARN each */

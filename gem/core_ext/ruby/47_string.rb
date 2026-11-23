@@ -157,7 +157,24 @@ class String
   alias __oruby_mrb_upto upto
   def upto(max, exclusive = false, &block)
     return to_enum(:upto, max, exclusive) { nil } unless block
-    Kernel.__oruby_enc_concat(self, max) if String === max && !(max.ascii_only? && ascii_only?)
+    if String === max && !(max.ascii_only? && ascii_only?)
+      Kernel.__oruby_enc_concat(self, max)
+      # MRI's general case (rb_str_upto_each): by #succ until max, or until
+      # longer than max (mruby steps one non-ASCII character by codepoint)
+      n = self <=> max
+      return self if n > 0 || (exclusive && n == 0)
+      after_end = max.succ
+      current = dup
+      until current == after_end
+        nxt = (exclusive || current != max) ? current.succ : nil
+        yield current
+        break if nxt.nil?
+        current = nxt
+        break if exclusive && current == max
+        break if current.bytesize > max.bytesize || current.bytesize == 0
+      end
+      return self
+    end
     __oruby_mrb_upto(max, exclusive, &block)
   end
 end

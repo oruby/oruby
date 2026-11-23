@@ -93,13 +93,38 @@ module RbConfig
     'LIBRUBY_A' => 'liboruby-static.a',
     'LIBRUBY_SO' => 'liboruby.' + %q,
     'libdirname' => 'libdir',
+    # every extension oruby has is built in, none a dynamically loaded file
+    'EXTSTATIC' => 'static',
     'LIBPATHENV' => 'DYLD_LIBRARY_PATH'
   }
   # no frozen values (MRI's CONFIG is mutable, under --enable-frozen-string-literal too)
   CONFIG.each { |k, v| CONFIG[k] = v.dup if String === v && v.frozen? }
   TOPDIR = prefix
+  # MRI's unexpanded table; oruby's values hold no $(refs)
+  MAKEFILE_CONFIG = {}
+  CONFIG.each { |k, v| MAKEFILE_CONFIG[k] = String === v ? v.dup : v }
   def self.ruby
     CONFIG['bindir'] + '/' + CONFIG['ruby_install_name'] + CONFIG['EXEEXT']
+  end
+  # MRI's RbConfig.expand: the $(name) and ${name} references in val
+  # replaced by config's values, recursively
+  def self.expand(val, config = CONFIG)
+    newval = val.gsub(/\$\$|\$\(([^()]+)\)|\$\{([^{}]+)\}/) do
+      var = $&
+      if !(v = $1 || $2)
+        '$'
+      elsif key = config[v = v[/\A[^:]+(?=(?::(.*?)=(.*))?\z)/]]
+        pat, sub = $1, $2
+        config[v] = false
+        config[v] = expand(key, config)
+        key = key.gsub(/#{Regexp.quote(pat)}(?=\s|\z)/n) { sub } if pat
+        key
+      else
+        var
+      end
+    end
+    val.replace(newval) unless newval == val
+    val
   end
 end
 CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
@@ -181,6 +206,14 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		// C front ends in place of the hot methods the Ruby above redefines
 		// (go-fast.c): the common case answered in C, the rest in that Ruby
 		mrb.InstallFastPaths()
+		// MRI marks the default $LOAD_PATH entries, sitelibdir and after, with
+		// @gem_prelude_index (the path itself): RubyGems puts activated gems'
+		// paths before the first (Gem.load_path_insert_index). RUBYLIB's come
+		// earlier, -I's later; neither is marked.
+		mrb.Resolve("load") // $LOAD_PATH
+		if def := oruby.DefaultLoadPath(); len(def) > 0 {
+			mrb.Eval(fmt.Sprintf("if (i = $LOAD_PATH.index(%q)); $LOAD_PATH[i..].each { |pa| pa.instance_variable_set(:@gem_prelude_index, pa) unless pa.frozen? }; end", def[0]))
+		}
 		return nil
 	})
 }

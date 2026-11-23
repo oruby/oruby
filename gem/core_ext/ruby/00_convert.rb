@@ -31,8 +31,11 @@ module Kernel
     def __responds?(obj, meth)
       if ::Kernel === obj
         obj.respond_to?(meth, true)
-      else # BasicObject: no respond_to?
+      else # BasicObject: its own respond_to? when it defines one, as MRI
         klass = __oruby_lookup_class(obj)
+        if klass.method_defined?(:respond_to?) || klass.private_method_defined?(:respond_to?)
+          return obj.__send__(:respond_to?, meth, true)
+        end
         klass.method_defined?(meth) || klass.private_method_defined?(meth)
       end
     end
