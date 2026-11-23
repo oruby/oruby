@@ -1,4 +1,31 @@
 module Nokogiri
+  module ClassResolver
+    VALID_NAMESPACES = ["HTML", "HTML4", "HTML5", "XML", "SAX"].freeze
+
+    def related_class(class_name)
+      klass = nil
+      inspecting = self.class
+
+      while inspecting
+        if inspecting.name
+          namespace_path = inspecting.name.split("::")[0..-2]
+          if VALID_NAMESPACES.include?(namespace_path.last)
+            related_class_name = (namespace_path + [class_name.to_s]).join("::")
+            klass =
+              begin
+                Object.const_get(related_class_name)
+              rescue NameError
+                nil
+              end
+            break if klass
+          end
+        end
+        inspecting = inspecting.superclass
+      end
+      klass
+    end
+  end
+
   VERSION_INFO = {
     "nokogiri" => { "version" => VERSION, "cppflags" => [], "ldflags" => [] },
     "ruby" => { "version" => RUBY_VERSION, "platform" => RUBY_PLATFORM, "engine" => "oruby" },
@@ -104,6 +131,10 @@ module Nokogiri
         @variables = {}
       end
 
+      def node=(node)
+        @node = node
+      end
+
       def register_ns(prefix, uri)
         @namespaces[prefix.to_s] = uri.to_s
         self
@@ -116,6 +147,11 @@ module Nokogiri
 
       def register_variable(name, value)
         @variables[name.to_s] = value
+        self
+      end
+
+      def register_variables(variables)
+        variables.each { |k, v| register_variable(k, v) }
         self
       end
 
@@ -341,6 +377,7 @@ module Nokogiri
     end
 
     class Node
+      include ClassResolver
       include Searchable
       include Enumerable
 
@@ -750,7 +787,7 @@ module Nokogiri
       end
 
       def fragment(tags = nil)
-        DocumentFragment.new(self, tags)
+        (related_class("DocumentFragment") || DocumentFragment).new(self, tags)
       end
 
       def to_xml(options = {})
@@ -782,6 +819,10 @@ module Nokogiri
         @namespace_inheritance = !!val
       end
 
+      def xpath_doctype
+        :xml
+      end
+
       def slop!
         decorators(XML::Node) << ::Nokogiri::Decorators::Slop
         decorate(self)
@@ -804,6 +845,14 @@ module Nokogiri
         doc = Document.new
         doc.encoding = encoding if encoding
         new(doc, tags)
+      end
+
+      def deconstruct
+        children.to_a
+      end
+
+      def parse_options
+        @parse_options ||= ParseOptions.new(ParseOptions::DEFAULT_XML)
       end
 
       def to_html(options = {})
@@ -987,6 +1036,7 @@ module Nokogiri
     end
 
     class Builder
+      include ClassResolver
       DEFAULT_DOCUMENT_OPTIONS = { encoding: "UTF-8" }.freeze
       attr_accessor :doc, :parent, :context, :arity
 
@@ -1002,7 +1052,8 @@ module Nokogiri
           @doc = root.document
           @parent = root
         else
-          @doc = XML::Document.new
+          doc_cls = related_class("Document") || XML::Document
+          @doc = doc_cls.new
           @doc.encoding = options[:encoding] if options[:encoding]
           @parent = @doc
         end
@@ -1112,11 +1163,13 @@ module Nokogiri
       end
 
       class Parser
+        include ClassResolver
         Attribute = Struct.new(:localname, :prefix, :uri, :value)
-        attr_accessor :document
+        attr_accessor :document, :encoding
 
-        def initialize(doc = Document.new, _encoding = "UTF-8")
+        def initialize(doc = Document.new, encoding = "UTF-8")
           @document = doc
+          @encoding = encoding
         end
 
         def parse(thing, &block)
@@ -1141,11 +1194,21 @@ module Nokogiri
       end
 
       class PushParser
-        attr_accessor :document
+        attr_accessor :document, :options
 
         def initialize(doc = Document.new, _file_name = nil, _encoding = "UTF-8")
           @document = doc
+          @options = ParseOptions::DEFAULT_XML
+          @replace_entities = false
           @state = SAX::PushState.new
+        end
+
+        def replace_entities
+          @replace_entities
+        end
+
+        def replace_entities=(val)
+          @replace_entities = !!val
         end
 
         def write(chunk, last_chunk = false)
@@ -1375,6 +1438,10 @@ module Nokogiri
         []
       end
 
+      def description
+        @name
+      end
+
       def inspect
         "#<#{self.class}: #{@name}>"
       end
@@ -1443,7 +1510,11 @@ module Nokogiri
       end
 
       def fragment(tags = nil)
-        HTML4::DocumentFragment.new(self, tags)
+        (related_class("DocumentFragment") || HTML4::DocumentFragment).new(self, tags)
+      end
+
+      def xpath_doctype
+        :html4
       end
 
       def to_s
@@ -1560,6 +1631,10 @@ module Nokogiri
 
       def self.fragment(tags, encoding = nil, context: nil, **options)
         DocumentFragment.parse(tags, encoding, context: context, **options)
+      end
+
+      def xpath_doctype
+        :html5
       end
     end
 

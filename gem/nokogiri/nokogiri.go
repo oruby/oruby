@@ -1490,9 +1490,18 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 	}, mrb.ArgsReq(1))
 
 	fragCls.DefineMethod("errors", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		if iv := mrb.IVGet(self, mrb.Intern("@errors")); !iv.IsNil() {
+			return iv
+		}
 		f, _ := getDOMNode(mrb, self)
 		return makeErrorsArray(mrb, f.errors)
 	}, mrb.ArgsNone())
+
+	fragCls.DefineMethod("errors=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		v := mrb.GetArgsFirst()
+		mrb.IVSet(self, mrb.Intern("@errors"), v)
+		return v
+	}, mrb.ArgsReq(1))
 
 	docCls.DefineMethod("collect_namespaces", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		d, _ := getDOMNode(mrb, self)

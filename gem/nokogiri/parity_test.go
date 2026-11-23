@@ -85,6 +85,45 @@ raise "xpath_context: #{res.map(&:text)}" unless res.map(&:text) == ["B"]
 nodes = Nokogiri::CSS.parse("div > p.foo, span#bar")
 raise "css parse len" unless nodes.length == 2
 raise "css to_xpath" unless nodes[0].to_xpath.include?("div/p")
+
+# Remaining public API helpers
+f = Nokogiri::XML.fragment("<a/><b/>")
+a_node, b_node = *f.deconstruct
+raise "frag deconstruct" unless a_node.name == "a" && b_node.name == "b"
+f.errors = ["custom"]
+raise "frag errors=" unless f.errors == ["custom"]
+raise "frag parse_options" unless f.parse_options.is_a?(Nokogiri::XML::ParseOptions)
+
+ctx.register_variables("target" => "1")
+ctx.node = xdoc.root
+raise "ctx register_variables/node=" unless ctx.evaluate(".//u:item[@id=$target]").map(&:text) == ["A"]
+
+sp = Nokogiri::XML::SAX::Parser.new(Nokogiri::XML::SAX::Document.new, "ISO-8859-1")
+raise "sax parser encoding" unless sp.encoding == "ISO-8859-1"
+sp.encoding = "UTF-8"
+raise "sax parser encoding=" unless sp.encoding == "UTF-8"
+
+pp = Nokogiri::XML::SAX::PushParser.new
+pp.replace_entities = true
+pp.options = Nokogiri::XML::ParseOptions::RECOVER
+raise "push parser opts" unless pp.replace_entities == true && pp.options == Nokogiri::XML::ParseOptions::RECOVER
+
+raise "elem desc description" unless br.description == "br"
+raise "xpath_doctype" unless xdoc.xpath_doctype == :xml && hdoc.xpath_doctype == :html4 && Nokogiri::HTML5("<p/>").xpath_doctype == :html5
+
+# ClassResolver#related_class (Loofah-style subclass resolution)
+module MyLoofah
+  module HTML5
+    class Document < Nokogiri::HTML5::Document; end
+    class DocumentFragment < Nokogiri::HTML5::DocumentFragment; end
+    class Builder < Nokogiri::HTML5::Builder; end
+  end
+end
+ldoc = MyLoofah::HTML5::Document.new
+raise "related_class frag" unless ldoc.related_class("DocumentFragment") == MyLoofah::HTML5::DocumentFragment
+raise "subclass fragment" unless ldoc.fragment("<p>hi</p>").is_a?(MyLoofah::HTML5::DocumentFragment)
+raise "related_class builder" unless MyLoofah::HTML5::Builder.new.related_class("Document") == MyLoofah::HTML5::Document
+raise "related_class sax" unless Nokogiri::XML::SAX::Parser.new.related_class("Document") == Nokogiri::XML::SAX::Document
 `)
 	if err != nil {
 		t.Fatalf("entrypoints/parity test failed: %v", err)
