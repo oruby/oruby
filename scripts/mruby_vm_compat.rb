@@ -328,6 +328,39 @@ module ORubyVMCompat
       #endif
       ret = mrb_obj_as_string_nomethod(mrb, regs[a+1]);
     C
+    svar_scope_frame(source)
+  end
+
+  # $~ and $_ after a bare private/public/protected/module_function: that
+  # gives the frame's scope proc the env of its own frame (class.c's
+  # vis_scope_persist), so svar_own_scope_p() no longer holds for it and the
+  # walk looked for the env's frame below the frame itself: a read answered
+  # nil and a write was dropped, while its blocks resolve to the frame.
+  def self.svar_scope_frame(source)
+    replace(source, "      if (svar_own_scope_p(p)) {\n",
+      "      if (svar_own_scope_p(p) || (MRB_PROC_SCOPE_P(p) && MRB_PROC_ENV(p) == CI_ENV(ci))) {\n")
+    strcat_private_to_s(source)
+    class_block_return(source)
+  end
+
+  # return in a block whose home is a class body (an OP_EXEC frame: no method
+  # name, a scope proc with an upper one, unlike the top level) is a
+  # LocalJumpError in CRuby; mruby returned from the class body
+  def self.class_block_return(source)
+    replace(source, "          if (ci->u.env == env) {\n            goto L_UNWINDING;\n", <<~'C'.gsub(/^/, "          "))
+                if (ci->u.env == env) {
+                  if (ci->mid == 0 && ci->proc && !MRB_PROC_CFUNC_P(ci->proc) &&
+                      MRB_PROC_SCOPE_P(ci->proc) && ci->proc->upper) break;
+                  goto L_UNWINDING;
+    C
+  end
+
+  # "#{obj}" calls obj's #to_s even when it is private, as CRuby's
+  # rb_obj_as_string does: the send in OP_STRCAT's slow path (the static
+  # prepare_exec_strcat_irep) is exempt from the visibility check.
+  def self.strcat_private_to_s(source)
+    replace(source, "          if (insn == OP_SEND || insn == OP_SEND0 || insn == OP_SENDB) {\n            exempt = FALSE;",
+      "          if (insn == OP_SEND || insn == OP_SEND0 || insn == OP_SENDB) {\n            exempt = (irep == &prepare_exec_strcat_irep);")
   end
 
   def self.const_names(source)
@@ -498,6 +531,15 @@ module ORubyVMCompat
   # Object#freeze: a metaclass's inherited class is not its own to freeze
   def self.metaclass_freeze(source)
     replace(source, '      if (b->c->tt == MRB_TT_SCLASS) b->c->frozen = 1;', '      if (oruby_own_sclass_p(mrb, b)) b->c->frozen = 1;')
+    block_given_define_method(source)
+  end
+
+  # block_given? in a define_method body: the block installed as a method is
+  # marked a scope but keeps the env it was written in, and the block given
+  # to that method's call is not the one asked about. As in CRuby, the
+  # answer is the enclosing scope's, so the walk goes on through that env.
+  def self.block_given_define_method(source)
+    replace(source, '    if (MRB_PROC_SCOPE_P(p)) break;', '    if (MRB_PROC_SCOPE_P(p) && !MRB_PROC_ENV_P(p)) break;')
   end
 
   # singleton_methods: an inherited metaclass class holds none of the object's

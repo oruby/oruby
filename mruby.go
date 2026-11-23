@@ -320,6 +320,15 @@ module Kernel
       raise TypeError, "can't convert #{c} into Array (#{c}#to_ary gives #{::Kernel.__cname(a)})"
     end
 
+    # super with implicit arguments outside a def (ORB_ZSUPER_NODEF): meth
+    # is the __method__ of the block it was written in
+    def __oruby_zsuper(meth)
+      if meth
+        raise RuntimeError, "implicit argument passing of super from method defined by define_method() is not supported. Specify all arguments explicitly."
+      end
+      raise NoMethodError, "super called outside of method"
+    end
+
     # [**h]: the Hash as the element, none when it is empty
     def __oruby_kwsplat_ary(h)
       h.empty? ? [] : [h]

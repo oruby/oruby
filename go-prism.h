@@ -26,7 +26,7 @@ enum {
   ORB_SOURCE_ENCODING,    // s0: __ENCODING__
   ORB_LITERAL_ENCODING,   // s0: literal in non-UTF-8 source; flags 1: \u (UTF-8), 2: binary
   ORB_HASH_LABEL_ENCODING, // s0: bare non-ASCII Hash label, s1: label text
-  ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment
+  ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment; flags 1: its value is unused
   ORB_MASGN_OPERAND,      // s0: a receiver or index evaluated before the RHS, s1: the assignment
   ORB_KWSPLAT,            // s0: the value of **value in a call or Hash literal
   ORB_ARRAY_KWHASH,       // s0: a brace-less Hash at the end of an Array literal; flags 1: only **splats (dropped when empty)
@@ -48,6 +48,7 @@ enum {
   ORB_WHEN_SPLAT,         // s0: the *x of a when in a case without a subject: true when an element is (mruby tests the Array)
   ORB_DSYM,               // s0: an interpolated :"…" (s1 its ':'), flags 1: a %I[] (s1 its "%I"): names checked as String#to_sym does
   ORB_ANON_ARG,           // s0: an anonymous *, **, & or ... argument in eval'd code; flags 1 rest, 2 keywords, 3 block, 4 all
+  ORB_ZSUPER_NODEF,       // s0: a bare super with no def around it (a define_method or other block): MRI's run-time errors
 };
 
 // Scan options: frozen_string_literal default (-1 unset, 0, 1) and the

@@ -789,6 +789,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_alloc_trace_start");
   (void)mrb_intern_lit(mrb, "__oruby_alloc_trace_stop");
   (void)mrb_intern_lit(mrb, "__oruby_allocation_info");
+  (void)mrb_intern_lit(mrb, "__oruby_ary_of");
   (void)mrb_intern_lit(mrb, "__oruby_autoload_loading");
   (void)mrb_intern_lit(mrb, "__oruby_autoload_marks");
   (void)mrb_intern_lit(mrb, "__oruby_autoload_other_thread?");
@@ -886,6 +887,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_lookup_class");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
   (void)mrb_intern_lit(mrb, "__oruby_main_binding");
+  (void)mrb_intern_lit(mrb, "__oruby_masgn_ary");
   (void)mrb_intern_lit(mrb, "__oruby_max");
   (void)mrb_intern_lit(mrb, "__oruby_mklass");
   (void)mrb_intern_lit(mrb, "__oruby_new__");

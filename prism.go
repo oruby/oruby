@@ -10,6 +10,7 @@ import "C"
 
 import (
 	"bytes"
+	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,6 +67,9 @@ type prismRec struct {
 
 // PreprocessOptions are per-source settings for the rewriter
 type PreprocessOptions struct {
+	// Filename is the source file path or identifier, used to namespace
+	// per-site runtime cache IDs across separately precompiled (.mrb) files.
+	Filename string
 	// SourceEncoding is the encoding of source without a magic comment
 	// (the main script under -K); empty means UTF-8
 	SourceEncoding string
@@ -294,7 +298,8 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	// "|", "->": block and lambda parameters (ORB_BLOCK_PARAMS)
 	// "when", "defined?": parse warnings (ORB_PARSE_WARN)
 	// ":\"", "%I": interpolated symbols (ORB_DSYM)
-	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::",
+	// "super": a bare super outside a def (ORB_ZSUPER_NODEF)
+	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::", "super",
 		"__ENCODING__", "frozen_string_literal", "freeze", "coding", "when", "defined?", ":\"", "%I"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
@@ -551,6 +556,30 @@ func PreprocessRubyBytes(src []byte) []byte {
 
 var endSiteCounter, masgnSiteCounter, regexpSiteCounter uint64
 
+// sitePrefix computes a deterministic non-zero 38-bit prefix (placed in bits
+// 24..61 of a 62-bit positive integer) from the file identity and source
+// bytes, so files precompiled to .mrb in separate orubyc invocations never
+// collide on runtime site-ID caches.
+func sitePrefix(src []byte, opts *PreprocessOptions) uint64 {
+	h := fnv.New64a()
+	if opts != nil && opts.Filename != "" {
+		_, _ = h.Write([]byte(opts.Filename))
+		_, _ = h.Write([]byte{0})
+	}
+	_, _ = h.Write(src)
+	sum := h.Sum64()
+	prefix := (sum ^ (sum >> 38)) & ((1 << 38) - 1)
+	if prefix == 0 {
+		prefix = 1
+	}
+	return prefix << 24
+}
+
+func nextSiteID(prefix uint64, counter *uint64) uint64 {
+	seq := atomic.AddUint64(counter, 1) & ((1 << 24) - 1)
+	return prefix | seq
+}
+
 // PreprocessRubyWith is PreprocessRubyBytes with per-source options
 func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
 	out, _ := preprocessRuby(src, opts)
@@ -561,6 +590,7 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 	if !mayNeedRewrite(src, opts) {
 		return src, nil
 	}
+	prefix := sitePrefix(src, opts)
 	recs, encName, ok := prismScan(src, opts)
 	for ok {
 		prepared := prepareMasgnOperands(src, recs)
@@ -641,7 +671,7 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 			r.add(s[0], e[1], func(*rewriter) string { return "begin " })
 			r.add(s[2], e[2], func(*rewriter) string { return " end" })
 		case C.ORB_FLIP_FLOP:
-			id := atomic.AddUint64(&ffCounter, 1)
+			id := nextSiteID(prefix, &ffCounter)
 			flags := rc.flags
 			r.add(s[0], e[0], func(r *rewriter) string {
 				l, rt := r.render(s[1], e[1]), r.render(s[2], e[2])
@@ -699,7 +729,7 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				}
 			}
 		case C.ORB_END_BLOCK:
-			id := atomic.AddUint64(&endSiteCounter, 1)
+			id := nextSiteID(prefix, &endSiteCounter)
 			r.add(s[0], e[1], func(*rewriter) string {
 				return "::Kernel.__oruby_end__(" + strconv.FormatUint(id, 10) + ") {"
 			})
@@ -708,7 +738,7 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				continue
 			}
 			if debugFrozenStringLiterals.Load() {
-				id := strconv.FormatUint(frozenStringSite.Add(1), 10)
+				id := strconv.FormatUint(nextSiteID(prefix, (*uint64)(unsafe.Pointer(&frozenStringSite))), 10)
 				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_debug_fstring(" },
 					func(*rewriter) string { return ", " + id + ")" })
 			} else {
@@ -755,6 +785,10 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_dsym(" }, func(*rewriter) string { return ")" })
 				r.add(s[0], s[0]+1, func(*rewriter) string { return "" })
 			}
+		case C.ORB_ZSUPER_NODEF:
+			// super with implicit arguments and no def around it: MRI's
+			// RuntimeError in a define_method body, NoMethodError elsewhere
+			r.add(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_zsuper(__method__)" })
 		case C.ORB_PAT_LAMBDA:
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "^(" }, func(*rewriter) string { return ")" })
 		case C.ORB_PAT_ANON_REST:
@@ -762,8 +796,16 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 		case C.ORB_MASGN_VALUE:
 			// a, b = v -> __oruby_masgn(id, (a, b = __oruby_to_ary(id, (v)))):
 			// the value is converted, the expression still returns v. The
-			// inserts are zero-width, so the code inside is rewritten as usual
-			id := strconv.FormatUint(atomic.AddUint64(&masgnSiteCounter, 1), 10)
+			// inserts are zero-width, so the code inside is rewritten as usual.
+			// Where nothing uses the expression's value (a statement before
+			// the last, a loop body's last) one C call converts v:
+			// a, b = __oruby_masgn_ary((v))
+			if rc.flags&1 != 0 {
+				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_masgn_ary((" },
+					func(*rewriter) string { return "))" })
+				break
+			}
+			id := strconv.FormatUint(nextSiteID(prefix, &masgnSiteCounter), 10)
 			r.addWrap(s[1], e[1], func(*rewriter) string { return "::Kernel.__oruby_masgn(" + id + ", (" },
 				func(*rewriter) string { return "))" })
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_to_ary(" + id + ", (" },
@@ -890,14 +932,14 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 		case C.ORB_REGEXP_LITERAL:
 			// one Regexp per literal, as MRI's (mruby compiles a literal each
 			// time it is evaluated), including interpolated literals with /o
-			id := strconv.FormatUint(atomic.AddUint64(&regexpSiteCounter, 1), 10)
+			id := strconv.FormatUint(nextSiteID(prefix, &regexpSiteCounter), 10)
 			r.addWrap(s[0], e[0], func(*rewriter) string {
 				return "(::Kernel.__oruby_relit(" + id + ") || ::Kernel.__oruby_relit_set(" + id + ", "
 			}, func(*rewriter) string { return "))" })
 		case C.ORB_RANGE_LITERAL:
 			// one frozen Range per literal site, as MRI's (mruby makes one
 			// each time it is evaluated)
-			id := strconv.FormatUint(atomic.AddUint64(&regexpSiteCounter, 1), 10)
+			id := strconv.FormatUint(nextSiteID(prefix, &regexpSiteCounter), 10)
 			r.addWrap(s[0], e[0], func(*rewriter) string {
 				return "(::Kernel.__oruby_relit(" + id + ") || ::Kernel.__oruby_relit_set(" + id + ", ("
 			}, func(*rewriter) string { return ").freeze))" })

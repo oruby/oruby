@@ -99,24 +99,35 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 		return fmt.Errorf("reading ruby file %s: %w", absPath, err)
 	}
 
-	// Compile this file to IRep
-	cxt := r.mrb.MrbCcontextNew()
-	defer cxt.Free()
-	cxt.SetNoExec(true)
-	cxt.Filename(absPath)
+	var irep oruby.MrbIrep
+	isBytecode := IsRiteBinary(content)
+	if isBytecode {
+		irep, err = r.mrb.ReadIrep(content)
+		if err != nil {
+			return fmt.Errorf("reading bytecode %s: %w", absPath, err)
+		}
+	} else {
+		// Compile this file to IRep
+		cxt := r.mrb.MrbCcontextNew()
+		defer cxt.Free()
+		cxt.SetNoExec(true)
+		cxt.Filename(absPath)
 
-	parser, err := r.mrb.ParseString(string(content), cxt)
-	if err != nil {
-		return fmt.Errorf("parsing %s: %w", absPath, err)
-	}
+		parser, err := r.mrb.ParseString(string(content), cxt)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", absPath, err)
+		}
+		defer parser.Free()
 
-	proc, err := r.mrb.GenerateCode(parser)
-	if err != nil {
-		return fmt.Errorf("generating bytecode for %s: %w", absPath, err)
+		proc, err := r.mrb.GenerateCode(parser)
+		if err != nil {
+			return fmt.Errorf("generating bytecode for %s: %w", absPath, err)
+		}
+		irep = proc.IRep()
 	}
 
 	decoder := NewDecoder(r.mrb)
-	unit, err := decoder.Decode(proc.IRep())
+	unit, err := decoder.Decode(irep)
 	if err != nil {
 		return fmt.Errorf("decoding irep for %s: %w", absPath, err)
 	}
@@ -140,19 +151,28 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 	r.visited[absPath] = mod
 	*list = append(*list, mod)
 
-	// Discover dependencies
-	matches := reqRegex.FindAllStringSubmatch(string(content), -1)
+	// Discover dependencies from bytecode instructions (and source regex if source text)
+	reqs := extractUnitRequires(unit)
+	if !isBytecode {
+		matches := reqRegex.FindAllStringSubmatch(string(content), -1)
+		for _, m := range matches {
+			reqs = append(reqs, requireRef{kind: m[1], target: m[2]})
+		}
+	}
 	currentDir := filepath.Dir(absPath)
+	seenReqs := make(map[requireRef]bool, len(reqs))
 
-	for _, m := range matches {
-		kind := m[1]
-		target := m[2]
+	for _, req := range reqs {
+		if seenReqs[req] {
+			continue
+		}
+		seenReqs[req] = true
 
 		resolvedFile := ""
-		if kind == "require_relative" {
-			resolvedFile = r.findRelative(currentDir, target)
+		if req.kind == "require_relative" {
+			resolvedFile = r.findRelative(currentDir, req.target)
 		} else {
-			resolvedFile = r.findInLoadPaths(currentDir, target)
+			resolvedFile = r.findInLoadPaths(currentDir, req.target)
 		}
 
 		if resolvedFile != "" {
@@ -165,15 +185,107 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 	return nil
 }
 
+type requireRef struct {
+	kind   string
+	target string
+}
+
+// extractUnitRequires scans decoded bytecode instructions across an IRepUnit tree
+// to find static require and require_relative calls, enabling dependency resolution
+// directly from precompiled .mrb files without needing Ruby source text.
+func extractUnitRequires(u *IRepUnit) []requireRef {
+	if u == nil {
+		return nil
+	}
+	var out []requireRef
+	jumpTargets := make(map[int]bool)
+	for _, ins := range u.Instructions {
+		if ins.IsJump() && ins.Target >= 0 {
+			jumpTargets[ins.Target] = true
+		}
+	}
+
+	regStr := make(map[uint32]string)
+	for _, ins := range u.Instructions {
+		if jumpTargets[ins.Offset] {
+			clear(regStr)
+		}
+		switch ins.Op {
+		case OpSTRING, OpLOADL:
+			if int(ins.B) < len(u.Pool) {
+				if s, ok := u.Pool[ins.B].(string); ok {
+					regStr[ins.A] = s
+					continue
+				}
+			}
+			delete(regStr, ins.A)
+		case OpMOVE:
+			if s, ok := regStr[uint32(ins.B)]; ok {
+				regStr[ins.A] = s
+			} else {
+				delete(regStr, ins.A)
+			}
+		case OpDEBUG:
+			// chilled string debug hint leaves register unchanged
+		case OpSEND0, OpSSEND0:
+			sym := ""
+			if int(ins.B) < len(u.Syms) {
+				sym = u.Syms[ins.B]
+			}
+			// frozen string literal unary -@ or .freeze preserves the string value
+			if sym != "-@" && sym != "freeze" {
+				delete(regStr, ins.A)
+			}
+		case OpSSEND, OpSEND:
+			sym := ""
+			if int(ins.B) < len(u.Syms) {
+				sym = u.Syms[ins.B]
+			}
+			n := int(ins.C & 0xf)
+			nk := int((ins.C >> 4) & 0xf)
+			if sym == "__oruby_debug_fstring" && n == 2 && nk == 0 {
+				if s, ok := regStr[ins.A+1]; ok {
+					regStr[ins.A] = s
+					continue
+				}
+			}
+			if (sym == "require" || sym == "require_relative") && n == 1 && nk == 0 {
+				if target, ok := regStr[ins.A+1]; ok && target != "" {
+					out = append(out, requireRef{kind: sym, target: target})
+				}
+			}
+			delete(regStr, ins.A)
+		default:
+			delete(regStr, ins.A)
+		}
+	}
+
+	for _, child := range u.Children {
+		out = append(out, extractUnitRequires(child)...)
+	}
+	return out
+}
+
+func candidateFiles(dir, target string) []string {
+	base := filepath.Join(dir, target)
+	candidates := []string{
+		base,
+		base + ".rb",
+		base + ".mrb",
+	}
+	if strings.HasSuffix(target, ".rb") {
+		candidates = append(candidates, strings.TrimSuffix(base, ".rb")+".mrb")
+	} else if strings.HasSuffix(target, ".mrb") {
+		candidates = append(candidates, strings.TrimSuffix(base, ".mrb")+".rb")
+	}
+	return candidates
+}
+
 func (r *DependencyResolver) findRelative(currentDir, target string) string {
 	if filepath.IsAbs(target) {
 		currentDir = ""
 	}
-	candidates := []string{
-		filepath.Join(currentDir, target),
-		filepath.Join(currentDir, target+".rb"),
-	}
-	for _, c := range candidates {
+	for _, c := range candidateFiles(currentDir, target) {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
 			abs, _ := filepath.Abs(c)
 			return abs
@@ -191,11 +303,7 @@ func (r *DependencyResolver) findInLoadPaths(currentDir, target string) string {
 	// Search load paths
 	paths := append([]string{currentDir, "lib"}, r.loadPaths...)
 	for _, lp := range paths {
-		candidates := []string{
-			filepath.Join(lp, target),
-			filepath.Join(lp, target+".rb"),
-		}
-		for _, c := range candidates {
+		for _, c := range candidateFiles(lp, target) {
 			if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
 				abs, _ := filepath.Abs(c)
 				return abs
@@ -205,38 +313,38 @@ func (r *DependencyResolver) findInLoadPaths(currentDir, target string) string {
 	return ""
 }
 
+func addPathVariants(keys *[]string, p string) {
+	if p == "" {
+		return
+	}
+	*keys = append(*keys, p)
+	ext := filepath.Ext(p)
+	if ext == ".rb" || ext == ".mrb" {
+		noExt := strings.TrimSuffix(p, ext)
+		*keys = append(*keys, noExt, noExt+".rb", noExt+".mrb")
+	}
+}
+
 // CanonicalKeys generates lookup keys for the module in the require registry.
 func (m *ModuleUnit) CanonicalKeys() []string {
-	keys := []string{m.RelPath}
-
-	// Without extension: "foo/bar" for "foo/bar.rb"
-	noExt := strings.TrimSuffix(m.RelPath, filepath.Ext(m.RelPath))
-	if noExt != m.RelPath {
-		keys = append(keys, noExt)
-	}
+	var keys []string
+	addPathVariants(&keys, m.RelPath)
+	addPathVariants(&keys, m.FilePath)
 
 	// If the file is inside any load path, add relative path to that load path!
 	for _, lp := range m.LoadPaths {
 		absLP, err := filepath.Abs(lp)
 		if err == nil {
 			if rel, err := filepath.Rel(absLP, m.FilePath); err == nil && !strings.HasPrefix(rel, "..") {
-				keys = append(keys, rel)
-				relNoExt := strings.TrimSuffix(rel, filepath.Ext(rel))
-				if relNoExt != rel {
-					keys = append(keys, relNoExt)
-				}
+				addPathVariants(&keys, rel)
 			}
 		}
 	}
 
-	// Base name: "bar.rb" and "bar"
+	// Base name: "bar.rb", "bar.mrb", and "bar"
 	base := filepath.Base(m.RelPath)
 	if base != m.RelPath {
-		keys = append(keys, base)
-		baseNoExt := strings.TrimSuffix(base, filepath.Ext(base))
-		if baseNoExt != base {
-			keys = append(keys, baseNoExt)
-		}
+		addPathVariants(&keys, base)
 	}
 
 	return keys

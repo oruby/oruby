@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "2d6d0afcd42f116d"
+const presymTable = "2cc6841d99db0d0a"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -1022,6 +1022,7 @@ const (
 	Sym___oruby_alloc_trace_start               MrbSym = C.MRB_SYM____oruby_alloc_trace_start               // "__oruby_alloc_trace_start"
 	Sym___oruby_alloc_trace_stop                MrbSym = C.MRB_SYM____oruby_alloc_trace_stop                // "__oruby_alloc_trace_stop"
 	Sym___oruby_allocation_info                 MrbSym = C.MRB_SYM____oruby_allocation_info                 // "__oruby_allocation_info"
+	Sym___oruby_ary_of                          MrbSym = C.MRB_SYM____oruby_ary_of                          // "__oruby_ary_of"
 	Sym___oruby_autoload_loading                MrbSym = C.MRB_SYM____oruby_autoload_loading                // "__oruby_autoload_loading"
 	Sym___oruby_autoload_marks                  MrbSym = C.MRB_SYM____oruby_autoload_marks                  // "__oruby_autoload_marks"
 	Sym___oruby_autoload_registered             MrbSym = C.MRB_SYM____oruby_autoload_registered             // "__oruby_autoload_registered"
@@ -1113,6 +1114,7 @@ const (
 	Sym___oruby_lookup_class                    MrbSym = C.MRB_SYM____oruby_lookup_class                    // "__oruby_lookup_class"
 	Sym___oruby_main__                          MrbSym = C.MRB_SYM____oruby_main__                          // "__oruby_main__"
 	Sym___oruby_main_binding                    MrbSym = C.MRB_SYM____oruby_main_binding                    // "__oruby_main_binding"
+	Sym___oruby_masgn_ary                       MrbSym = C.MRB_SYM____oruby_masgn_ary                       // "__oruby_masgn_ary"
 	Sym___oruby_max                             MrbSym = C.MRB_SYM____oruby_max                             // "__oruby_max"
 	Sym___oruby_mklass                          MrbSym = C.MRB_SYM____oruby_mklass                          // "__oruby_mklass"
 	Sym___oruby_new__                           MrbSym = C.MRB_SYM____oruby_new__                           // "__oruby_new__"

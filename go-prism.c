@@ -27,7 +27,39 @@ typedef struct {
   const char *src;                 /* the source, the locations' base */
   const pm_node_t *alias_dsym[8];  /* dsyms ORB_ALIAS/UNDEF_DYNAMIC render themselves */
   int nalias_dsym;
+  /* multiple assignments whose value nothing uses (ORB_MASGN_VALUE flags 1):
+     statements before the last of a list, the last of a loop body */
+  const pm_node_t **void_masgn;
+  int nvoid, capvoid;
+  int in_def; /* zsuper_visit: defs around the node */
 } orb_scan;
+
+static void
+void_statement(orb_scan *sc, const pm_node_t *n)
+{
+  if (!n || PM_NODE_TYPE(n) != PM_MULTI_WRITE_NODE) return;
+  if (sc->nvoid == sc->capvoid) {
+    int cap = sc->capvoid ? sc->capvoid * 2 : 16;
+    const pm_node_t **v = (const pm_node_t **)realloc(sc->void_masgn, sizeof(*v) * cap);
+    if (!v) return;
+    sc->void_masgn = v;
+    sc->capvoid = cap;
+  }
+  sc->void_masgn[sc->nvoid++] = n;
+}
+
+static bool
+void_masgn_p(const orb_scan *sc, const pm_node_t *n)
+{
+  for (int i = sc->nvoid - 1; i >= 0; i--) if (sc->void_masgn[i] == n) return true;
+  return false;
+}
+
+static void
+void_loop_body(orb_scan *sc, const pm_statements_node_t *st)
+{
+  if (st && st->body.size > 0) void_statement(sc, st->body.nodes[st->body.size - 1]);
+}
 
 static bool is_dsym(const pm_node_t *n);
 
@@ -94,6 +126,48 @@ lspan(orb_rec *r, int i, pm_location_t loc)
   if (loc.length == 0 && loc.start == 0) return;
   r->s[i] = (int32_t)loc.start;
   r->e[i] = (int32_t)(loc.start + loc.length);
+}
+
+static bool
+has_bytes(const char *s, size_t len, const char *w, size_t wl)
+{
+  for (size_t i = 0; i + wl <= len; i++) if (s[i] == w[0] && memcmp(s + i, w, wl) == 0) return true;
+  return false;
+}
+
+/* A bare super (implicit arguments) with no def around it, only blocks:
+   mruby compiles it as super(), so a define_method body passed none and
+   raised ArgumentError. MRI raises at run time (ORB_ZSUPER_NODEF). A class
+   body starts afresh: its blocks have no def either. */
+static pm_visit_result_t
+zsuper_visit(const pm_node_t *node, void *data)
+{
+  orb_scan *sc = (orb_scan *)data;
+  switch (PM_NODE_TYPE(node)) {
+  case PM_DEF_NODE:
+    sc->in_def++;
+    pm_visit_child_nodes(node, zsuper_visit, data);
+    sc->in_def--;
+    return PM_VISIT_SKIP;
+  case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE: {
+    int saved = sc->in_def;
+    sc->in_def = 0;
+    pm_visit_child_nodes(node, zsuper_visit, data);
+    sc->in_def = saved;
+    return PM_VISIT_SKIP;
+  }
+  case PM_DEFINED_NODE:
+    return PM_VISIT_SKIP; /* defined?(super) evaluates nothing */
+  case PM_FORWARDING_SUPER_NODE:
+    if (sc->in_def == 0) {
+      orb_rec *r = add(sc, ORB_ZSUPER_NODEF);
+      span(r, 0, node);
+      return PM_VISIT_SKIP;
+    }
+    return PM_VISIT_DESCEND;
+  default:
+    return PM_VISIT_DESCEND;
+  }
 }
 
 static bool
@@ -374,6 +448,17 @@ visit(const pm_node_t *node, void *data)
   orb_scan *sc = (orb_scan *)data;
   orb_rec *r;
   switch (PM_NODE_TYPE(node)) {
+  case PM_STATEMENTS_NODE: {
+    const pm_node_list_t *l = &((const pm_statements_node_t *)node)->body;
+    for (size_t i = 0; i + 1 < l->size; i++) void_statement(sc, l->nodes[i]);
+    break;
+  }
+  case PM_WHILE_NODE:
+    void_loop_body(sc, ((const pm_while_node_t *)node)->statements);
+    break;
+  case PM_UNTIL_NODE:
+    void_loop_body(sc, ((const pm_until_node_t *)node)->statements);
+    break;
   case PM_DEFINED_NODE: {
     // defined?(A::B ||= v) is answered without generating the assignment
     const pm_node_t *v = ((const pm_defined_node_t *)node)->value;
@@ -691,6 +776,7 @@ visit(const pm_node_t *node, void *data)
       r = add(sc, ORB_MASGN_VALUE);
       span(r, 0, v);
       span(r, 1, node);
+      if (void_masgn_p(sc, node)) r->flags = 1;
     }
     {
       const pm_multi_write_node_t *m = (const pm_multi_write_node_t *)node;
@@ -982,6 +1068,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
   }
   if (root && *errors == 0) pm_visit_node(root, visit, &sc);
   if (root && *errors == 0 && !sc.eval) pm_visit_node(root, toplevel_return_visit, &sc);
+  if (root && *errors == 0 && !sc.eval && has_bytes(src, len, "super", 5)) pm_visit_node(root, zsuper_visit, &sc);
   /* the parse warnings MRI prints (mruby's compiler prints none), for
      prism.go to have the program print them as it starts: their texts in
      *msgs, NUL separated, one ORB_PARSE_WARN each */
@@ -1032,6 +1119,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
     }
     *msgs = mbuf;
   }
+  free(sc.void_masgn);
   pm_parser_free(parser);
   pm_arena_free(arena);
   if (options) pm_options_free(options);

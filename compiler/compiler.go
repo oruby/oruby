@@ -1,10 +1,24 @@
 package compiler
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 
 	"github.com/oruby/oruby"
 )
+
+// IsRiteBinary reports whether data starts with a valid mruby RiteVM binary (.mrb) header.
+func IsRiteBinary(data []byte) bool {
+	if len(data) < 32 || !bytes.HasPrefix(data, []byte(oruby.RiteBinaryIdent)) {
+		return false
+	}
+	checkLen := len(data)
+	if checkLen > 64 {
+		checkLen = 64
+	}
+	return bytes.IndexByte(data[:checkLen], 0) >= 0
+}
 
 // Options configures the oruby-compiler transpilation process.
 type Options struct {
@@ -46,6 +60,42 @@ func (c *Compiler) CompileIrep(mrb *oruby.MrbState, irep oruby.MrbIrep) (string,
 	return codegen.Generate(unit)
 }
 
+// CompileBytecode decodes precompiled mruby RiteVM bytecode (.mrb) and emits transpiled Go code.
+func (c *Compiler) CompileBytecode(mrb *oruby.MrbState, bytecode []byte) (string, error) {
+	irep, err := mrb.ReadIrep(bytecode)
+	if err != nil {
+		return "", fmt.Errorf("reading mruby bytecode: %w", err)
+	}
+	return c.CompileIrep(mrb, irep)
+}
+
+// CompileFile compiles either a precompiled .mrb bytecode file or a .rb Ruby source file into Go code.
+func (c *Compiler) CompileFile(mrb *oruby.MrbState, filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", filePath, err)
+	}
+	if IsRiteBinary(data) {
+		return c.CompileBytecode(mrb, data)
+	}
+	cxt := mrb.MrbCcontextNew()
+	defer cxt.Free()
+	cxt.SetNoExec(true)
+	cxt.Filename(filePath)
+
+	parser, err := mrb.ParseString(string(data), cxt)
+	if err != nil {
+		return "", fmt.Errorf("parsing ruby source %s: %w", filePath, err)
+	}
+	defer parser.Free()
+
+	proc, err := mrb.GenerateCode(parser)
+	if err != nil {
+		return "", fmt.Errorf("generating bytecode for %s: %w", filePath, err)
+	}
+	return c.CompileIrep(mrb, proc.IRep())
+}
+
 // CompileRuby parses and compiles Ruby source code into Go code.
 func (c *Compiler) CompileRuby(mrb *oruby.MrbState, code string) (string, error) {
 	cxt := mrb.MrbCcontextNew()
@@ -56,6 +106,7 @@ func (c *Compiler) CompileRuby(mrb *oruby.MrbState, code string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("parsing ruby source: %w", err)
 	}
+	defer parser.Free()
 
 	proc, err := mrb.GenerateCode(parser)
 	if err != nil {

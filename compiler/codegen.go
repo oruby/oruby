@@ -302,7 +302,7 @@ func collectUnits(u *IRepUnit, list *[]*IRepUnit) {
 
 // analyze assigns kinds and names to the irep tree.
 func (g *CodeGen) analyze(u *IRepUnit, parent *IRepUnit, kind unitKind, childIdx int, prefix, file string) {
-	if u.File != "" {
+	if u.File != "" && (filepath.IsAbs(u.File) || file == "") {
 		file = u.File
 	}
 	inf := &unitInfo{
@@ -846,16 +846,16 @@ func compiledFind(feature, dir string, relative bool) string {
 		if abs, err := filepath.Abs(p); err == nil {
 			p = abs
 		}
-		candidates = append(candidates, p, p+".rb")
+		candidates = append(candidates, p, p+".rb", p+".mrb")
 	}
 	if !relative {
 		if filepath.IsAbs(feature) {
-			candidates = append(candidates, feature, feature+".rb")
+			candidates = append(candidates, feature, feature+".rb", feature+".mrb")
 		} else if abs, err := filepath.Abs(feature); err == nil {
-			candidates = append(candidates, abs, abs+".rb")
+			candidates = append(candidates, abs, abs+".rb", abs+".mrb")
 		}
 		clean := strings.TrimPrefix(feature, "./")
-		candidates = append(candidates, clean, clean+".rb")
+		candidates = append(candidates, clean, clean+".rb", clean+".mrb")
 	}
 	for _, c := range candidates {
 		if _, ok := compiledRegistry[c]; ok {

@@ -1198,34 +1198,13 @@ static mrb_callinfo *svar_start(mrb_state *mrb, mrb_bool *moved) {
   return ci;
 }
 
-/* A bare private/protected/public/module_function gives the scope proc of
-   the frame it runs in (a class body, a method) the env of that very frame
-   (class.c's vis_scope_persist). vm.c's svar_owner_from then no longer takes
-   the frame for a scope owning its slot, and looking below it for the env's
-   frame finds none: a read answers nil and a write is dropped, although a
-   block of that frame resolves to the frame. With the env flag cleared for
-   the call the frame owns its slot again, the one its blocks find (both are
-   mrb_ci_svar of the frame), and the env it keeps on return is the same. */
-static struct RProc *svar_persisted_scope(mrb_callinfo *ci) {
-  struct RProc *p = (struct RProc *)ci->proc;
-  if (p && !MRB_PROC_CFUNC_P(p) && MRB_PROC_SCOPE_P(p) && MRB_PROC_ENV_P(p) &&
-      MRB_PROC_ENV(p) == mrb_vm_ci_env(ci))
-    return p;
-  return NULL;
-}
-
 static mrb_value svar_get(mrb_state *mrb, enum mrb_svar_index key) {
   mrb_bool moved;
   mrb_callinfo *start = svar_start(mrb, &moved);
-  struct RProc *ps = start > mrb->c->cibase ? svar_persisted_scope(start) : NULL;
-  if (!moved && !ps) return mrb_vm_svar_get(mrb, key);
-  /* a read allocates nothing: no GC runs while ci is lowered or the flag
-     is off (the proc's e.env then reads as its target class) */
+  if (!moved) return mrb_vm_svar_get(mrb, key);
   mrb_callinfo *saved = mrb->c->ci;
-  mrb->c->ci = start;
-  if (ps) ps->flags &= ~MRB_PROC_ENVSET;
+  mrb->c->ci = start; /* a read allocates nothing */
   mrb_value v = mrb_vm_svar_get(mrb, key);
-  if (ps) ps->flags |= MRB_PROC_ENVSET;
   mrb->c->ci = saved;
   return v;
 }
@@ -1233,21 +1212,17 @@ static mrb_value svar_get(mrb_state *mrb, enum mrb_svar_index key) {
 static void svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v) {
   mrb_bool moved;
   mrb_callinfo *start = svar_start(mrb, &moved);
-  struct RProc *ps = start > mrb->c->cibase ? svar_persisted_scope(start) : NULL;
-  if (!moved && !ps) {
+  if (!moved) {
     mrb_vm_svar_set(mrb, key, v);
     return;
   }
   /* A first write allocates the scope's container. With ci lowered the GC
-     would not mark the frames above it, and with the env flag off it would
-     mark the proc's env as its target class, so none may run meanwhile. */
+     would not mark the frames above it, so none may run meanwhile. */
   mrb_callinfo *saved = mrb->c->ci;
   mrb_bool gc_off = mrb->gc.disabled;
   mrb->gc.disabled = TRUE;
   mrb->c->ci = start;
-  if (ps) ps->flags &= ~MRB_PROC_ENVSET;
   mrb_vm_svar_set(mrb, key, v);
-  if (ps) ps->flags |= MRB_PROC_ENVSET;
   mrb->c->ci = saved;
   mrb->gc.disabled = gc_off;
 }
@@ -1911,6 +1886,15 @@ static mrb_value block_to_ary_p(mrb_state *mrb, mrb_value self) {
   if (!p || MRB_PROC_STRICT_P(p) || mrb_array_p(argv[0])) return mrb_false_value();
   for (mrb_int i = 1; i < argc; i++) if (!mrb_nil_p(argv[i])) return mrb_false_value();
   return mrb_true_value();
+}
+
+/* Kernel.__oruby_masgn_ary(obj) for ORB_MASGN_VALUE (prism.go) where the
+   assignment's value is unused: a, b = obj as MRI takes obj, an Array as
+   is, anything else as Kernel.__oruby_ary_of (#to_ary) does */
+static mrb_value masgn_ary_m(mrb_state *mrb, mrb_value self) {
+  mrb_value obj = mrb_get_arg1(mrb);
+  if (mrb_array_p(obj)) return obj;
+  return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_ary_of), 1, obj);
 }
 
 static mrb_value orb_params(mrb_state *mrb, mrb_value procv, int lambda) {
@@ -4395,6 +4379,7 @@ void _mrb_init_oruby_core(mrb_state *mrb) {
   mrb_define_private_method(mrb, mrb->string_class, "__encoding_us_ascii!", str_enc_us_ascii_set, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_core_proc), core_proc_p_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM_Q(__oruby_bta), block_to_ary_p, MRB_ARGS_ANY());
+  mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_masgn_ary), masgn_ary_m, MRB_ARGS_REQ(1));
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_record), mod_const_record_m, MRB_ARGS_REQ(1));
   mrb_define_private_method_id(mrb, mrb->module_class, MRB_SYM(__oruby_const_location), mod_const_location_m, MRB_ARGS_REQ(1));
   if (mrb_class_defined_id(mrb, MRB_SYM(Fiber))) {
