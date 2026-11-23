@@ -210,9 +210,11 @@ module Nokogiri
 
       def css(*rules)
         return NodeSet.new(document) if rules.empty?
-        while !rules.empty? && rules.last.is_a?(Hash)
+        # Separate trailing namespaces hash / custom handler objects from CSS rule strings
+        while !rules.empty? && !rules.last.is_a?(String)
           rules.pop
         end
+        return NodeSet.new(document) if rules.empty?
         if rules.length == 1
           return __css(rules[0])
         end
@@ -924,7 +926,9 @@ module Nokogiri
 
   module CSS
     def self.xpath_for(*rules)
-      rules.map { |r| "//#{r}" }
+      opts = rules.last.is_a?(Hash) ? rules.pop : {}
+      prefix = opts[:prefix] || "//"
+      rules.map { |r| __xpath_for(r.to_s, prefix) }
     end
   end
 

@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/oruby/oruby"
+	_ "github.com/oruby/oruby/gem/argon2"
 	_ "github.com/oruby/oruby/gem/base64"
 	_ "github.com/oruby/oruby/gem/bcrypt"
 	_ "github.com/oruby/oruby/gem/bcrypt_pbkdf"
 	_ "github.com/oruby/oruby/gem/bigdecimal"
+	_ "github.com/oruby/oruby/gem/brotli"
+	_ "github.com/oruby/oruby/gem/commonmarker"
 	_ "github.com/oruby/oruby/gem/core_ext"
 	_ "github.com/oruby/oruby/gem/coverage"
 	_ "github.com/oruby/oruby/gem/date"
@@ -26,6 +29,7 @@ import (
 	_ "github.com/oruby/oruby/gem/etc"
 	_ "github.com/oruby/oruby/gem/ffi"
 	_ "github.com/oruby/oruby/gem/fiddle"
+	_ "github.com/oruby/oruby/gem/hiredis"
 	_ "github.com/oruby/oruby/gem/http"
 	"github.com/oruby/oruby/gem/internal/rb"
 	_ "github.com/oruby/oruby/gem/io"
@@ -41,16 +45,20 @@ import (
 	_ "github.com/oruby/oruby/gem/nio4r"
 	_ "github.com/oruby/oruby/gem/nokogiri"
 	_ "github.com/oruby/oruby/gem/objspace"
+	_ "github.com/oruby/oruby/gem/oj"
 	_ "github.com/oruby/oruby/gem/pg"
 	_ "github.com/oruby/oruby/gem/process"
 	_ "github.com/oruby/oruby/gem/pty"
 	_ "github.com/oruby/oruby/gem/puma_http11"
 	_ "github.com/oruby/oruby/gem/racc"
 	_ "github.com/oruby/oruby/gem/rack"
+	_ "github.com/oruby/oruby/gem/rbnacl"
 	_ "github.com/oruby/oruby/gem/regexp"
 	_ "github.com/oruby/oruby/gem/regexp/full"
+	_ "github.com/oruby/oruby/gem/scrypt"
 	_ "github.com/oruby/oruby/gem/socket"
 	_ "github.com/oruby/oruby/gem/sqlite3"
+	_ "github.com/oruby/oruby/gem/strscan"
 	_ "github.com/oruby/oruby/gem/thread"
 	_ "github.com/oruby/oruby/gem/time"
 	_ "github.com/oruby/oruby/gem/transcode"
@@ -58,6 +66,7 @@ import (
 	_ "github.com/oruby/oruby/gem/websocket"
 	_ "github.com/oruby/oruby/gem/yaml"
 	_ "github.com/oruby/oruby/gem/zlib"
+	_ "github.com/oruby/oruby/gem/zstd"
 )
 
 //go:embed ruby/*.rb
@@ -85,10 +94,6 @@ func init() {
 		return nil
 	})
 	oruby.GemAlias("tempfile", "io/file")
-	oruby.LazyGem("strscan", func(mrb *oruby.MrbState) interface{} {
-		load(mrb, "strscan")
-		return nil
-	})
 	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "io/nonblock", "io/wait", "English"} {
 		oruby.LazyGem(name, func(*oruby.MrbState) interface{} { return nil })
 	}

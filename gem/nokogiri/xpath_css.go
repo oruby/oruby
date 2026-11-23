@@ -429,6 +429,16 @@ func queryCSS(scope *domNode, selector string) ([]*domNode, error) {
 
 	compiled, err := cascadia.Compile(selStr)
 	if err != nil {
+		// Fallback to CSS->XPath for Nokogiri/jQuery extensions (:first, :last, :eq, [a!=b], etc.)
+		prefix := ".//"
+		if scope.kind == DocumentNode || scope.kind == HTMLDocumentNode {
+			prefix = "//"
+		}
+		if xp, xerr := cssToXPath(selStr, prefix); xerr == nil {
+			if res, eerr := evalXPath(scope, xp, nil, nil); eerr == nil && res.isSet {
+				return res.nodes, nil
+			}
+		}
 		return nil, fmt.Errorf("invalid CSS selector %q: %w", selector, err)
 	}
 

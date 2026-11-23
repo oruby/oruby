@@ -59,12 +59,28 @@ func initNokogiri(mrb *oruby.MrbState) any {
 	synErr := mrb.DefineClassUnder(mod, "SyntaxError", stdErr)
 
 	xmlMod := mrb.DefineModuleUnder(mod, "XML")
+	mrb.ConstSet(xmlMod, mrb.Intern("XML_C14N_1_0"), mrb.FixnumValue(xmlC14N10))
+	mrb.ConstSet(xmlMod, mrb.Intern("XML_C14N_EXCLUSIVE_1_0"), mrb.FixnumValue(xmlC14NExclusive10))
+	mrb.ConstSet(xmlMod, mrb.Intern("XML_C14N_1_1"), mrb.FixnumValue(xmlC14N11))
 	xmlSynErr := mrb.DefineClassUnder(xmlMod, "SyntaxError", synErr)
 	xpathMod := mrb.DefineModuleUnder(xmlMod, "XPath")
 	mrb.DefineClassUnder(xpathMod, "SyntaxError", xmlSynErr)
 
 	cssMod := mrb.DefineModuleUnder(mod, "CSS")
 	mrb.DefineClassUnder(cssMod, "SyntaxError", synErr)
+	cssMod.DefineClassMethod("__xpath_for", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs().Slice()
+		sel := args[0].String()
+		prefix := "//"
+		if len(args) >= 2 && !args[1].IsNil() {
+			prefix = args[1].String()
+		}
+		xp, err := cssToXPath(sel, prefix)
+		if err != nil {
+			return rb.Raise(mrb, "Nokogiri::CSS::SyntaxError", "%s", err.Error())
+		}
+		return mrb.StrNew(xp)
+	}, mrb.ArgsArg(1, 1))
 
 	// Node hierarchy
 	nodeCls := mrb.DefineClassUnder(xmlMod, "Node", mrb.ObjectClass())
@@ -853,6 +869,26 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		xmlDecl := args.Item(2).Bool()
 		return mrb.StrNew(n.serialize(asHTML, indent, xmlDecl))
 	}, mrb.ArgsReq(3))
+
+	nodeCls.DefineMethod("canonicalize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		args := mrb.GetArgs().Slice()
+		mode := xmlC14N10
+		if len(args) >= 1 && !args[0].IsNil() {
+			mode = args[0].Int()
+		}
+		var incl []string
+		if len(args) >= 2 && args[1].IsArray() {
+			for i := 0; i < oruby.RArrayLen(args[1]); i++ {
+				incl = append(incl, mrb.AryRef(args[1], i).String())
+			}
+		}
+		withComments := false
+		if len(args) >= 3 && !args[2].IsNil() {
+			withComments = args[2].Bool()
+		}
+		return mrb.StrNew(n.canonicalize(mode, incl, withComments))
+	}, mrb.ArgsOpt(3))
 
 	nodeCls.DefineMethod("inner_html", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)

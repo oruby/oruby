@@ -3,6 +3,7 @@ package erubi
 import (
 	_ "embed"
 	"regexp"
+	"strings"
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/internal/rb"
@@ -28,9 +29,79 @@ func init() {
 		//erubi.DefineMethod("result_with_hash", erbResultWithHash, mrb.Args);
 		//erubi.DefineMethod("run", erbRun, mrb.Args);
 		//erubi.DefineMethod("set_eoutvar", erbsetEoutvar, mrb.Args);
+		escMod := mrb.DefineModuleUnder(erb, "Escape")
+		escMod.DefineModuleFunction("html_escape", erbHTMLEscape, mrb.ArgsReq(1))
+		escMod.DefineModuleFunction("__url_encode", erbURLEncode, mrb.ArgsReq(1))
 		rb.LoadRuby(mrb, "erb.rb", erbRuby)
 		return nil
 	})
+	oruby.GemAlias("erb/escape", "erb")
+	oruby.GemAlias("erb/util", "erb")
+}
+
+func erbURLEncode(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	arg := mrb.GetArgsFirst()
+	var s string
+	if arg.IsString() {
+		s = arg.String()
+	} else {
+		sv, err := mrb.Funcall(arg, oruby.Sym_to_s)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		s = sv.String()
+	}
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '.' || c == '_' || c == '~' {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0F])
+		}
+	}
+	return mrb.StrNew(b.String())
+}
+
+func erbHTMLEscape(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	arg := mrb.GetArgsFirst()
+	var s string
+	if arg.IsString() {
+		s = arg.String()
+	} else {
+		sv, err := mrb.Funcall(arg, oruby.Sym_to_s)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		s = sv.String()
+	}
+	if !strings.ContainsAny(s, `&<>"'`) {
+		return mrb.StrNew(s)
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '"':
+			b.WriteString("&quot;")
+		case '\'':
+			b.WriteString("&#39;")
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return mrb.StrNew(b.String())
 }
 
 func erbVersion(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

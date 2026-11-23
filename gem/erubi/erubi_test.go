@@ -177,6 +177,21 @@ func TestERBBindingHashSupport(t *testing.T) {
 	}
 }
 
+func TestERBEscape(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	got, err := mrb.Eval(`
+    ERB::Escape.html_escape(%(<a href="x&y">'z'</a>)) == "&lt;a href=&quot;x&amp;y&quot;&gt;&#39;z&#39;&lt;/a&gt;" &&
+      ERB::Util.h("a < b") == "a &lt; b" &&
+      ERB::Util.h(42) == "42" &&
+      ERB::Util.h("plain") == "plain" &&
+      ERB::Util.u("a b/c") == "a%20b%2Fc"
+  `)
+	if err != nil || !got.Bool() {
+		t.Fatalf("ERB::Escape = %v, %v; want true, nil", got, err)
+	}
+}
+
 func TestERBHashLocals(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

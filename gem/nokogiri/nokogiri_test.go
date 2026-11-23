@@ -270,6 +270,24 @@ rescue Nokogiri::CSS::SyntaxError
   raised = true
 end
 raise "expected CSS::SyntaxError" unless raised
+
+# Nokogiri CSS.xpath_for & jQuery extensions (:contains, :first, :last, :eq, !=)
+xps = Nokogiri::CSS.xpath_for("ul#nav > li.item a[href^='https://']")
+raise "xpath_for=#{xps.inspect}" unless xps.length == 1 && xps[0].include?("starts-with(@href, 'https://')")
+raise "css :contains" unless doc.at_css('a:contains("About")').text == "About"
+raise "css :first" unless doc.at_css("li:first a").text == "Home"
+raise "css :last" unless doc.at_css("li:last a").text == "Contact"
+raise "css :eq" unless doc.at_css("li:eq(1) a").text == "About"
+raise "css !=" unless doc.css('a[href!="/contact"]').length == 2
+
+# XML Canonicalization (C14N 1.0 & Exclusive C14N)
+cdoc = Nokogiri::XML('<root xmlns:b="urn:b" xmlns:a="urn:a" z="1" a="2"><empty/><!-- drop --><child b:y="1" a:x="2"/></root>')
+c14n = cdoc.canonicalize
+raise "c14n=#{c14n.inspect}" unless c14n == '<root xmlns:a="urn:a" xmlns:b="urn:b" a="2" z="1"><empty></empty><child a:x="2" b:y="1"></child></root>'
+c14n_c = cdoc.canonicalize(Nokogiri::XML::XML_C14N_1_0, nil, true)
+raise "c14n comments" unless c14n_c.include?("<!-- drop -->")
+exc = cdoc.at_xpath("//empty").canonicalize(Nokogiri::XML::XML_C14N_EXCLUSIVE_1_0)
+raise "exc c14n=#{exc.inspect}" unless exc == "<empty></empty>"
 `)
 }
 

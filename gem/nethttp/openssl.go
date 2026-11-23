@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"hash"
 	"math/big"
+	"net"
 	"strings"
 	"time"
 
@@ -249,7 +250,7 @@ type x509Cert struct {
 	serial    *big.Int
 	subject   *x509Name
 	issuer    *x509Name
-	pubKey    *rsa.PublicKey
+	pubKey    any // *rsa.PublicKey or *ecdsa.PublicKey
 	notBefore time.Time
 	notAfter  time.Time
 	exts      []*x509Ext
@@ -297,7 +298,7 @@ func goTimeToRuby(mrb *oruby.MrbState, t time.Time) oruby.Value {
 	return u.Value()
 }
 
-func keyHashID(pub *rsa.PublicKey) []byte {
+func keyHashID(pub any) []byte {
 	if pub == nil {
 		return nil
 	}
@@ -353,13 +354,26 @@ func applyExtensions(tmpl *x509.Certificate, exts []*x509Ext) {
 				if ext.subject != nil && ext.subject.pubKey != nil {
 					pub = ext.subject.pubKey
 				}
-				if rp, ok := pub.(*rsa.PublicKey); ok {
-					tmpl.SubjectKeyId = keyHashID(rp)
+				if pub != nil {
+					tmpl.SubjectKeyId = keyHashID(pub)
 				}
 			}
 		case "authoritykeyidentifier":
 			if ext.issuer != nil && ext.issuer.pubKey != nil {
 				tmpl.AuthorityKeyId = keyHashID(ext.issuer.pubKey)
+			}
+		case "subjectaltname":
+			for _, tok := range strings.Split(ext.value, ",") {
+				tok = strings.TrimSpace(tok)
+				if strings.HasPrefix(tok, "DNS:") {
+					tmpl.DNSNames = append(tmpl.DNSNames, strings.TrimSpace(tok[4:]))
+				} else if strings.HasPrefix(tok, "IP:") {
+					if ip := net.ParseIP(strings.TrimSpace(tok[3:])); ip != nil {
+						tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+					}
+				} else if strings.HasPrefix(tok, "email:") {
+					tmpl.EmailAddresses = append(tmpl.EmailAddresses, strings.TrimSpace(tok[6:]))
+				}
 			}
 		}
 	}
@@ -855,12 +869,16 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 	certCls.DefineMethod("public_key=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
 		c, _ := rb.Get[*x509Cert](mrb, self)
-		k, ok := rb.Get[*rsaKey](mrb, v)
-		if !ok || k.pub == nil {
+		var pub any
+		if k, ok := rb.Get[*rsaKey](mrb, v); ok && k.pub != nil {
+			pub = k.pub
+		} else if k, ok := rb.Get[*ecKey](mrb, v); ok && k.pub != nil {
+			pub = k.pub
+		} else {
 			return mrb.Raise(mrb.ETypeError(), "wrong argument type (expected OpenSSL::PKey::PKey)")
 		}
 		if c != nil {
-			c.pubKey = k.pub
+			c.pubKey = pub
 		}
 		mrb.SetIV(self, "@public_key", v)
 		return v
@@ -922,8 +940,15 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 		if !ok {
 			return mrb.Raise(certErrCls, "certificate not initialized")
 		}
-		k, ok := rb.Get[*rsaKey](mrb, args[0])
-		if !ok || k.priv == nil {
+		var signerPriv any
+		var signerPub any
+		if rk, ok := rb.Get[*rsaKey](mrb, args[0]); ok && rk.priv != nil {
+			signerPriv = rk.priv
+			signerPub = &rk.priv.PublicKey
+		} else if ek, ok := rb.Get[*ecKey](mrb, args[0]); ok && ek.priv != nil {
+			signerPriv = ek.priv
+			signerPub = &ek.priv.PublicKey
+		} else {
 			return mrb.Raise(certErrCls, "private key required")
 		}
 		digestName := "SHA256"
@@ -939,7 +964,7 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 			NotBefore:          c.notBefore,
 			NotAfter:           c.notAfter,
 			PublicKey:          c.pubKey,
-			SignatureAlgorithm: x509SigAlgo(digestName),
+			SignatureAlgorithm: x509SigAlgoForKey(digestName, signerPriv),
 		}
 		if tmpl.SerialNumber == nil {
 			tmpl.SerialNumber = big.NewInt(1)
@@ -958,9 +983,9 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 		}
 		pub := c.pubKey
 		if pub == nil {
-			pub = &k.priv.PublicKey
+			pub = signerPub
 		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, k.priv)
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signerPriv)
 		if err != nil {
 			return mrb.Raise(certErrCls, err.Error())
 		}
@@ -1067,6 +1092,10 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 		return mrb.FixnumValue(st.lastErr)
 	}, mrb.ArgsNone())
 
+	storeCls.DefineMethod("set_default_paths", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		return mrb.NilValue()
+	}, mrb.ArgsNone())
+
 	storeCls.DefineMethod("error_string", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		st, _ := rb.Get[*x509Store](mrb, self)
 		if st == nil {
@@ -1074,4 +1103,6 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 		}
 		return mrb.StrNew(st.lastErrText)
 	}, mrb.ArgsNone())
+
+	initOpenSSLExt(mrb, mod, osslErr, pkeyMod, pkeyErr, pkeyBase, rsaCls, certCls)
 }

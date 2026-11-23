@@ -185,3 +185,127 @@ func TestOpenSSLSecureCompare(t *testing.T) {
 		t.Fatalf("OpenSSL fixed-length mismatch = %v, %v; want true, nil", got, err)
 	}
 }
+
+func TestOpenSSLBNAndPKeyECAndRSA(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`
+require "openssl"
+
+# OpenSSL::BN
+a = OpenSSL::BN.new("123456789012345678901234567890")
+b = OpenSSL::BN.new("FF", 16)
+raise "bn hex" unless b.to_i == 255
+raise "bn to_s(16)" unless b.to_s(16) == "FF"
+raise "bn bin" unless OpenSSL::BN.new("\x01\x00".b, 2).to_i == 256
+raise "bn arith" unless (42.to_bn + 8.to_bn) == 50.to_bn
+raise "bn mod_exp" unless 2.to_bn.mod_exp(10, 1000) == 24.to_bn
+raise "bn gcd" unless 48.to_bn.gcd(18.to_bn) == 6.to_bn
+raise "bn prime" unless 104729.to_bn.prime? && !104728.to_bn.prime?
+raise "bn rand" unless OpenSSL::BN.rand(64).num_bits <= 64
+raise "bn add big" unless (a + 1).to_s == "123456789012345678901234567891"
+
+# RSA sign/verify & PKey.read
+rsa = OpenSSL::PKey::RSA.new(2048)
+raise "rsa n/e" unless rsa.n.num_bits >= 2040 && rsa.e.to_i == 65537
+sig = rsa.sign("SHA256", "hello rsa")
+raise "rsa verify" unless rsa.public_key.verify("SHA256", sig, "hello rsa")
+raise "rsa bad verify" if rsa.public_key.verify("SHA256", sig, "tampered")
+rsa2 = OpenSSL::PKey.read(rsa.to_pem)
+raise "PKey.read rsa" unless rsa2.is_a?(OpenSSL::PKey::RSA) && rsa2.verify("SHA256", sig, "hello rsa")
+
+# EC generate, sign/verify, Group/Point, ECDH, PEM/DER, PKey.read
+ec = OpenSSL::PKey::EC.generate("prime256v1")
+raise "ec group" unless ec.group.curve_name == "prime256v1" && ec.group.degree == 256
+raise "ec priv/pub" unless ec.private? && ec.public? && ec.check_key
+raise "ec point" unless ec.public_key.is_a?(OpenSSL::PKey::EC::Point) && ec.public_key.on_curve?
+esig = ec.sign("SHA256", "hello ecdsa")
+raise "ec verify" unless ec.verify("SHA256", esig, "hello ecdsa")
+raise "ec bad verify" if ec.verify("SHA256", esig, "bad")
+
+ec_pub = OpenSSL::PKey.read(ec.public_to_pem)
+raise "PKey.read ec pub" unless ec_pub.is_a?(OpenSSL::PKey::EC) && !ec_pub.private? && ec_pub.verify("SHA256", esig, "hello ecdsa")
+ec_priv = OpenSSL::PKey.read(ec.to_pem)
+raise "PKey.read ec priv" unless ec_priv.is_a?(OpenSSL::PKey::EC) && ec_priv.private?
+
+# ECDH key agreement
+alice = OpenSSL::PKey::EC.generate("prime256v1")
+bob   = OpenSSL::PKey::EC.generate("prime256v1")
+s1 = alice.dh_compute_key(bob.public_key)
+s2 = bob.dh_compute_key(alice.public_key)
+raise "ecdh mismatch" unless s1 == s2 && s1.bytesize == 32
+`)
+	if err != nil {
+		t.Fatalf("OpenSSL BN/PKey/EC test failed: %v", err)
+	}
+}
+
+func TestOpenSSLTLSServerAndClient(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	_, err := mrb.Eval(`
+require "socket"
+require "openssl"
+
+# Generate self-signed EC certificate for localhost
+key = OpenSSL::PKey::EC.generate("prime256v1")
+cert = OpenSSL::X509::Certificate.new
+cert.version = 2
+cert.serial = 1
+cert.subject = OpenSSL::X509::Name.parse("/CN=localhost")
+cert.issuer = cert.subject
+cert.public_key = key
+cert.not_before = Time.now - 60
+cert.not_after = Time.now + 3600
+ef = OpenSSL::X509::ExtensionFactory.new
+ef.subject_certificate = cert
+ef.issuer_certificate = cert
+cert.add_extension(ef.create_extension("subjectAltName", "DNS:localhost,IP:127.0.0.1"))
+cert.sign(key, OpenSSL::Digest::SHA256.new)
+
+srv_ctx = OpenSSL::SSL::SSLContext.new
+srv_ctx.cert = cert
+srv_ctx.key = key
+srv_ctx.alpn_protocols = ["h2", "http/1.1"]
+
+tcp_srv = TCPServer.new("127.0.0.1", 0)
+port = tcp_srv.addr[1]
+ssl_srv = OpenSSL::SSL::SSLServer.new(tcp_srv, srv_ctx)
+
+server_thread = Thread.new do
+  client = ssl_srv.accept
+  line = client.gets
+  client.puts("ECHO:#{line.strip}")
+  client.close
+end
+
+cli_ctx = OpenSSL::SSL::SSLContext.new
+cli_ctx.verify_mode = OpenSSL::SSL::VERIFY_PEER
+store = OpenSSL::X509::Store.new
+store.add_cert(cert)
+cli_ctx.cert_store = store
+cli_ctx.alpn_protocols = ["http/1.1"]
+
+tcp_cli = TCPSocket.new("127.0.0.1", port)
+ssl_cli = OpenSSL::SSL::SSLSocket.new(tcp_cli, cli_ctx)
+ssl_cli.hostname = "localhost"
+ssl_cli.sync_close = true
+ssl_cli.connect
+ssl_cli.post_connection_check("localhost")
+
+raise "alpn" unless ssl_cli.alpn_protocol == "http/1.1"
+raise "peer_cert" unless ssl_cli.peer_cert.to_der == cert.to_der
+raise "ssl_version" unless ssl_cli.ssl_version.start_with?("TLSv1.")
+
+ssl_cli.puts("hello tls")
+reply = ssl_cli.gets
+ssl_cli.close
+server_thread.join
+ssl_srv.close
+
+raise "reply=#{reply.inspect}" unless reply == "ECHO:hello tls\n"
+`)
+	if err != nil {
+		t.Fatalf("OpenSSL TLS server/client test failed: %v", err)
+	}
+}

@@ -195,6 +195,14 @@ func MustCompileRuby(source string, options int) *Regexp {
 
 func (r *Regexp) numSubexp() int { return r.engine.NumSubexp() }
 
+// SubexpNames returns capture group names (index 0 and unnamed groups are "").
+func (r *Regexp) SubexpNames() []string { return r.subexpNames() }
+
+// FindAtBytes returns the leftmost match starting at or after byte pos.
+func (r *Regexp) FindAtBytes(s string, pos int, encoding ...string) ([]int, error) {
+	return r.findErr(s, pos, encoding...)
+}
+
 // subexpNames returns the group names with encoded names decoded
 func (r *Regexp) subexpNames() []string {
 	r.namesOnce.Do(func() {

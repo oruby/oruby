@@ -26,6 +26,102 @@ module OpenSSL
     class SSLErrorWaitWritable < SSLError
       include IO::WaitWritable
     end
+
+    class SSLContext
+      DEFAULT_PARAMS = {
+        verify_mode: VERIFY_PEER,
+        verify_hostname: true,
+      }.freeze
+
+      def set_params(params = {})
+        DEFAULT_PARAMS.merge(params || {}).each do |k, v|
+          setter = "#{k}="
+          public_send(setter, v) if respond_to?(setter)
+        end
+        self
+      end
+    end
+
+    class SSLSocket
+      def fileno
+        @io.fileno
+      end
+      alias to_i fileno
+
+      def puts(*objs)
+        if objs.empty?
+          write("\n")
+        else
+          objs.each do |o|
+            s = o.to_s
+            write(s.end_with?("\n") ? s : "#{s}\n")
+          end
+        end
+        nil
+      end
+
+      def print(*objs)
+        objs.each { |o| write(o.to_s) }
+        nil
+      end
+      alias << write
+
+      def peeraddr
+        @io.peeraddr
+      end
+
+      def addr
+        @io.addr
+      end
+    end
+
+    class SSLServer
+      attr_accessor :start_immediately
+
+      def initialize(svr, ctx)
+        @svr = svr
+        @ctx = ctx
+        @start_immediately = true
+      end
+
+      def to_io
+        @svr
+      end
+
+      def listen(backlog = 5)
+        @svr.listen(backlog)
+        0
+      end
+
+      def addr
+        @svr.addr
+      end
+
+      def setsockopt(*args)
+        @svr.setsockopt(*args)
+      end
+
+      def accept
+        sock = @svr.accept
+        begin
+          ssl = SSLSocket.new(sock, @ctx)
+          ssl.sync_close = true
+          ssl.accept if @start_immediately
+          ssl
+        rescue
+          sock.close rescue nil
+          raise
+        end
+      end
+
+      def close
+        @svr.close
+      end
+
+      def closed?
+        @svr.closed?
+      end
+    end
   end
 
   class Digest
@@ -195,5 +291,11 @@ module OpenSSL
 
   def self.secure_compare(a, b)
     OpenSSL.__secure_compare(a, b)
+  end
+end
+
+class Integer
+  def to_bn
+    OpenSSL::BN.new(self)
   end
 end
