@@ -81,8 +81,11 @@ class NameError
   alias __orig_nme_to_s to_s
   def to_s
     s = __orig_nme_to_s
+    # (a message already in MRI's words, "for class 'X'" from Kernel#method
+    # and the like, stays)
     if instance_variable_defined?(:@receiver) &&
-       (m = /\A(undefined method|undefined local variable or method) '([^']+)' for (.*)\z/.__match_raw(s))
+       (m = /\A(undefined method|undefined local variable or method) '([^']+)' for (.*)\z/.__match_raw(s)) &&
+       !/\A(?:class|module) '/.match?(m[3])
       recv = @receiver
       desc = if nil.equal?(recv)
                "nil"

@@ -1337,6 +1337,41 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       }
     }
     C
+    # Kernel#public_method in C, beside Kernel#method: a C method reads the
+    # refinements of the frame that called it, so a public method a
+    # refinement gives there is found, as Kernel#method finds it. Everything
+    # else (MRI's NameErrors, #to_str names, respond_to_missing?) stays with
+    # core_ext's Kernel#__oruby_public_method (22_missing.rb), whose own
+    # lookup would see core_ext's frame instead.
+    replace(source, "static mrb_value\nmrb_kernel_singleton_method(mrb_state *mrb, mrb_value self)", <<~'C'.chomp)
+      static mrb_value
+      mrb_kernel_public_method(mrb_state *mrb, mrb_value self)
+      {
+        mrb_value arg = mrb_get_arg1(mrb);
+      #ifdef MRB_USE_REFINEMENTS
+        if (mrb_symbol_p(arg) || mrb_string_p(arg)) {
+          mrb_sym name = mrb_symbol_p(arg) ? mrb_symbol(arg) : mrb_intern_str(mrb, arg);
+          struct RArray *scope = mrb->refscopes_len && mrb_refined_mid_p(mrb, name) ? mrb_vm_caller_refinements(mrb) : NULL;
+          if (scope) {
+            struct RClass *c = mrb_class(mrb, self), *rc = c, *pc = c;
+            mrb_method_t rm = mrb_vm_find_method_in_scope(mrb, scope, c, &rc, name);
+            mrb_method_t pm = mrb_method_search_vm(mrb, &pc, name);
+            if (!MRB_METHOD_UNDEF_P(rm) && (MRB_METHOD_UNDEF_P(pm) || rc != pc) &&
+                !(rm.flags & (MRB_METHOD_PRIVATE_FL | MRB_METHOD_PROTECTED_FL))) {
+              return method_alloc(mrb, c, self, name, FALSE, FALSE);
+            }
+          }
+        }
+      #endif
+        return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_public_method), 1, arg);
+      }
+
+      static mrb_value
+      mrb_kernel_singleton_method(mrb_state *mrb, mrb_value self)
+    C
+    replace(source, "  mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(method), mrb_kernel_method, MRB_ARGS_REQ(1));\n",
+      "  mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(method), mrb_kernel_method, MRB_ARGS_REQ(1));\n" \
+      "  mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(public_method), mrb_kernel_public_method, MRB_ARGS_REQ(1));\n")
   end
 
   def self.eval_source(source)

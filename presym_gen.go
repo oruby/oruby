@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "1f6f416adabd7f9c"
+const presymTable = "82a797fa1bd80e4a"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -622,6 +622,7 @@ const (
 	Sym_Id                                      MrbSym = C.MRB_SYM__Id                                      // "Id"
 	Sym_Ifaddr                                  MrbSym = C.MRB_SYM__Ifaddr                                  // "Ifaddr"
 	Sym_Image                                   MrbSym = C.MRB_SYM__Image                                   // "Image"
+	Sym_Infinity                                MrbSym = C.MRB_SYM__Infinity                                // "Infinity"
 	Sym_Instance                                MrbSym = C.MRB_SYM__Instance                                // "Instance"
 	Sym_Integer                                 MrbSym = C.MRB_SYM__Integer                                 // "Integer"
 	Sym_InternalObjectWrapper                   MrbSym = C.MRB_SYM__InternalObjectWrapper                   // "InternalObjectWrapper"
@@ -664,6 +665,7 @@ const (
 	Sym_MemoryPointer                           MrbSym = C.MRB_SYM__MemoryPointer                           // "MemoryPointer"
 	Sym_MessagePack                             MrbSym = C.MRB_SYM__MessagePack                             // "MessagePack"
 	Sym_Method                                  MrbSym = C.MRB_SYM__Method                                  // "Method"
+	Sym_MinusInfinity                           MrbSym = C.MRB_SYM__MinusInfinity                           // "MinusInfinity"
 	Sym_Mode                                    MrbSym = C.MRB_SYM__Mode                                    // "Mode"
 	Sym_Monitor                                 MrbSym = C.MRB_SYM__Monitor                                 // "Monitor"
 	Sym_Mrbtest                                 MrbSym = C.MRB_SYM__Mrbtest                                 // "Mrbtest"
@@ -677,6 +679,7 @@ const (
 	Sym_NONBLOCK                                MrbSym = C.MRB_SYM__NONBLOCK                                // "NONBLOCK"
 	Sym_NONCEBYTES                              MrbSym = C.MRB_SYM__NONCEBYTES                              // "NONCEBYTES"
 	Sym_NULL                                    MrbSym = C.MRB_SYM__NULL                                    // "NULL"
+	Sym_NaN                                     MrbSym = C.MRB_SYM__NaN                                     // "NaN"
 	Sym_Name                                    MrbSym = C.MRB_SYM__Name                                    // "Name"
 	Sym_NameError                               MrbSym = C.MRB_SYM__NameError                               // "NameError"
 	Sym_Namespace                               MrbSym = C.MRB_SYM__Namespace                               // "Namespace"
@@ -923,6 +926,7 @@ const (
 	Sym___backtrace__                           MrbSym = C.MRB_SYM____backtrace__                           // "__backtrace__"
 	Sym___base_label__                          MrbSym = C.MRB_SYM____base_label__                          // "__base_label__"
 	Sym___bc_crypt                              MrbSym = C.MRB_SYM____bc_crypt                              // "__bc_crypt"
+	Sym___bc_crypt_hash                         MrbSym = C.MRB_SYM____bc_crypt_hash                         // "__bc_crypt_hash"
 	Sym___bc_crypt_pbkdf                        MrbSym = C.MRB_SYM____bc_crypt_pbkdf                        // "__bc_crypt_pbkdf"
 	Sym___bc_salt                               MrbSym = C.MRB_SYM____bc_salt                               // "__bc_salt"
 	Sym___black                                 MrbSym = C.MRB_SYM____black                                 // "__black"

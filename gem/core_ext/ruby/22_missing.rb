@@ -53,8 +53,10 @@ end
 
 module Kernel
   # Kernel#method for a public method only: MRI's NameError for a private
-  # or protected one
-  def public_method(name)
+  # or protected one. Kernel#public_method is C (mruby-method's method.c,
+  # ORubyVMCompat.method_lookup), which answers a refined method itself (a C
+  # method sees its caller's refinements) and calls this for the rest.
+  private def __oruby_public_method(name)
     sym = Symbol === name ? name : Kernel.__implicit(name, String).to_sym
     cls = Kernel.instance_method(:class).bind_call(self)
     vis = if singleton_class.private_method_defined?(sym) then "private"

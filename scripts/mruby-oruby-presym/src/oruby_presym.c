@@ -379,6 +379,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "Id");
   (void)mrb_intern_lit(mrb, "Ifaddr");
   (void)mrb_intern_lit(mrb, "Image");
+  (void)mrb_intern_lit(mrb, "Infinity");
   (void)mrb_intern_lit(mrb, "Instance");
   (void)mrb_intern_lit(mrb, "Integer");
   (void)mrb_intern_lit(mrb, "InternalObjectWrapper");
@@ -421,6 +422,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "MemoryPointer");
   (void)mrb_intern_lit(mrb, "MessagePack");
   (void)mrb_intern_lit(mrb, "Method");
+  (void)mrb_intern_lit(mrb, "MinusInfinity");
   (void)mrb_intern_lit(mrb, "Mode");
   (void)mrb_intern_lit(mrb, "Monitor");
   (void)mrb_intern_lit(mrb, "Mrbtest");
@@ -434,6 +436,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "NONBLOCK");
   (void)mrb_intern_lit(mrb, "NONCEBYTES");
   (void)mrb_intern_lit(mrb, "NULL");
+  (void)mrb_intern_lit(mrb, "NaN");
   (void)mrb_intern_lit(mrb, "Name");
   (void)mrb_intern_lit(mrb, "NameError");
   (void)mrb_intern_lit(mrb, "Namespace");
@@ -683,6 +686,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__backtrace__");
   (void)mrb_intern_lit(mrb, "__base_label__");
   (void)mrb_intern_lit(mrb, "__bc_crypt");
+  (void)mrb_intern_lit(mrb, "__bc_crypt_hash");
   (void)mrb_intern_lit(mrb, "__bc_crypt_pbkdf");
   (void)mrb_intern_lit(mrb, "__bc_salt");
   (void)mrb_intern_lit(mrb, "__black");
