@@ -39,6 +39,7 @@ import (
 	_ "github.com/oruby/oruby/gem/mysql2"
 	_ "github.com/oruby/oruby/gem/nethttp"
 	_ "github.com/oruby/oruby/gem/nio4r"
+	_ "github.com/oruby/oruby/gem/nokogiri"
 	_ "github.com/oruby/oruby/gem/objspace"
 	_ "github.com/oruby/oruby/gem/pg"
 	_ "github.com/oruby/oruby/gem/process"

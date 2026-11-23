@@ -68,6 +68,7 @@ test:
 	(cd gem/msgpack && go test)
 	(cd gem/mysql2 && go test)
 	(cd gem/nio4r && go test)
+	(cd gem/nokogiri && go test)
 	(cd gem/objspace && go test)
 	(cd gem/pg && go test)
 	(cd gem/process && go test)
