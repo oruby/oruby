@@ -881,6 +881,9 @@ func getStat(mrb *oruby.MrbState, f oruby.Value) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if oruby.IsOrbVirtualPath(s) {
+		return mrb.OrbStat(s)
+	}
 	return os.Stat(s)
 }
 
@@ -1092,7 +1095,12 @@ func fileLStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return raisePathError(mrb, err)
 	}
-	stat, err := os.Lstat(name)
+	var stat os.FileInfo
+	if oruby.IsOrbVirtualPath(name) {
+		stat, err = mrb.OrbStat(name)
+	} else {
+		stat, err = os.Lstat(name)
+	}
 	if err != nil {
 		return mrb.SysFail(err)
 	}
@@ -1117,7 +1125,11 @@ func fileFtype(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if pErr != nil {
 			return raisePathError(mrb, pErr)
 		}
-		stat, err = os.Lstat(name)
+		if oruby.IsOrbVirtualPath(name) {
+			stat, err = mrb.OrbStat(name)
+		} else {
+			stat, err = os.Lstat(name)
+		}
 	}
 	if err != nil {
 		return mrb.SysFail(err)
@@ -1278,6 +1290,14 @@ func fileRealpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 		pth = filepath.Join(dir, pth)
 	}
+	if oruby.IsOrbVirtualPath(pth) {
+		cleaned := filepath.ToSlash(filepath.Clean(pth))
+		if _, err := mrb.OrbStat(cleaned); err != nil {
+			return mrb.SysFail(err)
+		}
+		ret := mrb.StrNew(cleaned)
+		return preserveEncoding(mrb, rawArgs[0], ret)
+	}
 	realPth, err := filepath.EvalSymlinks(pth)
 	if err != nil {
 		return mrb.SysFail(err)
@@ -1367,6 +1387,17 @@ func fileRealdirpath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			dir = filepath.Join(pwd, dir)
 		}
 		pth = filepath.Join(dir, pth)
+	}
+	if oruby.IsOrbVirtualPath(pth) {
+		cleaned := filepath.ToSlash(filepath.Clean(pth))
+		if _, err := mrb.OrbStat(cleaned); err != nil {
+			parent := filepath.ToSlash(filepath.Dir(cleaned))
+			if _, perr := mrb.OrbStat(parent); perr != nil {
+				return mrb.SysFail(perr)
+			}
+		}
+		ret := mrb.StrNew(cleaned)
+		return preserveEncoding(mrb, rawArgs[0], ret)
 	}
 	realPth, err := resolveRealdirpath(pth)
 	if err != nil {
@@ -1569,8 +1600,11 @@ func fileToPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !ok || f == nil {
 		return mrb.Raise(mrb.ClassGet("IOError"), "uninitialized stream")
 	}
-	ret := mrb.StrNew(f.Name())
 	ivPath := mrb.GetIV(self, "@path")
+	if !mrb.NilP(ivPath) && ivPath.IsString() && oruby.IsOrbVirtualPath(ivPath.String()) {
+		return ivPath
+	}
+	ret := mrb.StrNew(f.Name())
 	if !mrb.NilP(ivPath) {
 		return preserveEncoding(mrb, ivPath, ret)
 	}
@@ -1674,6 +1708,29 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 	}
 
 	var f *os.File
+	if oruby.IsOrbVirtualPath(name) {
+		if flags&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0 {
+			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.EROFS}
+		}
+		data, ok := mrb.OrbReadAsset(name)
+		if !ok {
+			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.ENOENT}
+		}
+		tmp, err := os.CreateTemp("", "oruby-orb-*")
+		if err != nil {
+			return nil, err
+		}
+		_ = os.Remove(tmp.Name())
+		if _, err := tmp.Write(data); err != nil {
+			_ = tmp.Close()
+			return nil, err
+		}
+		if _, err := tmp.Seek(0, 0); err != nil {
+			_ = tmp.Close()
+			return nil, err
+		}
+		return tmp, nil
+	}
 	mrb.Blocking(func() {
 		f, err = os.OpenFile(name, flags, os.FileMode(perm))
 	})

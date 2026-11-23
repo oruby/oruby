@@ -199,4 +199,7 @@ func (mrb *MrbState) CopyLazyFeatures(to *MrbState) {
 	for _, name := range names {
 		to.Resolve(name)
 	}
+	for _, orb := range mrb.MountedOrbs() {
+		_, _ = to.MountOrb(orb)
+	}
 }

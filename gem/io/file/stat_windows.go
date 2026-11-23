@@ -8,7 +8,14 @@ import (
 )
 
 func getExtendedStat(stat os.FileInfo) extendedStat {
-	s := stat.Sys().(*syscall.Win32FileAttributeData)
+	s, ok := stat.Sys().(*syscall.Win32FileAttributeData)
+	if !ok || s == nil {
+		return extendedStat{
+			nlink: 1,
+			atime: stat.ModTime(),
+			ctime: stat.ModTime(),
+		}
+	}
 	return extendedStat{
 		ino:     0,
 		dev:     0x2,

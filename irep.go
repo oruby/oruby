@@ -152,6 +152,10 @@ func (mrb *MrbState) LoadIrep(buffer []byte) (Value, error) {
 	if bufLen == 0 {
 		status = C._mrb_load_irep_empty(mrb.p, &result)
 	} else {
+		if rite, ok := ExtractRiteBinary(buffer); ok {
+			buffer = rite
+			bufLen = len(buffer)
+		}
 		status = C._mrb_load_irep_buf(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), &result)
 		runtime.KeepAlive(buffer)
 	}
@@ -173,6 +177,10 @@ func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbCcontext) (Value, er
 	if bufLen == 0 {
 		status = C._mrb_load_irep_empty_cxt(mrb.p, context.p, &result)
 	} else {
+		if rite, ok := ExtractRiteBinary(buffer); ok {
+			buffer = rite
+			bufLen = len(buffer)
+		}
 		status = C._mrb_load_irep_buf_cxt(mrb.p, unsafe.Pointer(&buffer[0]), C.size_t(bufLen), context.p, &result)
 		runtime.KeepAlive(buffer)
 	}
@@ -216,15 +224,42 @@ func (c *MrbCcontext) LoadDetectBuf(data []byte) (Value, error) {
 	return c.mrb.LoadDetectBufCxt(data, c)
 }
 
+// ExtractRiteBinary checks whether data is an mruby RiteVM binary (.mrb),
+// optionally preceded by a "#!..." shebang line, and returns the RITE payload.
+func ExtractRiteBinary(data []byte) ([]byte, bool) {
+	if bytes.HasPrefix(data, []byte("#!")) {
+		if nl := bytes.IndexByte(data, '\n'); nl >= 0 {
+			data = data[nl+1:]
+		}
+	}
+	if len(data) < 32 || !bytes.HasPrefix(data, []byte(RiteBinaryIdent)) {
+		return nil, false
+	}
+	checkLen := len(data)
+	if checkLen > 64 {
+		checkLen = 64
+	}
+	if bytes.IndexByte(data[:checkLen], 0) < 0 {
+		return nil, false
+	}
+	return data, true
+}
+
+// IsRiteBinary reports whether data contains a RiteVM binary (.mrb) payload.
+func IsRiteBinary(data []byte) bool {
+	_, ok := ExtractRiteBinary(data)
+	return ok
+}
+
 // LoadDetectBufCxt load buffer with context, detecting if data is precompiled
 // or if it contains script that needs to be compiled
 // In order to be recognized as a `.mrb` file, the following three points must be satisfied:
-// - File starts with "RITE"
+// - File starts with "RITE" (optionally after a #! shebang line)
 // - At least `sizeof(struct rite_binary_header)` bytes can be read
-// - `NUL` is included in the first 64 bytes of the file
+// - `NUL` is included in the first 64 bytes of the RITE payload
 func (mrb *MrbState) LoadDetectBufCxt(data []byte, c *MrbCcontext) (Value, error) {
-	if bytes.HasPrefix(data, []byte(RiteBinaryIdent)) && len(data) >= 64 && bytes.Contains(data[:63], []byte{'\x00'}) {
-		return mrb.LoadIrepCxt(data, c)
+	if rite, ok := ExtractRiteBinary(data); ok {
+		return mrb.LoadIrepCxt(rite, c)
 	}
 
 	// Parse as script, then load and execute

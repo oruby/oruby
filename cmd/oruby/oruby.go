@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -505,6 +506,41 @@ func dashSArgs(args []string) (map[string]string, []string) {
 	return vars, args[i:]
 }
 
+// delegateToOrubyc forwards `oruby init` and `oruby build` to the sibling `orubyc` binary.
+func delegateToOrubyc(args []string) int {
+	orubycPath := ""
+	if exe, err := os.Executable(); err == nil {
+		if real, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+			exe = real
+		}
+		sibling := filepath.Join(filepath.Dir(exe), "orubyc")
+		if st, err := os.Stat(sibling); err == nil && !st.IsDir() {
+			orubycPath = sibling
+		}
+	}
+	if orubycPath == "" {
+		if p, err := exec.LookPath("orubyc"); err == nil {
+			orubycPath = p
+		}
+	}
+	if orubycPath == "" {
+		fmt.Fprintf(os.Stderr, "%s: cannot find 'orubyc' executable to run '%s'\n", progName(), args[0])
+		return 1
+	}
+	cmd := exec.Command(orubycPath, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintf(os.Stderr, "%s: %v\n", progName(), err)
+		return 1
+	}
+	return 0
+}
+
 func main() {
 	exitCode := 0
 	defer func() {
@@ -519,6 +555,11 @@ func main() {
 }
 
 func run() int {
+	if len(os.Args) >= 2 && (os.Args[1] == "init" || os.Args[1] == "build") {
+		if _, err := os.Stat(os.Args[1]); os.IsNotExist(err) {
+			return delegateToOrubyc(os.Args[1:])
+		}
+	}
 	o := newOptions()
 	rest, err := o.parse(os.Args[1:], false)
 	if err != nil {
@@ -613,7 +654,9 @@ func run() int {
 		}
 	}
 	origLen := len(src)
-	if src != nil && len(o.eLines) == 0 {
+	isOrb := src != nil && len(o.eLines) == 0 && (oruby.IsOrbBinary(src) || strings.EqualFold(filepath.Ext(o.script), ".orb"))
+	isBytecode := o.mrbfile || (src != nil && len(o.eLines) == 0 && oruby.IsRiteBinary(src))
+	if src != nil && len(o.eLines) == 0 && !isBytecode && !isOrb {
 		// a shebang line not naming ruby means -x
 		if o.xflag || bytes.HasPrefix(src, []byte("#!")) && !rubyShebang.Match(firstLine(src)) {
 			stripped, ok := stripToRubyLine(src)
@@ -713,10 +756,16 @@ func run() int {
 	}
 
 	// RubyGems is loaded at startup, as MRI does, unless disabled (the mspec
-	// runner skips it for speed unless asked for explicitly)
-	gems := o.feature("gems", os.Getenv("MSPEC_RUNNER") == "")
+	// runner and self-contained .orb bundles skip it by default unless
+	// --enable-gems asks for it explicitly)
+	gems := o.feature("gems", !isOrb && os.Getenv("MSPEC_RUNNER") == "")
 	if gems {
 		mrb.LoadString("begin; require 'rubygems'; rescue LoadError => e; warn \"`RubyGems' were not loaded: #{e}\" if $VERBOSE; end")
+	}
+	// DidYouMean is autoloaded, as MRI's gem_prelude does (with the gems, or
+	// when --enable=did_you_mean asks for it)
+	if o.feature("did_you_mean", gems) {
+		mrb.LoadString("Object.autoload(:DidYouMean, 'did_you_mean')")
 	}
 
 	for _, lib := range o.libs {
@@ -740,7 +789,7 @@ func run() int {
 	}
 
 	// DATA: the main script file opened just past its __END__ line
-	if src != nil && len(o.eLines) == 0 && o.script != "" && o.script != "-" {
+	if src != nil && !isBytecode && !isOrb && len(o.eLines) == 0 && o.script != "" && o.script != "-" {
 		if off := oruby.DataOffset(src); off >= 0 {
 			mrb.SetGV("$__oruby_data__", o.script)
 			if _, err := mrb.LoadString(fmt.Sprintf("Object.const_set(:DATA, File.open($__oruby_data__)).seek(%d); $__oruby_data__ = nil", off+origLen-len(src))); err != nil {
@@ -752,13 +801,23 @@ func run() int {
 
 	mrb.SetMainScript(cmdline)
 	// a program not read from a file is kept for #source_range (core_ext)
-	if src != nil && (cmdline == "-e" || cmdline == "-") && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_keep_main_source")) {
+	if src != nil && !isBytecode && !isOrb && (cmdline == "-e" || cmdline == "-") && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_keep_main_source")) {
 		mrb.Call(mrb.KernelModule().Value(), "__oruby_keep_main_source", cmdline, string(src))
 	}
 	var v oruby.Value
 	switch {
 	case src == nil:
 		v, err = c.LoadIrepFile(o.script)
+	case isOrb:
+		var orb *oruby.OrbFile
+		orb, err = mrb.MountOrbBytes(cmdline, src)
+		if err == nil {
+			if ep, ok := orb.ResolveEntrypoint(cmdline); ok {
+				v, err = mrb.ExecuteOrbEntry(orb, ep, c)
+			}
+		}
+	case isBytecode:
+		v, err = c.LoadIrepBuf(src)
 	default:
 		if o.dashN || o.dashP {
 			src = loopWrap(src, o)

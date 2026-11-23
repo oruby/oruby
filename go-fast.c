@@ -1539,7 +1539,9 @@ void _orb_fast_install(mrb_state *mrb) {
     snprintf(buf, sizeof(buf), "__oruby_slow_%s", d->name);
     mrb_sym slow = mrb_intern_cstr(mrb, buf);
     /* kept where it is defined, so that super from it goes on from there */
-    mrb_define_method_raw(mrb, owner, slow, cur);
+    mrb_method_t slow_m = cur;
+    MRB_METHOD_SET_VISIBILITY(slow_m, MRB_METHOD_PRIVATE_FL);
+    mrb_define_method_raw(mrb, owner, slow, slow_m);
     mrb_method_t m;
     MRB_METHOD_FROM_FUNC(m, fast_fns[n]);
     m.flags |= method_aspec(cur);
@@ -1691,7 +1693,9 @@ static mrb_value mod_implicit_c(mrb_state *mrb, mrb_value self) {
   if (proc) {
     char buf[32];
     snprintf(buf, sizeof(buf), "__oruby_imp_%d", slot);
-    mrb_define_method_raw(mrb, c, mrb_intern_cstr(mrb, buf), m);
+    mrb_method_t imp_m = m;
+    MRB_METHOD_SET_VISIBILITY(imp_m, MRB_METHOD_PRIVATE_FL);
+    mrb_define_method_raw(mrb, c, mrb_intern_cstr(mrb, buf), imp_m);
   }
   if (getenv("ORUBY_FAST_DEBUG")) fprintf(stderr, "implicit %s#%s slot %d proc %d\n", mrb_class_name(mrb, c), mrb_sym_name(mrb, name), slot, proc);
   mrb_method_t w;

@@ -12,11 +12,12 @@ import (
 
 // ModuleUnit represents a single precompiled Ruby file.
 type ModuleUnit struct {
-	FilePath  string    // Absolute path on disk
+	FilePath  string    // Absolute path on disk (or virtual path anchor)
 	RelPath   string    // Normalized relative path (e.g. "calculator.rb", "models/user.rb")
 	FuncName  string    // Name of the Go entry function
 	Root      *IRepUnit // Root IRepUnit of this file
 	LoadPaths []string  // Search paths for resolving relative require paths
+	Hash32    uint32    // FNV-1a 32-bit hash of the module bytecode/source payload
 }
 
 // DependencyResolver finds and resolves all require/require_relative dependencies.
@@ -97,6 +98,10 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 	content, err := os.ReadFile(absPath)
 	if err != nil {
 		return fmt.Errorf("reading ruby file %s: %w", absPath, err)
+	}
+
+	if oruby.IsOrbBinary(content) {
+		return r.resolveOrbBytes(absPath, rootDir, content, list, counter)
 	}
 
 	var irep oruby.MrbIrep
@@ -182,6 +187,91 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 		}
 	}
 
+	return nil
+}
+
+func (r *DependencyResolver) resolveOrbBytes(absOrbPath, rootDir string, content []byte, list *[]*ModuleUnit, counter *int) error {
+	orb, err := oruby.ParseOrb(absOrbPath, content)
+	if err != nil {
+		return fmt.Errorf("parsing orb archive %s: %w", absOrbPath, err)
+	}
+
+	orbLoadPaths := append([]string{}, r.loadPaths...)
+	orbLoadPaths = append(orbLoadPaths, rootDir, filepath.Join(rootDir, "lib"))
+	for i := range orb.Entries {
+		e := &orb.Entries[i]
+		if e.Flags&oruby.OrbFlagLoadPath != 0 && e.Kind == oruby.OrbKindDir {
+			orbLoadPaths = append(orbLoadPaths, filepath.Join(rootDir, filepath.FromSlash(e.Path)))
+		}
+	}
+
+	// Order entries so the designated entrypoint comes first (modules[0])
+	order := make([]int, 0, len(orb.Entries))
+	epIdx := int(orb.Header.EntrypointIdx)
+	if epIdx >= 0 && epIdx < len(orb.Entries) {
+		order = append(order, epIdx)
+	}
+	for i := range orb.Entries {
+		if i != epIdx {
+			order = append(order, i)
+		}
+	}
+
+	decoder := NewDecoder(r.mrb)
+	for _, i := range order {
+		e := &orb.Entries[i]
+		if e.Kind != oruby.OrbKindMrb && e.Kind != oruby.OrbKindRuby {
+			continue
+		}
+		vfile := filepath.Join(rootDir, filepath.FromSlash(e.Path))
+		if _, ok := r.visited[vfile]; ok {
+			continue
+		}
+
+		payload := orb.EntryData(e)
+		var irep oruby.MrbIrep
+		if e.Kind == oruby.OrbKindMrb || IsRiteBinary(payload) {
+			irep, err = r.mrb.ReadIrep(payload)
+			if err != nil {
+				return fmt.Errorf("reading bytecode for %s in %s: %w", e.Path, absOrbPath, err)
+			}
+		} else {
+			cxt := r.mrb.MrbCcontextNew()
+			cxt.SetNoExec(true)
+			cxt.Filename(vfile)
+			parser, perr := r.mrb.ParseString(string(payload), cxt)
+			if perr != nil {
+				cxt.Free()
+				return fmt.Errorf("parsing %s in %s: %w", e.Path, absOrbPath, perr)
+			}
+			proc, gerr := r.mrb.GenerateCode(parser)
+			parser.Free()
+			cxt.Free()
+			if gerr != nil {
+				return fmt.Errorf("generating bytecode for %s in %s: %w", e.Path, absOrbPath, gerr)
+			}
+			irep = proc.IRep()
+		}
+
+		unit, err := decoder.Decode(irep)
+		if err != nil {
+			return fmt.Errorf("decoding irep for %s in %s: %w", e.Path, absOrbPath, err)
+		}
+
+		idx := *counter
+		*counter++
+		mod := &ModuleUnit{
+			FilePath:  vfile,
+			RelPath:   filepath.FromSlash(e.Path),
+			FuncName:  fmt.Sprintf("FileModule_%d", idx),
+			Root:      unit,
+			LoadPaths: orbLoadPaths,
+			Hash32:    e.Hash32,
+		}
+		r.visited[vfile] = mod
+		*list = append(*list, mod)
+	}
+	r.visited[absOrbPath] = &ModuleUnit{FilePath: absOrbPath}
 	return nil
 }
 

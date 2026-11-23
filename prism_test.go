@@ -1,8 +1,10 @@
 package oruby
 
 import (
+	"bytes"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -192,5 +194,71 @@ func TestPrismRewriteRuns(t *testing.T) {
 		if got := v.String(); got != want {
 			t.Errorf("%s = %q, want %q", code, got, want)
 		}
+	}
+}
+
+// TestPrismPrecompiledMrbSiteIDIsolation verifies that two files precompiled to
+// .mrb in separate compiler processes (where per-process site counters both
+// start at 0) do not collide on runtime caches (__oruby_relit, __oruby_ff__,
+// __oruby_to_ary/__oruby_masgn, __oruby_end__) when loaded into the same state.
+func TestPrismPrecompiledMrbSiteIDIsolation(t *testing.T) {
+	compileToMrb := func(filename, src string) []byte {
+		// Simulate a fresh orubyc process where all site counters start at 0
+		atomic.StoreUint64(&regexpSiteCounter, 0)
+		atomic.StoreUint64(&ffCounter, 0)
+		atomic.StoreUint64(&endSiteCounter, 0)
+		atomic.StoreUint64(&masgnSiteCounter, 0)
+
+		mrb := MrbOpen()
+		defer mrb.Close()
+		c := mrb.MrbCcontextNew()
+		defer c.Free()
+		c.Filename(filename)
+		c.SetNoExec(true)
+
+		val, err := c.LoadBytes([]byte(src))
+		if err != nil {
+			t.Fatalf("compiling %s: %v", filename, err)
+		}
+		var buf bytes.Buffer
+		if st, err := mrb.DumpIrepBinary(mrb.RProc(val).IRep(), MrbDumpDebugInfo, &buf); err != nil || st != MrbDumpOK {
+			t.Fatalf("dumping %s: status=%d err=%v", filename, st, err)
+		}
+		return buf.Bytes()
+	}
+
+	mrbA := compileToMrb("app/models/alpha.rb", `
+def alpha_vals
+  [(1..3), (10...20), ((a, b = *[10, 20]))]
+end
+`)
+	mrbB := compileToMrb("app/models/beta.rb", `
+def beta_vals
+  [(4..6), (30...40), ((x, y = *[30, 40]))]
+end
+`)
+	// Also test identical range literal expression in two different file paths
+	mrbSame1 := compileToMrb("app/a/same.rb", `def same_range; 1..5; end`)
+	mrbSame2 := compileToMrb("app/b/same.rb", `def other_range; 1..9; end`)
+
+	runtimeMrb, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeMrb.Close()
+
+	for _, bytecode := range [][]byte{mrbA, mrbB, mrbSame1, mrbSame2} {
+		if _, err := runtimeMrb.LoadIrep(bytecode); err != nil {
+			t.Fatalf("LoadIrep failed: %v", err)
+		}
+	}
+
+	res, err := runtimeMrb.Eval(`[alpha_vals.inspect, beta_vals.inspect, same_range.inspect, other_range.inspect].join(" | ")`)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	want := `[1..3, 10...20, [10, 20]] | [4..6, 30...40, [30, 40]] | 1..5 | 1..9`
+	if got := res.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

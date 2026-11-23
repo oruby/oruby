@@ -47,6 +47,9 @@ func (mrb *MrbState) DumpIrep(irep MrbIrep, flags uint8, writer io.Writer) (int,
 
 // ReadIrep read irep
 func (mrb *MrbState) ReadIrep(buffer []byte) (irep MrbIrep, err error) {
+	if rite, ok := ExtractRiteBinary(buffer); ok {
+		buffer = rite
+	}
 	bufLen := len(buffer)
 
 	if bufLen == 0 {

@@ -16,6 +16,7 @@ import (
 
 var (
 	outFile    = flag.String("o", "", "Output Go source file path (or '-' for stdout)")
+	outDir     = flag.String("outdir", "", "Output directory for multi-file Go package emission")
 	pkgName    = flag.String("pkg", "main", "Target Go package name")
 	buildBin   = flag.String("build", "", "Directly compile generated Go code into binary executable")
 	disasmOnly = flag.Bool("disasm", false, "Disassemble bytecode and print without generating Go code")
@@ -146,28 +147,61 @@ func main() {
 	}
 	defer mrb.Close()
 
-	cxt := mrb.MrbCcontextNew()
-	defer cxt.Free()
-	cxt.SetNoExec(true)
-	cxt.Filename(inputPath)
+	var irep oruby.MrbIrep
+	isOrb := oruby.IsOrbBinary(rubyCode)
+	if !isOrb {
+		if compiler.IsRiteBinary(rubyCode) {
+			irep, err = mrb.ReadIrep(rubyCode)
+			if err != nil {
+				log.Fatalf("Bytecode load error: %v\n", err)
+			}
+		} else {
+			cxt := mrb.MrbCcontextNew()
+			defer cxt.Free()
+			cxt.SetNoExec(true)
+			cxt.Filename(inputPath)
 
-	parser, err := mrb.ParseString(string(rubyCode), cxt)
-	if err != nil {
-		log.Fatalf("Ruby parse error: %v\n", err)
-	}
+			parser, err := mrb.ParseString(string(rubyCode), cxt)
+			if err != nil {
+				log.Fatalf("Ruby parse error: %v\n", err)
+			}
+			defer parser.Free()
 
-	proc, err := mrb.GenerateCode(parser)
-	if err != nil {
-		log.Fatalf("Bytecode generation error: %v\n", err)
-	}
+			proc, err := mrb.GenerateCode(parser)
+			if err != nil {
+				log.Fatalf("Bytecode generation error: %v\n", err)
+			}
+			irep = proc.IRep()
+		}
 
-	irep := proc.IRep()
-	if irep.IsNil() {
-		log.Fatal("Generated irep is empty")
+		if irep.IsNil() {
+			log.Fatal("Generated irep is empty")
+		}
 	}
 
 	if *disasmOnly {
 		decoder := compiler.NewDecoder(mrb)
+		if isOrb {
+			orb, err := oruby.ParseOrb(inputPath, rubyCode)
+			if err != nil {
+				log.Fatalf("Failed parsing .orb archive: %v\n", err)
+			}
+			for _, e := range orb.Entries {
+				if e.Kind != oruby.OrbKindMrb {
+					continue
+				}
+				entryIrep, err := mrb.ReadIrep(orb.EntryData(&e))
+				if err != nil {
+					log.Fatalf("Failed reading irep %s: %v\n", e.Path, err)
+				}
+				unit, err := decoder.Decode(entryIrep)
+				if err != nil {
+					log.Fatalf("Failed decoding %s: %v\n", e.Path, err)
+				}
+				fmt.Printf("### %s ###\n%s\n", e.Path, unit.Disassemble())
+			}
+			return
+		}
 		unit, err := decoder.Decode(irep)
 		if err != nil {
 			log.Fatalf("Failed decoding bytecode: %v\n", err)
@@ -212,11 +246,47 @@ func main() {
 			if gerr != nil || len(matches) == 0 {
 				matches = []string{pat}
 			}
-			extra = append(extra, matches...)
+			for _, m := range matches {
+				if fi, stErr := os.Stat(m); stErr == nil && fi.IsDir() {
+					_ = filepath.WalkDir(m, func(p string, d os.DirEntry, wErr error) error {
+						if wErr != nil || d.IsDir() {
+							return nil
+						}
+						ext := filepath.Ext(p)
+						if ext == ".mrb" || ext == ".orb" {
+							extra = append(extra, p)
+						} else if ext == ".rb" {
+							// If a compiled .mrb sibling exists in the same directory, prefer the .mrb
+							if _, err := os.Stat(strings.TrimSuffix(p, ".rb") + ".mrb"); err != nil {
+								extra = append(extra, p)
+							}
+						}
+						return nil
+					})
+				} else {
+					extra = append(extra, m)
+				}
+			}
 		}
-		goSrc, err = comp.CompileBundleWith(mrb, inputPath, extra, lps)
-		for _, serr := range comp.Skipped {
-			fmt.Fprintf(os.Stderr, "warning: skipped: %v\n", serr)
+		if *outDir != "" {
+			written, err := comp.CompilePackageDir(mrb, inputPath, extra, lps, *outDir)
+			for _, serr := range comp.Skipped {
+				fmt.Fprintf(os.Stderr, "warning: skipped: %v\n", serr)
+			}
+			if err != nil {
+				log.Fatalf("Package code generation error: %v\n", err)
+			}
+			if *verbose {
+				fmt.Printf("Wrote %d Go files to %s\n", len(written), *outDir)
+			}
+			if *buildBin == "" {
+				return
+			}
+		} else {
+			goSrc, err = comp.CompileBundleWith(mrb, inputPath, extra, lps)
+			for _, serr := range comp.Skipped {
+				fmt.Fprintf(os.Stderr, "warning: skipped: %v\n", serr)
+			}
 		}
 	} else {
 		decoder := compiler.NewDecoder(mrb)
@@ -239,15 +309,18 @@ func main() {
 
 	// Direct compilation to binary requested
 	if *buildBin != "" {
-		tmpDir, err := os.MkdirTemp("", "oruby_build_*")
-		if err != nil {
-			log.Fatalf("Failed creating temp build dir: %v\n", err)
-		}
-		defer os.RemoveAll(tmpDir)
+		tmpDir := *outDir
+		if tmpDir == "" {
+			tmpDir, err = os.MkdirTemp("", "oruby_build_*")
+			if err != nil {
+				log.Fatalf("Failed creating temp build dir: %v\n", err)
+			}
+			defer os.RemoveAll(tmpDir)
 
-		srcFile := filepath.Join(tmpDir, "main.go")
-		if err := os.WriteFile(srcFile, []byte(goSrc), 0644); err != nil {
-			log.Fatalf("Failed writing temp source file: %v\n", err)
+			srcFile := filepath.Join(tmpDir, "main.go")
+			if err := os.WriteFile(srcFile, []byte(goSrc), 0644); err != nil {
+				log.Fatalf("Failed writing temp source file: %v\n", err)
+			}
 		}
 
 		// Copy embedded directories if specified

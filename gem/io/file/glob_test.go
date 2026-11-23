@@ -114,7 +114,7 @@ func Test_globPath5(t *testing.T) {
 // glob runs the patterns through the glob engine (glob.go) as the tests
 // above call it
 func glob(patterns []string, flags int, base string, onFound func(f string) error) error {
-	for _, p := range globPatterns(patterns, flags, base, base != "", true) {
+	for _, p := range globPatterns(nil, patterns, flags, base, base != "", true) {
 		if err := onFound(p); err != nil {
 			return err
 		}

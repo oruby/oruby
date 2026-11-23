@@ -230,6 +230,19 @@ func dirEntries(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
+	if oruby.IsOrbVirtualPath(dir) {
+		entries, err := mrb.OrbReadDir(dir)
+		if err != nil {
+			return mrb.SysFail(err)
+		}
+		ret := mrb.AryNewCapa(len(entries) + 2)
+		ret.Push(encodeDirEntry(mrb, ".", extEnc, explicit))
+		ret.Push(encodeDirEntry(mrb, "..", extEnc, explicit))
+		for _, e := range entries {
+			ret.Push(encodeDirEntry(mrb, e.Name(), extEnc, explicit))
+		}
+		return ret
+	}
 	f, err := os.Open(dir)
 	if err != nil {
 		return mrb.SysFail(err)
@@ -265,7 +278,7 @@ func dirDoForeach(mrb *oruby.MrbState, self oruby.Value, dir string, enc oruby.V
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
-	err = eachName(dir, skipDots, func(f string) error {
+	err = eachName(mrb, dir, skipDots, func(f string) error {
 		_ = mrb.Yield(block, encodeDirEntry(mrb, f, extEnc, explicit))
 		if mrb.Exc() != nil {
 			return mrb.Err()
@@ -329,7 +342,7 @@ func dirChildren(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.RaiseError(err)
 	}
 	ret := mrb.AryNew()
-	err = eachName(dir, true, func(f string) error {
+	err = eachName(mrb, dir, true, func(f string) error {
 		ret.Push(encodeDirEntry(mrb, f, extEnc, explicit))
 		return nil
 	})
@@ -472,7 +485,7 @@ func dirGlob(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if base.IsString() {
 		b = mrb.String(base)
 	}
-	paths := globPatterns([]string{mrb.String(pat)}, flags.Int(), b, b != "", sorted.Bool())
+	paths := globPatterns(mrb, []string{mrb.String(pat)}, flags.Int(), b, b != "", sorted.Bool())
 	ret := mrb.AryNewCapa(len(paths))
 	for _, p := range paths {
 		ret.PushString(p)
@@ -585,7 +598,13 @@ func scanType(m os.FileMode) string {
 }
 
 func scanDir(mrb *oruby.MrbState, path string, enc oruby.Value, block oruby.RProc) oruby.MrbValue {
-	entries, err := os.ReadDir(path)
+	var entries []os.DirEntry
+	var err error
+	if oruby.IsOrbVirtualPath(path) {
+		entries, err = mrb.OrbReadDir(path)
+	} else {
+		entries, err = os.ReadDir(path)
+	}
 	if err != nil {
 		return mrb.SysFail(err)
 	}
@@ -625,6 +644,13 @@ func scanDir(mrb *oruby.MrbState, path string, enc oruby.Value, block oruby.RPro
 
 func dirExist(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	dir := mrb.FSPath(mrb.GetArgsFirst())
+	if oruby.IsOrbVirtualPath(dir) {
+		stat, err := mrb.OrbStat(dir)
+		if err != nil {
+			return oruby.False
+		}
+		return oruby.Bool(stat.IsDir())
+	}
 	stat, err := os.Stat(dir)
 	if err != nil {
 		return oruby.False
@@ -638,6 +664,13 @@ func dirIsEmpty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.EArgumentError().Raise("string contains null byte")
 	}
 	dir := mrb.FSPath(arg)
+	if oruby.IsOrbVirtualPath(dir) {
+		entries, err := mrb.OrbReadDir(dir)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return oruby.Bool(len(entries) == 0)
+	}
 
 	f, err := os.Open(dir)
 	if err != nil {
@@ -898,16 +931,30 @@ func dirEachChild(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return self
 }
 
-func eachName(dir string, skipDots bool, f func(s string) error) error {
-	fd, err := os.Open(dir)
-	if err != nil {
-		return err
+func eachName(mrb *oruby.MrbState, dir string, skipDots bool, f func(s string) error) error {
+	var names []string
+	if oruby.IsOrbVirtualPath(dir) {
+		entries, err := mrb.OrbReadDir(dir)
+		if err != nil {
+			return err
+		}
+		names = make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+	} else {
+		fd, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		var err2 error
+		names, err2 = fd.Readdirnames(-1)
+		if err2 != nil {
+			_ = fd.Close()
+			return err2
+		}
+		defer fd.Close()
 	}
-	names, err := fd.Readdirnames(-1)
-	if err != nil {
-		return err
-	}
-	defer fd.Close()
 
 	if !skipDots {
 		if err := f("."); err != nil {

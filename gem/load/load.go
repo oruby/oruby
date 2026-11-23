@@ -91,11 +91,11 @@ func isSoExt(e string) bool {
 	return false
 }
 
-// extKind: the feature's kind by its extension: 'r' (Ruby), 's' (C
+// extKind: the feature's kind by its extension: 'r' (Ruby/Bytecode/ORB), 's' (C
 // extension), 0 (none, or one require does not know)
 func extKind(f string) byte {
 	switch e := filepath.Ext(f); {
-	case e == ".rb" || e == ".mrb":
+	case e == ".rb" || e == ".mrb" || e == ".orb":
 		return 'r'
 	case isSoExt(e):
 		return 's'
@@ -144,7 +144,32 @@ func loadIrep(mrb *oruby.MrbState, fileName string) (oruby.RProc, error) {
 }
 
 func doLoad(mrb *oruby.MrbState, fullName string) error {
-	var err error
+	if entry, orb, ok := mrb.OrbLookupVirtual(fullName); ok {
+		_, err := mrb.ExecuteOrbEntry(orb, entry, nil)
+		return err
+	}
+
+	data, err := os.ReadFile(fullName)
+	if err != nil {
+		return err
+	}
+
+	if filepath.Ext(fullName) == ".orb" || oruby.IsOrbBinary(data) {
+		orb, err := mrb.MountOrbBytes(fullName, data)
+		if err != nil {
+			return err
+		}
+		if ep, ok := orb.ResolveEntrypoint(fullName); ok {
+			if _, err := mrb.ExecuteOrbEntry(orb, ep, nil); err != nil {
+				return err
+			}
+			vpath := orb.VirtualPath(ep)
+			if featureP(mrb, vpath, 'r', nil) == 0 {
+				mrb.AryPush(mrb.GVGet(oruby.GvSym_LOADED_FEATURES), mrb.StrNew(vpath))
+			}
+		}
+		return nil
+	}
 
 	cxt := mrb.MrbCcontextNew()
 	defer cxt.Free()
@@ -153,20 +178,17 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 	// MRI's, not printed
 	cxt.SetCaptureErrors(true)
 
-	switch filepath.Ext(fullName) {
-	case ".mrb":
-		_, err = cxt.LoadIrepFile(fullName)
-	default:
-		if src, ok := coverageSource(mrb, fullName); ok {
-			_, err = mrb.LoadBytesCxt(src, cxt)
-		} else {
-			_, err = mrb.LoadFileCxt(fullName, cxt)
-		}
-		if err != nil {
-			syntaxErrorAt(mrb, fullName)
-		}
+	if filepath.Ext(fullName) == ".mrb" || oruby.IsRiteBinary(data) {
+		_, err = mrb.LoadIrepCxt(data, cxt)
+		return err
 	}
-
+	if src, ok := coverageSource(mrb, fullName); ok {
+		data = src
+	}
+	_, err = mrb.LoadBytesCxt(data, cxt)
+	if err != nil {
+		syntaxErrorAt(mrb, fullName)
+	}
 	return err
 }
 
@@ -218,10 +240,6 @@ func coverageSource(mrb *oruby.MrbState, fullName string) ([]byte, bool) {
 // main extended with mod as self and mod as where its definitions go; its
 // top-level methods are private, as MRI's
 func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error {
-	data, err := os.ReadFile(fullName)
-	if err != nil {
-		return err
-	}
 	main := mrb.TopSelf()
 	self, err := mrb.Funcall(main, mrb.Intern("clone"))
 	if err != nil {
@@ -233,10 +251,33 @@ func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error 
 	if err := mrb.IVSet(self, oruby.Sym___oruby_load_wrapper, mod); err != nil {
 		return err
 	}
+
+	if entry, orb, ok := mrb.OrbLookupVirtual(fullName); ok {
+		_, err := mrb.ExecuteOrbEntryWrapped(orb, entry, mod, self)
+		return err
+	}
+
+	data, err := os.ReadFile(fullName)
+	if err != nil {
+		return err
+	}
+
+	if filepath.Ext(fullName) == ".orb" || oruby.IsOrbBinary(data) {
+		orb, err := mrb.MountOrbBytes(fullName, data)
+		if err != nil {
+			return err
+		}
+		if ep, ok := orb.ResolveEntrypoint(fullName); ok {
+			_, err := mrb.ExecuteOrbEntryWrapped(orb, ep, mod, self)
+			return err
+		}
+		return nil
+	}
+
 	cxt := mrb.MrbCcontextNew()
 	defer cxt.Free()
 	cxt.Filename(fullName)
-	if filepath.Ext(fullName) == ".mrb" {
+	if filepath.Ext(fullName) == ".mrb" || oruby.IsRiteBinary(data) {
 		_, err := mrb.LoadIrepBytesWrapped(data, cxt, mrb.ClassPtr(mod), self)
 		return err
 	}
@@ -315,9 +356,12 @@ func resolveFeaturePath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	lp := expandedLoadPath(mrb)
 	exts := []string{""}
 	if extKind(feature) == 0 {
-		exts = append([]string{".rb", ".mrb"}, dlexts...)
+		exts = append([]string{".rb", ".mrb", ".orb"}, dlexts...)
 	}
-	name, _ := findFile(feature, exts, lp)
+	name, _ := findFileInState(mrb, feature, exts, lp)
+	if name == "" && strings.HasSuffix(feature, ".rb") {
+		name, _ = findFileInState(mrb, strings.TrimSuffix(feature, ".rb")+".mrb", []string{""}, lp)
+	}
 	if name == "" {
 		// a library built into oruby (a Go gem): Ruby code of no file
 		if !isExplicit(feature) && mrb.GemAvailable(feature) {
@@ -343,9 +387,17 @@ func loadLoad(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 	wrap := args.Item(1)
 
-	path, _ := findFile(feature, []string{""}, expandedLoadPath(mrb))
-	if path == "" && fileLoadOK(feature) {
+	lp := expandedLoadPath(mrb)
+	path, _ := findFileInState(mrb, feature, []string{""}, lp)
+	if path == "" && fileLoadOKInState(mrb, feature) {
 		path = feature
+	}
+	if path == "" && strings.HasSuffix(feature, ".rb") {
+		mrbFeature := strings.TrimSuffix(feature, ".rb") + ".mrb"
+		path, _ = findFileInState(mrb, mrbFeature, []string{""}, lp)
+		if path == "" && fileLoadOKInState(mrb, mrbFeature) {
+			path = mrbFeature
+		}
 	}
 	if path == "" {
 		return raiseCannotLoad(mrb, feature)
@@ -423,14 +475,25 @@ func fileLoadOK(p string) bool {
 	return true
 }
 
+func fileLoadOKInState(mrb *oruby.MrbState, p string) bool {
+	if oruby.IsOrbVirtualPath(p) {
+		_, _, ok := mrb.OrbLookupVirtual(p)
+		return ok
+	}
+	return fileLoadOK(p)
+}
+
 // isExplicit: a path require does not search $LOAD_PATH for
 func isExplicit(f string) bool {
-	return filepath.IsAbs(f) || f == "~" || strings.HasPrefix(f, "~") ||
+	return oruby.IsOrbVirtualPath(f) || filepath.IsAbs(f) || f == "~" || strings.HasPrefix(f, "~") ||
 		strings.HasPrefix(f, "./") || strings.HasPrefix(f, "../") || f == "." || f == ".."
 }
 
 // expandPath is File.expand_path: "~" and "~user" too
 func expandPath(f string) string {
+	if oruby.IsOrbVirtualPath(f) {
+		return filepath.ToSlash(filepath.Clean(f))
+	}
 	if strings.HasPrefix(f, "~") {
 		rest := f[1:]
 		name := rest
@@ -463,6 +526,9 @@ var (
 // realpathOf is filepath.EvalSymlinks, cached: $LOADED_FEATURES entries and
 // $LOAD_PATH entries are compared by real path on every require
 func realpathOf(p string) string {
+	if oruby.IsOrbVirtualPath(p) {
+		return filepath.ToSlash(filepath.Clean(p))
+	}
 	realpathMu.Lock()
 	defer realpathMu.Unlock()
 	if r, ok := realpathCache[p]; ok {
@@ -498,10 +564,18 @@ func expandedLoadPath(mrb *oruby.MrbState) []string {
 // findFile: the first file feature+ext names: an explicit path expanded,
 // any other in a $LOAD_PATH entry
 func findFile(feature string, exts, lp []string) (string, string) {
+	return findFileInState(nil, feature, exts, lp)
+}
+
+func findFileInState(mrb *oruby.MrbState, feature string, exts, lp []string) (string, string) {
+	check := fileLoadOK
+	if mrb != nil {
+		check = func(p string) bool { return fileLoadOKInState(mrb, p) }
+	}
 	if isExplicit(feature) {
 		base := expandPath(feature)
 		for _, e := range exts {
-			if fileLoadOK(base + e) {
+			if check(base + e) {
 				return base + e, e
 			}
 		}
@@ -511,8 +585,13 @@ func findFile(feature string, exts, lp []string) (string, string) {
 	// the path wins over a C extension earlier
 	for _, e := range exts {
 		for _, dir := range lp {
-			p := filepath.Join(dir, feature+e)
-			if fileLoadOK(p) {
+			var p string
+			if oruby.IsOrbVirtualPath(dir) {
+				p = filepath.ToSlash(filepath.Join(dir, feature+e))
+			} else {
+				p = filepath.Join(dir, feature+e)
+			}
+			if check(p) {
 				return p, e
 			}
 		}
@@ -542,7 +621,7 @@ func featureP(mrb *oruby.MrbState, feature string, kind byte, lp []string) byte 
 		if strings.HasPrefix(e, base) {
 			rest := e[len(base):]
 			switch {
-			case rest == ".rb" || rest == ".mrb":
+			case rest == ".rb" || rest == ".mrb" || rest == ".orb":
 				return 'r'
 			case isSoExt(rest):
 				return 's'
@@ -597,13 +676,20 @@ func loadedByRealpath(mrb *oruby.MrbState, name, real string) bool {
 // install layout's rubylibdir (lib/oruby/<ruby_version>), or "". An upstream
 // copy is preferred over ORuby's embedded rewrite of the same library; the
 // rewrite stays the fallback for embedded use without the install layout.
-func upstreamLib(feature string) string {
+func upstreamLib(mrb *oruby.MrbState, feature string) string {
 	if feature == "" || isExplicit(feature) {
 		return ""
 	}
 	name := feature
 	if !strings.HasSuffix(name, ".rb") {
 		name += ".rb"
+	}
+	if mrb != nil && len(mrb.MountedOrbs()) > 0 {
+		for _, orb := range mrb.MountedOrbs() {
+			if e, ok := orb.Lookup("lib/" + name); ok && (e.Kind == oruby.OrbKindMrb || e.Kind == oruby.OrbKindRuby) {
+				return orb.VirtualPath(e)
+			}
+		}
 	}
 	p := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion, name)
 	if st, err := os.Stat(p); err == nil && !st.IsDir() {
@@ -616,7 +702,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	if feature == "" {
 		return raiseCannotLoad(mrb, feature)
 	}
-	if p := upstreamLib(feature); p != "" {
+	if p := upstreamLib(mrb, feature); p != "" {
 		feature = p
 	}
 	lp := expandedLoadPath(mrb)
@@ -640,7 +726,14 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 		if featureP(mrb, feature, 'r', lp) != 0 {
 			return mrb.FalseValue()
 		}
-		path, _ := findFile(feature, []string{""}, lp)
+		path, _ := findFileInState(mrb, feature, []string{""}, lp)
+		if path == "" && strings.HasSuffix(feature, ".rb") {
+			mrbFeature := strings.TrimSuffix(feature, ".rb") + ".mrb"
+			if featureP(mrb, mrbFeature, 'r', lp) != 0 {
+				return mrb.FalseValue()
+			}
+			path, _ = findFileInState(mrb, mrbFeature, []string{""}, lp)
+		}
 		if path == "" {
 			return raiseCannotLoad(mrb, feature)
 		}
@@ -654,7 +747,7 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 		if e := filepath.Ext(feature); e == ".so" || e == ".o" {
 			base, exts = strings.TrimSuffix(feature, e), dlexts
 		}
-		path, _ := findFile(base, exts, lp)
+		path, _ := findFileInState(mrb, base, exts, lp)
 		if path == "" {
 			return raiseCannotLoad(mrb, feature)
 		}
@@ -668,11 +761,11 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	if ft == 'r' {
 		return mrb.FalseValue()
 	}
-	exts := []string{".rb", ".mrb"}
+	exts := []string{".rb", ".mrb", ".orb"}
 	if ft != 's' {
 		exts = append(exts, dlexts...)
 	}
-	path, e := findFile(feature, exts, lp)
+	path, e := findFileInState(mrb, feature, exts, lp)
 	if path == "" {
 		if ft != 0 {
 			return mrb.FalseValue() // provided under the name
@@ -694,8 +787,10 @@ func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
 	// a file reached through a symlink is the same feature as its real
 	// path, as in MRI
 	real := path
-	if r, err := filepath.EvalSymlinks(path); err == nil {
-		real = r
+	if !oruby.IsOrbVirtualPath(path) {
+		if r, err := filepath.EvalSymlinks(path); err == nil {
+			real = r
+		}
 	}
 	locks := loadLocks(mrb)
 	for {
@@ -746,12 +841,15 @@ func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
 	return mrb.TrueValue()
 }
 
-func autoloadFile(path string, lp []string) string {
+func autoloadFile(mrb *oruby.MrbState, path string, lp []string) string {
 	exts := []string{""}
 	if extKind(path) == 0 {
-		exts = []string{".rb", ".mrb"}
+		exts = []string{".rb", ".mrb", ".orb"}
 	}
-	full, _ := findFile(path, exts, lp)
+	full, _ := findFileInState(mrb, path, exts, lp)
+	if full == "" && strings.HasSuffix(path, ".rb") {
+		full, _ = findFileInState(mrb, strings.TrimSuffix(path, ".rb")+".mrb", []string{""}, lp)
+	}
 	return full
 }
 
@@ -774,7 +872,7 @@ func (lk *loadLock) markAutoloads(mrb *oruby.MrbState, path, real string) {
 		if lp == nil && !isExplicit(feature) {
 			lp = expandedLoadPath(mrb)
 		}
-		full := autoloadFile(feature, lp)
+		full := autoloadFile(mrb, feature, lp)
 		if full == "" || (full != path && realpathOf(full) != real) {
 			continue
 		}
@@ -814,7 +912,7 @@ func autoloadRegistered(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if !isExplicit(path) {
 		lp = expandedLoadPath(mrb)
 	}
-	full := autoloadFile(path, lp)
+	full := autoloadFile(mrb, path, lp)
 	if full != "" {
 		real := realpathOf(full)
 		if lock := loadLocks(mrb)[real]; lock != nil {

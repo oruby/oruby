@@ -175,6 +175,26 @@ func ioBinreadInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	}
 
+	if oruby.IsOrbVirtualPath(name) {
+		data, ok := mrb.OrbReadAsset(name)
+		if !ok {
+			return mrb.SysFail(&os.PathError{Op: "open", Path: name, Err: syscall.ENOENT})
+		}
+		fileSize := int64(len(data))
+		if offset >= fileSize {
+			if hasLength {
+				return mrb.NilValue()
+			}
+			return binaryStringValue(mrb, []byte(""))
+		}
+		rem := fileSize - offset
+		toRead := rem
+		if hasLength && length < rem {
+			toRead = length
+		}
+		return binaryStringValue(mrb, data[offset:offset+toRead])
+	}
+
 	f, err := os.Open(name)
 	if err != nil {
 		return mrb.SysFail(err)
@@ -259,35 +279,58 @@ func ioReadInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	}
 
-	f, err := os.Open(name)
-	if err != nil {
-		return mrb.SysFail(err)
-	}
-	defer f.Close()
-
-	stat, err := f.Stat()
-	if err != nil {
-		return mrb.SysFail(err)
-	}
-	fileSize := stat.Size()
-
-	if offset >= fileSize {
-		if hasLength {
-			return mrb.NilValue()
+	var buf []byte
+	var n int
+	if oruby.IsOrbVirtualPath(name) {
+		data, ok := mrb.OrbReadAsset(name)
+		if !ok {
+			return mrb.SysFail(&os.PathError{Op: "open", Path: name, Err: syscall.ENOENT})
 		}
-		return mrb.StrNew("")
-	}
+		fileSize := int64(len(data))
+		if offset >= fileSize {
+			if hasLength {
+				return mrb.NilValue()
+			}
+			return mrb.StrNew("")
+		}
+		rem := fileSize - offset
+		toRead := rem
+		if hasLength && length < rem {
+			toRead = length
+		}
+		buf = data[offset : offset+toRead]
+		n = len(buf)
+	} else {
+		f, err := os.Open(name)
+		if err != nil {
+			return mrb.SysFail(err)
+		}
+		defer f.Close()
 
-	rem := fileSize - offset
-	toRead := rem
-	if hasLength && length < rem {
-		toRead = length
-	}
+		stat, err := f.Stat()
+		if err != nil {
+			return mrb.SysFail(err)
+		}
+		fileSize := stat.Size()
 
-	buf := make([]byte, toRead)
-	n, err := f.ReadAt(buf, offset)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return mrb.SysFail(err)
+		if offset >= fileSize {
+			if hasLength {
+				return mrb.NilValue()
+			}
+			return mrb.StrNew("")
+		}
+
+		rem := fileSize - offset
+		toRead := rem
+		if hasLength && length < rem {
+			toRead = length
+		}
+
+		buf = make([]byte, toRead)
+		n, err = f.ReadAt(buf, offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return mrb.SysFail(err)
+		}
 	}
 
 	ret := mrb.StrNew(string(buf[:n]))

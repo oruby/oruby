@@ -280,8 +280,10 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	if hasMultiAssign(src) || hasRegexpEncFlag(src) || hasCaseIn(src) {
 		return true
 	}
-	// eval'd code may forward anonymous parameters (ORB_ANON_ARG)
-	if opts != nil && opts.NoRegexpLiterals && (bytes.IndexByte(src, '*') >= 0 || bytes.IndexByte(src, '&') >= 0) {
+	// eval'd code may forward anonymous parameters (ORB_ANON_ARG), or
+	// yield in a class body (ORB_INVALID_YIELD)
+	if opts != nil && opts.NoRegexpLiterals && (bytes.IndexByte(src, '*') >= 0 || bytes.IndexByte(src, '&') >= 0 ||
+		bytes.Contains(src, []byte("yield"))) {
 		return true
 	}
 	// a regexp literal (ORB_REGEXP_LITERAL)
@@ -299,7 +301,8 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	// "when", "defined?": parse warnings (ORB_PARSE_WARN)
 	// ":\"", "%I": interpolated symbols (ORB_DSYM)
 	// "super": a bare super outside a def (ORB_ZSUPER_NODEF)
-	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::", "super",
+	// "lambda": lambda(&x) (ORB_LAMBDA_BLOCK_ARG); "`", "%x": ORB_XSTRING_FROZEN
+	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::", "super", "lambda", "`", "%x",
 		"__ENCODING__", "frozen_string_literal", "freeze", "coding", "when", "defined?", ":\"", "%I"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
@@ -619,10 +622,20 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 		}
 	}
 	caseInKeys := map[int][]string{}
-	// aliases first: later references in this source use them too
+	// aliases first: later references in this source use them too. The
+	// references before an alias keep what the name meant there
+	// (gvarBefore: its first alias's position and the earlier target)
+	type gvarPrior struct {
+		at     int
+		target string
+	}
+	gvarBefore := map[string]gvarPrior{}
 	for _, rc := range recs {
 		if rc.kind == C.ORB_ALIAS_GVAR {
 			nw, old := r.text(rc.s[1], rc.e[1]), resolveGvar(r.text(rc.s[2], rc.e[2]))
+			if _, seen := gvarBefore[nw]; !seen {
+				gvarBefore[nw] = gvarPrior{rc.s[0], resolveGvar(nw)}
+			}
 			if nw != old {
 				gvarAliasMu.Lock()
 				gvarAliases[nw] = old
@@ -630,8 +643,9 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 			}
 		}
 	}
-	cpathWraps := map[[2]int]*masgnPost{} // an assignment's writes after it (ORB_MASGN_CPATH, _NESTED)
-	var parseWarns []string               // ORB_PARSE_WARN, printed by one call at the first statement
+	cpathWraps := map[[2]int]*masgnPost{}   // an assignment's writes after it (ORB_MASGN_CPATH, _NESTED)
+	sclassReturnTags := map[[2]int]string{} // class << obj with returns: its catch tag (ORB_SCLASS_RETURN)
+	var parseWarns []string                 // ORB_PARSE_WARN, printed by one call at the first statement
 	warnAt := -1
 	for i := 0; i < len(recs); i++ {
 		rc := recs[i]
@@ -668,6 +682,15 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 			}
 			r.add(at, at, func(*rewriter) string { return "; " + target + " = __for_elem__;" })
 		case C.ORB_BEGIN_BLOCK:
+			// BEGIN { b } runs first in its code unit: a one-line body moves to
+			// the program's first statement (FIFO, no line shifts); a longer one
+			// stays where it is, as begin b end
+			if at := s[3]; at >= 0 && at <= s[0] && !bytes.Contains(src[s[0]:e[2]], []byte("\n")) {
+				bs, be := e[1], s[2]
+				r.add(at, at, func(r *rewriter) string { return "begin " + r.render(bs, be) + " end; " })
+				r.add(s[0], e[2], func(*rewriter) string { return "nil" })
+				break
+			}
 			r.add(s[0], e[1], func(*rewriter) string { return "begin " })
 			r.add(s[2], e[2], func(*rewriter) string { return " end" })
 		case C.ORB_FLIP_FLOP:
@@ -718,7 +741,11 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				})
 				break
 			}
-			if t := resolveGvar(name); t != name {
+			t := resolveGvar(name)
+			if p, ok := gvarBefore[name]; ok && s[0] < p.at {
+				t = p.target
+			}
+			if t != name {
 				if s[1] >= 0 && readOnlyGvar(t) {
 					// $alias_of_backref = v is MRI's runtime NameError, not a syntax error
 					r.add(s[1], e[1], func(*rewriter) string {
@@ -785,6 +812,50 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_dsym(" }, func(*rewriter) string { return ")" })
 				r.add(s[0], s[0]+1, func(*rewriter) string { return "" })
 			}
+		case C.ORB_INVALID_YIELD:
+			r.add(s[0], e[0], func(*rewriter) string {
+				return `::Kernel.raise(::SyntaxError, "#{__FILE__}:#{__LINE__}: Invalid yield")`
+			})
+		case C.ORB_SCLASS_RETURN:
+			// return in class << obj inside a def returns from the method, as
+			// MRI's: the class body is run in a catch, the return throws there
+			//   (__oruby_srN = catch(:__oruby_srN) { [class << obj ... end] };
+			//    __oruby_srN.size == 2 ? (return __oruby_srN[1]) : __oruby_srN[0])
+			key := [2]int{s[1], e[1]}
+			tag, ok := sclassReturnTags[key]
+			if !ok {
+				tag = "__oruby_sr" + strconv.FormatUint(nextSiteID(prefix, &masgnSiteCounter), 10)
+				sclassReturnTags[key] = tag
+				t := tag
+				r.addWrap(s[1], e[1], func(*rewriter) string { return "(" + t + " = ::Kernel.catch(:" + t + ") { [" },
+					func(*rewriter) string { return "] }; " + t + ".size == 2 ? (return " + t + "[1]) : " + t + "[0])" })
+			}
+			as, ae, one := s[2], e[2], rc.flags&1 != 0
+			t := tag
+			r.add(s[0], e[0], func(r *rewriter) string {
+				v := "nil"
+				if as >= 0 {
+					v = r.render(as, ae)
+					if !one {
+						v = "[" + v + "]"
+					}
+				}
+				return "::Kernel.throw(:" + t + ", [nil, (" + v + ")])"
+			})
+		case C.ORB_CLASS_BASE:
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "(::Kernel.__oruby_class_base(" }, func(*rewriter) string { return "))" })
+		case C.ORB_XSTRING_FROZEN:
+			// `cmd` -> self.`(%Q`cmd`.freeze), %x(cmd) -> self.`(%Q(cmd).freeze):
+			// the same delimiters and escapes, the argument frozen as MRI's
+			open := r.text(s[1], e[1])
+			q := "%Q" + open
+			if strings.HasPrefix(open, "%x") {
+				q = "%Q" + open[2:]
+			}
+			r.add(s[1], e[1], func(*rewriter) string { return q })
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "self.`(" }, func(*rewriter) string { return ".freeze)" })
+		case C.ORB_LAMBDA_BLOCK_ARG:
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "::Kernel.__oruby_lambda_arg(" }, func(*rewriter) string { return ")" })
 		case C.ORB_ZSUPER_NODEF:
 			// super with implicit arguments and no def around it: MRI's
 			// RuntimeError in a define_method body, NoMethodError elsewhere

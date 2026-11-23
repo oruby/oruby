@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/oruby/oruby"
 )
 
 // Dir.glob as MRI's dir.c does it (glob_make_pattern, glob_helper): a
@@ -162,11 +164,42 @@ func (gp globPattern) textFrom(i int) string {
 }
 
 type globber struct {
+	mrb     *oruby.MrbState
 	flags   int
 	base    string // the directory relative patterns start in ("" the cwd)
 	hasBase bool
 	sorted  bool
 	out     []string
+}
+
+func (g *globber) readDir(p string) ([]os.DirEntry, error) {
+	if g.mrb != nil && oruby.IsOrbVirtualPath(p) {
+		return g.mrb.OrbReadDir(p)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := f.ReadDir(-1)
+	_ = f.Close()
+	if err != nil && len(entries) == 0 {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (g *globber) stat(p string) (os.FileInfo, error) {
+	if g.mrb != nil && oruby.IsOrbVirtualPath(p) {
+		return g.mrb.OrbStat(p)
+	}
+	return os.Stat(p)
+}
+
+func (g *globber) lstat(p string) (os.FileInfo, error) {
+	if g.mrb != nil && oruby.IsOrbVirtualPath(p) {
+		return g.mrb.OrbStat(p)
+	}
+	return os.Lstat(p)
 }
 
 // fsPath is where path is on the file system
@@ -295,12 +328,7 @@ func (g *globber) helper(gp globPattern, st globState) {
 		return
 	}
 
-	f, err := os.Open(g.fsPath(st.path))
-	if err != nil {
-		return
-	}
-	entries, err := f.ReadDir(-1)
-	_ = f.Close()
+	entries, err := g.readDir(g.fsPath(st.path))
 	if err != nil && len(entries) == 0 {
 		return
 	}
@@ -364,7 +392,7 @@ func (g *globber) helper(gp globPattern, st globState) {
 					if s.kind != segFollow {
 						continue // "**/" stays out of symlinks
 					}
-					fi, err := os.Stat(g.fsPath(childPath))
+					fi, err := g.stat(g.fsPath(childPath))
 					if err != nil || !fi.IsDir() {
 						continue
 					}
@@ -419,14 +447,14 @@ func (g *globber) matchEnd(gp globPattern, st globState) {
 			return
 		}
 		if !st.fromEntry {
-			if _, err := os.Lstat(g.fsPath(st.path)); err != nil {
+			if _, err := g.lstat(g.fsPath(st.path)); err != nil {
 				return
 			}
 		}
 		g.out = append(g.out, st.path)
 		return
 	}
-	if fi, err := os.Stat(g.fsPath(st.path)); err != nil || !fi.IsDir() {
+	if fi, err := g.stat(g.fsPath(st.path)); err != nil || !fi.IsDir() {
 		return
 	}
 	if st.path == "" {
@@ -457,8 +485,8 @@ func fnmatchBraceSeg(pattern, name string, flags int) bool {
 }
 
 // globPatterns runs each pattern in turn; the results are appended
-func globPatterns(patterns []string, flags int, base string, hasBase, sorted bool) []string {
-	g := &globber{flags: flags, base: base, hasBase: hasBase, sorted: sorted}
+func globPatterns(mrb *oruby.MrbState, patterns []string, flags int, base string, hasBase, sorted bool) []string {
+	g := &globber{mrb: mrb, flags: flags, base: base, hasBase: hasBase, sorted: sorted}
 	for _, p := range patterns {
 		g.run(p)
 	}

@@ -260,3 +260,102 @@ func TestRequireDedupesSymlinkedPaths(t *testing.T) {
 		t.Fatalf("symlinked require = %s, want [1, false]", s)
 	}
 }
+
+func compileTestRite(t *testing.T, mrb *oruby.MrbState, filename, source string) []byte {
+	t.Helper()
+	c := mrb.MrbCcontextNew()
+	defer c.Free()
+	c.Filename(filename)
+	c.SetNoExec(true)
+	val, err := c.LoadBytes([]byte(source))
+	if err != nil {
+		t.Fatalf("compile %s: %v", filename, err)
+	}
+	var buf bytes.Buffer
+	if _, err := mrb.DumpIrep(mrb.RProc(val).IRep(), oruby.DumpDebugInfo, &buf); err != nil {
+		t.Fatalf("dump %s: %v", filename, err)
+	}
+	return buf.Bytes()
+}
+
+func TestTransparentBytecodeAndMrbFallback(t *testing.T) {
+	mrb := openLoadTestState(t)
+	dir := t.TempDir()
+
+	// 1. Only .mrb exists on disk, but code calls require(".../routes.rb"), load(".../routes.rb"), and autoload(:Val, ".../auto.rb")
+	routesMrb := filepath.Join(dir, "routes.mrb")
+	if err := os.WriteFile(routesMrb, compileTestRite(t, mrb, "routes.rb", `$routes_loaded = ($routes_loaded || 0) + 1`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	autoMrb := filepath.Join(dir, "auto.mrb")
+	if err := os.WriteFile(autoMrb, compileTestRite(t, mrb, "auto.rb", `AutoConst = 99`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. A file keeps the .rb extension (plus a #! shebang) so Dir.glob("*.rb") sees it, while holding RITE bytecode
+	riteInRb := filepath.Join(dir, "in_place.rb")
+	shebangRite := append([]byte("#!/usr/bin/env oruby\n"), compileTestRite(t, mrb, "in_place.rb", `$inplace_val = 42`)...)
+	if err := os.WriteFile(riteInRb, shebangRite, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	routesRbArg := strconv.Quote(filepath.Join(dir, "routes.rb"))
+	autoRbArg := strconv.Quote(filepath.Join(dir, "auto.rb"))
+	riteInRbArg := strconv.Quote(riteInRb)
+
+	code := `
+	  r1 = require ` + routesRbArg + `
+	  r2 = require ` + routesRbArg + `
+	  l1 = load ` + routesRbArg + `
+	  autoload(:AutoConst, ` + autoRbArg + `)
+	  r3 = require ` + riteInRbArg + `
+	  [r1, r2, l1, $routes_loaded, AutoConst, r3, $inplace_val]
+	`
+	got, err := mrb.Eval(code)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	want := "[true, false, true, 2, 99, true, 42]"
+	if s := mrb.String(mrb.Call(got, "inspect")); s != want {
+		t.Fatalf("got %s, want %s", s, want)
+	}
+}
+
+func TestRequireAndLoadOrbBundle(t *testing.T) {
+	mrb := openLoadTestState(t)
+	dir := t.TempDir()
+
+	// Build a multi-file .orb bundle with a lib/ directory on $LOAD_PATH,
+	// a nested model using require_relative, and an entrypoint.
+	b := oruby.NewOrbBuilder(oruby.OrbHdrDebugInfo)
+	_ = b.AddDir("lib", true)
+	_ = b.AddEntry("lib/orb_formatter.rb", oruby.OrbKindMrb, 0, 0644,
+		compileTestRite(t, mrb, "lib/orb_formatter.rb", `module OrbFormatter; def self.tag(s) = "[#{s}]"; end`))
+	_ = b.AddEntry("models/account.rb", oruby.OrbKindMrb, 0, 0644,
+		compileTestRite(t, mrb, "models/account.rb", `require "orb_formatter"; class OrbAccount; def label = OrbFormatter.tag("acct"); end`))
+	_ = b.AddEntry("boot.rb", oruby.OrbKindMrb, 0, 0644,
+		compileTestRite(t, mrb, "boot.rb", `require_relative "models/account"; $orb_boot_count = ($orb_boot_count || 0) + 1; $orb_label = OrbAccount.new.label`))
+	b.SetEntrypoint("boot.rb")
+
+	orbPath := filepath.Join(dir, "app_bundle.orb")
+	if err := b.WriteFile(orbPath); err != nil {
+		t.Fatal(err)
+	}
+
+	orbArg := strconv.Quote(orbPath)
+	code := `
+	  r1 = require ` + orbArg + `
+	  r2 = require ` + orbArg + `
+	  r3 = require "orb_formatter"
+	  l1 = load ` + orbArg + `
+	  [r1, r2, r3, l1, $orb_boot_count, $orb_label]
+	`
+	got, err := mrb.Eval(code)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	want := `[true, false, false, true, 2, "[acct]"]`
+	if s := mrb.String(mrb.Call(got, "inspect")); s != want {
+		t.Fatalf("got %s, want %s", s, want)
+	}
+}

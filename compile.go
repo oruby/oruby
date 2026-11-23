@@ -528,6 +528,9 @@ func (mrb *MrbState) LoadIrepBytesWrapped(buf []byte, context *MrbCcontext, klas
 	if len(buf) == 0 {
 		return nilValue, errors.New("empty bytecode")
 	}
+	if rite, ok := ExtractRiteBinary(buf); ok {
+		buf = rite
+	}
 	return mrb.loadWrapped(buf, context, klass, self, true)
 }
 

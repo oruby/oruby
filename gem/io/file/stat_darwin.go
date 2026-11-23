@@ -7,7 +7,24 @@ import (
 )
 
 func getExtendedStat(stat os.FileInfo) extendedStat {
-	s := stat.Sys().(*syscall.Stat_t)
+	s, ok := stat.Sys().(*syscall.Stat_t)
+	if !ok || s == nil {
+		mode := uint32(stat.Mode().Perm())
+		if stat.IsDir() {
+			mode |= syscall.S_IFDIR
+		} else {
+			mode |= syscall.S_IFREG
+		}
+		return extendedStat{
+			mode:      mode,
+			nlink:     1,
+			uid:       os.Geteuid(),
+			gid:       os.Getegid(),
+			atime:     stat.ModTime(),
+			ctime:     stat.ModTime(),
+			birthtime: stat.ModTime(),
+		}
+	}
 	return extendedStat{
 		ino:       s.Ino,
 		dev:       uint64(s.Dev),

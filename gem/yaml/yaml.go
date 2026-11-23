@@ -89,10 +89,25 @@ func yamlLoadFileMode(mode int) oruby.MrbFuncT {
 			return exc
 		}
 		path := mrb.GetArgsFirst()
-		if !path.IsString() {
+		var filename string
+		if path.IsString() {
+			filename = mrb.String(path)
+		} else if mrb.RespondTo(path, oruby.Sym_to_path) {
+			if p, err := mrb.Funcall(path, oruby.Sym_to_path); err == nil && p.IsString() {
+				filename = mrb.String(p)
+			}
+		}
+		if filename == "" {
 			return mrb.Raise(mrb.ExcGet("TypeError"), "YAML filename must be a String")
 		}
-		file, err := os.Open(mrb.String(path))
+		if oruby.IsOrbVirtualPath(filename) {
+			data, ok := mrb.OrbReadAsset(filename)
+			if !ok {
+				return mrb.Raise(rb.ClassPath(mrb, "Psych::Exception"), "open "+filename+": no such file or directory")
+			}
+			return loadYAMLText(mrb, string(data), o)
+		}
+		file, err := os.Open(filename)
 		if err != nil {
 			return mrb.Raise(rb.ClassPath(mrb, "Psych::Exception"), err.Error())
 		}
@@ -219,10 +234,25 @@ func yamlParse(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 
 func yamlParseFile(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	path := mrb.GetArgsFirst()
-	if !path.IsString() {
+	var filename string
+	if path.IsString() {
+		filename = mrb.String(path)
+	} else if mrb.RespondTo(path, oruby.Sym_to_path) {
+		if p, err := mrb.Funcall(path, oruby.Sym_to_path); err == nil && p.IsString() {
+			filename = mrb.String(p)
+		}
+	}
+	if filename == "" {
 		return mrb.Raise(mrb.ExcGet("TypeError"), "YAML filename must be a String")
 	}
-	data, err := os.ReadFile(mrb.String(path))
+	if oruby.IsOrbVirtualPath(filename) {
+		data, ok := mrb.OrbReadAsset(filename)
+		if !ok {
+			return mrb.Raise(rb.ClassPath(mrb, "Psych::Exception"), "open "+filename+": no such file or directory")
+		}
+		return yamlParseText(mrb, string(data))
+	}
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return mrb.Raise(rb.ClassPath(mrb, "Psych::Exception"), err.Error())
 	}

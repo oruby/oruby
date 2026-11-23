@@ -1,23 +1,17 @@
 package compiler
 
 import (
-	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 
 	"github.com/oruby/oruby"
 )
 
 // IsRiteBinary reports whether data starts with a valid mruby RiteVM binary (.mrb) header.
 func IsRiteBinary(data []byte) bool {
-	if len(data) < 32 || !bytes.HasPrefix(data, []byte(oruby.RiteBinaryIdent)) {
-		return false
-	}
-	checkLen := len(data)
-	if checkLen > 64 {
-		checkLen = 64
-	}
-	return bytes.IndexByte(data[:checkLen], 0) >= 0
+	return oruby.IsRiteBinary(data)
 }
 
 // Options configures the oruby-compiler transpilation process.
@@ -140,4 +134,54 @@ func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extr
 	})
 
 	return codegen.GenerateBundle(modules)
+}
+
+// CompilePackageDir resolves entryFile (whether .orb, .mrb, or .rb) and its
+// dependencies, and writes a multi-file Go package (aot_runtime.go +
+// aot_mod_NNN.go) into outDir. It returns the sorted list of written file paths.
+func (c *Compiler) CompilePackageDir(mrb *oruby.MrbState, entryFile string, extra []string, loadPaths []string, outDir string) ([]string, error) {
+	resolver := NewDependencyResolver(mrb, loadPaths)
+	modules, skipped, err := resolver.ResolveWith(entryFile, extra)
+	c.Skipped = skipped
+	if err != nil {
+		return nil, fmt.Errorf("resolving dependencies for %s: %w", entryFile, err)
+	}
+
+	codegen := NewCodeGen(CodeGenOptions{
+		PackageName: c.opts.PackageName,
+		Standalone:  c.opts.Standalone,
+		EmbedDirs:   c.opts.EmbedDirs,
+		Debug:       c.opts.Debug,
+	})
+
+	files, err := codegen.GeneratePackageFiles(modules)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating output directory %s: %w", outDir, err)
+	}
+
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	written := make([]string, 0, len(names))
+	for _, name := range names {
+		full := filepath.Join(outDir, name)
+		content := []byte(files[name])
+		// Skip rewriting unchanged module files to preserve timestamps for Go build cache
+		if existing, rerr := os.ReadFile(full); rerr == nil && string(existing) == files[name] {
+			written = append(written, full)
+			continue
+		}
+		if err := os.WriteFile(full, content, 0644); err != nil {
+			return nil, fmt.Errorf("writing %s: %w", full, err)
+		}
+		written = append(written, full)
+	}
+	return written, nil
 }
