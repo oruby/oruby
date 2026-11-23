@@ -70,6 +70,7 @@ import (
 )
 
 //go:embed ruby/*.rb
+//go:embed ruby/drb/*.rb ruby/drb/LICENSE.txt
 var rubyFS embed.FS
 var benchmarkStart = time.Now()
 
@@ -82,6 +83,39 @@ func load(mrb *oruby.MrbState, name string) {
 }
 
 func init() {
+	oruby.LazyGem("expect", func(mrb *oruby.MrbState) interface{} {
+		load(mrb, "expect")
+		return nil
+	})
+	oruby.LazyGem("drb", func(mrb *oruby.MrbState) interface{} {
+		load(mrb, "drb")
+		return nil
+	})
+	drbFiles, err := rubyFS.ReadDir("ruby/drb")
+	if err != nil {
+		panic(err)
+	}
+	for _, file := range drbFiles {
+		name := file.Name()
+		if !strings.HasSuffix(name, ".rb") {
+			continue
+		}
+		feature := "drb/" + strings.TrimSuffix(name, ".rb")
+		oruby.LazyGem(feature, func(mrb *oruby.MrbState) interface{} {
+			source, err := rubyFS.ReadFile("ruby/" + feature + ".rb")
+			if err != nil {
+				panic(err)
+			}
+			// Embedded files resolve siblings by feature name.
+			siblings := strings.NewReplacer(
+				"require_relative 'drb'", "require 'drb/drb'",
+				"require_relative 'eq'", "require 'drb/eq'",
+				"require_relative 'version'", "require 'drb/version'",
+			)
+			rb.LoadRuby(mrb, feature+".rb", []byte(siblings.Replace(string(source))))
+			return nil
+		})
+	}
 	// require names of libraries provided by eagerly loaded oruby gems
 	oruby.LazyGem("stringio", func(mrb *oruby.MrbState) interface{} {
 		// MRI's StringIO is C: as <internal:> code its gets sets the

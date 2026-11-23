@@ -733,6 +733,26 @@ func ioRead(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return binaryStringValue(mrb, nil)
 	}
 
+	if scheduler := mrb.FiberScheduler(); !scheduler.IsNil() {
+		if _, file := mrb.Data(self).(*os.File); file &&
+			mrb.RespondTo(scheduler, oruby.Sym_io_read) && mrb.RespondTo(self, oruby.Sym___oruby_read_scheduled) {
+			pending := rbufView(mrb, self)
+			if l.IsNil() || int64(len(pending)) < length {
+				request := mrb.NilValue()
+				if !l.IsNil() {
+					request = mrb.Int64Value(length)
+				}
+				prefix := binaryStringValue(mrb, pending)
+				rbufTake(mrb, self, len(pending))
+				value, err := mrb.Funcall(self, oruby.Sym___oruby_read_scheduled, scheduler, request, outbuf, prefix)
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+				return value
+			}
+		}
+	}
+
 	var buf []byte
 	if l.IsNil() {
 		buf, err = sr.ReadAll()

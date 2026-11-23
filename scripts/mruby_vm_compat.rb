@@ -88,6 +88,77 @@ module ORubyVMCompat
       if (file_scope) MRB_CI_SET_VISIBILITY(ci, MRB_METHOD_PRIVATE_FL >> 25);
     C
     missing_dispatch(source)
+    replace(source, "static int\nvm_op_enter(", <<~'C'.chomp)
+      static mrb_bool
+      oruby_irep_uses_block(const mrb_irep *irep)
+      {
+        const mrb_code *end = irep->iseq + irep->ilen;
+        for (const mrb_code *pc = irep->iseq; pc < end;) {
+          struct mrb_insn_data insn = mrb_decode_insn(pc);
+          if (insn.insn == OP_ENTER && MRB_ASPEC_BLOCK(insn.a)) return TRUE;
+          if (insn.insn == OP_SUPER || insn.insn == OP_BLKPUSH || insn.insn == OP_ARGARY) return TRUE;
+          if ((insn.insn == OP_BLOCK || insn.insn == OP_LAMBDA) && insn.b < irep->rlen &&
+              oruby_irep_uses_block(irep->reps[insn.b])) return TRUE;
+          pc = insn.next;
+        }
+        return FALSE;
+      }
+
+      static void
+      oruby_warn_unused_block(mrb_state *mrb, mrb_callinfo *ci, const struct RProc *proc)
+      {
+        mrb_irep *irep = (mrb_irep*)proc->body.irep;
+        if (!irep || !MRB_PROC_CREF_P(proc) || ci->mid == MRB_SYM(initialize) ||
+            (irep->flags & (ORUBY_IREP_BLOCK_WARNED | MRB_IREP_NO_FREE))) return;
+        const mrb_callinfo *caller = ci - 1;
+        if (!caller->proc || MRB_PROC_CFUNC_P(caller->proc) || !caller->pc) return;
+        const mrb_irep *from = caller->proc->body.irep;
+        int32_t line, defined_line;
+        const char *file, *defined_file;
+        if (!mrb_debug_get_position(mrb, from, (uint32_t)(caller->pc - from->iseq - 1), &line, &file) || !file ||
+            !mrb_debug_get_position(mrb, irep, 0, &defined_line, &defined_file) || !defined_file ||
+            strncmp(file, "<internal:", 10) == 0 || strncmp(defined_file, "<internal:", 10) == 0 ||
+            oruby_irep_uses_block(irep)) return;
+
+        mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+        if (!mrb_respond_to(mrb, kernel, MRB_SYM(warn))) return;
+        irep->flags |= ORUBY_IREP_BLOCK_WARNED;
+        int arena = mrb_gc_arena_save(mrb);
+        mrb_value message = mrb_format(mrb, "%s:%d: warning: the block passed to '%n' defined at %s:%d may be ignored",
+                                       file, (int)line, ci->mid, defined_file, (int)defined_line);
+        mrb_funcall_argv1(mrb, kernel, MRB_SYM(warn), message);
+        mrb_gc_arena_restore(mrb, arena);
+      }
+
+      static int
+      vm_op_enter(
+    C
+    replace(source, "          /* setup environment for calling method */\n          irep = p->body.irep;\n          stack_extend(mrb, (irep->nregs < 4) ? 4 : irep->nregs);\n          ci->pc = irep->iseq;", <<~'C'.chomp.gsub(/^/, "          "))
+      /* setup environment for calling method */
+      irep = p->body.irep;
+      stack_extend(mrb, (irep->nregs < 4) ? 4 : irep->nregs);
+      ci->pc = irep->iseq;
+      if (mrb_unlikely(ci->blk && insn != OP_SUPER && mrb->kernel_module &&
+                       (mrb->kernel_module->flags & ORUBY_KERNEL_UNUSED_BLOCK_WARNING))) {
+        oruby_warn_unused_block(mrb, ci, p);
+        ci = mrb->c->ci;
+      }
+    C
+    replace(source, "    {\n      mrb_method_t m;\n\n      CHECK_VM_INTERRUPT(mrb);", <<~'C'.chomp.gsub(/^/, "    "))
+      {
+        mrb_method_t m;
+        mrb_bool case_equal = mid == MRB_SYM(__oruby_case_equal);
+        if (case_equal) mid = MRB_OPSYM(eqq);
+
+        CHECK_VM_INTERRUPT(mrb);
+    C
+    replace(source, '        if (mrb_unlikely(m.flags & (MRB_METHOD_PRIVATE_FL | MRB_METHOD_PROTECTED_FL))) {',
+      '        if (mrb_unlikely(m.flags & (MRB_METHOD_PRIVATE_FL | MRB_METHOD_PROTECTED_FL)) && !case_equal) {')
+    replace(source, '    if (mrb_unlikely(argc < m1 + m2 || (r == 0 && argc > len))) {', <<~'C'.chomp.gsub(/^/, "    "))
+      mrb_bool implicit = r && irep->lv && m1 + o < irep->nlocals - 1 &&
+                         irep->lv[m1 + o] == MRB_SYM(__oruby_implicit_rest);
+      if (mrb_unlikely(argc < m1 + m2 || ((!r || implicit) && argc > len - implicit))) {
+    C
     replace(source, "    CASE(OP_DEBUG, BBB) {", <<~'C'.chomp.gsub(/^/, "    "))
       CASE(OP_DEBUG, BBB) {
         if (b == ORUBY_CHILLED_DEBUG_TAG && c <= 1 && mrb_string_p(regs[a])) {
@@ -411,6 +482,21 @@ module ORubyVMCompat
   def self.implicit_rest(source)
     source.gsub!('#include "../include/', '#include "')
     replace(source, '#include <assert.h>', "#include <assert.h>\n#include <stdatomic.h>\n#define MRC_TARGET_MRUBY 1\n#include <mruby.h>\n#include \"oruby-vm-compat.h\"\n\nstatic _Atomic int oruby_chilled_options;\nvoid oruby_compiler_literal_options(int options) { atomic_store(&oruby_chilled_options, options); }")
+    replace(source, '              genop_3(s, OP_SEND, cursp(), new_sym(s, MRC_OPSYM_2(eqq)), 1);', <<~'C'.chomp.gsub(/^/, "              "))
+      static const uint8_t case_equal[] = "__oruby_case_equal";
+      genop_3(s, OP_SEND, cursp(), new_sym(s, nsym(s->c->p, case_equal, sizeof(case_equal)-1)), 1);
+    C
+    replace(source, '  genop_3(s, OP_SEND, reg, new_sym(s, MRC_SYM_1(deconstruct)), 0);', <<~'C'.chomp.gsub(/^/, "  "))
+      genop_3(s, OP_SEND, reg, new_sym(s, MRC_SYM_1(deconstruct)), 0);
+      static const uint8_t deconstructed[] = "__oruby_deconstructed";
+      genop_3(s, OP_SEND, reg, new_sym(s, nsym(s->c->p, deconstructed, sizeof(deconstructed)-1)), 0);
+    C
+    replace(source, '      memcpy(s->irep->lv, prev->irep->lv, lv_size);', <<~'C'.chomp.gsub(/^/, "      "))
+      /* Binding reaches the outer names through upvars. The synthetic
+       * iteration block uses its registers for the argument and temporaries.
+       * Keep unnamed slots for the compiler's local-variable dump format. */
+      memset(s->irep->lv, 0, lv_size);
+    C
     replace(source, <<~'C'.chomp.gsub(/^/, "        "), <<~'C'.chomp.gsub(/^/, "        "))
       push_n(2); pop_n(2); /* space for one arg and a block */
       pop();
@@ -476,7 +562,7 @@ module ORubyVMCompat
       {
         struct RClass *kernel = mrb->kernel_module;
         if (!kernel) return;
-        kernel->flags &= ~ORUBY_KERNEL_CHILLED_WARNING;
+        kernel->flags &= ~(ORUBY_KERNEL_CHILLED_WARNING | ORUBY_KERNEL_UNUSED_BLOCK_WARNING);
         if (mrb_nil_p(verbose) || !mrb_class_defined_id(mrb, MRB_SYM(Warning))) return;
         mrb_value warning = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(Warning));
         if (!mrb_module_p(warning)) return;
@@ -485,6 +571,10 @@ module ORubyVMCompat
         mrb_bool enabled = mrb_hash_p(settings) && mrb_hash_key_p(mrb, settings, category)
           ? mrb_test(mrb_hash_get(mrb, settings, category)) : mrb_test(verbose);
         if (enabled) kernel->flags |= ORUBY_KERNEL_CHILLED_WARNING;
+        category = mrb_symbol_value(MRB_SYM(strict_unused_block));
+        enabled = mrb_hash_p(settings) && mrb_hash_key_p(mrb, settings, category)
+          ? mrb_test(mrb_hash_get(mrb, settings, category)) : mrb_test(verbose);
+        if (enabled) kernel->flags |= ORUBY_KERNEL_UNUSED_BLOCK_WARNING;
       }
 
       void
@@ -509,7 +599,8 @@ module ORubyVMCompat
           mrb_frozen_error(mrb, o);
         }
         struct RBasic *obj = o;
-        if (mrb_unlikely((obj->flags & ORUBY_STRING_CHILLED) && obj->tt == MRB_TT_STRING)) {
+        if (mrb_unlikely((obj->flags & (ORUBY_STRING_CHILLED | ORUBY_STRING_TEMP_LOCK)) && obj->tt == MRB_TT_STRING)) {
+          if (obj->flags & ORUBY_STRING_TEMP_LOCK) mrb_raise(mrb, E_RUNTIME_ERROR, "can't modify string; temporarily locked");
           oruby_chilled_mutation(mrb, obj);
         }
       }
@@ -718,6 +809,15 @@ module ORubyVMCompat
   end
 
   def self.refinement(source)
+    replace(source, <<~'C'.chomp.gsub(/^/, "  "), <<~'C'.chomp.gsub(/^/, "  "))
+      if (!mrb_class_p(target) && !mrb_module_p(target)) {
+        mrb_raisef(mrb, E_TYPE_ERROR, "wrong argument type %C (expected Class or Module)", mrb_obj_class(mrb, target));
+      }
+    C
+      if (!mrb_class_p(target) && !mrb_module_p(target) && !mrb_sclass_p(target)) {
+        mrb_raisef(mrb, E_TYPE_ERROR, "wrong argument type %C (expected Class or Module)", mrb_obj_class(mrb, target));
+      }
+    C
     replace(source, '  struct RProc *np = MRB_OBJ_ALLOC(mrb, MRB_TT_PROC, mrb->proc_class);',
       '  struct RProc *np = MRB_OBJ_ALLOC(mrb, MRB_TT_PROC, mrb_obj_class(mrb, self));')
     replace(source, '  if (MRB_PROC_CFUNC_P(p) || MRB_PROC_ALIAS_P(p) || (MRB_PROC_SCOPE_P(p) && MRB_PROC_STRICT_P(p))) {',
@@ -741,10 +841,73 @@ module ORubyVMCompat
   end
 
   def self.gc(source)
+    replace(source, '#include <mruby/khash.h>', "#include <mruby/khash.h>\n#include \"oruby-alloc-trace.h\"")
+    replace(source, "  paint_partial_white(gc, &p->as.basic);\n  return &p->as.basic;", <<~'C'.chomp.gsub(/^/, "  "))
+      paint_partial_white(gc, &p->as.basic);
+      if (mrb_unlikely(mrb->kernel_module && (mrb->kernel_module->flags & ORUBY_TRACE_ACTIVE))) {
+        orb_alloc_record(mrb, &p->as.basic);
+      }
+      return &p->as.basic;
+    C
+    replace(source, <<~'C'.chomp, <<~'C'.chomp)
+      obj_free(mrb_state *mrb, struct RBasic *obj, mrb_bool end)
+      {
+        DEBUG(fprintf(stderr, "obj_free(%p,tt=%d)\n",obj,obj->tt));
+        if (mrb_gc_giv_p(mrb, obj)) {
+    C
+      obj_free(mrb_state *mrb, struct RBasic *obj, mrb_bool end)
+      {
+        DEBUG(fprintf(stderr, "obj_free(%p,tt=%d)\n",obj,obj->tt));
+        if (mrb_unlikely(!end && mrb->kernel_module && (mrb->kernel_module->flags & ORUBY_TRACE_HISTORY))) {
+          orb_alloc_forget(mrb, obj);
+        }
+        if (mrb_gc_giv_p(mrb, obj)) {
+    C
     replace(source, "  gc->state = MRB_GC_STATE_SWEEP;", <<~'C'.chomp.gsub(/^/, "  "))
       /* Drop weak Proc cache keys before their storage can be recycled. */
       mrb_const_cache_clear(mrb);
+      if (mrb->kernel_module && (mrb->kernel_module->flags & (ORUBY_TRACE_ACTIVE | ORUBY_TRACE_HISTORY))) {
+        struct orb_alloc_trace *trace = orb_alloc_state(mrb);
+        if (trace) ++trace->generation;
+      }
       gc->state = MRB_GC_STATE_SWEEP;
+    C
+  end
+
+  def self.objectspace(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/presym.h>")
+    replace(source, '  struct RClass *target_module;',
+      "  struct RClass *target_module;\n  struct RClass *attached_class;")
+    replace(source, '  /* filter class kind if target module defined */', <<~'C'.chomp.gsub(/^/, "  "))
+      /* A class's singleton filter walks its normal class descendants and
+         the visible singleton classes of their instances. */
+      if (d->attached_class) {
+        struct RClass *klass;
+        if (obj->tt == MRB_TT_CLASS) {
+          klass = (struct RClass*)obj;
+        }
+        else if (obj->tt == MRB_TT_SCLASS) {
+          mrb_value attached = mrb_iv_get(mrb, mrb_obj_value(obj), MRB_SYM(__attached__));
+          if (mrb_nil_p(attached) || mrb_class_p(attached) || mrb_module_p(attached) || mrb_sclass_p(attached)) {
+            return MRB_EACH_OBJ_OK;
+          }
+          klass = mrb_obj_class(mrb, attached);
+        }
+        else {
+          return MRB_EACH_OBJ_OK;
+        }
+        while (klass && klass != d->attached_class) klass = mrb_class_real(klass->super);
+        if (!klass) return MRB_EACH_OBJ_OK;
+      }
+      else
+      /* filter class kind if target module defined */
+    C
+    replace(source, '  mrb_objspace_each_objects(mrb, os_each_object_cb, &d);', <<~'C'.chomp.gsub(/^/, "  "))
+      if (d.target_module && d.target_module->tt == MRB_TT_SCLASS) {
+        mrb_value attached = mrb_iv_get(mrb, mrb_obj_value(d.target_module), MRB_SYM(__attached__));
+        if (mrb_class_p(attached)) d.attached_class = mrb_class_ptr(attached);
+      }
+      mrb_objspace_each_objects(mrb, os_each_object_cb, &d);
     C
   end
 
@@ -905,6 +1068,7 @@ module ORubyVMCompat
 
     {
       "mruby-objectspace-weakmap" => ["weakmap.c", :weakmap],
+      "mruby-objectspace" => ["mruby_objectspace.c", :objectspace],
       "mruby-compiler" => ["codegen.c", :implicit_rest],
       "mruby-string-ext" => ["string.c", :chilled_uplus],
       "mruby-fiber" => ["fiber.c", :fiber_root_transfer],

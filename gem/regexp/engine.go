@@ -85,6 +85,7 @@ type Regexp struct {
 	// a string, so searches at pos > 0 use the fallback engine when present.
 	startContext bool
 	lineStart    bool
+	nestedRepeat bool
 	ctxOnce      sync.Once
 	ctxEngine    Engine
 
@@ -122,6 +123,7 @@ type compiledRe struct {
 	engine       Engine
 	startContext bool
 	lineStart    bool
+	nestedRepeat bool
 }
 
 var (
@@ -137,11 +139,11 @@ func compileRuby(source string, options int) (*Regexp, error) {
 	key := compiledKey{source, options}
 	if c, ok := compiled.Load(key); ok {
 		cr := c.(*compiledRe)
-		return &Regexp{source: source, options: options, re2: cr.re2, engine: cr.engine, startContext: cr.startContext, lineStart: cr.lineStart}, nil
+		return &Regexp{source: source, options: options, re2: cr.re2, engine: cr.engine, startContext: cr.startContext, lineStart: cr.lineStart, nestedRepeat: cr.nestedRepeat}, nil
 	}
 	r, err := compileRubyNew(source, options)
 	if err == nil && compiledCount.Load() < compiledMax {
-		compiled.Store(key, &compiledRe{r.re2, r.engine, r.startContext, r.lineStart})
+		compiled.Store(key, &compiledRe{r.re2, r.engine, r.startContext, r.lineStart, r.nestedRepeat})
 		compiledCount.Add(1)
 	}
 	return r, err
@@ -152,7 +154,7 @@ func compileRubyNew(source string, options int) (*Regexp, error) {
 	if err == nil {
 		re, cerr := goregexp.Compile(tr.pattern)
 		if cerr == nil {
-			r := &Regexp{source: source, options: options, re2: re, startContext: tr.startContext, lineStart: tr.lineStart}
+			r := &Regexp{source: source, options: options, re2: re, startContext: tr.startContext, lineStart: tr.lineStart, nestedRepeat: tr.nestedRepeat}
 			r.engine = &re2Engine{re: re}
 			return r, nil
 		}

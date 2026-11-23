@@ -66,7 +66,7 @@ func (sc *scanner) sliceRuby(mrb *oruby.MrbState, self oruby.Value, start, lengt
 	if length < 0 {
 		length = 0
 	}
-	if start+length > len(s) {
+	if length > len(s)-start {
 		length = len(s) - start
 	}
 	res := mrb.BytesValue([]byte(s[start : start+length]))
@@ -99,17 +99,26 @@ func toStrArg(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
 	return mrb.NilValue(), oruby.ETypeError("no implicit conversion of %s into String", name)
 }
 
+func hexDigit(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
 func toIntArg(mrb *oruby.MrbState, v oruby.Value) (int, error) {
 	if v.IsInt() {
 		return int(v.Int64()), nil
+	}
+	if v.Type() == oruby.MrbTTBigInt {
+		n, err := mrb.AsInt64(v)
+		return int(n), err
 	}
 	if mrb.RespondTo(v, oruby.Sym_to_int) {
 		iv, err := mrb.Funcall(v, oruby.Sym_to_int)
 		if err != nil {
 			return 0, err
 		}
-		if iv.IsInt() {
-			return int(iv.Int64()), nil
+		if iv.IsInt() || iv.Type() == oruby.MrbTTBigInt {
+			n, err := mrb.AsInt64(iv)
+			return int(n), err
 		}
 		return 0, oruby.ETypeError("can't convert into Integer")
 	}
@@ -564,7 +573,7 @@ func initStrscan(mrb *oruby.MrbState) any {
 		if s[i] == '+' || s[i] == '-' {
 			i++
 		}
-		if base == 16 && i+1 < len(s) && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X') {
+		if base == 16 && i+2 < len(s) && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X') && hexDigit(s[i+2]) {
 			i += 2
 		}
 		digStart := i
@@ -575,11 +584,9 @@ func initStrscan(mrb *oruby.MrbState) any {
 					i++
 					continue
 				}
-			} else {
-				if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
-					i++
-					continue
-				}
+			} else if hexDigit(c) {
+				i++
+				continue
 			}
 			break
 		}

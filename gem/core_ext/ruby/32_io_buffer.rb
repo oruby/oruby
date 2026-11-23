@@ -315,15 +315,22 @@ class IO
       __oruby_read(offset, length).each_byte.sum { |b| b.to_s(2).count("1") }
     end
 
-    # read(io, offset = 0, length = rest): bytes read from io into the buffer
-    def read(io, offset = 0, length = nil)
+    # length is the minimum read. A zero minimum still uses the available buffer.
+    def read(io, length = 0, offset = 0)
       _, _, size = __oruby_view
-      offset, length = __oruby_bounds(offset, length, size)
-      return 0 if length == 0
-      data = io.read(length)
-      return 0 if data.nil?
-      __oruby_write(offset, data.b)
-      data.bytesize
+      offset, capacity = __oruby_bounds(offset, nil, size)
+      __oruby_bounds(offset, length, size)
+      return 0 if capacity == 0
+      read = 0
+      begin
+        data = io.readpartial(capacity - read)
+        break if data.empty?
+        __oruby_write(offset + read, data.b)
+        read += data.bytesize
+      end while read < length
+      read
+    rescue EOFError
+      read
     end
 
     # write(io, offset = 0, length = rest): bytes written to io
@@ -453,9 +460,17 @@ class IO
         if block_given?
           b.__oruby_st = Storage.__oruby_state(string, nil, readonly: string.frozen?, external: true,
                                                source: string, advance: true)
+          locked = !string.frozen?
+          if locked
+            if string.__send__(:__oruby_string_temp_lock, true)
+              raise RuntimeError, "can't modify string; temporarily locked"
+            end
+            b.__oruby_st[:locked_source] = true
+          end
           begin
             return yield(b)
           ensure
+            string.__send__(:__oruby_string_temp_lock, false) if locked
             b.__oruby_free!
           end
         end
@@ -591,7 +606,9 @@ class IO
         data = @st[:data]
         return if data.nil? || bytes.empty?
         at = @st[:base] + pos
-        if data.encoding == Encoding::BINARY && !data.frozen?
+        if @st[:locked_source]
+          data.__send__(:__oruby_buffer_string_write, at, bytes)
+        elsif data.encoding == Encoding::BINARY && !data.frozen?
           data.bytesplice(at, bytes.bytesize, bytes)
         else
           bytes.each_byte.with_index { |b, i| data.setbyte(at + i, b) }

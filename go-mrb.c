@@ -4194,7 +4194,73 @@ static mrb_value rescue_splat_m(mrb_state *mrb, mrb_value self) {
   return mrb_false_value();
 }
 
+mrb_value oruby_alloc_trace_start(mrb_state *, mrb_value);
+mrb_value oruby_alloc_trace_stop(mrb_state *, mrb_value);
+mrb_value oruby_alloc_trace_clear(mrb_state *, mrb_value);
+mrb_value oruby_allocation_info(mrb_state *, mrb_value);
+
+static mrb_value oruby_case_equal_m(mrb_state *mrb, mrb_value self) {
+  return mrb_funcall_argv1(mrb, self, MRB_OPSYM(eqq), mrb_get_arg1(mrb));
+}
+
+static mrb_value oruby_deconstructed_m(mrb_state *mrb, mrb_value self) {
+  if (!mrb_array_p(self)) mrb_raise(mrb, E_TYPE_ERROR, "deconstruct must return Array");
+  return self;
+}
+
+static mrb_value oruby_string_temp_lock_m(mrb_state *mrb, mrb_value self) {
+  struct RBasic *string = mrb_basic_ptr(self);
+  mrb_bool was_locked = (string->flags & ORUBY_STRING_TEMP_LOCK) != 0;
+  if (mrb_test(mrb_get_arg1(mrb))) string->flags |= ORUBY_STRING_TEMP_LOCK;
+  else string->flags &= ~ORUBY_STRING_TEMP_LOCK;
+  return mrb_bool_value(was_locked);
+}
+
+struct oruby_buffer_string_write {
+  mrb_value dest, bytes;
+  mrb_int offset;
+};
+
+static mrb_value oruby_buffer_string_write_body(mrb_state *mrb, void *userdata) {
+  const struct oruby_buffer_string_write *write = userdata;
+  struct RString *dest = mrb_str_ptr(write->dest);
+  mrb_str_modify(mrb, dest);
+  memmove(RSTRING_PTR(write->dest) + write->offset, RSTRING_PTR(write->bytes), RSTRING_LEN(write->bytes));
+  return write->dest;
+}
+
+static mrb_value oruby_buffer_string_write_m(mrb_state *mrb, mrb_value self) {
+  struct oruby_buffer_string_write write = { .dest = self };
+  mrb_get_args(mrb, "iS", &write.offset, &write.bytes);
+  struct RBasic *string = mrb_basic_ptr(self);
+  if (!(string->flags & ORUBY_STRING_TEMP_LOCK)) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "string is not temporarily locked");
+  }
+  if (write.offset < 0 || write.offset > RSTRING_LEN(self) ||
+      RSTRING_LEN(write.bytes) > RSTRING_LEN(self) - write.offset) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "write exceeds the string size");
+  }
+  string->flags &= ~ORUBY_STRING_TEMP_LOCK;
+  mrb_bool failed;
+  mrb_value result = mrb_protect_error(mrb, oruby_buffer_string_write_body, &write, &failed);
+  string->flags |= ORUBY_STRING_TEMP_LOCK;
+  if (failed) mrb_exc_raise(mrb, result);
+  return result;
+}
+
 void _mrb_init_oruby_core(mrb_state *mrb) {
+  mrb_define_private_method_id(mrb, mrb->string_class, MRB_SYM(__oruby_string_temp_lock), oruby_string_temp_lock_m, MRB_ARGS_REQ(1));
+  mrb_define_private_method_id(mrb, mrb->string_class, MRB_SYM(__oruby_buffer_string_write), oruby_buffer_string_write_m, MRB_ARGS_REQ(2));
+  struct RClass *basic = mrb_class_get_id(mrb, MRB_SYM(BasicObject));
+  mrb_define_method_id(mrb, basic, MRB_SYM(__oruby_case_equal), oruby_case_equal_m, MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, basic, MRB_SYM(__oruby_deconstructed), oruby_deconstructed_m, MRB_ARGS_NONE());
+  if (mrb_const_defined_at(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(ObjectSpace))) {
+    struct RClass *objspace = mrb_module_get_id(mrb, MRB_SYM(ObjectSpace));
+    mrb_define_class_method_id(mrb, objspace, MRB_SYM(__oruby_alloc_trace_start), oruby_alloc_trace_start, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, objspace, MRB_SYM(__oruby_alloc_trace_stop), oruby_alloc_trace_stop, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, objspace, MRB_SYM(__oruby_alloc_trace_clear), oruby_alloc_trace_clear, MRB_ARGS_NONE());
+    mrb_define_class_method_id(mrb, objspace, MRB_SYM(__oruby_allocation_info), oruby_allocation_info, MRB_ARGS_REQ(1));
+  }
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_refresh_chilled_warning), chilled_warning_refresh_m, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_lookup_class), lookup_class_m, MRB_ARGS_REQ(1));
   mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_rescue_splat), rescue_splat_m, MRB_ARGS_REQ(1));

@@ -33,6 +33,7 @@ enum {
   ORB_REGEXP_ENC,         // s0: interpolated regexp; flags: encoding letter and options in the high byte; parts follow as ORB_LIST_ITEM
   ORB_REGEXP_LITERAL,     // s0: a static regexp or interpolated /o literal cached per site
   ORB_REGEXP_RANGE,       // s0: static regexp content, flags: extended mode
+  ORB_REGEXP_LAST_LINE,   // s0: implicit match against the frame's $_
   ORB_MASGN_CPATH,        // s0: a constant path target of a multiple assignment, s1: the assignment
   ORB_FOR_CPATH,          // s0: a constant path target of a for loop, s1: (zero width) where its body starts
   ORB_MASGN_NESTED,       // s0: a nested target (a, b) of a multiple assignment, s1: the assignment, s2: inside its parentheses

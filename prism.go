@@ -301,14 +301,16 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 		return true
 	}
 	digits := 0
+	numberedReference := false
 	for _, c := range src {
 		if c >= '0' && c <= '9' || c == '_' {
 			digits++
-			if digits > 255 {
+			if digits > 255 || numberedReference && digits == 10 {
 				return true
 			}
 		} else {
 			digits = 0
+			numberedReference = c == '$'
 		}
 	}
 	return false
@@ -876,6 +878,9 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 				break
 			}
 			r.addWrap(s[0], e[0], func(*rewriter) string { return "{" }, func(*rewriter) string { return "}" })
+		case C.ORB_REGEXP_LAST_LINE:
+			r.addWrap(s[0], e[0], func(*rewriter) string { return "((" },
+				func(*rewriter) string { return ") =~ $_)" })
 		case C.ORB_REGEXP_LITERAL:
 			// one Regexp per literal, as MRI's (mruby compiles a literal each
 			// time it is evaluated), including interpolated literals with /o

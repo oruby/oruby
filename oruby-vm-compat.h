@@ -5,15 +5,18 @@
 #define ORUBY_IREP_RUBY2_KEYWORDS 8
 #define ORUBY_IREP_EVAL 16
 #define ORUBY_IREP_RETAINED_SOURCE 32
+#define ORUBY_IREP_BLOCK_WARNED 64
 
 /* A VM argument accumulator made by a splat, including bare super's rest. */
 #define ORUBY_ARRAY_SPLAT (1u << 13)
 /* Bit 19 is the generic ivar flag even on strings. */
 #define ORUBY_STRING_CHILLED (1u << 18)
+#define ORUBY_STRING_TEMP_LOCK (1u << 17)
 #define ORUBY_CHILLED_DEBUG_TAG 0xce
 
 /* A spare class flag on the state's Kernel module. */
 #define ORUBY_KERNEL_CHILLED_WARNING (1u << 15)
+#define ORUBY_KERNEL_UNUSED_BLOCK_WARNING (1u << 12)
 void oruby_chilled_warning_refresh(mrb_state *, mrb_value);
 void oruby_chilled_warn(mrb_state *, struct RBasic *);
 

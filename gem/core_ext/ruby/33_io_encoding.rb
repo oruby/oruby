@@ -286,6 +286,27 @@ class IO
   end
 
   alias __oruby_go_read read
+  def __oruby_read_scheduled(scheduler, length, outbuf, result)
+    capacity = length ? [length - result.bytesize, 16384].min : 16384
+    buffer = IO::Buffer.new(capacity)
+    while length.nil? || result.bytesize < length
+      remaining = length && length - result.bytesize
+      view = remaining && remaining < buffer.size ? buffer.slice(0, remaining) : buffer
+      count = scheduler.io_read(self, view, view.size, 0)
+      raise SystemCallError.new("read", -count) if count < 0
+      break if count == 0
+      raise IOError, "io_read returned more bytes than the buffer holds" if count > view.size
+      result << view.get_string(0, count)
+    end
+    result.force_encoding(external_encoding) if length.nil? && external_encoding
+    if outbuf
+      outbuf.replace(result)
+      result = outbuf
+    end
+    return nil if length && result.empty?
+    result
+  end
+
   def read(length = nil, outbuf = nil)
     return __oruby_go_read(length, outbuf) unless length.nil?
     s = outbuf.nil? ? __oruby_go_read : __oruby_go_read(nil, outbuf)

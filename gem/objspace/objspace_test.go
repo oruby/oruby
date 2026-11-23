@@ -97,7 +97,7 @@ func TestObjSpace(t *testing.T) {
 			traced = Widget.new("sprocket")
 		end
 		raise "allocation_sourceline" unless ObjectSpace.allocation_sourceline(traced).is_a?(Integer)
-		raise "allocation_class_path" unless ObjectSpace.allocation_class_path(traced) == "Widget"
+		raise "allocation_class_path" unless ObjectSpace.allocation_class_path(traced).nil?
 		raise "allocation_generation" unless ObjectSpace.allocation_generation(traced).is_a?(Integer)
 
 		ObjectSpace.trace_object_allocations_clear

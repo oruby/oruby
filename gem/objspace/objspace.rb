@@ -1,8 +1,4 @@
 module ObjectSpace
-  @__tracing = false
-  @__trace_hooked = false
-  @__alloc_info = {}
-
   class << self
     def memsize_of_all(klass = nil)
       total = 0
@@ -71,6 +67,8 @@ module ObjectSpace
       refs << cls if cls && !__is_immediate(cls)
 
       case obj
+      when (defined?(Thread::Queue) && Thread::Queue)
+        obj.__oruby_items.each { |e| refs << e unless __is_immediate(e) }
       when Array
         obj.each { |e| refs << e unless __is_immediate(e) }
       when Hash
@@ -165,7 +163,7 @@ module ObjectSpace
         parts << "\"name\":#{__json_escape(n)}" if n
       end
       parts << "\"memsize\":#{memsize_of(obj)}"
-      if !@__alloc_info.empty? && (info = @__alloc_info[addr])
+      if (info = __oruby_allocation_info(obj))
         parts << "\"file\":#{__json_escape(info[0])}" if info[0]
         parts << "\"line\":#{info[1]}" if info[1]
         parts << "\"method\":#{__json_escape(info[3].to_s)}" if info[3]
@@ -182,16 +180,24 @@ module ObjectSpace
       when :stdout
         $stdout.write(line)
         nil
-      when :file
+      when :file, nil
         require "tempfile"
-        f = Tempfile.new(["orubyheap", ".json"])
-        f.write(line)
-        f.flush
-        f
-      else
+        owned = Tempfile.create(["orubyheap", ".json"])
+        owned.write(line)
+        owned.flush
+        owned
+      when IO
         output.write(line)
         output
+      else
+        raise ArgumentError, "wrong output option: #{output.inspect}"
       end
+    rescue Exception
+      if owned
+        owned.close rescue nil
+        File.unlink(owned.path) rescue nil
+      end
+      raise
     end
 
     def dump_all(output: :file, full: false, since: nil, shapes: true)
@@ -253,88 +259,45 @@ module ObjectSpace
       end
     end
 
-    def __record_allocation(obj)
-      return unless @__tracing
-      return if __is_immediate(obj)
-      @__tracing = false
-      begin
-        loc = caller_locations(2, 1)&.first
-        file = loc ? loc.path : nil
-        line = loc ? loc.lineno : nil
-        meth = loc ? loc.label : nil
-        cls_path = internal_class_of(obj)&.name
-        gen = defined?(GC) && GC.respond_to?(:count) ? GC.count : 0
-        @__alloc_info[__obj_address(obj)] = [file, line, cls_path, meth, gen]
-      ensure
-        @__tracing = true
-      end
-    end
+    def trace_object_allocations_start = __oruby_alloc_trace_start
 
-    def trace_object_allocations_start
-      unless @__trace_hooked
-        @__trace_hooked = true
-        ::Class.class_eval do
-          alias_method :__oruby_objspace_orig_new, :new
-          def new(*args, **kw, &blk)
-            obj =
-              if kw.empty?
-                __oruby_objspace_orig_new(*args, &blk)
-              else
-                __oruby_objspace_orig_new(*args, **kw, &blk)
-              end
-            ::ObjectSpace.__record_allocation(obj)
-            obj
-          end
-        end
-      end
-      @__tracing = true
-      nil
-    end
+    alias trace_object_allocations_debug_start trace_object_allocations_start
 
-    def trace_object_allocations_debug_start
-      trace_object_allocations_start
-    end
+    def trace_object_allocations_stop = __oruby_alloc_trace_stop
 
-    def trace_object_allocations_stop
-      @__tracing = false
-      nil
-    end
-
-    def trace_object_allocations_clear
-      @__alloc_info.clear
-      nil
-    end
+    def trace_object_allocations_clear = __oruby_alloc_trace_clear
 
     def trace_object_allocations
-      prev = @__tracing
       trace_object_allocations_start
-      yield
-    ensure
-      @__tracing = prev
+      begin
+        yield
+      ensure
+        trace_object_allocations_stop
+      end
     end
 
     def allocation_sourcefile(obj)
-      info = @__alloc_info[__obj_address(obj)]
+      info = __oruby_allocation_info(obj)
       info ? info[0] : nil
     end
 
     def allocation_sourceline(obj)
-      info = @__alloc_info[__obj_address(obj)]
+      info = __oruby_allocation_info(obj)
       info ? info[1] : nil
     end
 
     def allocation_class_path(obj)
-      info = @__alloc_info[__obj_address(obj)]
+      info = __oruby_allocation_info(obj)
       info ? info[2] : nil
     end
 
     def allocation_method_id(obj)
-      info = @__alloc_info[__obj_address(obj)]
-      info && info[3] ? info[3].to_sym : nil
+      info = __oruby_allocation_info(obj)
+      info ? info[3] : nil
     end
 
     def allocation_generation(obj)
-      info = @__alloc_info[__obj_address(obj)]
+      info = __oruby_allocation_info(obj)
       info ? info[4] : nil
     end
   end

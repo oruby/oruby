@@ -38,7 +38,7 @@ module Warning
     raise ArgumentError, "unknown category: #{category}" unless CATEGORIES.include?(category)
     @settings ||= {}
     enabled = @settings[category] = !!val
-    ::Kernel.__oruby_refresh_chilled_warning if category == :deprecated
+    ::Kernel.__oruby_refresh_chilled_warning if category == :deprecated || category == :strict_unused_block
     enabled
   end
 

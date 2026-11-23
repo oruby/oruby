@@ -717,6 +717,16 @@ visit(const pm_node_t *node, void *data)
     if (call) sc->keep_re = call->receiver;
     break;
   }
+  case PM_MATCH_LAST_LINE_NODE:
+    compile_warn(sc, node, "regex literal in condition", 0);
+    r = add(sc, ORB_REGEXP_LAST_LINE);
+    span(r, 0, node);
+    /* The plain last-line node has the same literal fields as a regexp. */
+    if (sc->relits) {
+      r = add(sc, ORB_REGEXP_LITERAL);
+      span(r, 0, node);
+    }
+    break;
   case PM_REGULAR_EXPRESSION_NODE:
     if (sc->regexp_ranges) {
       const pm_regular_expression_node_t *re = (const pm_regular_expression_node_t *)node;
@@ -766,6 +776,11 @@ visit(const pm_node_t *node, void *data)
     }
     break;
   }
+  case PM_INTERPOLATED_MATCH_LAST_LINE_NODE:
+    compile_warn(sc, node, "regex literal in condition", 0);
+    r = add(sc, ORB_REGEXP_LAST_LINE);
+    span(r, 0, node);
+    /* fall through to the identical interpolated-literal layout */
   case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
     /* Keep the encodings of the interpolated strings until Regexp.compile. */
     const pm_interpolated_regular_expression_node_t *re = (const pm_interpolated_regular_expression_node_t *)node;
@@ -980,6 +995,7 @@ _oruby_prism_scan(mrb_state *mrb, const char *src, size_t len, const orb_scan_op
       const char *ty = pm_diagnostic_type(w);
       int verbose;
       if (strcmp(ty, "duplicated_hash_key") == 0) verbose = 0;
+      else if (strcmp(ty, "invalid_numbered_reference") == 0) verbose = 0;
       else if (strcmp(ty, "duplicated_when_clause") == 0) verbose = 1;
       else if (strcmp(ty, "void_statement") == 0) verbose = 1;
       else if (strcmp(ty, "ignored_frozen_string_literal") == 0) verbose = 1;

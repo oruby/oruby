@@ -359,6 +359,9 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return raiseRegexpError(mrb, err)
 	}
+	if r.nestedRepeat {
+		warn(mrb, "nested repeat operator '+' and '{...}': /"+src+"/")
+	}
 	r.enc = enc
 	r.source, r.options = src, opts
 	if pattern != src {

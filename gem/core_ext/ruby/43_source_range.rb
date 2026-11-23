@@ -88,12 +88,13 @@ module Ruby
         return nodes.select { |n| n[0] == "InterpolatedSymbolNode" } if mid == :__oruby_dsym || mid == :__oruby_dsyms
         return nodes.select { |n| n[0] == "KeywordHashNode" } if mid == :__oruby_kwsplat
         # pattern matching (core_ext's helpers)
-        return nodes.select { |n| PATTERNS.include?(n[0]) } if s.start_with?("__pat")
+        return nodes.select { |n| PATTERNS.include?(n[0]) } if s.start_with?("__pat") || mid == :__oruby_deconstructed
         if mid == :__oruby_nomatch
           patterns = nodes.select { |n| PATTERNS.include?(n[0]) }
           return patterns.length == 1 ? patterns : []
         end
         return [__oruby_splat_node(nodes) || __oruby_condition(nodes)].compact if mid == :__case_eqq
+        return [__oruby_condition(nodes)].compact if mid == :__oruby_case_equal
         index = mid == :[] || mid == :[]=
         found = nodes.select do |n|
           case n[0]

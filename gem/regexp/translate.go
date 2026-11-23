@@ -36,6 +36,7 @@ func (e *needsFullError) Error() string {
 }
 
 type translation struct {
+	nestedRepeat bool
 	pattern      string
 	named        bool
 	startContext bool
@@ -68,6 +69,11 @@ func translate(source string, options int, t target) (translation, error) {
 
 func translateWithStartAnchor(source string, options int, t target, startAnchor string) (translation, error) {
 	if strings.Contains(source, `\g`) {
+		if t == targetFull || getFallback() != nil {
+			if _, calls, err := scanGroups(source, options&Extended != 0); err == nil && len(calls) != 0 {
+				return translation{}, &nativeSyntaxError{&RegexpError{"subexpression calls require the native fallback"}}
+			}
+		}
 		expanded, err := expandCalls(source, options&Extended != 0)
 		if err != nil {
 			return translation{}, err
@@ -86,30 +92,33 @@ func translateWithStartAnchor(source string, options int, t target, startAnchor 
 		prefix += "s"
 	}
 	prefix += ")"
-	return translation{pattern: prefix + tr.out.String(), named: tr.named, startContext: tr.ctx, lineStart: tr.lineStart}, nil
+	return translation{pattern: prefix + tr.out.String(), named: tr.named, startContext: tr.ctx, lineStart: tr.lineStart, nestedRepeat: tr.nestedRepeat}, nil
 }
 
 type groupFrame struct {
 	x         bool // /x state to restore
-	atomStart int  // out offset where the group starts
+	charMode  byte
+	atomStart int // out offset where the group starts
 }
 
 type translator struct {
-	src         string
-	startAnchor string
-	i           int
-	t           target
-	out         strings.Builder
-	x           bool
-	stack       []groupFrame
-	named       bool
-	ctx         bool
-	lineStart   bool
-	ncap        int
-	lastAtom    int  // out offset of the last atom; -1 if none
-	quant       bool // last token was a quantifier
-	keep        bool // \K seen at top level
-	topAlt      bool // top-level | seen
+	src          string
+	startAnchor  string
+	i            int
+	t            target
+	out          strings.Builder
+	x            bool
+	charMode     byte // 'a' ASCII, 'd' Ruby default, 'u' Unicode
+	stack        []groupFrame
+	named        bool
+	ctx          bool
+	lineStart    bool
+	ncap         int
+	lastAtom     int  // out offset of the last atom; -1 if none
+	quant        bool // last token was a quantifier
+	nestedRepeat bool
+	keep         bool // \K seen at top level
+	topAlt       bool // top-level | seen
 }
 
 func (tr *translator) errorf(format string, args ...interface{}) error {
@@ -133,6 +142,14 @@ func (tr *translator) assertion(s string) {
 	tr.lastAtom = -1
 	tr.quant = false
 	tr.out.WriteString(s)
+}
+
+func (tr *translator) repeatableAssertion(s string) {
+	if tr.i < len(tr.src) && strings.ContainsRune("*+?{", rune(tr.src[tr.i])) {
+		tr.atom("(?:" + s + ")")
+		return
+	}
+	tr.assertion(s)
 }
 
 // hasNamedGroups reports whether src defines (?<name>...) or (?'name'...).
@@ -203,7 +220,7 @@ func (tr *translator) run() error {
 			}
 			f := tr.stack[len(tr.stack)-1]
 			tr.stack = tr.stack[:len(tr.stack)-1]
-			tr.x = f.x
+			tr.x, tr.charMode = f.x, f.charMode
 			tr.out.WriteByte(')')
 			tr.lastAtom = f.atomStart
 			tr.quant = false
@@ -225,17 +242,17 @@ func (tr *translator) run() error {
 		case '^':
 			tr.ctx = true
 			tr.lineStart = true
+			tr.i++
 			if tr.t == targetFull {
 				// Ruby treats an empty string as a line, but a trailing
 				// newline does not create another line at the end.
-				tr.assertion(`(?:\A|^(?!\z))`)
+				tr.repeatableAssertion(`(?:\A|^(?!\z))`)
 			} else {
-				tr.assertion("^")
+				tr.repeatableAssertion("^")
 			}
-			tr.i++
 		case '$':
-			tr.assertion("$")
 			tr.i++
+			tr.repeatableAssertion("$")
 		case '.':
 			tr.atom(".")
 			tr.i++
@@ -285,6 +302,7 @@ func (tr *translator) quantSuffix(interval bool) error {
 		tr.i++
 	case '+':
 		if interval {
+			tr.nestedRepeat = true
 			return nil
 		}
 		if err := tr.full("possessive quantifier"); err != nil {
@@ -352,7 +370,7 @@ func (tr *translator) interval() error {
 }
 
 func (tr *translator) push(x bool) {
-	tr.stack = append(tr.stack, groupFrame{x: x, atomStart: tr.out.Len()})
+	tr.stack = append(tr.stack, groupFrame{x: x, charMode: tr.charMode, atomStart: tr.out.Len()})
 }
 
 func (tr *translator) captureRef(ref string, delimited bool) (string, error) {
@@ -471,7 +489,7 @@ func (tr *translator) group() error {
 	// option group (?imx-imx) or (?imx-imx:...)
 	j := tr.i + 2
 	on, off := "", ""
-	x := tr.x
+	x, charMode := tr.x, tr.charMode
 	neg := false
 	for ; j < len(src); j++ {
 		c := src[j]
@@ -486,6 +504,12 @@ func (tr *translator) group() error {
 			} else {
 				on += g
 			}
+			continue
+		case 'a', 'd', 'u':
+			if neg {
+				return tr.errorf("undefined group option")
+			}
+			charMode = c
 			continue
 		case '-':
 			if neg {
@@ -505,7 +529,7 @@ func (tr *translator) group() error {
 	}
 	if src[j] == ')' {
 		// applies to the rest of the enclosing group
-		tr.x = x
+		tr.x, tr.charMode = x, charMode
 		if flags != "" {
 			tr.out.WriteString("(?" + flags + ")")
 		}
@@ -513,7 +537,7 @@ func (tr *translator) group() error {
 		return nil
 	}
 	tr.push(tr.x)
-	tr.x = x
+	tr.x, tr.charMode = x, charMode
 	if flags != "" {
 		tr.out.WriteString("(?" + flags + ":")
 	} else {
@@ -541,23 +565,44 @@ func (tr *translator) escape() error {
 	switch c {
 	case 'A':
 		tr.ctx = true
-		tr.assertion(`\A`)
+		tr.repeatableAssertion(`\A`)
 	case 'z':
-		tr.assertion(`\z`)
+		tr.repeatableAssertion(`\z`)
 	case 'Z':
 		if err := tr.full(`\Z`); err != nil {
 			return err
 		}
-		tr.assertion(`\Z`)
+		tr.repeatableAssertion(`\Z`)
 	case 'b', 'B':
 		tr.ctx = true
-		tr.assertion(`\` + string(c))
+		word := ""
+		switch tr.charMode {
+		case 'd', 'u':
+			if err := tr.full("Unicode word boundary"); err != nil {
+				return err
+			}
+			word = "[" + posixFragments["word"] + "]"
+		case 'a':
+			if tr.t == targetFull {
+				word = "[a-zA-Z0-9_]"
+			}
+		}
+		if word == "" {
+			tr.repeatableAssertion(`\` + string(c))
+			break
+		}
+		s := fmt.Sprintf("(?<=%s)(?!%s)|(?<!%s)(?=%s)", word, word, word, word)
+		if c == 'B' {
+			tr.repeatableAssertion("(?!" + s + ")")
+		} else {
+			tr.repeatableAssertion("(?:" + s + ")")
+		}
 	case 'G':
 		if err := tr.full(`\G`); err != nil {
 			return err
 		}
 		tr.ctx = true
-		tr.assertion(tr.startAnchor)
+		tr.repeatableAssertion(tr.startAnchor)
 	case 'K':
 		if err := tr.full(`\K`); err != nil {
 			return err
@@ -573,18 +618,30 @@ func (tr *translator) escape() error {
 		tr.out.WriteString("(?<=" + s + ")")
 		tr.keep = true
 		tr.lastAtom, tr.quant = -1, false
-	case 'd':
-		ascii(`\d`, `[0-9]`)
-	case 'D':
-		ascii(`\D`, `[^0-9]`)
-	case 'w':
-		ascii(`\w`, `[a-zA-Z0-9_]`)
-	case 'W':
-		ascii(`\W`, `[^a-zA-Z0-9_]`)
-	case 's':
-		tr.atom(`[\t\n\v\f\r ]`)
-	case 'S':
-		tr.atom(`[^\t\n\v\f\r ]`)
+	case 'd', 'D', 'w', 'W', 's', 'S':
+		if tr.charMode == 'u' {
+			frag := unicodeShorthand(c)
+			if c < 'a' {
+				tr.atom("[^" + frag + "]")
+			} else {
+				tr.atom("[" + frag + "]")
+			}
+			break
+		}
+		switch c {
+		case 'd':
+			ascii(`\d`, `[0-9]`)
+		case 'D':
+			ascii(`\D`, `[^0-9]`)
+		case 'w':
+			ascii(`\w`, `[a-zA-Z0-9_]`)
+		case 'W':
+			ascii(`\W`, `[^a-zA-Z0-9_]`)
+		case 's':
+			tr.atom(`[\t\n\v\f\r ]`)
+		case 'S':
+			tr.atom(`[^\t\n\v\f\r ]`)
+		}
 	case 'h':
 		tr.atom(`[0-9a-fA-F]`)
 	case 'H':
@@ -845,6 +902,33 @@ var posixFragments = map[string]string{
 	"any":    `\x00-\x{10ffff}`,
 }
 
+func unicodeShorthand(c byte) string {
+	switch c | 0x20 {
+	case 'd':
+		return `\p{Nd}`
+	case 'w':
+		return posixFragments["word"]
+	case 's':
+		return posixFragments["space"]
+	}
+	return ""
+}
+
+var asciiPOSIX = map[string]string{
+	"alpha": "a-zA-Z",
+	"digit": "0-9",
+	"alnum": "a-zA-Z0-9",
+	"upper": "A-Z",
+	"lower": "a-z",
+	"space": `\t\n\v\f\r `,
+	"blank": `\t `,
+	"cntrl": `\x00-\x1f\x7f`,
+	"punct": `\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e`,
+	"graph": `\x21-\x7e`,
+	"print": `\x20-\x7e`,
+	"word":  "a-zA-Z0-9_",
+}
+
 var categoryLongNames = map[string]string{
 	"letter": "L", "uppercaseletter": "Lu", "lowercaseletter": "Ll", "titlecaseletter": "Lt",
 	"modifierletter": "Lm", "otherletter": "Lo", "mark": "M", "nonspacingmark": "Mn",
@@ -961,9 +1045,15 @@ func (tr *translator) parseClass() (*cset, error) {
 			if neg {
 				name = name[1:]
 			}
-			frag, ok := posixFragments[normalizeProp(name)]
+			key := normalizeProp(name)
+			frag, ok := posixFragments[key]
 			if !ok {
 				return nil, tr.errorf("invalid POSIX bracket type [:%s:]", name)
+			}
+			if tr.charMode == 'a' {
+				if ascii := asciiPOSIX[key]; ascii != "" {
+					frag = ascii
+				}
 			}
 			if tr.i+1 < len(src) && src[tr.i] == '-' && src[tr.i+1] != ']' &&
 				!strings.HasPrefix(src[tr.i+1:], "&&") {
@@ -1059,6 +1149,14 @@ func (tr *translator) classShorthand() (citem, error) {
 			it.negFrag = re2Form
 		}
 		return it
+	}
+	if tr.charMode == 'u' {
+		if frag := unicodeShorthand(c); frag != "" {
+			if c < 'a' {
+				return neg(frag, ""), nil
+			}
+			return citem{frag: frag}, nil
+		}
 	}
 	switch c {
 	case 'd':

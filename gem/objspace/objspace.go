@@ -12,6 +12,9 @@ import (
 //go:embed objspace.rb
 var objspaceRb []byte
 
+//go:embed trace.rb
+var traceRb []byte
+
 const (
 	// Approximate mruby RVALUE slot size and value size on 64-bit MRB_NO_BOXING.
 	rvalueSlotSize = 48
@@ -21,6 +24,11 @@ const (
 
 func init() {
 	oruby.LazyGem("objspace", initObjSpace)
+	oruby.LazyGem("objspace/trace", func(mrb *oruby.MrbState) any {
+		mrb.Resolve("objspace")
+		rb.LoadRuby(mrb, "<internal:objspace/trace>", traceRb)
+		return nil
+	})
 }
 
 func initObjSpace(mrb *oruby.MrbState) any {
