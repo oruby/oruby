@@ -1,10 +1,12 @@
 package regexp
 
 import (
+	"math"
 	"strings"
 	"time"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/internal/rb"
 )
 
 // oruby regex options
@@ -67,7 +69,7 @@ func init() {
 		cls.DefineMethod("source", regexSource, mrb.ArgsNone())
 		cls.DefineMethod("~", regexTilde, mrb.ArgsNone())
 		cls.UndefMethod("initialize")
-		cls.DefineMethod("initialize", regexInit, mrb.ArgsArg(1, 3)+mrb.ArgsBlock())
+		cls.DefineMethod("initialize", regexInit, mrb.ArgsArg(1, 3)+mrb.ArgsKey(0, 1)+mrb.ArgsBlock())
 		cls.DefineMethod("encoding", regexEncoding, mrb.ArgsNone())
 		cls.DefineMethod("fixed_encoding?", regexFixedEncoding, mrb.ArgsNone())
 		cls.DefineMethod("after_init", regexAfterInit, mrb.ArgsNone())
@@ -89,7 +91,7 @@ func init() {
 
 		cls.DefineClassMethod("quote", regexQuote, mrb.ArgsReq(1))
 		cls.DefineClassMethod("escape", regexQuote, mrb.ArgsReq(1))
-		cls.DefineClassMethod("compile", regexCompile, mrb.ArgsAny()+mrb.ArgsBlock())
+		cls.DefineClassMethod("compile", regexCompile, mrb.ArgsAny()+mrb.ArgsKey(0, 1)+mrb.ArgsBlock())
 		cls.DefineClassMethod("last_match", regexLastMatch, mrb.ArgsOpt(1))
 		// re.__match_raw(str): a MatchData or nil, leaving $~ alone (for
 		// core Ruby, whose frames are its callers', go-mrb.c)
@@ -100,7 +102,7 @@ func init() {
 				return mrb.NilValue()
 			}
 			s := rstr(arg)
-			result, err := re.findErr(s, 0)
+			result, err := re.findErr(s, 0, regexpSubjectEncoding(mrb, arg))
 			if err != nil {
 				return raiseTimeout(mrb, err)
 			}
@@ -118,10 +120,20 @@ func init() {
 		cls.DefineClassMethod("union", regexUnion, mrb.ArgsAny())
 		cls.DefineClassMethod("timeout", regexTimeout, mrb.ArgsNone())
 		cls.DefineClassMethod("timeout=", regexSetTimeout, mrb.ArgsReq(1))
+		cls.DefineMethod("timeout", regexInstanceTimeout, mrb.ArgsNone())
 		cls.DefineClassMethod("linear_time?", regexLinearTime, mrb.ArgsArg(1, 1))
 		mrb.DefineClassUnder(cls, "TimeoutError", mrb.ERegexpError())
 
 		mrb.DefineGlobalConst("Regexp", cls)
+		rb.LoadRuby(mrb, "<internal:regexp>", []byte(`
+class << Regexp
+  private
+
+  def __oruby_compile_keywords(args, options, block)
+    new(*args, **options, &block)
+  end
+end
+`))
 
 		initString(mrb)
 		return nil
@@ -170,13 +182,20 @@ func rubyOptions(mrb *oruby.MrbState, v oruby.Value) int {
 	return IgnoreCase
 }
 
-// regexCompile is Regexp.compile: Regexp.new, with a literal's encoding
-// letter as the third argument
 func regexCompile(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args, block := mrb.GetArgsWithBlock()
-	call := make([]interface{}, 0, args.Len()+1)
-	for _, a := range args.Slice() {
-		call = append(call, a)
+	if kw := mrb.KeywordArgsValue(); !kw.IsNil() {
+		list := mrb.AryNewFromValues(args.Slice()...)
+		ret, err := mrb.Funcall(self, oruby.Sym___oruby_compile_keywords, list, kw, block)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		return ret
+	}
+	var short [4]interface{}
+	call := short[:0]
+	for _, arg := range args.Slice() {
+		call = append(call, arg)
 	}
 	if !block.IsNil() {
 		call = append(call, block.Value())
@@ -289,6 +308,20 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	source := args.Item(0)
 	var src, enc string
 	var opts int
+	var timeout time.Duration
+	if kw := mrb.KeywordArgsValue(); !kw.IsNil() {
+		key := mrb.SymbolValue(mrb.Intern("timeout"))
+		for _, k := range oruby.RArraySlice(mrb.HashKeys(kw).Value()) {
+			if !k.IsSymbol() || k.Symbol() != key.Symbol() {
+				return mrb.Raise(mrb.EArgumentError(), "unknown keyword: "+mrb.String(mrb.Inspect(k)))
+			}
+		}
+		var exc oruby.MrbValue
+		timeout, exc = regexpTimeoutArg(mrb, mrb.HashGet(kw, key))
+		if exc != nil {
+			return exc
+		}
+	}
 
 	if other, ok := mrb.Data(source).(*Regexp); ok && source.Type() == oruby.MrbTTCData {
 		if args.Len() > 1 && !args.Item(1).IsNil() {
@@ -321,11 +354,17 @@ func regexInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		enc, opts = regexpEncoding(mrb, src, strEnc(mrb, sv), opts, lit)
 	}
 
-	r, err := compileRuby(src, opts)
+	pattern := regexpPatternText(src, enc)
+	r, err := compileRuby(pattern, opts&^NoEncoding)
 	if err != nil {
 		return raiseRegexpError(mrb, err)
 	}
 	r.enc = enc
+	r.source, r.options = src, opts
+	if pattern != src {
+		r.pattern = pattern
+	}
+	r.timeout = timeout
 	mrb.DataSetInterface(self, r)
 	_ = mrb.IVSet(self, oruby.IvSym_source, sourceValue(mrb, src, enc))
 	_ = mrb.IVSet(self, oruby.IvSym_options, mrb.FixnumValue(opts))
@@ -340,7 +379,7 @@ func regexInitCopy(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if r, ok := mrb.Data(src).(*Regexp); ok {
 		// compiled patterns are immutable and safe to share
 		mrb.DataSetInterface(self, r)
-		_ = mrb.IVSet(self, oruby.IvSym_source, mrb.StrNew(r.source))
+		_ = mrb.IVSet(self, oruby.IvSym_source, sourceValue(mrb, r.source, regexpEncName(mrb, src)))
 		_ = mrb.IVSet(self, oruby.IvSym_options, mrb.FixnumValue(r.options))
 	}
 	return self
@@ -547,7 +586,7 @@ func regexMatchOperator(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return ret
 	}
 	idx := data.byteBegin(0)
-	return mrb.FixnumValue(charIndex(data.s, idx))
+	return mrb.FixnumValue(regexpCharIndex(data.s, idx, data.enc))
 }
 
 // charIndex converts a byte offset to a character index
@@ -605,8 +644,8 @@ func newMatchValue(mrb *oruby.MrbState, re *Regexp, s string, result []int) orub
 }
 
 // doMatch matches at byte offset pos and sets $~; returns nil value on no match
-func doMatch(mrb *oruby.MrbState, re *Regexp, s string, pos int) oruby.MrbValue {
-	result, err := re.findErr(s, pos)
+func doMatch(mrb *oruby.MrbState, re *Regexp, s string, pos int, encoding ...string) oruby.MrbValue {
+	result, err := re.findErr(s, pos, encoding...)
 	if err != nil {
 		return raiseTimeout(mrb, err)
 	}
@@ -615,6 +654,9 @@ func doMatch(mrb *oruby.MrbState, re *Regexp, s string, pos int) oruby.MrbValue 
 		return mrb.NilValue()
 	}
 	matchData := newMatchValue(mrb, re, s, result)
+	if len(encoding) > 0 {
+		mrb.Data(matchData).(*MatchData).enc = encoding[0]
+	}
 	setLastMatch(mrb, matchData)
 	return matchData
 }
@@ -628,24 +670,24 @@ func raiseTimeout(mrb *oruby.MrbState, err error) oruby.MrbValue {
 }
 
 // subject returns the string to match: String, Symbol or nil (no match)
-func subject(mrb *oruby.MrbState, v oruby.Value) (string, bool) {
+func subject(mrb *oruby.MrbState, v oruby.Value) (string, oruby.Value, bool) {
 	switch v.Type() {
 	case oruby.MrbTTSymbol:
-		return mrb.SymString(oruby.MrbSymbol(v)), true
+		return mrb.SymString(oruby.MrbSymbol(v)), v, true
 	case oruby.MrbTTString:
-		return rstr(v), true
+		return rstr(v), v, true
 	}
 	if v.IsNil() {
-		return "", false
+		return "", oruby.Nil, false
 	}
 	if mrb.RespondTo(v, oruby.Sym_to_str) {
 		if s, err := mrb.Funcall(v, oruby.Sym_to_str); err == nil && s.Type() == oruby.MrbTTString {
-			return rstr(s), true
+			return rstr(s), s.Value(), true
 		}
 		mrb.ExcClear()
 	}
 	mrb.Raise(mrb.ETypeError(), "no implicit conversion into String")
-	return "", false
+	return "", oruby.Nil, false
 }
 
 func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -653,7 +695,7 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if r, ok := mrb.Data(self).(*Regexp); !ok || r == nil {
 		return mrb.ETypeError().Raisef("uninitialized Regexp")
 	}
-	s, ok := subject(mrb, args.Item(0))
+	s, subjectValue, ok := subject(mrb, args.Item(0))
 	if !ok {
 		if mrb.HasExc() {
 			return mrb.Exc().Value()
@@ -661,10 +703,11 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		setLastMatch(mrb, mrb.NilValue())
 		return mrb.NilValue()
 	}
-	if !matchCheck(mrb, self, args.Item(0)) {
+	enc, ok := matchEncoding(mrb, self, subjectValue)
+	if !ok {
 		return mrb.Exc().Value()
 	}
-	pos, ok := byteIndex(s, oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0))))
+	pos, ok := regexpByteIndex(s, oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0))), enc)
 	if !ok {
 		setLastMatch(mrb, mrb.NilValue())
 		return mrb.NilValue()
@@ -674,18 +717,14 @@ func regexMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if regx == nil {
 		return mrb.Raise(mrb.ETypeError(), "uninitialized Regexp")
 	}
-	matchData := doMatch(mrb, regx, s, pos)
+	matchData := doMatch(mrb, regx, s, pos, enc)
+	if mrb.HasExc() {
+		return matchData
+	}
 	if !matchData.Value().IsNil() && matchData.Value().Type() == oruby.MrbTTCData {
 		_ = mrb.IVSet(matchData.Value(), oruby.IvSym_regexp, self)
-		if md, ok := mrb.Data(matchData.Value()).(*MatchData); ok {
-			subj := args.Item(0)
-			if subj.Type() == oruby.MrbTTString {
-				md.enc = encName(mrb, strEnc(mrb, subj))
-			} else if mrb.RespondTo(subj, oruby.Sym_to_str) {
-				if sv, err := mrb.Funcall(subj, oruby.Sym_to_str); err == nil && sv.Type() == oruby.MrbTTString {
-					md.enc = encName(mrb, strEnc(mrb, sv.Value()))
-				}
-			}
+		if subjectValue.IsString() && enc == "UTF-8" {
+			mrb.Data(matchData.Value()).(*MatchData).enc = encName(mrb, strEnc(mrb, subjectValue))
 		}
 	}
 
@@ -732,8 +771,13 @@ func regexCaseEq(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return oruby.False
 		}
 		s = rstr(v)
+		dest = v.Value()
 	}
-	md := doMatch(mrb, regexpOf(mrb, self), s, 0)
+	enc, ok := matchEncoding(mrb, self, dest)
+	if !ok {
+		return mrb.Exc().Value()
+	}
+	md := doMatch(mrb, regexpOf(mrb, self), s, 0, enc)
 	if mrb.HasExc() {
 		return mrb.Exc().Value()
 	}
@@ -743,21 +787,22 @@ func regexCaseEq(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 // regexEqualMatch is Regexp#match?: does not set $~
 func regexEqualMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
-	s, ok := subject(mrb, args.Item(0))
+	s, subjectValue, ok := subject(mrb, args.Item(0))
 	if !ok {
 		if mrb.HasExc() {
 			return mrb.Exc().Value()
 		}
 		return oruby.False
 	}
-	if !matchCheck(mrb, self, args.Item(0)) {
+	enc, ok := matchEncoding(mrb, self, subjectValue)
+	if !ok {
 		return mrb.Exc().Value()
 	}
-	pos, ok := byteIndex(s, oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0))))
+	pos, ok := regexpByteIndex(s, oruby.MrbFixnum(args.ItemDef(1, oruby.MrbFixnumValue(0))), enc)
 	if !ok {
 		return oruby.False
 	}
-	m, err := regexpOf(mrb, self).findErr(s, pos)
+	m, err := regexpOf(mrb, self).findErr(s, pos, enc)
 	if err != nil {
 		return raiseTimeout(mrb, err)
 	}
@@ -846,33 +891,65 @@ func regexLastMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func regexTimeout(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	d := MatchTimeout()
+	return regexpTimeoutValue(mrb, MatchTimeout())
+}
+
+func regexInstanceTimeout(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	r := regexpOf(mrb, self)
+	if r == nil {
+		return mrb.Raise(mrb.ETypeError(), "uninitialized Regexp")
+	}
+	return regexpTimeoutValue(mrb, r.timeout)
+}
+
+func regexpTimeoutValue(mrb *oruby.MrbState, d time.Duration) oruby.MrbValue {
 	if d <= 0 {
 		return mrb.NilValue()
 	}
 	return mrb.FloatValue(d.Seconds())
 }
 
-// regexSetTimeout is Regexp.timeout=; it applies to regexps compiled
-// afterwards by the backtracking engine (RE2 matching is linear-time).
 func regexSetTimeout(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	v := mrb.GetArgsFirst()
-	var d time.Duration
-	switch v.Type() {
-	case oruby.MrbTTFixnum:
-		d = time.Duration(oruby.MrbFixnum(v)) * time.Second
-	case oruby.MrbTTFloat:
-		d = time.Duration(v.Float64() * float64(time.Second))
-	default:
-		if !v.IsNil() {
-			return mrb.Raise(mrb.ETypeError(), "timeout must be a Numeric or nil")
-		}
-	}
-	if d < 0 {
-		return mrb.Raise(mrb.EArgumentError(), "invalid timeout")
+	d, exc := regexpTimeoutArg(mrb, v)
+	if exc != nil {
+		return exc
 	}
 	SetMatchTimeout(d)
 	return v
+}
+
+func regexpTimeoutArg(mrb *oruby.MrbState, v oruby.Value) (time.Duration, oruby.MrbValue) {
+	var seconds float64
+	switch v.Type() {
+	case oruby.MrbTTFixnum:
+		seconds = float64(oruby.MrbFixnum(v))
+	case oruby.MrbTTFloat:
+		seconds = v.Float64()
+	default:
+		if v.IsNil() {
+			return 0, nil
+		}
+		if !mrb.ObjIsKindOf(v, mrb.ClassGet("Numeric")) {
+			return 0, mrb.Raise(mrb.ETypeError(), "timeout must be a Numeric or nil")
+		}
+		number, err := mrb.Funcall(v, mrb.Intern("to_f"))
+		if err != nil {
+			return 0, mrb.RaiseError(err)
+		}
+		seconds = number.Float64()
+	}
+	if seconds <= 0 {
+		return 0, mrb.Raise(mrb.EArgumentError(), "invalid timeout: "+mrb.String(mrb.Inspect(v)))
+	}
+	nanos := seconds * float64(time.Second)
+	if math.IsNaN(nanos) {
+		return 0, nil
+	}
+	if nanos >= math.MaxInt64 {
+		return time.Duration(math.MaxInt64), nil
+	}
+	return time.Duration(nanos), nil
 }
 
 // matchDataPos adapts a group-position accessor; the group is an index or name

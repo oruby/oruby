@@ -13,6 +13,7 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	rx "github.com/oruby/oruby/gem/regexp"
@@ -83,19 +84,34 @@ func (e *nativeEngine) NumSubexp() int        { return len(e.names) - 1 }
 func (e *nativeEngine) SubexpNames() []string { return e.names }
 
 func (e *nativeEngine) FindAt(s string, pos int) ([]int, error) {
+	return e.FindAtDeadline(s, pos, time.Time{})
+}
+
+func (e *nativeEngine) FindAtDeadline(s string, pos int, deadline time.Time) ([]int, error) {
 	var captures [C.RE_MAX_CAPTURES*2 + 2]C.int
 	size := len(e.names) * 2
 	if e.pattern.keep_slot != 0 {
 		size = int(e.pattern.keep_slot) + 2
 	}
 	native.Lock()
+	var timeout C.uint64_t
+	if !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			native.Unlock()
+			return nil, rx.ErrMatchTimeout
+		}
+		timeout = C.uint64_t(remaining)
+	}
 	count := C.orb_regexp_match(native.state, e.pattern, (*C.char)(unsafe.Pointer(unsafe.StringData(s))),
-		C.size_t(len(s)), C.mrb_int(pos), &captures[0], C.int(size), C.mrb_bool(e.binary))
+		C.size_t(len(s)), C.mrb_int(pos), &captures[0], C.int(size), C.mrb_bool(e.binary), timeout)
 	native.Unlock()
 	runtime.KeepAlive(e)
 	switch count {
 	case 0:
 		return nil, nil
+	case C.ORB_RE_TIMEOUT:
+		return nil, rx.ErrMatchTimeout
 	case C.RE_OVER_STACK_LIMIT, C.RE_OVER_STEP_LIMIT:
 		return nil, errors.New("regexp match timeout: native engine limit exceeded")
 	case C.RE_NOMEM:

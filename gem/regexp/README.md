@@ -42,15 +42,17 @@ Recursive subexpression calls (`\g<name>`) and the absent operator
 (`(?~...)`) use the native engine in `gem/regexp/full`. It compiles from
 the pinned mruby source and uses the same ORuby Regexp and MatchData classes.
 
-Byte-wise matching of invalid UTF-8 and binary (`/n`) strings still has
-compatibility gaps.
+Binary, Windows-31J and EUC-JP input is matched by encoded character, and
+MatchData keeps the original bytes and offsets.
 
 ### Regexp.timeout
 
-`Regexp.timeout=` applies to regexps that the full engine compiles afterwards,
-and is process-wide. A match exceeding the backtracking limit
-(`full.MaxBacktrackingStack`) raises `Regexp::TimeoutError`. RE2 matching
-is linear-time and needs neither.
+`Regexp.timeout=` sets the process-wide limit for matching, including existing
+regexps. `Regexp.new(source, timeout: seconds)` sets an instance limit. Timed
+RE2 and native searches check the deadline during matching. The regexp2
+fallback also checks elapsed time, with its internal interruption resolution
+limited by regexp2's clock. Exceeding a deadline or the backtracking limit
+raises `Regexp::TimeoutError`.
 
 ## Tests
 

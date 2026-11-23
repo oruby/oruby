@@ -51,7 +51,9 @@ func initString(mrb *oruby.MrbState) {
 
 // literalCache keeps compiled patterns for String arguments of sub/gsub/scan,
 // which match literally.
-var literalCache sync.Map // string -> *Regexp
+type literalKey struct{ source, encoding string }
+
+var literalCache sync.Map // literalKey -> *Regexp
 
 // getRegexp returns the pattern of a Regexp argument; a String argument
 // matches literally (as in sub, gsub, scan, index, split).
@@ -63,14 +65,22 @@ func getRegexp(mrb *oruby.MrbState, value oruby.Value) *Regexp {
 		}
 	case oruby.MrbTTString:
 		s := rstr(value)
-		if r, ok := literalCache.Load(s); ok {
+		key := literalKey{source: s}
+		if !isASCII(s) {
+			key.encoding = regexpSubjectEncoding(mrb, value)
+		}
+		if r, ok := literalCache.Load(key); ok {
 			return r.(*Regexp)
 		}
-		r, err := compileRuby(QuoteMeta(s), 0)
+		normalized := newRegexpText(s, key.encoding).text
+		r, err := compileRuby(QuoteMeta(normalized), 0)
 		if err != nil {
 			return nil
 		}
-		literalCache.Store(s, r)
+		if normalized != s {
+			r.pattern, r.source, r.enc = r.source, QuoteMeta(s), key.encoding
+		}
+		literalCache.Store(key, r)
 		return r
 	}
 	return nil
@@ -305,8 +315,14 @@ func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	case "regexp":
 		start := 0
 		lastNull := false
+		enc := regexpSubjectEncoding(mrb, self)
+		input := newRegexpText(s, enc)
+		deadline := re.deadline()
 		for {
-			m, err := re.findErr(s, start)
+			if start > len(s) {
+				break
+			}
+			m, err := re.findText(input, start, deadline)
 			if err != nil {
 				return raiseTimeout(mrb, err)
 			}
@@ -325,7 +341,11 @@ func stringSplit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 					if start == len(s) {
 						start++
 					} else {
-						start += charLen(start)
+						if legacyRegexpEncoding(enc) {
+							start += encodedWidth(s[start:], enc)
+						} else {
+							start += charLen(start)
+						}
 					}
 					lastNull = true
 					continue
@@ -431,8 +451,8 @@ func sliceWith(mrb *oruby.MrbState, self oruby.Value, old string) oruby.MrbValue
 			}
 		}
 	}
-	matchData := doMatch(mrb, r, mrb.String(self), 0)
-	if matchData.Value().IsNil() {
+	matchData := doMatch(mrb, r, mrb.String(self), 0, regexpSubjectEncoding(mrb, self))
+	if matchData.Value().Type() != oruby.MrbTTCData {
 		return matchData
 	}
 	m := mrb.Data(matchData.Value()).(*MatchData)
@@ -554,7 +574,11 @@ func encName(mrb *oruby.MrbState, e oruby.Value) string {
 	if e.IsNil() {
 		return "UTF-8"
 	}
-	return mrb.String(mrb.Call(e, "to_s"))
+	name := mrb.String(mrb.Call(e, "to_s"))
+	if name == "BINARY" {
+		return "ASCII-8BIT"
+	}
+	return name
 }
 
 func (e *encBuf) add(mrb *oruby.MrbState, s string, enc oruby.Value) oruby.MrbValue {
@@ -661,12 +685,13 @@ func makeReplacer(mrb *oruby.MrbState, self, replace, block, selfEnc oruby.Value
 // substitute replaces the first (all=false) or every match of re in s
 func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replacer, selfEnc oruby.Value, eachMatch bool) (oruby.MrbValue, bool, oruby.MrbValue) {
 	var matches [][]int
+	enc := encName(mrb, selfEnc)
 	if all {
 		var err error
-		if matches, err = re.findAll(s); err != nil {
+		if matches, err = re.findAll(s, enc); err != nil {
 			return nil, false, raiseTimeout(mrb, err)
 		}
-	} else if m, err := re.findErr(s, 0); err != nil {
+	} else if m, err := re.findErr(s, 0, enc); err != nil {
 		return nil, false, raiseTimeout(mrb, err)
 	} else if m != nil {
 		matches = [][]int{m}
@@ -679,7 +704,6 @@ func substitute(mrb *oruby.MrbState, re *Regexp, s string, all bool, rep replace
 	}
 	last := 0
 	md := oruby.Nil
-	enc := encName(mrb, selfEnc)
 	var data *MatchData
 	for _, m := range matches {
 		data = NewMatchData(re, s, m, 0)
@@ -871,16 +895,20 @@ func patternRegexp(mrb *oruby.MrbState, v oruby.Value) (*Regexp, oruby.Value, or
 
 func stringIsMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs()
-	re, _, exc := patternRegexp(mrb, args.Item(0))
+	re, reValue, exc := patternRegexp(mrb, args.Item(0))
 	if exc != nil {
 		return exc
 	}
+	if !matchCheck(mrb, reValue, self) {
+		return mrb.Exc().Value()
+	}
 	s := mrb.String(self)
-	pos, ok := byteIndex(s, args.ItemDef(1, mrb.FixnumValue(0)).Int())
+	enc := regexpSubjectEncoding(mrb, self)
+	pos, ok := regexpByteIndex(s, args.ItemDef(1, mrb.FixnumValue(0)).Int(), enc)
 	if !ok {
 		return oruby.False
 	}
-	m, err := re.findErr(s, pos)
+	m, err := re.findErr(s, pos, enc)
 	if err != nil {
 		return raiseTimeout(mrb, err)
 	}
@@ -912,12 +940,13 @@ func stringMatch(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.Exc().Value()
 	}
 	s := mrb.String(self)
-	pos, ok := byteIndex(s, args.ItemDef(1, mrb.FixnumValue(0)).Int())
+	enc := regexpSubjectEncoding(mrb, self)
+	pos, ok := regexpByteIndex(s, args.ItemDef(1, mrb.FixnumValue(0)).Int(), enc)
 	if !ok {
 		setLastMatch(mrb, mrb.NilValue())
 		return mrb.NilValue()
 	}
-	md := doMatch(mrb, re, s, pos)
+	md := doMatch(mrb, re, s, pos, enc)
 	if !md.Value().IsNil() && md.Value().Type() == oruby.MrbTTCData {
 		_ = mrb.IVSet(md.Value(), oruby.IvSym_regexp, reValue)
 		if m, ok := mrb.Data(md.Value()).(*MatchData); ok {
@@ -943,14 +972,14 @@ func stringMatchEqual(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.Exc().Value()
 	}
 	s := mrb.String(self)
-	md := doMatch(mrb, re, s, 0)
+	md := doMatch(mrb, re, s, 0, regexpSubjectEncoding(mrb, self))
 	if md.Value().IsNil() || md.Value().Type() != oruby.MrbTTCData {
 		return md
 	}
 	data := mrb.Data(md.Value()).(*MatchData)
 	data.enc = encName(mrb, strEnc(mrb, self))
 	idx := data.byteBegin(0)
-	return mrb.FixnumValue(charIndex(s, idx))
+	return mrb.FixnumValue(regexpCharIndex(s, idx, data.enc))
 }
 
 func stringIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -967,19 +996,20 @@ func stringIndex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.Exc().Value()
 	}
 	s := rstr(self)
-	pos, ok := byteIndex(s, oruby.MrbFixnum(args.ItemDef(1, mrb.FixnumValue(0))))
+	enc := regexpSubjectEncoding(mrb, self)
+	pos, ok := regexpByteIndex(s, oruby.MrbFixnum(args.ItemDef(1, mrb.FixnumValue(0))), enc)
 	if !ok {
 		setLastMatch(mrb, mrb.NilValue())
 		return mrb.NilValue()
 	}
-	md := doMatch(mrb, re, s, pos)
+	md := doMatch(mrb, re, s, pos, enc)
 	if md.Value().IsNil() || md.Value().Type() != oruby.MrbTTCData {
 		return md
 	}
 	data := mrb.Data(md.Value()).(*MatchData)
 	data.enc = encName(mrb, strEnc(mrb, self))
 	idx := data.byteBegin(0)
-	return mrb.FixnumValue(charIndex(s, idx))
+	return mrb.FixnumValue(regexpCharIndex(s, idx, data.enc))
 }
 
 func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -991,7 +1021,7 @@ func stringScan(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	}
 
 	s := rstr(self)
-	results, err := r.findAll(s)
+	results, err := r.findAll(s, regexpSubjectEncoding(mrb, self))
 	if err != nil {
 		return raiseTimeout(mrb, err)
 	}
@@ -1068,6 +1098,8 @@ func reverseSearch(mrb *oruby.MrbState, self oruby.Value, old string, bytes bool
 		return mrb.Exc().Value()
 	}
 	s := rstr(self)
+	enc := regexpSubjectEncoding(mrb, self)
+	input := newRegexpText(s, enc)
 	pos := len(s)
 	if args.Len() > 1 {
 		if args.Item(1).IsNil() {
@@ -1086,7 +1118,7 @@ func reverseSearch(mrb *oruby.MrbState, self oruby.Value, old string, bytes bool
 				pos = n
 			}
 		} else {
-			b, ok := byteIndex(s, n)
+			b, ok := regexpByteIndex(s, n, enc)
 			if !ok {
 				if n < 0 {
 					setLastMatch(mrb, mrb.NilValue())
@@ -1097,38 +1129,42 @@ func reverseSearch(mrb *oruby.MrbState, self oruby.Value, old string, bytes bool
 			pos = b
 		}
 	}
-	find := re.findErr
+	deadline := re.deadline()
+	find := func(pos int) ([]int, error) { return re.findText(input, pos, deadline) }
 	// Each candidate moves backwards, while \G stays at the given offset.
 	if engine, ok := re.engine.(interface {
 		WithSearchOrigin(string, int) (Engine, error)
 	}); ok && strings.Contains(re.source, `\G`) {
-		if pos < len(s) && !utf8.RuneStart(s[pos]) {
+		if !input.boundary(s, pos) {
 			return mrb.Raisef(mrb.EIndexError(), "offset %d does not land on character boundary", pos)
 		}
-		fixed, err := engine.WithSearchOrigin(s, pos)
+		fixed, err := engine.WithSearchOrigin(input.text, input.engineOffset(pos))
 		if err != nil {
 			return raiseRegexpError(mrb, err)
 		}
-		find = fixed.FindAt
+		find = func(pos int) ([]int, error) {
+			match, err := re.findWith(fixed, input.text, input.engineOffset(pos), deadline)
+			return input.sourceMatch(match), err
+		}
 	}
 	for p := pos; p >= 0; {
-		m, err := find(s, p)
+		m, err := find(p)
 		if err != nil {
 			return raiseTimeout(mrb, err)
 		}
 		if m != nil && m[0] == p {
 			md := newMatchValue(mrb, re, s, m)
+			mrb.Data(md).(*MatchData).enc = enc
 			setLastMatch(mrb, md)
 			if bytes {
 				return mrb.FixnumValue(p)
 			}
-			return mrb.FixnumValue(charIndex(s, p))
+			return mrb.FixnumValue(regexpCharIndex(s, p, enc))
 		}
 		if p == 0 {
 			break
 		}
-		_, w := utf8.DecodeLastRuneInString(s[:p])
-		p -= w
+		p = input.previous(s, p)
 	}
 	setLastMatch(mrb, mrb.NilValue())
 	return mrb.NilValue()
@@ -1146,6 +1182,7 @@ func stringByteindex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.Call(self, "old_byteindex", arg)
 	}
 	s := rstr(self)
+	enc := regexpSubjectEncoding(mrb, self)
 	pos := 0
 	if args.Len() > 1 {
 		pos = oruby.MrbFixnum(args.Item(1))
@@ -1157,10 +1194,21 @@ func stringByteindex(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		setLastMatch(mrb, mrb.NilValue())
 		return mrb.NilValue()
 	}
-	if pos < len(s) && !utf8.RuneStart(s[pos]) {
+	input := newRegexpText(s, enc)
+	if !input.boundary(s, pos) {
 		return mrb.Raise(mrb.EIndexError(), "offset "+strconv.Itoa(pos)+" does not land on character boundary")
 	}
-	md := doMatch(mrb, re, s, pos)
+	result, err := re.findText(input, pos, re.deadline())
+	if err != nil {
+		return raiseTimeout(mrb, err)
+	}
+	if result == nil {
+		setLastMatch(mrb, mrb.NilValue())
+		return mrb.NilValue()
+	}
+	md := newMatchValue(mrb, re, s, result)
+	mrb.Data(md).(*MatchData).enc = enc
+	setLastMatch(mrb, md)
 	if md.Value().IsNil() || md.Value().Type() != oruby.MrbTTCData {
 		return md
 	}

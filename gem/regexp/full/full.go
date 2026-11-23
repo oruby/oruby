@@ -18,6 +18,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/dlclark/regexp2/v2"
@@ -37,6 +39,8 @@ type engine struct {
 	names   []string // index = Ruby group number
 	source  string
 	options int
+	opts    regexp2.RegexOptions
+	timed   sync.Pool
 }
 
 func compile(source string, options int) (rx.Engine, error) {
@@ -64,9 +68,6 @@ func compilePattern(source string, options int, pattern string, named bool) (*en
 		msg = strings.TrimPrefix(msg, "error parsing regexp: ")
 		return nil, rx.NewRegexpError(msg + ": /" + source + "/")
 	}
-	if d := rx.MatchTimeout(); d > 0 {
-		re.MatchTimeout = d
-	}
 	nums := re.GetGroupNumbers()
 	names := make([]string, len(nums))
 	for i, n := range nums {
@@ -74,7 +75,7 @@ func compilePattern(source string, options int, pattern string, named bool) (*en
 			names[i] = name
 		}
 	}
-	return &engine{re: re, names: names, source: source, options: options}, nil
+	return &engine{re: re, names: names, source: source, options: options, opts: opts}, nil
 }
 
 func (e *engine) WithSearchOrigin(s string, pos int) (rx.Engine, error) {
@@ -86,7 +87,6 @@ func (e *engine) WithSearchOrigin(s string, pos int) (rx.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	fixed.re.MatchTimeout = e.re.MatchTimeout
 	return fixed, nil
 }
 
@@ -98,7 +98,34 @@ func (e *engine) SubexpNames() []string { return e.names }
 var ErrBacktrackLimit = errors.New("regexp match timeout: backtracking limit exceeded")
 
 func (e *engine) FindAt(s string, pos int) ([]int, error) {
-	m, err := e.re.FindStringMatchStartingAt(s, pos)
+	return e.find(e.re, s, pos)
+}
+
+func (e *engine) FindAtDeadline(s string, pos int, deadline time.Time) ([]int, error) {
+	re, _ := e.timed.Get().(*regexp2.Regexp)
+	if re == nil {
+		var err error
+		re, err = regexp2.Compile(e.re.String(), e.opts,
+			regexp2.OptionMaintainCaptureOrder(),
+			regexp2.OptionMaxBacktrackingStackSize(MaxBacktrackingStack))
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer e.timed.Put(re)
+	re.MatchTimeout = time.Until(deadline)
+	if re.MatchTimeout <= 0 {
+		return nil, rx.ErrMatchTimeout
+	}
+	match, err := e.find(re, s, pos)
+	if time.Until(deadline) <= 0 {
+		return nil, rx.ErrMatchTimeout
+	}
+	return match, err
+}
+
+func (e *engine) find(re *regexp2.Regexp, s string, pos int) ([]int, error) {
+	m, err := re.FindStringMatchStartingAt(s, pos)
 	if err != nil {
 		if errors.Is(err, regexp2.ErrBacktrackingStackLimit) {
 			return nil, ErrBacktrackLimit

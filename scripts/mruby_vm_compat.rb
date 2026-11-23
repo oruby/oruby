@@ -316,6 +316,65 @@ module ORubyVMCompat
     C
   end
 
+  def self.defined_queries(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/debug.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, '  if (mid != 0 && tc != NULL && tc->super != NULL) {', <<~'C'.chomp.gsub(/^/, "  "))
+      /* A block in define_method closes over the installed method frame.
+         Its own callinfo can still carry the class from the original block. */
+      const struct RProc *p = ci->proc;
+      while (p && !MRB_PROC_CFUNC_P(p) && !MRB_PROC_SCOPE_P(p) && p->upper) {
+        const struct RProc *upper = p->upper;
+        struct REnv *env = MRB_PROC_ENV(p);
+        if (MRB_PROC_SCOPE_P(upper) && MRB_PROC_ENV_P(upper)) {
+          if (env && env->mid) {
+            mid = env->mid;
+            tc = env->c;
+          }
+          for (mrb_callinfo *frame = ci - 1; frame >= mrb->c->cibase; frame--) {
+            if (frame->proc == upper) {
+              mid = frame->mid;
+              tc = mrb_vm_ci_target_class(frame);
+              break;
+            }
+          }
+          break;
+        }
+        p = upper;
+      }
+      if (mid != 0 && tc != NULL && tc->super != NULL) {
+    C
+    replace(source, '    mrb_sym rtm_id = MRB_SYM_Q(respond_to_missing);', <<~'C'.chomp.gsub(/^/, "    "))
+      mrb_sym rtm_id = MRB_SYM_Q(respond_to_missing);
+      mrb_sym rt_id = MRB_SYM_Q(respond_to);
+      struct RClass *owner = mrb_class(mrb, recv);
+      mrb_method_t rt = mrb_method_search_vm(mrb, &owner, rt_id);
+      if (!MRB_METHOD_UNDEF_P(rt) && !mrb_func_basic_p(mrb, recv, rt_id, obj_respond_to)) {
+        mrb_value args[] = {mrb_symbol_value(rtm_id), mrb_true_value()};
+        mrb_int argc = 2;
+        if (MRB_METHOD_PROC_P(rt) && mrb_proc_arity(MRB_METHOD_PROC(rt)) == 1) {
+          argc = 1;
+          mrb_value kernel = mrb_obj_value(mrb->kernel_module);
+          if ((mrb->kernel_module->flags & ORUBY_KERNEL_CHILLED_WARNING) &&
+              mrb_respond_to(mrb, kernel, MRB_SYM(__oruby_warn_here))) {
+            const struct RProc *proc = MRB_METHOD_PROC(rt);
+            while (MRB_PROC_ALIAS_P(proc)) proc = proc->upper;
+            const char *file = NULL;
+            int32_t line = 0;
+            if (!MRB_PROC_CFUNC_P(proc)) {
+              mrb_debug_get_position(mrb, proc->body.irep, 0, &line, &file);
+            }
+            mrb_value message = mrb_format(mrb,
+              "%v.respond_to?(:respond_to_missing?) uses the deprecated method signature, which takes one parameter\n%s:%d: respond_to? is defined here",
+              mrb_obj_as_string(mrb, recv), file ? file : "(unknown)", (int)line);
+            mrb_funcall_id(mrb, kernel, MRB_SYM(__oruby_warn_here), 2, message,
+                           mrb_symbol_value(MRB_SYM(deprecated)));
+          }
+        }
+        if (!mrb_test(mrb_funcall_argv(mrb, recv, rt_id, argc, args))) return mrb_nil_value();
+      }
+    C
+  end
+
   def self.variable(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     replace(source, "  mrb_funcall_argv(mrb, mrb_obj_value(c), MRB_SYM(const_added), 1, &name);", <<~'C'.chomp.gsub(/^/, "  "))
@@ -806,6 +865,19 @@ module ORubyVMCompat
     end
   end
 
+  def self.regexp_executor(source)
+    replace(source, '  for (; !s.nomem && sp <= str_end; sp++) {', <<~'C'.chomp.gsub(/^/, "  "))
+      for (; !s.nomem && sp <= str_end; sp++) {
+        if (orb_regexp_poll()) break;
+    C
+    replace(source, '    if (++m->steps > MRB_REGEXP_STEP_LIMIT) return BT_LIMIT;',
+      '    if (++m->steps > MRB_REGEXP_STEP_LIMIT || orb_regexp_poll()) return BT_LIMIT;')
+    replace(source, '  while (sp + plen <= str_end && sp <= start_cap) {', <<~'C'.chomp.gsub(/^/, "  "))
+      while (sp + plen <= str_end && sp <= start_cap) {
+        if (orb_regexp_poll()) return RE_OVER_STEP_LIMIT;
+    C
+  end
+
   def self.install(build)
     # The regexp fallback uses mruby's Unicode case tables, without loading
     # the mruby Regexp and MatchData classes into ORuby.
@@ -816,7 +888,7 @@ module ORubyVMCompat
     {
       "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement,
       "proc" => :proc_identity, "array" => :array_splat, "variable" => :variable,
-      "error" => :chilled_mutation
+      "error" => :chilled_mutation, "kernel" => :defined_queries
     }.each do |name, patch|
       original = File.join(inputs, "#{name}.c")
       generated = File.join(overrides, "#{name}.c")
@@ -845,6 +917,11 @@ module ORubyVMCompat
       install_source(File.join(MRUBY_ROOT, relative, file), File.join(gem_overrides, file), patch)
       build.cc.define_rules(gem_output, gem_overrides, build.exts.object)
       build.cc.define_rules(gem_output, gem_overrides, build.exts.presym_preprocessed)
+    end
+
+    if build.name == "host"
+      original = File.join(MRUBY_ROOT, "mrbgems/mruby-regexp/src/re_exec.c")
+      install_source(original, File.join(overrides, "regexp/re_exec.c"), :regexp_executor).invoke
     end
   end
 end

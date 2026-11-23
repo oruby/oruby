@@ -113,7 +113,7 @@ func (m *MatchData) charBegin(idx int) (interface{}, error) {
 	if m.result[idx*2] < 0 {
 		return nil, nil
 	}
-	return charIndex(m.s, m.result[idx*2]), nil
+	return regexpCharIndex(m.s, m.result[idx*2], m.enc), nil
 }
 
 // End is the character offset where group idx ends (MatchData#end)
@@ -124,7 +124,7 @@ func (m *MatchData) charEnd(idx int) (interface{}, error) {
 	if m.result[idx*2+1] < 0 {
 		return nil, nil
 	}
-	return charIndex(m.s, m.result[idx*2+1]), nil
+	return regexpCharIndex(m.s, m.result[idx*2+1], m.enc), nil
 }
 
 // Byteoffset returns [begin, end] byte offsets of group idx (MatchData#byteoffset)
@@ -232,7 +232,7 @@ func (m *MatchData) charOffset(idx int) ([]interface{}, error) {
 	if m.result[idx*2] < 0 {
 		return []interface{}{nil, nil}, nil
 	}
-	return []interface{}{charIndex(m.s, m.result[idx*2]), charIndex(m.s, m.result[idx*2+1])}, nil
+	return []interface{}{regexpCharIndex(m.s, m.result[idx*2], m.enc), regexpCharIndex(m.s, m.result[idx*2+1], m.enc)}, nil
 }
 
 // PostMatch returns string after match
@@ -272,13 +272,12 @@ func mdStr(mrb *oruby.MrbState, m *MatchData, s string) oruby.Value {
 	if m.enc == "" || m.enc == "UTF-8" {
 		return v
 	}
-	if enc, err := mrb.Funcall(mrb.ClassGet("Encoding").Value(), mrb.Intern("find"), m.enc); err == nil {
-		if _, err := mrb.Funcall(v, mrb.Intern("force_encoding"), enc); err != nil {
-			mrb.ExcClear()
+	if m.enc == "ASCII-8BIT" {
+		if binary, err := mrb.Funcall(v, oruby.Sym_b); err == nil {
+			return binary.Value()
 		}
-	} else {
-		mrb.ExcClear()
 	}
+	forceEncoding(mrb, v.Value(), m.enc)
 	return v
 }
 

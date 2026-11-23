@@ -3,6 +3,7 @@ package regexp
 import (
 	"errors"
 	"fmt"
+	"io"
 	goregexp "regexp"
 	"strings"
 	"sync"
@@ -15,8 +16,7 @@ import (
 
 var matchTimeout atomic.Int64
 
-// MatchTimeout returns Regexp.timeout (0 = none). Fallback engines apply it
-// to patterns they compile.
+// MatchTimeout returns the process-wide match limit (0 = none).
 func MatchTimeout() time.Duration { return time.Duration(matchTimeout.Load()) }
 
 // SetMatchTimeout sets Regexp.timeout (process-wide).
@@ -39,6 +39,13 @@ type Engine interface {
 	// SubexpNames returns NumSubexp()+1 names; "" for unnamed groups and index 0.
 	SubexpNames() []string
 }
+
+// TimedEngine can interrupt a search at its deadline.
+type TimedEngine interface {
+	FindAtDeadline(s string, pos int, deadline time.Time) ([]int, error)
+}
+
+var ErrMatchTimeout = errors.New("regexp match timeout")
 
 // FallbackFunc compiles a Ruby regexp that the RE2 engine cannot express.
 // source is the Ruby pattern as written; options are Ruby Regexp options.
@@ -66,10 +73,12 @@ func getFallback() FallbackFunc {
 // Regexp is the Go value behind a Ruby Regexp object.
 type Regexp struct {
 	source  string // Ruby source as written
+	pattern string // normalized engine source for legacy encodings, if different
 	options int    // Ruby options (IgnoreCase, Extended, Multiline)
 	enc     string // Encoding name given by Regexp#initialize ("": from source)
 	engine  Engine
 	re2     *goregexp.Regexp // set when engine is RE2
+	timeout time.Duration    // explicit per-regexp limit; otherwise use MatchTimeout
 
 	// startContext is set when the pattern uses assertions that look before
 	// the search position (^, \A, \b, \B). RE2 cannot start a search inside
@@ -208,11 +217,51 @@ func (r *Regexp) find(s string, pos int) []int {
 }
 
 // findErr is find that reports engine errors (backtracking limits, timeouts).
-func (r *Regexp) findErr(s string, pos int) ([]int, error) {
+func (r *Regexp) findErr(s string, pos int, encoding ...string) ([]int, error) {
 	if pos < 0 || pos > len(s) {
 		return nil, nil
 	}
-	return r.searchEngine(s, pos).FindAt(s, pos)
+	deadline := r.deadline()
+	enc := r.enc
+	if len(encoding) > 0 {
+		enc = encoding[0]
+	}
+	input := newRegexpText(s, enc)
+	return r.findText(input, pos, deadline)
+}
+
+func (r *Regexp) findText(input regexpText, pos int, deadline time.Time) ([]int, error) {
+	at := input.engineOffset(pos)
+	match, err := r.findWith(r.searchEngine(input.text, at), input.text, at, deadline)
+	return input.sourceMatch(match), err
+}
+
+func (r *Regexp) deadline() time.Time {
+	d := r.timeout
+	if d == 0 {
+		d = MatchTimeout()
+	}
+	if d > 0 {
+		return time.Now().Add(d)
+	}
+	return time.Time{}
+}
+
+func (r *Regexp) findWith(eng Engine, s string, pos int, deadline time.Time) ([]int, error) {
+	if deadline.IsZero() {
+		return eng.FindAt(s, pos)
+	}
+	if time.Until(deadline) <= 0 {
+		return nil, ErrMatchTimeout
+	}
+	if timed, ok := eng.(TimedEngine); ok {
+		return timed.FindAtDeadline(s, pos, deadline)
+	}
+	match, err := eng.FindAt(s, pos)
+	if time.Until(deadline) <= 0 {
+		return nil, ErrMatchTimeout
+	}
+	return match, err
 }
 
 func (r *Regexp) searchEngine(s string, pos int) Engine {
@@ -228,7 +277,14 @@ func (r *Regexp) searchEngine(s string, pos int) Engine {
 func (r *Regexp) contextEngine() Engine {
 	r.ctxOnce.Do(func() {
 		if fb := getFallback(); fb != nil {
-			if eng, err := fb(r.source, r.options); err == nil {
+			source, opts := r.source, r.options
+			if r.pattern != "" {
+				source = r.pattern
+			}
+			if r.enc != "" {
+				opts &^= NoEncoding
+			}
+			if eng, err := fb(source, opts); err == nil {
 				r.ctxEngine = eng
 			}
 		}
@@ -239,31 +295,45 @@ func (r *Regexp) contextEngine() Engine {
 // findAll returns successive matches with Ruby's scan/gsub semantics: after
 // an empty match the search moves on one character; an empty match right
 // after a non-empty match is allowed.
-func (r *Regexp) findAll(s string) ([][]int, error) {
+func (r *Regexp) findAll(s string, encoding ...string) ([][]int, error) {
+	deadline := r.deadline()
+	enc := r.enc
+	if len(encoding) > 0 {
+		enc = encoding[0]
+	}
+	input := newRegexpText(s, enc)
+	s = input.text
 	eng := r.searchEngine(s, 0)
-	if e, ok := eng.(*re2Engine); ok {
-		return e.findAllRuby(s), nil
+	if e, ok := eng.(*re2Engine); ok && deadline.IsZero() {
+		all := e.findAllRuby(s)
+		if input.source != nil {
+			for _, match := range all {
+				input.sourceMatch(match)
+			}
+		}
+		return all, nil
 	}
 	var out [][]int
 	pos := 0
 	for pos <= len(s) {
-		m, err := eng.FindAt(s, pos)
+		m, err := r.findWith(eng, s, pos, deadline)
 		if err != nil {
 			return out, err
 		}
 		if m == nil {
 			break
 		}
-		out = append(out, m)
-		if m[1] > m[0] {
-			pos = m[1]
+		start, end := m[0], m[1]
+		out = append(out, input.sourceMatch(m))
+		if end > start {
+			pos = end
 			continue
 		}
-		if m[1] >= len(s) {
+		if end >= len(s) {
 			break
 		}
-		_, w := utf8.DecodeRuneInString(s[m[1]:])
-		pos = m[1] + w
+		_, w := utf8.DecodeRuneInString(s[end:])
+		pos = end + w
 	}
 	return out, nil
 }
@@ -287,9 +357,36 @@ func (e *re2Engine) SubexpNames() []string { return e.re.SubexpNames() }
 // before pos see a string start there; Regexp.find routes such patterns to
 // the fallback engine when one is registered.
 func (e *re2Engine) FindAt(s string, pos int) ([]int, error) {
-	m := e.re.FindStringSubmatchIndex(s[pos:])
+	return offsetMatch(e.re.FindStringSubmatchIndex(s[pos:]), pos), nil
+}
+
+type deadlineReader struct {
+	strings.Reader
+	deadline time.Time
+	reads    uint
+}
+
+func (r *deadlineReader) ReadRune() (rune, int, error) {
+	if r.reads&255 == 0 && time.Until(r.deadline) <= 0 {
+		return 0, 0, io.EOF
+	}
+	r.reads++
+	return r.Reader.ReadRune()
+}
+
+func (e *re2Engine) FindAtDeadline(s string, pos int, deadline time.Time) ([]int, error) {
+	reader := &deadlineReader{deadline: deadline}
+	reader.Reset(s[pos:])
+	match := e.re.FindReaderSubmatchIndex(reader)
+	if time.Until(deadline) <= 0 {
+		return nil, ErrMatchTimeout
+	}
+	return offsetMatch(match, pos), nil
+}
+
+func offsetMatch(m []int, pos int) []int {
 	if m == nil {
-		return nil, nil
+		return nil
 	}
 	if pos > 0 {
 		for i := range m {
@@ -298,7 +395,7 @@ func (e *re2Engine) FindAt(s string, pos int) ([]int, error) {
 			}
 		}
 	}
-	return m, nil
+	return m
 }
 
 // findAllRuby uses Go's context-correct FindAll and adds the empty matches

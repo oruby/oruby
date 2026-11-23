@@ -53,6 +53,12 @@ func TestRubyOnlyConstructs(t *testing.T) {
 		{`m = /(?<=é)(b)/.match("éb"); [m.begin(0), m.pre_match, m[1]]`, `[1, "é", "b"]`},
 		{`m = /(?<pair>a\g<pair>?b)/.match("xaaabbb"); [m.byteoffset(0), m.names, $~.equal?(m)]`, `[[1, 7], ["pair"], true]`},
 		{`/(?~abc)/.match("xyzabc")[0]`, `"xyzab"`},
+		{`s = "\xC3\xA9".b
+          [s.scan(/./n).map(&:bytes), s.match(/./n, 1).offset(0)]`, `[[[195], [169]], [1, 2]]`},
+		{`s = "\xC3\xA9".b
+          s.gsub("\xA9".b, "x").bytes`, `[195, 120]`},
+		{`r = Regexp.compile("x", timeout: 0.25)
+          [r.timeout, r.dup.timeout, Regexp.new(r).timeout]`, `[0.25, 0.25, nil]`},
 	}
 	for _, c := range cases {
 		if got := eval(t, c.code); got != c.want {

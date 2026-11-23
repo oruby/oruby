@@ -191,7 +191,7 @@ func (mrb *MrbState) GetAllArgs(defaults ...interface{}) (RArgs, RHash, RProc) {
 
 // KeywordArgs returns provided keyword args as RHash
 func (mrb *MrbState) KeywordArgs() RHash {
-	raw := Value{C._mrb_get_args_kw(mrb.p)}
+	raw := mrb.KeywordArgsValue()
 	if raw.IsNil() {
 		return mrb.HashNew()
 	}
@@ -202,6 +202,11 @@ func (mrb *MrbState) KeywordArgs() RHash {
 		return mrb.HashNew()
 	}
 	return RHash{RValue{raw.v, mrb}}
+}
+
+// KeywordArgsValue returns the keyword argument hash, or nil when absent.
+func (mrb *MrbState) KeywordArgsValue() Value {
+	return Value{C._mrb_get_args_kw(mrb.p)}
 }
 
 // GetArgs2 return two function arguments

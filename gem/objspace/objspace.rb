@@ -203,11 +203,13 @@ module ObjectSpace
           nil
         when :stdout
           $stdout
-        when :file
+        when :file, nil
           require "tempfile"
-          Tempfile.new(["orubyheap", ".json"])
-        else
+          owned = Tempfile.create(["orubyheap", ".json"])
+        when IO
           output
+        else
+          raise ArgumentError, "wrong output option: #{output.inspect}"
         end
 
       each_object do |o|
@@ -231,6 +233,12 @@ module ObjectSpace
         io.flush if io.respond_to?(:flush)
         io
       end
+    rescue Exception
+      if owned
+        owned.close rescue nil
+        File.unlink(owned.path) rescue nil
+      end
+      raise
     end
 
     def dump_shapes(output: :file, since: 0)

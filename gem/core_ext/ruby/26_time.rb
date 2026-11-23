@@ -388,8 +388,10 @@ class Time
       return __take(Time.__in_tz(Time, p[0], p[1], off)) if mode == :tz
       return __take(Time.__make_obj(Time, p[0], p[1], mode, off))
     end
-    if String === year && mon.nil? && day.nil? && hour.nil? && !year.match?(/\A\s*-?\d+\s*\z/)
-      return __take(Time.__parse_new(self.class, year, zone, precision))
+    if String === year && mon.nil? && day.nil? && hour.nil?
+      unless year.encoding.ascii_compatible? && year.match?(/\A\s*-?\d+\s*\z/)
+        return __take(Time.__parse_new(self.class, year, zone, precision))
+      end
     end
     mode, off = Time.__zone(zone, self.class)
     return __take(Time.__from_civil_tz(Time, year, mon, day, hour, min, sec, off)) if mode == :tz

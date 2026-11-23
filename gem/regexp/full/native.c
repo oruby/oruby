@@ -2,7 +2,6 @@
 #include <mruby/error.h>
 #include <mruby/string.h>
 #include <stdio.h>
-#include <string.h>
 
 /* The regexp compiler uses this formatter in its diagnostics. */
 void
@@ -12,7 +11,6 @@ mrb_re_flags_cat(mrb_state *mrb, mrb_value str, uint32_t flags)
   if (flags & RE_FLAG_IGNORECASE) mrb_str_cat_lit(mrb, str, "i");
   if (flags & RE_FLAG_EXTENDED) mrb_str_cat_lit(mrb, str, "x");
 }
-
 mrb_state *
 orb_regexp_state(void)
 {
@@ -57,13 +55,4 @@ orb_regexp_compile(mrb_state *mrb, const char *source, size_t len, uint32_t flag
   }
   mrb_gc_arena_restore(mrb, arena);
   return request.pattern;
-}
-
-int
-orb_regexp_match(mrb_state *mrb, const mrb_regexp_pattern *pattern,
-                 const char *subject, size_t len, mrb_int pos, int *captures, int size,
-                 mrb_bool binary)
-{
-  memset(captures, -1, sizeof(int) * size);
-  return mrb_re_exec(mrb, pattern, subject ? subject : "", len, pos, captures, size, binary);
 }
