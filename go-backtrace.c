@@ -460,7 +460,10 @@ static const char *bt_file_line(mrb_state *mrb, const bt_frame *f, int32_t *line
   const char *file = NULL;
   *line = 0;
   if (!f->irep || !mrb_debug_get_position(mrb, f->irep, f->idx, line, &file)) return NULL;
-  if (*line < 0) *line = 0;
+  /* eval's line argument is kept in 16 bits (mrc_ccontext's lineno): a
+     negative one comes back wrapped (eval(src, b, f, -100) is -98, not 65438) */
+  if (*line > INT16_MAX && (f->irep->flags & ORUBY_IREP_EVAL)) *line -= 65536;
+  if (*line < 0 && !(f->irep->flags & ORUBY_IREP_EVAL)) *line = 0;
   return file;
 }
 

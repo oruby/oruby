@@ -342,6 +342,7 @@ module ORubyVMCompat
     strcat_private_to_s(source)
     class_block_return(source)
     gvar_uninitialized_warning(source)
+    vcall_name_error(source)
     # a module method bound to an unrelated receiver runs under an ICLASS whose
     # superclass is the receiver's class (mruby-method's mcall): self is a kind
     # of that class
@@ -349,6 +350,29 @@ module ORubyVMCompat
       "      if (!mrb_obj_is_kind_of(mrb, recv, target_class) &&\n" \
       "          !(target_class->tt == MRB_TT_ICLASS && target_class->super && mrb_obj_is_kind_of(mrb, recv, target_class->super))) {\n" \
       "      super_typeerror:")
+  end
+
+  # a missing method called as a variable (foo, which the code generator
+  # emits as the n=0 OP_SSEND; foo() is OP_SSEND0) is CRuby's NameError
+  # "undefined local variable or method", not a NoMethodError. The caller's
+  # frame (ci - 1) still stands just past the call.
+  def self.vcall_name_error(source)
+    replace(source, "    if (super) mrb_no_method_error_recv(mrb, mid, recv, args, \"no superclass method '%n' for %T\", mid, recv);\n    else mrb_method_missing(mrb, mid, recv, args);",
+      <<~'C'.chomp.gsub(/^/, "    "))
+      if (super) mrb_no_method_error_recv(mrb, mid, recv, args, "no superclass method '%n' for %T", mid, recv);
+      if (ci > mrb->c->cibase) {
+        const mrb_callinfo *cc = ci - 1;
+        const struct RProc *cp = cc->proc;
+        if (cp && !MRB_PROC_CFUNC_P(cp) && cc->pc) {
+          const mrb_irep *ir = cp->body.irep;
+          const mrb_code *p = cc->pc;
+          if (p - ir->iseq >= 4 && p[-4] == OP_SSEND && p[-1] == 0 && p[-2] < ir->slen && ir->syms[p[-2]] == mid) {
+            mrb_name_error_recv(mrb, mid, recv, "undefined local variable or method '%n' for %T", mid, recv);
+          }
+        }
+      }
+      mrb_method_missing(mrb, mid, recv, args);
+    C
   end
 
   # reading a global variable never assigned warns in verbose mode, as CRuby;
@@ -369,13 +393,21 @@ module ORubyVMCompat
 
   # return in a block whose home is a class body (an OP_EXEC frame: no method
   # name, a scope proc with an upper one, unlike the top level) is a
-  # LocalJumpError in CRuby; mruby returned from the class body
+  # LocalJumpError in CRuby; mruby returned from the class body. So is an
+  # eval'd return in a block that would end the program (a top-level block's
+  # own return, or eval's directly at the top level, end it).
   def self.class_block_return(source)
+    replace(source, "      const struct RProc *dst = top_proc(mrb, ci->proc, &env);\n",
+      "      const struct RProc *ret_proc = ci->proc;\n      const struct RProc *dst = top_proc(mrb, ci->proc, &env);\n")
     replace(source, "          if (ci->u.env == env) {\n            goto L_UNWINDING;\n", <<~'C'.gsub(/^/, "          "))
-                if (ci->u.env == env) {
-                  if (ci->mid == 0 && ci->proc && !MRB_PROC_CFUNC_P(ci->proc) &&
-                      MRB_PROC_SCOPE_P(ci->proc) && ci->proc->upper) break;
-                  goto L_UNWINDING;
+      if (ci->u.env == env) {
+        if (ci->mid == 0 && ci->proc && !MRB_PROC_CFUNC_P(ci->proc) &&
+            MRB_PROC_SCOPE_P(ci->proc) && ci->proc->upper) break;
+        if (ci->mid == 0 && ci->proc && !MRB_PROC_CFUNC_P(ci->proc) && !ci->proc->upper &&
+            !MRB_PROC_CFUNC_P(ret_proc) && (ret_proc->body.irep->flags & ORUBY_IREP_EVAL) &&
+            ret_proc->upper && ret_proc->upper->upper && !MRB_PROC_CFUNC_P(ret_proc->upper) &&
+            !MRB_PROC_SCOPE_P(ret_proc->upper)) break;
+        goto L_UNWINDING;
     C
   end
 
@@ -710,6 +742,29 @@ module ORubyVMCompat
       iv_del(mrb, mrb->globals, sym, NULL);
       if (sym == MRB_GVSYM(VERBOSE)) oruby_chilled_warning_refresh(mrb, mrb_nil_value());
     C
+    # instance_eval(string) (eval'd code under a singleton class): after the
+    # receiver's singleton class, its class's own constants come before the
+    # caller's lexical scopes, as CRuby (the ancestors come after them)
+    replace(source, "  if (const_lookup(mrb, c, sym, &v, TRUE)) {\n    if (const_warn_deprecated(mrb, c, sym, v)) *cachep = FALSE;\n    return v;\n  }\n",
+      <<~'C')
+        if (const_lookup(mrb, c, sym, &v, TRUE)) {
+          if (const_warn_deprecated(mrb, c, sym, v)) *cachep = FALSE;
+          return v;
+        }
+        if (c->tt == MRB_TT_SCLASS && !MRB_PROC_CFUNC_P(proc) && (proc->body.irep->flags & ORUBY_IREP_EVAL)) {
+          for (c2 = c->super; c2 && c2->tt == MRB_TT_ICLASS; c2 = c2->super) ;
+          if (c2 && c2 != mrb->object_class && const_lookup(mrb, c2, sym, &v, TRUE)) {
+            if (const_warn_deprecated(mrb, c2, sym, v)) *cachep = FALSE;
+            return v;
+          }
+        }
+    C
+    replace(source, "  if (const_lookup(mrb, c, sym, &v, load)) return v;\n",
+      "  if (const_lookup(mrb, c, sym, &v, load)) return v;\n" \
+      "  if (c->tt == MRB_TT_SCLASS && !MRB_PROC_CFUNC_P(proc) && (proc->body.irep->flags & ORUBY_IREP_EVAL)) {\n" \
+      "    for (c2 = c->super; c2 && c2->tt == MRB_TT_ICLASS; c2 = c2->super) ;\n" \
+      "    if (c2 && c2 != mrb->object_class && const_lookup(mrb, c2, sym, &v, load)) return v;\n" \
+      "  }\n")
   end
 
   def self.implicit_rest(source)

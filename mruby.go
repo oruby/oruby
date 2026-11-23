@@ -447,6 +447,10 @@ end
 				return mrb.RaiseError(err)
 			}
 			opts.SourceEncoding = name.String()
+		} else if C._orb_str_binary_p(src.v) != 0 {
+			// a BINARY source is read as BINARY unless a magic comment says
+			// otherwise, as MRI's eval
+			opts.SourceEncoding = "ASCII-8BIT"
 		}
 		out, err := preprocessRuby([]byte(src.String()), &opts)
 		if err != nil {

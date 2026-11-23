@@ -302,6 +302,11 @@ static mrb_value str_enc_tag_set(mrb_state *mrb, mrb_value self) {
 #define EVAL_WRAPPED 6
 static mrb_func_t eval_orig[EVAL_WRAPPED];
 
+static mrb_bool str_is_ascii(const char *s, mrb_int len) {
+  for (mrb_int i = 0; i < len; i++) if ((unsigned char)s[i] >= 0x80) return FALSE;
+  return TRUE;
+}
+
 static mrb_bool src_contains(const char *s, mrb_int len, const char *pat) {
   mrb_int n = (mrb_int)strlen(pat);
   for (mrb_int i = 0; i + n <= len; i++) {
@@ -395,6 +400,8 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
       const char *s = RSTRING_PTR(argv[0]);
       mrb_int len = RSTRING_LEN(argv[0]);
       if (!mrb_nil_p(str_enc_tag(mrb, argv[0])) ||
+          /* a BINARY source with other than ASCII: its literals are BINARY */
+          (RSTR_BINARY_P(mrb_str_ptr(argv[0])) && !str_is_ascii(s, len)) ||
           src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
           src_contains(s, len, "**") || src_contains(s, len, "=>") ||
           src_contains(s, len, ": ") || src_contains(s, len, "..") ||
@@ -2900,30 +2907,7 @@ static void kw_error_fix(mrb_state *mrb, struct RObject *exc, mrb_bool missing) 
   mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
 }
 
-/* a missing method called as a variable (`foo`: the n=0 OP_SSEND the code
-   generator emits for one, OP_SSEND0 being foo()): MRI's NameError
-   "undefined local variable or method" */
-static mrb_bool vcall_fix(mrb_state *mrb, struct RObject *exc) {
-  mrb_callinfo *ci = mrb->c->ci;
-  if (ci > mrb->c->cibase && (!ci->proc || MRB_PROC_CFUNC_P(ci->proc))) ci--; /* method_missing's frame */
-  const struct RProc *p = ci->proc;
-  if (!p || MRB_PROC_CFUNC_P(p) || !ci->pc) return FALSE;
-  const mrb_irep *irep = p->body.irep;
-  const mrb_code *pc = ci->pc;
-  if (pc - irep->iseq < 4 || pc[-4] != OP_SSEND || pc[-1] != 0 || pc[-2] >= irep->slen) return FALSE;
-  mrb_value name = mrb_obj_iv_get(mrb, exc, MRB_SYM(name));
-  if (!mrb_symbol_p(name) || mrb_symbol(name) != irep->syms[pc[-2]]) return FALSE;
-  mrb_value mesg = mrb_exc_mesg_get(mrb, (struct RException*)exc);
-  if (!mesg_prefix(mesg, "undefined method ")) return FALSE;
-  exc->c = E_NAME_ERROR;
-  mrb_value s = mrb_str_new_lit(mrb, "undefined local variable or method ");
-  mrb_str_cat(mrb, s, RSTRING_PTR(mesg) + 17, RSTRING_LEN(mesg) - 17);
-  mrb_exc_mesg_set(mrb, (struct RException*)exc, s);
-  return TRUE;
-}
-
 void _orb_frozen_fix(mrb_state *mrb, struct RObject *exc) {
-  if (exc->c == E_NOMETHOD_ERROR && vcall_fix(mrb, exc)) return;
   if (exc->c == E_NOMETHOD_ERROR) {
     /* catch without a block: mruby's (bytecode, so no C pre-check) calls
        nil; MRI's LocalJumpError */

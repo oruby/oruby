@@ -74,11 +74,15 @@ class Exception
   end
 end
 
-class NoMethodError
+# MRI's receiver wording in "undefined method" and, for a variable-like
+# call, "undefined local variable or method" (NameError; NoMethodError
+# inherits it)
+class NameError
   alias __orig_nme_to_s to_s
   def to_s
     s = __orig_nme_to_s
-    if instance_variable_defined?(:@receiver) && (m = /\Aundefined method '([^']+)' for (.*)\z/.__match_raw(s))
+    if instance_variable_defined?(:@receiver) &&
+       (m = /\A(undefined method|undefined local variable or method) '([^']+)' for (.*)\z/.__match_raw(s))
       recv = @receiver
       desc = if nil.equal?(recv)
                "nil"
@@ -91,14 +95,16 @@ class NoMethodError
              elsif Module === recv
                "module #{recv.name || Module.instance_method(:to_s).bind_call(recv)}"
              elsif !(Kernel === recv)
-               "an instance of #{m[2]}"
+               "an instance of #{m[3]}"
+             elsif defined?(::TOPLEVEL_BINDING) && recv.equal?(::TOPLEVEL_BINDING.receiver)
+               "main"
              elsif !Kernel.instance_method(:singleton_methods).bind_call(recv, false).empty?
                Kernel.instance_method(:to_s).bind_call(recv)
              else
                cls = Kernel.instance_method(:class).bind_call(recv)
                "an instance of #{cls.name || Module.instance_method(:to_s).bind_call(cls)}"
              end
-      return "undefined method '#{m[1]}' for #{desc}"
+      return "#{m[1]} '#{m[2]}' for #{desc}"
     end
     s
   end
