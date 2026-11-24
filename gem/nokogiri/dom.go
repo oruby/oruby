@@ -88,6 +88,9 @@ type domNode struct {
 	encoding            string
 	url                 string
 	version             string
+	hasXMLDecl          bool
+	xmlDeclEncoding     string
+	standalone          string
 	quirksMode          string
 	parseNoScriptAsText bool
 	parseNoScriptSet    bool
@@ -929,6 +932,15 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 		sb.WriteByte('&')
 		sb.WriteString(n.name)
 		sb.WriteByte(';')
+	case AttributeNode:
+		if n.prefix != "" {
+			sb.WriteString(n.prefix)
+			sb.WriteByte(':')
+		}
+		sb.WriteString(n.name)
+		sb.WriteString(`="`)
+		sb.WriteString(escapeHTMLAttrVal(n.data, asHTML && isHTML5))
+		sb.WriteByte('"')
 	case TextNode:
 		rawParent := false
 		if asHTML && n.parent != nil && n.parent.kind == ElementNode && n.parent.nsURI == "" {
@@ -1017,7 +1029,14 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 				sb.WriteString(a.name)
 			}
 			sb.WriteString(`="`)
-			sb.WriteString(escapeHTMLAttrVal(a.value, asHTML && isHTML5))
+			val := a.value
+			if asHTML && !isHTML5 && a.prefix == "" {
+				switch strings.ToLower(a.name) {
+				case "href", "src", "action", "name":
+					val = strings.ReplaceAll(val, `"`, "%22")
+				}
+			}
+			sb.WriteString(escapeHTMLAttrVal(val, asHTML && isHTML5))
 			sb.WriteByte('"')
 		}
 		if asHTML && n.nsURI == "" && htmlVoidElements[strings.ToLower(n.name)] {

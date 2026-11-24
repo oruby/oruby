@@ -58,6 +58,8 @@ module Nokogiri
     end
   end
 
+  LIBXML_HTTP_ENABLED = false
+
   def self.uses_libxml?(_requirement = nil)
     false
   end
@@ -1245,6 +1247,45 @@ module Nokogiri
       DEFAULT_DOCUMENT_OPTIONS = { encoding: "UTF-8" }.freeze
       attr_accessor :doc, :parent, :context, :arity
 
+      class NodeBuilder
+        def initialize(node, doc_builder)
+          @node = node
+          @doc_builder = doc_builder
+        end
+
+        def [](k)
+          @node[k]
+        end
+
+        def []=(k, v)
+          @node[k] = v
+        end
+
+        def method_missing(method, *args, **kw, &block)
+          opts = args.last.is_a?(Hash) ? args.pop.dup : {}
+          opts.merge!(kw) unless kw.empty?
+          m = method.to_s
+          if m.end_with?("!")
+            @node["id"] = m[0..-2]
+          else
+            @node["class"] = [@node["class"], m].compact.reject(&:empty?).join(" ")
+          end
+          unless args.empty?
+            @node.content = args.first.to_s
+          end
+          opts.each do |k, v|
+            ks = k.to_s
+            if ks == "class"
+              @node["class"] = [@node["class"], v.to_s].compact.reject(&:empty?).join(" ")
+            else
+              @node[ks] = v.to_s
+            end
+          end
+          @doc_builder.__insert_block(@node, block) if block
+          self
+        end
+      end
+
       def self.with(root, &block)
         new({}, root, &block)
       end
@@ -1259,16 +1300,25 @@ module Nokogiri
         else
           doc_cls = related_class("Document") || XML::Document
           @doc = doc_cls.new
-          @doc.encoding = options[:encoding] if options[:encoding]
+          if options.key?(:encoding)
+            @doc.encoding = options[:encoding]
+          else
+            @doc.encoding = nil
+          end
           @parent = @doc
         end
+        if options.key?(:namespace_inheritance)
+          @doc.namespace_inheritance = options[:namespace_inheritance]
+        end
         if block
+          @context = block.binding.receiver if block.respond_to?(:binding)
           if block.arity == 1
             block.call(self)
           else
             instance_eval(&block)
           end
         end
+        @parent = @doc
       end
 
       def [](ns)
@@ -1295,57 +1345,116 @@ module Nokogiri
       end
 
       def <<(str)
-        frag = @doc.fragment(str.to_s)
+        frag = @parent.respond_to?(:fragment) ? @parent.fragment(str.to_s) : @doc.fragment(str.to_s)
         @parent.add_child(frag)
         self
       end
 
-      def to_xml(options = {})
-        @doc.to_xml(options)
+      def insert(node, &block)
+        @parent.add_child(node)
+        __insert_block(node, block) if block
+        NodeBuilder.new(node, self)
+      end
+
+      def to_xml(*args)
+        if args.empty?
+          @doc.to_xml(indent: 2)
+        else
+          @doc.to_xml(*args)
+        end
+      end
+
+      def __insert_block(node, block)
+        old_parent = @parent
+        @parent = node
+        begin
+          if @arity <= 0 && block.arity <= 0
+            instance_eval(&block)
+          else
+            block.call(self)
+          end
+        ensure
+          @parent = old_parent
+        end
       end
 
       def method_missing(method, *args, **kw, &block)
+        if @ns.nil? && @context && @arity <= 0 && @context.respond_to?(method, true)
+          return @context.send(method, *args, **kw, &block)
+        end
         ns_prefix = @ns
         @ns = nil
         tag = method.to_s
-        tag = tag[0..-2] if tag.end_with?("_")
-        qname = ns_prefix && !ns_prefix.empty? ? "#{ns_prefix}:#{tag}" : tag
-        node = @doc.create_element(qname)
+        tag = tag[0..-2] if tag.end_with?("_") || tag.end_with?("!")
+
+        attrs = {}
+        content_str = nil
         args.each do |arg|
           if arg.is_a?(Hash)
-            arg.each { |k, v| __apply_attr(node, k.to_s, v.to_s) }
+            arg.each { |k, v| attrs[k.to_s] = v.to_s }
           elsif !arg.nil?
-            node.content = arg.to_s
+            content_str = arg.to_s
           end
         end
-        kw.each { |k, v| __apply_attr(node, k.to_s, v.to_s) }
-        @parent.add_child(node)
-        if block
-          old_parent = @parent
-          @parent = node
-          begin
-            if block.arity == 1
-              block.call(self)
+        kw.each { |k, v| attrs[k.to_s] = v.to_s }
+
+        # Determine namespace prefix from tag if present (e.g. send("foo:child"))
+        if ns_prefix.nil? && tag.include?(":")
+          p_part, l_part = tag.split(":", 2)
+          ns_prefix = p_part
+          tag = l_part
+        end
+
+        parent_ns_map = {}
+        if @parent && @parent.respond_to?(:namespace_scopes)
+          @parent.namespace_scopes.each { |ns| parent_ns_map[ns.prefix.to_s] = ns }
+        end
+
+        node = @doc.create_element(tag)
+        declared_default_ns = nil
+        declared_prefixed_ns = {}
+
+        # First pass: apply xmlns declarations (avoiding duplicates already in scope)
+        attrs.each do |k, v|
+          if k == "xmlns"
+            if parent_ns_map[""] && parent_ns_map[""].href == v
+              declared_default_ns = parent_ns_map[""]
             else
-              instance_eval(&block)
+              declared_default_ns = node.add_namespace_definition(nil, v)
             end
-          ensure
-            @parent = old_parent
+          elsif k.start_with?("xmlns:")
+            pref = k[6..-1]
+            if parent_ns_map[pref] && parent_ns_map[pref].href == v
+              declared_prefixed_ns[pref] = parent_ns_map[pref]
+            else
+              declared_prefixed_ns[pref] = node.add_namespace_definition(pref, v)
+            end
           end
         end
-        node
-      end
 
-      private
+        # Resolve node's namespace
+        if ns_prefix && !ns_prefix.empty?
+          target_ns = declared_prefixed_ns[ns_prefix] || parent_ns_map[ns_prefix]
+          unless target_ns
+            raise ArgumentError, "Namespace #{ns_prefix} has not been defined"
+          end
+          node.namespace = target_ns
+        elsif declared_default_ns
+          node.namespace = declared_default_ns
+        elsif @doc.namespace_inheritance && @parent && @parent.element? && @parent.namespace
+          node.namespace = @parent.namespace
+        end
 
-      def __apply_attr(node, k, v)
-        if k == "xmlns"
-          node.add_namespace_definition(nil, v)
-        elsif k.start_with?("xmlns:")
-          node.add_namespace_definition(k[6..-1], v)
-        else
+        # Second pass: apply regular attributes
+        attrs.each do |k, v|
+          next if k == "xmlns" || k.start_with?("xmlns:")
           node[k] = v
         end
+        node.content = content_str unless content_str.nil?
+
+        @parent.add_child(node)
+        __insert_block(node, block) if block
+        NodeBuilder.new(node, self)
       end
     end
 
@@ -1370,6 +1479,33 @@ module Nokogiri
       class Parser
         include ClassResolver
         Attribute = Struct.new(:localname, :prefix, :uri, :value)
+        ENCODINGS = {
+          "NONE" => 0,
+          "UTF-8" => 1,
+          "UTF16LE" => 2,
+          "UTF16BE" => 3,
+          "UCS4LE" => 4,
+          "UCS4BE" => 5,
+          "EBCDIC" => 6,
+          "UCS4-2143" => 7,
+          "UCS4-3412" => 8,
+          "UCS2" => 9,
+          "ISO-8859-1" => 10,
+          "ISO-8859-2" => 11,
+          "ISO-8859-3" => 12,
+          "ISO-8859-4" => 13,
+          "ISO-8859-5" => 14,
+          "ISO-8859-6" => 15,
+          "ISO-8859-7" => 16,
+          "ISO-8859-8" => 17,
+          "ISO-8859-9" => 18,
+          "ISO-2022-JP" => 19,
+          "SHIFT-JIS" => 20,
+          "EUC-JP" => 21,
+          "ASCII" => 22,
+        }.freeze
+        ENCODING_NAMES_BY_ID = ENCODINGS.invert.freeze
+
         attr_accessor :document, :encoding
 
         def initialize(doc = Document.new, encoding = "UTF-8")
@@ -1378,23 +1514,34 @@ module Nokogiri
         end
 
         def parse(thing, &block)
-          if thing.respond_to?(:read)
+          if thing.respond_to?(:read) && thing.respond_to?(:close)
             parse_io(thing, &block)
-          else
+          elsif thing.respond_to?(:read)
+            parse_io(thing, &block)
+          elsif thing.is_a?(String) || thing.respond_to?(:to_str)
             parse_memory(thing, &block)
+          else
+            raise TypeError, "no implicit conversion of #{thing.class} into String or IO"
           end
         end
 
-        def parse_memory(data, _encoding = nil)
-          SAX.__emit(@document, data.to_s, false)
+        def parse_memory(data, encoding = @encoding, &block)
+          ctx = ParserContext.memory(data, encoding)
+          yield ctx if block
+          ctx.parse_with(self)
         end
 
-        def parse_io(io, _encoding = nil)
-          parse_memory(io.read)
+        def parse_io(io, encoding = @encoding, &block)
+          ctx = ParserContext.io(io, encoding)
+          yield ctx if block
+          ctx.parse_with(self)
         end
 
-        def parse_file(filename, _encoding = nil)
-          parse_memory(File.read(filename))
+        def parse_file(filename, encoding = @encoding, &block)
+          raise ArgumentError, "filename cannot be nil" if filename.nil?
+          ctx = ParserContext.file(filename, encoding)
+          yield ctx if block
+          ctx.parse_with(self)
         end
       end
 
@@ -1403,9 +1550,10 @@ module Nokogiri
 
         def initialize(doc = Document.new, _file_name = nil, _encoding = "UTF-8")
           @document = doc
-          @options = ParseOptions::DEFAULT_XML
+          @options = 0
           @replace_entities = false
           @state = SAX::PushState.new
+          @buf = +""
         end
 
         def replace_entities
@@ -1417,7 +1565,10 @@ module Nokogiri
         end
 
         def write(chunk, last_chunk = false)
-          @state.write(@document, chunk.to_s) if chunk && !chunk.empty?
+          if chunk && !chunk.empty?
+            @buf << chunk.to_s
+            @state.write(@document, chunk.to_s)
+          end
           finish if last_chunk
           self
         end
@@ -1425,23 +1576,48 @@ module Nokogiri
 
         def finish
           @state.finish(@document)
+          if (@options & ParseOptions::RECOVER) == 0
+            if @buf.strip.empty?
+              raise XML::SyntaxError, "Document is empty"
+            end
+          end
           @state = SAX::PushState.new
+          @buf = +""
           self
         end
       end
     end
 
-    def self.Reader(string_or_io, url = nil, encoding = nil, options = 0)
+    def self.Reader(string_or_io, url = nil, encoding = nil, options = ParseOptions::NONET, &block)
+      raise ArgumentError, "string_or_io cannot be nil" if string_or_io.nil?
       if string_or_io.respond_to?(:read)
-        Reader.from_io(string_or_io, url, encoding, options)
+        Reader.from_io(string_or_io, url, encoding, options, &block)
       else
-        Reader.from_memory(string_or_io.to_s, url, encoding, options)
+        Reader.from_memory(string_or_io, url, encoding, options, &block)
       end
     end
 
     class Reader
-      def self.from_io(io, url = nil, encoding = nil, options = 0)
-        from_memory(io.read, url, encoding, options)
+      def self.__read_io_chunks(io)
+        buf = +"".b
+        loop do
+          chunk = io.read(4096)
+          break if chunk.nil? || chunk.empty?
+          unless chunk.is_a?(String)
+            raise TypeError, "IO#read must return a String or nil"
+          end
+          buf << chunk.b
+        end
+        buf
+      end
+
+      def self.from_io(io, url = nil, encoding = nil, options = ParseOptions::NONET, &block)
+        raise ArgumentError, "io cannot be nil" if io.nil?
+        raise TypeError, "expected IO" unless io.respond_to?(:read)
+        data = __read_io_chunks(io)
+        r = from_memory(data, url, encoding, options, &block)
+        r.__set_source(io)
+        r
       end
     end
 
@@ -1572,6 +1748,17 @@ module Nokogiri
     end
 
     class ElementDescription
+      KNOWN_ELEMENTS = %w[
+        a abbr acronym address applet area article aside audio b base basefont bdi bdo bgsound big
+        blink blockquote body br button canvas caption center cite code col colgroup command data
+        datalist dd del details dfn dialog dir div dl dt em embed fieldset figcaption figure font
+        footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input
+        ins isindex kbd keygen label legend li link listing main map mark marquee menu menuitem meta
+        meter nav nobr noembed noframes noscript object ol optgroup option output p param plaintext
+        pre progress q rb rp rt rtc ruby s samp script section select small source spacer span strike
+        strong style sub summary sup table tbody td template textarea tfoot th thead time title tr
+        track tt u ul var video wbr xmp
+      ].freeze
       VOID_ELEMENTS = %w[area base basefont br col command embed frame hr img input isindex keygen link meta param source track wbr].freeze
       BLOCK_ELEMENTS = %w[
         address article aside blockquote canvas dd div dl dt fieldset figcaption figure
@@ -1579,13 +1766,44 @@ module Nokogiri
         pre section table tfoot ul video
       ].freeze
       DEPRECATED_ELEMENTS = %w[applet basefont center dir font isindex menu s strike u big blink marquee tt].freeze
+      BODY_SUB_ELEMENTS = %w[
+        a abbr acronym address applet area article aside audio b basefont bdi bdo bgsound big blink
+        blockquote br button canvas center cite code command data datalist del details dfn dialog dir
+        div dl em embed fieldset figure font footer form h1 h2 h3 h4 h5 h6 header hgroup hr i iframe
+        img input ins isindex kbd keygen label link listing main map mark marquee menu meta meter nav
+        nobr noembed noframes noscript object ol output p plaintext pre progress q ruby s samp script
+        section select small spacer span strike strong style sub summary sup table template textarea
+        time tt u ul var video wbr
+      ].freeze
+      REQUIRED_ATTRS = {
+        "img" => ["src", "alt"].freeze,
+        "meta" => ["content"].freeze,
+        "applet" => ["width", "height"].freeze,
+        "area" => ["alt"].freeze,
+        "base" => ["href"].freeze,
+        "bdo" => ["dir"].freeze,
+        "form" => ["action"].freeze,
+        "optgroup" => ["label"].freeze,
+        "param" => ["name"].freeze,
+        "script" => ["type"].freeze,
+        "style" => ["type"].freeze,
+        "textarea" => ["rows", "cols"].freeze,
+      }.freeze
+      DEPRECATED_ATTRS = {
+        "table" => ["align", "bgcolor"].freeze,
+        "body" => ["background", "bgcolor", "text", "link", "vlink", "alink"].freeze,
+        "div" => ["align"].freeze,
+        "p" => ["align"].freeze,
+        "img" => ["align", "border", "hspace", "vspace"].freeze,
+      }.freeze
 
       attr_reader :name
 
       def self.[](tag_name)
         return nil unless tag_name
-        @cache ||= {}
         key = tag_name.to_s.downcase
+        return nil unless KNOWN_ELEMENTS.include?(key)
+        @cache ||= {}
         @cache[key] ||= new(key)
       end
 
@@ -1610,7 +1828,7 @@ module Nokogiri
       end
 
       def save_end_tag?
-        !empty?
+        empty?
       end
 
       def implied_start_tag?
@@ -1622,10 +1840,12 @@ module Nokogiri
       end
 
       def sub_elements
+        return BODY_SUB_ELEMENTS if @name == "body"
         []
       end
 
       def default_sub_element
+        return "div" if @name == "body"
         nil
       end
 
@@ -1634,11 +1854,11 @@ module Nokogiri
       end
 
       def deprecated_attributes
-        []
+        DEPRECATED_ATTRS[@name] || []
       end
 
       def required_attributes
-        []
+        REQUIRED_ATTRS[@name] || []
       end
 
       def description
@@ -1738,27 +1958,6 @@ module Nokogiri
     end
 
     class Builder < XML::Builder
-      def initialize(options = {}, root = nil, &block)
-        @ns = nil
-        @context = nil
-        @arity = block ? block.arity : 0
-        if root
-          @doc = root.document
-          @parent = root
-        else
-          @doc = HTML4::Document.new
-          @doc.encoding = options[:encoding] if options[:encoding]
-          @parent = @doc
-        end
-        if block
-          if block.arity == 1
-            block.call(self)
-          else
-            instance_eval(&block)
-          end
-        end
-      end
-
       def to_html(options = {})
         @doc.to_html(options)
       end
@@ -1766,8 +1965,27 @@ module Nokogiri
 
     module SAX
       class Parser < XML::SAX::Parser
-        def parse_memory(data)
-          XML::SAX.__emit(@document, data.to_s, true)
+        def initialize(doc = XML::SAX::Document.new, encoding = nil)
+          super(doc, encoding)
+        end
+
+        def parse_memory(data, encoding = @encoding, &block)
+          ctx = HTML4::SAX::ParserContext.memory(data, encoding)
+          yield ctx if block
+          ctx.parse_with(self)
+        end
+
+        def parse_io(io, encoding = @encoding, &block)
+          ctx = HTML4::SAX::ParserContext.io(io, encoding)
+          yield ctx if block
+          ctx.parse_with(self)
+        end
+
+        def parse_file(filename, encoding = @encoding, &block)
+          raise ArgumentError, "filename cannot be nil" if filename.nil?
+          ctx = HTML4::SAX::ParserContext.file(filename, encoding)
+          yield ctx if block
+          ctx.parse_with(self)
         end
       end
 
@@ -1801,26 +2019,6 @@ module Nokogiri
     end
 
     class Builder < HTML4::Builder
-      def initialize(options = {}, root = nil, &block)
-        @ns = nil
-        @context = nil
-        @arity = block ? block.arity : 0
-        if root
-          @doc = root.document
-          @parent = root
-        else
-          @doc = HTML5::Document.new
-          @doc.encoding = options[:encoding] if options[:encoding]
-          @parent = @doc
-        end
-        if block
-          if block.arity == 1
-            block.call(self)
-          else
-            instance_eval(&block)
-          end
-        end
-      end
     end
 
     class Document
@@ -1864,17 +2062,6 @@ module Nokogiri
       def xpath_doctype
         :html5
       end
-
-      def quirks_mode
-        dtd = internal_subset
-        if dtd.nil?
-          QuirksMode::QUIRKS
-        elsif dtd.name.to_s.downcase == "html" && (dtd.external_id.nil? || dtd.external_id.empty?) && (dtd.system_id.nil? || dtd.system_id.empty?)
-          QuirksMode::NO_QUIRKS
-        else
-          QuirksMode::LIMITED_QUIRKS
-        end
-      end
     end
 
     class DocumentFragment
@@ -1894,10 +2081,6 @@ module Nokogiri
         else
           new(doc, src, context, **options)
         end
-      end
-
-      def quirks_mode
-        document ? document.quirks_mode : QuirksMode::NO_QUIRKS
       end
 
       private
@@ -1921,11 +2104,42 @@ module Nokogiri
       if encoding && !encoding.to_s.empty?
         enc = encoding.is_a?(Encoding) ? encoding : Encoding.find(encoding.to_s)
         src = src.dup.force_encoding(enc)
+      elsif src.encoding == Encoding::ASCII_8BIT
+        bytes = src.b
+        detected = nil
+        if bytes.start_with?("\xEF\xBB\xBF".b)
+          detected = Encoding::UTF_8
+        elsif bytes.start_with?("\xFE\xFF".b)
+          detected = Encoding::UTF_16BE
+        elsif bytes.start_with?("\xFF\xFE".b)
+          detected = Encoding::UTF_16LE
+        else
+          head = bytes[0, 1024]
+          if head =~ /<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9._-]+)/i
+            cname = $1
+            begin
+              detected = Encoding.find(cname)
+              detected = Encoding::WINDOWS_1252 if detected == Encoding::ISO_8859_1
+            rescue ArgumentError
+              detected = nil
+            end
+          end
+        end
+        if detected
+          src = bytes.dup.force_encoding(detected)
+        else
+          utf8_try = bytes.dup.force_encoding(Encoding::UTF_8)
+          if utf8_try.valid_encoding?
+            src = utf8_try
+          else
+            src = bytes.dup.force_encoding(Encoding::WINDOWS_1252)
+          end
+        end
       end
-      if src.encoding != Encoding::UTF_8 && src.encoding != Encoding::ASCII_8BIT
+      if src.encoding != Encoding::UTF_8
         src = src.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
-      elsif src.encoding == Encoding::ASCII_8BIT && !src.valid_encoding?
-        src = src.encode(Encoding::UTF_8, Encoding::WINDOWS_1252, invalid: :replace, undef: :replace)
+      elsif !src.valid_encoding?
+        src = src.scrub("\uFFFD")
       end
       src
     end
@@ -2072,21 +2286,106 @@ module Nokogiri
   module XML
     module SAX
       class ParserContext
-        attr_accessor :replace_entities, :recovery
+        attr_accessor :replace_entities, :recovery, :line, :column
+
+        def self.__resolve_encoding(encoding)
+          return nil if encoding.nil? || encoding == 0
+          if encoding.is_a?(Integer)
+            warn "passing an integer encoding id is deprecated; pass an Encoding or String instead"
+            name = Parser::ENCODING_NAMES_BY_ID[encoding]
+            raise ArgumentError, "unknown encoding id: #{encoding}" unless name
+            return nil if name == "NONE"
+            return Encoding.find(name == "UTF16LE" ? "UTF-16LE" : (name == "UTF16BE" ? "UTF-16BE" : name))
+          elsif encoding.is_a?(Encoding)
+            return encoding
+          elsif encoding.is_a?(String)
+            return nil if encoding.empty? || encoding.upcase == "NONE"
+            return Encoding.find(encoding)
+          else
+            raise TypeError, "expected Encoding, String, or Integer"
+          end
+        end
+
+        def self.__decode_data(data, encoding, auto_html = false)
+          enc = __resolve_encoding(encoding)
+          str = data.dup
+          if enc
+            str.force_encoding(enc)
+            if enc != Encoding::UTF_8
+              str = str.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+            end
+          elsif auto_html
+            bytes = str.b
+            head = bytes[0, 1024]
+            detected = nil
+            if head =~ /<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9._-]+)/i
+              begin
+                detected = Encoding.find($1)
+              rescue ArgumentError
+                detected = nil
+              end
+            end
+            if detected
+              str = bytes.dup.force_encoding(detected)
+              str = str.encode(Encoding::UTF_8, invalid: :replace, undef: :replace) if detected != Encoding::UTF_8
+            elsif str.encoding != Encoding::UTF_8 && str.encoding != Encoding::ASCII_8BIT
+              str = str.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+            end
+          elsif str.encoding != Encoding::UTF_8 && str.encoding != Encoding::ASCII_8BIT
+            str = str.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+          end
+          str
+        end
+
+        def self.__read_io(io)
+          buf = +"".b
+          loop do
+            chunk = io.read(4096)
+            break if chunk.nil? || chunk.empty?
+            buf << chunk.b
+          end
+          buf
+        end
+
+        def self.new(thing, encoding = "UTF-8")
+          if thing.respond_to?(:read)
+            io(thing, encoding)
+          elsif thing.is_a?(String) || thing.respond_to?(:to_str)
+            memory(thing, encoding)
+          else
+            raise TypeError, "expected String or IO"
+          end
+        end
+
+        def self.__alloc(data, encoding)
+          obj = allocate
+          obj.send(:initialize, data, encoding)
+          obj
+        end
 
         def self.memory(data, encoding = "UTF-8")
-          raise TypeError, "expected String" unless data.is_a?(String)
-          new(data, encoding)
+          if !data.is_a?(String)
+            if data.respond_to?(:to_str)
+              data = data.to_str
+            else
+              raise TypeError, "expected String"
+            end
+          end
+          raise RuntimeError, "input string cannot be empty" if data.empty?
+          __alloc(__decode_data(data, encoding, false), encoding)
         end
 
         def self.io(io, encoding = 0)
           raise TypeError, "expected IO" unless io.respond_to?(:read)
-          new(io.read, encoding)
+          data = __read_io(io)
+          __alloc(__decode_data(data, encoding, false), encoding)
         end
 
         def self.file(path, encoding = "UTF-8")
-          raise TypeError, "expected String" unless path.is_a?(String)
-          new(File.read(path), encoding)
+          raise ArgumentError, "filename cannot be nil" if path.nil?
+          raise TypeError, "expected String" unless path.is_a?(String) || path.respond_to?(:to_str)
+          data = File.binread(path.to_str)
+          __alloc(__decode_data(data, encoding, false), encoding)
         end
 
         def initialize(data, encoding = "UTF-8")
@@ -2094,11 +2393,14 @@ module Nokogiri
           @encoding = encoding
           @replace_entities = false
           @recovery = false
+          @line = 0
+          @column = 0
         end
 
         def parse_with(sax_handler)
+          raise ArgumentError, "expected SAX Parser" if sax_handler.nil?
           raise TypeError, "expected SAX Parser" unless sax_handler.is_a?(Parser)
-          sax_handler.parse_memory(@data)
+          XML::SAX.__emit(sax_handler.document, @data.to_s, false, @recovery, self)
         end
       end
     end
@@ -2107,9 +2409,45 @@ module Nokogiri
   module HTML4
     module SAX
       class ParserContext < XML::SAX::ParserContext
+        def self.new(thing, encoding = nil)
+          if thing.respond_to?(:read)
+            io(thing, encoding)
+          elsif thing.is_a?(String) || thing.respond_to?(:to_str)
+            memory(thing, encoding)
+          else
+            raise TypeError, "expected String or IO"
+          end
+        end
+
+        def self.memory(data, encoding = nil)
+          if !data.is_a?(String)
+            if data.respond_to?(:to_str)
+              data = data.to_str
+            else
+              raise TypeError, "expected String"
+            end
+          end
+          raise RuntimeError, "input string cannot be empty" if data.empty?
+          __alloc(__decode_data(data, encoding, true), encoding)
+        end
+
+        def self.io(io, encoding = nil)
+          raise TypeError, "expected IO" unless io.respond_to?(:read)
+          data = __read_io(io)
+          __alloc(__decode_data(data, encoding, true), encoding)
+        end
+
+        def self.file(path, encoding = nil)
+          raise ArgumentError, "filename cannot be nil" if path.nil?
+          raise TypeError, "expected String" unless path.is_a?(String) || path.respond_to?(:to_str)
+          data = File.binread(path.to_str)
+          __alloc(__decode_data(data, encoding, true), encoding)
+        end
+
         def parse_with(sax_handler)
+          raise ArgumentError, "expected SAX Parser" if sax_handler.nil?
           raise TypeError, "expected SAX Parser" unless sax_handler.is_a?(XML::SAX::Parser)
-          XML::SAX.__emit(sax_handler.document, @data.to_s, true)
+          XML::SAX.__emit(sax_handler.document, @data.to_s, true, @recovery, self)
         end
       end
     end

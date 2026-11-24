@@ -339,6 +339,21 @@ func wrapNS(mrb *oruby.MrbState, ns *domNS) oruby.Value {
 	if ns == nil {
 		return mrb.NilValue()
 	}
+	if ns.doc != nil && ns.doc.hasSelfVal && !ns.doc.selfVal.IsNil() {
+		cache := mrb.IVGet(ns.doc.selfVal, mrb.Intern("@__ns_cache"))
+		key := mrb.StrNew(ns.prefix + "\x00" + ns.href)
+		if !cache.IsNil() && cache.IsHash() {
+			if existing := mrb.HashGet(cache, key); !existing.IsNil() {
+				return existing
+			}
+		} else {
+			cache = mrb.HashNew().Value()
+			mrb.IVSet(ns.doc.selfVal, mrb.Intern("@__ns_cache"), cache)
+		}
+		val := mrb.DataWrapInterface(rb.ClassPath(mrb, "Nokogiri::XML::Namespace"), ns).Value()
+		mrb.HashSet(cache, key, val)
+		return val
+	}
 	return mrb.DataWrapInterface(rb.ClassPath(mrb, "Nokogiri::XML::Namespace"), ns).Value()
 }
 
@@ -1017,7 +1032,11 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 
 	nodeCls.DefineMethod("default_namespace=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
-		href := mrb.String(mrb.GetArgsFirst())
+		v := mrb.GetArgsFirst()
+		if v.IsNil() {
+			return mrb.NilValue()
+		}
+		href := mrb.String(v)
 		ns := n.addNamespaceDef("", href)
 		if n.prefix == "" {
 			n.nsURI = href
@@ -1539,13 +1558,11 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		return val
 	}, mrb.ArgsReq(5)|mrb.ArgsOpt(3))
 
-	html5DocCls.DefineMethod("quirks_mode", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	quirksModeFn := func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		d, _ := getDOMNode(mrb, self)
-		qm := d.quirksMode
-		if qm == "" {
-			qm = detectHTMLQuirksMode(d)
-		}
-		switch qm {
+		switch d.quirksMode {
+		case "":
+			return mrb.NilValue()
 		case "quirks":
 			return mrb.FixnumValue(1)
 		case "limited_quirks":
@@ -1553,7 +1570,9 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		default:
 			return mrb.FixnumValue(0)
 		}
-	}, mrb.ArgsNone())
+	}
+	html5DocCls.DefineMethod("quirks_mode", quirksModeFn, mrb.ArgsNone())
+	html5FragCls.DefineMethod("quirks_mode", quirksModeFn, mrb.ArgsNone())
 
 	html5DocCls.DefineMethod("parse_noscript_content_as_text", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		d, _ := getDOMNode(mrb, self)
@@ -1577,8 +1596,9 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		if doc == nil {
 			doc = newDocument(false, false)
 		}
+		hasTags := args.Len() >= 2 && !args.Item(1).IsNil()
 		tags := ""
-		if args.Len() >= 2 && !args.Item(1).IsNil() {
+		if hasTags {
 			tags = args.Item(1).String()
 		}
 		var ctxNode *domNode
@@ -1701,9 +1721,18 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		var frag *domNode
 		if doc.isHTML {
 			frag = parseHTMLFragmentOpts(doc, tags, ctxTag, noblanks, maxErrors, maxTreeDepth, parseNoScript)
-			if doc.isHTML5 && hasNoScriptOpt && !doc.parseNoScriptSet {
-				doc.parseNoScriptAsText = noScriptOpt
-				doc.parseNoScriptSet = true
+			if doc.isHTML5 {
+				if !hasTags {
+					frag.quirksMode = ""
+				} else if ctxNode != nil && doc.quirksMode == "quirks" {
+					frag.quirksMode = "quirks"
+				} else {
+					frag.quirksMode = "no_quirks"
+				}
+				if hasNoScriptOpt && !doc.parseNoScriptSet {
+					doc.parseNoScriptAsText = noScriptOpt
+					doc.parseNoScriptSet = true
+				}
 			}
 		} else {
 			frag = parseXMLFragmentCtx(doc, ctxNode, tags, strict, noblanks, nocdata)
@@ -2258,17 +2287,25 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 		handler := args.Item(0)
 		src := args.Item(1).String()
 		isHTML := args.Item(2).Bool()
+		recovery := true
+		if args.Len() >= 4 && !args.Item(3).IsNil() {
+			recovery = args.Item(3).Bool()
+		}
+		var ctxVal oruby.Value = mrb.NilValue()
+		if args.Len() >= 5 {
+			ctxVal = args.Item(4)
+		}
 		var doc *domNode
 		if isHTML {
 			doc = parseHTMLDocument(src, "", "UTF-8", false, false)
 		} else {
-			doc = parseXMLDocument(src, "", "UTF-8", false, false, false)
+			doc = parseXMLDocumentOpts(src, "", "UTF-8", false, !recovery, false, false)
 		}
-		if err := emitSAXEvents(mrb, handler, doc); err != nil {
+		if err := emitSAXEvents(mrb, handler, doc, ctxVal); err != nil {
 			return mrb.RaiseError(err)
 		}
 		return mrb.NilValue()
-	}, mrb.ArgsReq(3))
+	}, mrb.ArgsReq(3)|mrb.ArgsOpt(2))
 
 	saxMod.DefineClassMethod("__emit_stream", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args := mrb.GetArgs()
@@ -2333,12 +2370,30 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 
 	readerCls.DefineClassMethod("from_memory", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args := mrb.GetArgs()
-		src := args.Item(0).String()
+		srcArg := args.Item(0)
+		if srcArg.IsNil() {
+			return mrb.EArgumentError().Raise("string cannot be nil")
+		}
+		var src string
+		if srcArg.IsString() {
+			src = srcArg.String()
+		} else if mrb.RespondTo(srcArg, mrb.Intern("to_str")) {
+			sv, err := mrb.Funcall(srcArg, mrb.Intern("to_str"))
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+			if !sv.IsString() {
+				return mrb.ETypeError().Raise("to_str did not return String")
+			}
+			src = sv.String()
+		} else {
+			return mrb.ETypeError().Raise("expected String")
+		}
 		url := ""
 		if args.Len() >= 2 && !args.Item(1).IsNil() && args.Item(1).IsString() {
 			url = args.Item(1).String()
 		}
-		enc := "UTF-8"
+		enc := ""
 		if args.Len() >= 3 && !args.Item(2).IsNil() {
 			if args.Item(2).IsString() {
 				enc = args.Item(2).String()
@@ -2348,13 +2403,47 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 				}
 			}
 		}
-		doc := parseXMLDocument(src, url, enc, false, false, false)
+		optBits := poNoNet
+		poCls := mrb.ClassGetUnder(mrb.ModuleGetUnder(mrb.ModuleGet("Nokogiri"), "XML"), "ParseOptions")
+		var optsVal oruby.Value
+		if args.Len() >= 4 && !args.Item(3).IsNil() {
+			if mrb.ObjIsKindOf(args.Item(3), poCls) {
+				optsVal = args.Item(3)
+			} else if iv, err := mrb.Funcall(args.Item(3), mrb.Intern("to_i")); err == nil {
+				optBits = iv.Int()
+			}
+		}
+		if optsVal.IsNil() {
+			if v, err := mrb.Funcall(poCls.Value(), mrb.Intern("new"), mrb.FixnumValue(optBits)); err == nil {
+				optsVal = v
+			}
+		}
+		if blk := mrb.GetArgsBlock(); !blk.IsNil() {
+			if _, err := mrb.Funcall(blk, mrb.Intern("call"), optsVal); err != nil {
+				return mrb.RaiseError(err)
+			}
+		}
+		if !optsVal.IsNil() {
+			if iv, err := mrb.Funcall(optsVal, mrb.Intern("to_i")); err == nil {
+				optBits = iv.Int()
+			}
+		}
+		noblanks := (optBits & poNoBlanks) != 0
+		nocdata := (optBits & poNoCDATA) != 0
+		doc := parseXMLDocument(src, url, enc, false, noblanks, nocdata)
 		r := buildReaderEvents(doc)
 		r.source = src
 		r.url = url
-		r.encoding = enc
+		if enc != "" {
+			r.encoding = enc
+		} else if doc.xmlDeclEncoding != "" {
+			r.encoding = doc.xmlDeclEncoding
+		} else {
+			r.encoding = "UTF-8"
+		}
+		r.recover = (optBits & poRecover) != 0
 		return mrb.DataWrapInterface(readerCls, r).Value()
-	}, mrb.ArgsReq(1)|mrb.ArgsOpt(3))
+	}, mrb.ArgsReq(1)|mrb.ArgsOpt(3)|mrb.ArgsBlock())
 
 	getR := func(mrb *oruby.MrbState, self oruby.Value) *xmlReader {
 		r, _ := rb.Get[*xmlReader](mrb, self)
@@ -2367,9 +2456,24 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 		return &r.events[r.idx]
 	}
 
+	readerCls.DefineMethod("__set_source", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r := getR(mrb, self)
+		v := mrb.GetArgsFirst()
+		if r != nil {
+			r.sourceVal = v
+			r.hasSourceVal = true
+			mrb.IVSet(self, mrb.Intern("@__reader_source"), v)
+		}
+		return v
+	}, mrb.ArgsReq(1))
+
 	readerCls.DefineMethod("read", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		r := getR(mrb, self)
 		if r.idx+1 >= len(r.events) {
+			r.idx = len(r.events)
+			if !r.recover && r.doc != nil && len(r.doc.errors) > 0 {
+				return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", r.doc.errors[0].message)
+			}
 			return mrb.NilValue()
 		}
 		r.idx++
@@ -2387,6 +2491,10 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 			if _, err := mrb.YieldE(blk, self); err != nil {
 				return mrb.RaiseError(err)
 			}
+		}
+		r.idx = len(r.events)
+		if !r.recover && r.doc != nil && len(r.doc.errors) > 0 {
+			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", r.doc.errors[0].message)
 		}
 		return self
 	}, mrb.ArgsBlock())
@@ -2445,11 +2553,22 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 
 	readerCls.DefineMethod("attribute", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := curEv(getR(mrb, self))
-		if ev == nil || ev.node == nil {
+		arg := mrb.GetArgsFirst()
+		if ev == nil || ev.node == nil || arg.IsNil() {
 			return mrb.NilValue()
 		}
-		if a, ok := ev.node.getAttr(mrb.GetArgsFirst().String()); ok {
+		name := arg.String()
+		if a, ok := ev.node.getAttr(name); ok {
 			return mrb.StrNew(a.value)
+		}
+		for _, ns := range ev.node.nsDefs {
+			k := "xmlns"
+			if ns.prefix != "" {
+				k = "xmlns:" + ns.prefix
+			}
+			if k == name {
+				return mrb.StrNew(ns.href)
+			}
 		}
 		return mrb.NilValue()
 	}, mrb.ArgsReq(1))
@@ -2457,38 +2576,71 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 	readerCls.DefineMethod("attributes", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := curEv(getR(mrb, self))
 		h := mrb.HashNew()
-		if ev != nil && ev.node != nil {
+		if ev != nil && ev.node != nil && (ev.nodeType == readerTypeElement || ev.nodeType == readerTypeEndElement) {
+			for _, ns := range ev.node.nsDefs {
+				k := "xmlns"
+				if ns.prefix != "" {
+					k = "xmlns:" + ns.prefix
+				}
+				mrb.HashSet(h, mrb.StrNew(k), mrb.StrNew(ns.href))
+			}
 			for _, a := range ev.node.attrs {
-				mrb.HashSet(h, mrb.StrNew(a.name), mrb.StrNew(a.value))
+				k := a.name
+				if a.prefix != "" {
+					k = a.prefix + ":" + a.name
+				}
+				mrb.HashSet(h, mrb.StrNew(k), mrb.StrNew(a.value))
 			}
 		}
 		return h
 	}, mrb.ArgsNone())
-	readerCls.DefineAlias("attribute_hash", "attributes")
+
+	readerCls.DefineMethod("attribute_hash", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		ev := curEv(getR(mrb, self))
+		h := mrb.HashNew()
+		if ev != nil && ev.node != nil && (ev.nodeType == readerTypeElement || ev.nodeType == readerTypeEndElement) {
+			for _, a := range ev.node.attrs {
+				k := a.name
+				if a.prefix != "" {
+					k = a.prefix + ":" + a.name
+				}
+				mrb.HashSet(h, mrb.StrNew(k), mrb.StrNew(a.value))
+			}
+		}
+		return h
+	}, mrb.ArgsNone())
 
 	readerCls.DefineMethod("attribute_count", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := curEv(getR(mrb, self))
-		if ev == nil || ev.node == nil {
+		if ev == nil || ev.node == nil || ev.nodeType != readerTypeElement {
 			return mrb.FixnumValue(0)
 		}
-		return mrb.FixnumValue(len(ev.node.attrs))
+		return mrb.FixnumValue(len(ev.node.attrs) + len(ev.node.nsDefs))
 	}, mrb.ArgsNone())
 
 	readerCls.DefineMethod("attribute_at", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := curEv(getR(mrb, self))
-		if ev == nil || ev.node == nil {
+		arg := mrb.GetArgsFirst()
+		if ev == nil || ev.node == nil || arg.IsNil() {
 			return mrb.NilValue()
 		}
-		idx := mrb.GetArgsFirst().Int()
-		if idx < 0 || idx >= len(ev.node.attrs) {
+		idx := arg.Int()
+		if idx < 0 {
 			return mrb.NilValue()
 		}
-		return mrb.StrNew(ev.node.attrs[idx].value)
+		if idx < len(ev.node.attrs) {
+			return mrb.StrNew(ev.node.attrs[idx].value)
+		}
+		nsIdx := idx - len(ev.node.attrs)
+		if nsIdx < len(ev.node.nsDefs) {
+			return mrb.StrNew(ev.node.nsDefs[nsIdx].href)
+		}
+		return mrb.NilValue()
 	}, mrb.ArgsReq(1))
 
 	readerCls.DefineMethod("attributes?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := curEv(getR(mrb, self))
-		return mrb.BoolValue(ev != nil && ev.node != nil && len(ev.node.attrs) > 0)
+		return mrb.BoolValue(ev != nil && ev.node != nil && (len(ev.node.attrs)+len(ev.node.nsDefs)) > 0)
 	}, mrb.ArgsNone())
 
 	readerCls.DefineMethod("namespace_uri", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -2510,9 +2662,13 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 	readerCls.DefineMethod("namespaces", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := curEv(getR(mrb, self))
 		h := mrb.HashNew()
-		if ev != nil && ev.node != nil {
-			for k, v := range ev.node.scopeNamespaces() {
-				mrb.HashSet(h, mrb.StrNew(k), mrb.StrNew(v))
+		if ev != nil && ev.node != nil && (ev.nodeType == readerTypeElement || ev.nodeType == readerTypeEndElement) {
+			for _, ns := range ev.node.nsDefs {
+				k := "xmlns"
+				if ns.prefix != "" {
+					k = "xmlns:" + ns.prefix
+				}
+				mrb.HashSet(h, mrb.StrNew(k), mrb.StrNew(ns.href))
 			}
 		}
 		return h
@@ -2528,10 +2684,15 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 
 	readerCls.DefineMethod("base_uri", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		r := getR(mrb, self)
-		if r == nil || r.url == "" {
+		ev := curEv(r)
+		if r == nil || ev == nil || ev.node == nil {
 			return mrb.NilValue()
 		}
-		return mrb.StrNew(r.url)
+		u := nodeBaseURI(ev.node, r.url)
+		if u == "" {
+			return mrb.NilValue()
+		}
+		return mrb.StrNew(u)
 	}, mrb.ArgsNone())
 
 	readerCls.DefineMethod("source", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -2539,12 +2700,15 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 		if r == nil {
 			return mrb.StrNew("")
 		}
+		if r.hasSourceVal {
+			return r.sourceVal
+		}
 		return mrb.StrNew(r.source)
 	}, mrb.ArgsNone())
 
 	readerCls.DefineMethod("xml_version", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		r := getR(mrb, self)
-		if r == nil || r.doc == nil || r.doc.version == "" {
+		if r == nil || r.idx < 0 || r.doc == nil || r.doc.version == "" {
 			return mrb.NilValue()
 		}
 		return mrb.StrNew(r.doc.version)
@@ -2590,7 +2754,11 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 	}, mrb.ArgsNone())
 
 	readerCls.DefineMethod("inner_xml", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		ev := curEv(getR(mrb, self))
+		r := getR(mrb, self)
+		ev := curEv(r)
+		if r != nil && !r.recover && r.doc != nil && len(r.doc.errors) > 0 {
+			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", r.doc.errors[0].message)
+		}
 		if ev == nil || ev.node == nil {
 			return mrb.StrNew("")
 		}
@@ -2598,9 +2766,20 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 	}, mrb.ArgsNone())
 
 	readerCls.DefineMethod("outer_xml", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		ev := curEv(getR(mrb, self))
+		r := getR(mrb, self)
+		ev := curEv(r)
+		if r != nil && !r.recover && r.doc != nil && len(r.doc.errors) > 0 {
+			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", r.doc.errors[0].message)
+		}
 		if ev == nil || ev.node == nil {
 			return mrb.StrNew("")
+		}
+		if ev.nodeType == readerTypeEndElement {
+			tag := ev.node.name
+			if ev.node.prefix != "" {
+				tag = ev.node.prefix + ":" + ev.node.name
+			}
+			return mrb.StrNew("<" + tag + "/>")
 		}
 		return mrb.StrNew(ev.node.serialize(false, 0, false))
 	}, mrb.ArgsNone())

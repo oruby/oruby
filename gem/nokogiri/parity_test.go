@@ -59,7 +59,7 @@ raise "HTML4.fragment" unless Nokogiri::HTML4.fragment("<b>hi</b>").to_html == "
 br = Nokogiri::HTML4::ElementDescription["br"]
 div = Nokogiri::HTML4::ElementDescription["div"]
 font = Nokogiri::HTML4::ElementDescription["font"]
-raise "br desc" unless br.empty? && !br.save_end_tag?
+raise "br desc" unless br.empty? && br.save_end_tag?
 raise "div desc" unless div.block? && !div.inline? && !div.empty?
 raise "font desc" unless font.deprecated? && font.inline?
 hdoc = Nokogiri::HTML4("<div><br></div>")

@@ -12,17 +12,23 @@ import (
 // instructions, DOCTYPE, entity decoding, line numbers, NOBLANKS, and
 // STRICT / RECOVER error handling.
 type xmlParser struct {
-	src      string
-	pos      int
-	line     int
-	doc      *domNode
-	ctxNode  *domNode
-	strict   bool
-	noblanks bool
-	nocdata  bool
+	src         string
+	pos         int
+	line        int
+	doc         *domNode
+	ctxNode     *domNode
+	strict      bool
+	stopOnError bool
+	noblanks    bool
+	nocdata     bool
+	entities    map[string]string
 }
 
 func parseXMLDocument(src, url, encoding string, strict, noblanks, nocdata bool) *domNode {
+	return parseXMLDocumentOpts(src, url, encoding, strict, false, noblanks, nocdata)
+}
+
+func parseXMLDocumentOpts(src, url, encoding string, strict, stopOnError, noblanks, nocdata bool) *domNode {
 	doc := newDocument(false, false)
 	doc.url = url
 	decoded, detectedEnc := decodeToUTF8(src, encoding, false)
@@ -35,12 +41,13 @@ func parseXMLDocument(src, url, encoding string, strict, noblanks, nocdata bool)
 		return doc
 	}
 	p := &xmlParser{
-		src:      decoded,
-		line:     1,
-		doc:      doc,
-		strict:   strict,
-		noblanks: noblanks,
-		nocdata:  nocdata,
+		src:         decoded,
+		line:        1,
+		doc:         doc,
+		strict:      strict,
+		stopOnError: stopOnError,
+		noblanks:    noblanks,
+		nocdata:     nocdata,
 	}
 	p.parseInto(doc)
 	return doc
@@ -185,6 +192,52 @@ func resolveXMLEntity(ent string) (string, bool) {
 	return "", false
 }
 
+func (p *xmlParser) decodeText(s string) string {
+	if !strings.ContainsRune(s, '&') {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '&' {
+			semi := strings.IndexByte(s[i+1:], ';')
+			if semi > 0 {
+				ent := s[i+1 : i+1+semi]
+				validRef := true
+				for j := 0; j < len(ent); j++ {
+					if ent[j] == ' ' || ent[j] == '\t' || ent[j] == '\n' || ent[j] == '\r' || ent[j] == '<' || ent[j] == '&' {
+						validRef = false
+						break
+					}
+				}
+				if validRef {
+					if p.entities != nil {
+						if val, ok := p.entities[ent]; ok {
+							sb.WriteString(val)
+							i += semi + 2
+							continue
+						}
+					}
+					if rep, ok := resolveXMLEntity(ent); ok {
+						sb.WriteString(rep)
+						i += semi + 2
+						continue
+					}
+					sb.WriteByte('&')
+					sb.WriteString(ent)
+					sb.WriteByte(';')
+					i += semi + 2
+					continue
+				}
+			}
+			p.addError("xmlParseEntityRef: no name")
+		}
+		sb.WriteByte(s[i])
+		i++
+	}
+	return sb.String()
+}
+
 func (p *xmlParser) parseInto(root *domNode) {
 	// Skip UTF-8 BOM if present
 	if strings.HasPrefix(p.src, "\xef\xbb\xbf") {
@@ -195,9 +248,12 @@ func (p *xmlParser) parseInto(root *domNode) {
 	cur := func() *domNode { return stack[len(stack)-1] }
 
 	for p.pos < len(p.src) {
+		if p.stopOnError && len(p.doc.errors) > 0 {
+			return
+		}
 		lt := strings.IndexByte(p.src[p.pos:], '<')
 		if lt < 0 {
-			txt := decodeXMLEntities(p.src[p.pos:])
+			txt := p.decodeText(p.src[p.pos:])
 			p.advance(len(p.src) - p.pos)
 			if txt != "" && (!p.noblanks || strings.TrimSpace(txt) != "") {
 				if cur().kind != DocumentNode || strings.TrimSpace(txt) != "" {
@@ -212,13 +268,16 @@ func (p *xmlParser) parseInto(root *domNode) {
 			lineStart := p.line
 			raw := p.src[p.pos : p.pos+lt]
 			p.advance(lt)
-			txt := decodeXMLEntities(raw)
+			txt := p.decodeText(raw)
 			if txt != "" && (!p.noblanks || strings.TrimSpace(txt) != "") {
 				if cur().kind != DocumentNode || strings.TrimSpace(txt) != "" {
 					tn := newNode(p.doc, TextNode, "#text", txt)
 					tn.line = lineStart
 					cur().appendChild(tn)
 				}
+			}
+			if p.stopOnError && len(p.doc.errors) > 0 {
+				return
 			}
 		}
 
@@ -311,6 +370,14 @@ func (p *xmlParser) parseInto(root *domNode) {
 			dn := newNode(p.doc, DocumentTypeNode, dtName, meta)
 			dn.line = lineNo
 			parseDoctypeIDs(dn, meta)
+			if ents := extractDTDEntities(meta); len(ents) > 0 {
+				if p.entities == nil {
+					p.entities = map[string]string{}
+				}
+				for k, v := range ents {
+					p.entities[k] = v
+				}
+			}
 			cur().appendChild(dn)
 			continue
 		}
@@ -494,11 +561,16 @@ func splitQName(full string) (prefix, local string) {
 }
 
 func parseXMLDecl(doc *domNode, data string) {
+	doc.hasXMLDecl = true
 	if v := extractQuotedAttr(data, "version"); v != "" {
 		doc.version = v
 	}
 	if e := extractQuotedAttr(data, "encoding"); e != "" {
 		doc.encoding = e
+		doc.xmlDeclEncoding = e
+	}
+	if s := extractQuotedAttr(data, "standalone"); s != "" {
+		doc.standalone = s
 	}
 }
 

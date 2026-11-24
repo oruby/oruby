@@ -43,7 +43,7 @@ func TestBuilderNamespacesAndSaveOptions(t *testing.T) {
 			doc.at_xpath("//cac:Party/cbc:Name", ns).text,
 			doc.at_xpath("//cbc:ID", ns).namespace.href,
 			!xml_no_decl.start_with?("<?xml"),
-			xml_no_decl.include?("<EmptyTag></EmptyTag>"),
+			xml_no_decl.include?("<cac:EmptyTag></cac:EmptyTag>"),
 			xml_fmt.include?("\n  <cbc:ID>"),
 			buf == xml_no_decl,
 		]

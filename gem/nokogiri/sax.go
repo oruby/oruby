@@ -1,13 +1,16 @@
 package nokogiri
 
 import (
+	"net/url"
+	"strings"
+
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/internal/rb"
 )
 
 // emitSAXEvents walks a parsed DOM tree and fires standard Nokogiri::XML::SAX::Document
 // callbacks in document order.
-func emitSAXEvents(mrb *oruby.MrbState, handler oruby.Value, doc *domNode) error {
+func emitSAXEvents(mrb *oruby.MrbState, handler oruby.Value, doc *domNode, ctxVal oruby.Value) error {
 	call := func(name string, args ...any) error {
 		if !mrb.RespondTo(handler, mrb.Intern(name)) {
 			return nil
@@ -16,8 +19,18 @@ func emitSAXEvents(mrb *oruby.MrbState, handler oruby.Value, doc *domNode) error
 		return err
 	}
 
-	if !doc.isHTML && doc.version != "" {
-		if err := call("xmldecl", mrb.StrNew(doc.version), mrb.StrNew(doc.encoding), mrb.NilValue()); err != nil {
+	if !doc.isHTML && doc.hasXMLDecl {
+		var verVal, encVal, standVal oruby.Value = mrb.NilValue(), mrb.NilValue(), mrb.NilValue()
+		if doc.version != "" {
+			verVal = mrb.StrNew(doc.version)
+		}
+		if doc.xmlDeclEncoding != "" {
+			encVal = mrb.StrNew(doc.xmlDeclEncoding)
+		}
+		if doc.standalone != "" {
+			standVal = mrb.StrNew(doc.standalone)
+		}
+		if err := call("xmldecl", verVal, encVal, standVal); err != nil {
 			return err
 		}
 	}
@@ -29,14 +42,24 @@ func emitSAXEvents(mrb *oruby.MrbState, handler oruby.Value, doc *domNode) error
 			return err
 		}
 	}
-	if err := walkSAXNode(mrb, handler, doc, call); err != nil {
+	if err := walkSAXNode(mrb, handler, doc, ctxVal, call); err != nil {
 		return err
 	}
 	return call("end_document")
 }
 
-func walkSAXNode(mrb *oruby.MrbState, handler oruby.Value, n *domNode, call func(string, ...any) error) error {
+func walkSAXNode(mrb *oruby.MrbState, handler oruby.Value, n *domNode, ctxVal oruby.Value, call func(string, ...any) error) error {
+	setPos := func(line int) {
+		if !ctxVal.IsNil() {
+			if line <= 0 {
+				line = 1
+			}
+			mrb.IVSet(ctxVal, mrb.Intern("@line"), mrb.FixnumValue(line))
+			mrb.IVSet(ctxVal, mrb.Intern("@column"), mrb.FixnumValue(1))
+		}
+	}
 	for c := n.first; c != nil; c = c.next {
+		setPos(c.line)
 		switch c.kind {
 		case ElementNode:
 			qname := c.name
@@ -105,7 +128,7 @@ func walkSAXNode(mrb *oruby.MrbState, handler oruby.Value, n *domNode, call func
 			if err := call("start_element", mrb.StrNew(qname), attrsAry); err != nil {
 				return err
 			}
-			if err := walkSAXNode(mrb, handler, c, call); err != nil {
+			if err := walkSAXNode(mrb, handler, c, ctxVal, call); err != nil {
 				return err
 			}
 			if err := call("end_element_namespace", mrb.StrNew(c.name), prefVal, uriVal); err != nil {
@@ -165,10 +188,46 @@ type xmlReader struct {
 	events       []readerEvent
 	idx          int
 	source       string
+	hasSourceVal bool
+	sourceVal    oruby.Value
 	url          string
 	encoding     string
+	recover      bool
 	hasCustomErr bool
 	customErrs   oruby.Value
+}
+
+func nodeBaseURI(n *domNode, docURL string) string {
+	var chain []string
+	for cur := n; cur != nil; cur = cur.parent {
+		if cur.kind == ElementNode {
+			if a, ok := cur.getAttr("xml:base"); ok && a.value != "" {
+				chain = append(chain, a.value)
+			}
+		}
+	}
+	if len(chain) == 0 {
+		return docURL
+	}
+	var base *url.URL
+	if docURL != "" {
+		base, _ = url.Parse(docURL)
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		u, err := url.Parse(chain[i])
+		if err != nil {
+			continue
+		}
+		if base == nil || u.IsAbs() {
+			base = u
+		} else {
+			base = base.ResolveReference(u)
+		}
+	}
+	if base == nil {
+		return docURL
+	}
+	return base.String()
 }
 
 func buildReaderEvents(doc *domNode) *xmlReader {
@@ -194,7 +253,11 @@ func buildReaderEvents(doc *domNode) *xmlReader {
 					})
 				}
 			case TextNode:
-				events = append(events, readerEvent{nodeType: readerTypeText, node: c, depth: depth})
+				nt := readerTypeText
+				if strings.TrimSpace(c.data) == "" {
+					nt = readerTypeSignificantWhitespace
+				}
+				events = append(events, readerEvent{nodeType: nt, node: c, depth: depth})
 			case CDATASectionNode:
 				events = append(events, readerEvent{nodeType: readerTypeCDATA, node: c, depth: depth})
 			case CommentNode:
