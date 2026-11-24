@@ -26,6 +26,14 @@
 #include <limits.h>
 #include <math.h>
 #include <sys/types.h>
+/* what MRI's ruby.h brings in too, which extensions rely on */
+#include <stdio.h>
+#include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <alloca.h>
+#include <assert.h>
+#include <unistd.h>
 
 #if defined(__cplusplus)
 extern "C" {

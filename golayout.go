@@ -26,6 +26,9 @@ func RubyArch() string {
 // executable as MRI's layout puts it: <prefix>/bin/oruby, with the Ruby
 // libraries under <prefix>/lib/oruby/<version>.
 func InstallPrefix() string {
+	if installPrefix != "" {
+		return installPrefix
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "/usr/local"
@@ -35,6 +38,14 @@ func InstallPrefix() string {
 	}
 	return filepath.Dir(filepath.Dir(exe))
 }
+
+var installPrefix string
+
+// SetInstallPrefix names the directory ORuby is installed in, for an
+// executable that is not under it: a project's own bin/oruby, built with
+// its C extensions (`oruby build --target=dev`), uses the libraries of the
+// ORuby that built it.
+func SetInstallPrefix(prefix string) { installPrefix = prefix }
 
 // RubyLibPrefix is RbConfig::CONFIG["rubylibprefix"]: <prefix>/lib/oruby.
 func RubyLibPrefix() string {

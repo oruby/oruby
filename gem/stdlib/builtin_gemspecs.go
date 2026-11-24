@@ -104,8 +104,12 @@ func initRubyGemsDefaults(mrb *oruby.MrbState) any {
 		return ary
 	}, mrb.ArgsNone())
 
+	gemMod.DefineClassMethod("__oruby_native_gem?", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		return mrb.BoolValue(oruby.NativeExtensionGem(mrb.String(mrb.GetArgsFirst())))
+	}, mrb.ArgsReq(1))
 	gemMod.DefineClassMethod("__oruby_native_extension?", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
-		return mrb.BoolValue(mrb.GemAvailable(mrb.String(mrb.GetArgsFirst())))
+		// a compiled-in C extension is the Go gem named as its library (gem/capi)
+		return mrb.BoolValue(mrb.GemAvailable(mrb.String(mrb.GetArgsFirst()) + ".so"))
 	}, mrb.ArgsReq(1))
 
 	rb.LoadRuby(mrb, "<internal:rubygems/defaults/oruby>", []byte(`
@@ -152,8 +156,8 @@ Gem::Specification.singleton_class.prepend(ORubyDefaultGemSpecs)
 # is built: RubyGems neither ignores the gem nor asks for a build.
 module ORubyNativeExtensions
   def missing_extensions?
-    return false if !extensions.empty? &&
-      extensions.all? { |e| Gem.__oruby_native_extension?(File.basename(File.dirname(e))) }
+    return false if !extensions.empty? && (Gem.__oruby_native_gem?(name) ||
+      extensions.all? { |e| Gem.__oruby_native_extension?(File.basename(File.dirname(e))) })
     super
   end
 end

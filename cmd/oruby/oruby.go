@@ -555,8 +555,11 @@ func main() {
 }
 
 func run() int {
-	if len(os.Args) >= 2 && (os.Args[1] == "init" || os.Args[1] == "build") {
-		if _, err := os.Stat(os.Args[1]); os.IsNotExist(err) {
+	if embeddedOrb != nil {
+		os.Args = append([]string{os.Args[0], embeddedOrbPath()}, os.Args[1:]...)
+	} else if len(os.Args) >= 2 && (os.Args[1] == "init" || os.Args[1] == "build") {
+		// a script of that name runs; a directory (a project's build/) is none
+		if fi, err := os.Stat(os.Args[1]); os.IsNotExist(err) || (err == nil && fi.IsDir()) {
 			return delegateToOrubyc(os.Args[1:])
 		}
 	}
@@ -640,7 +643,9 @@ func run() int {
 		}
 	default:
 		cmdline = o.script
-		if !(o.mrbfile || strings.EqualFold(filepath.Ext(o.script), ".mrb")) {
+		if embeddedOrb != nil && o.script == embeddedOrbPath() {
+			src = embeddedOrb
+		} else if !(o.mrbfile || strings.EqualFold(filepath.Ext(o.script), ".mrb")) {
 			src, err = os.ReadFile(o.script)
 			if err != nil {
 				if os.IsNotExist(err) {

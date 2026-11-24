@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/oruby/oruby"
@@ -97,6 +99,9 @@ module RbConfig
     'EXTSTATIC' => 'static',
     'LIBPATHENV' => 'DYLD_LIBRARY_PATH'
   }
+  # what mkmf compiles and links with: the C API's headers (gem/capi) and,
+  # for its link tests, the C API and libmruby as static libraries
+  CONFIG.update(%s)
   # no frozen values (MRI's CONFIG is mutable, under --enable-frozen-string-literal too)
   CONFIG.each { |k, v| CONFIG[k] = v.dup if String === v && v.frozen? }
   TOPDIR = prefix
@@ -126,9 +131,11 @@ module RbConfig
     val.replace(newval) unless newval == val
     val
   end
+  # CONFIG is the expanded table, as MRI's
+  CONFIG.each_value { |v| expand(v) if String === v }
 end
 CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
-`, prefix, runtime.GOOS, cpu, host, arch, runtime.GOOS, cpu, dlext, arch, arch, arch, arch, dlext))
+`, prefix, runtime.GOOS, cpu, host, arch, runtime.GOOS, cpu, dlext, arch, arch, arch, arch, dlext, buildConfig(prefix)))
 		return nil
 	})
 
@@ -294,4 +301,77 @@ func initMathGamma(mrb *oruby.MrbState) {
 		v, sign := math.Lgamma(d)
 		return mrb.AryNewFromValues(mrb.FloatValue(v), oruby.Int(sign).Value())
 	}, oruby.ArgsReq(1))
+}
+
+// buildConfig is the part of RbConfig::CONFIG that mkmf compiles and links
+// with, as a Ruby Hash literal. The headers are the C API's (gem/capi):
+// <prefix>/include/oruby-<version> where ORuby is installed, gem/capi/include
+// in its source tree; without them mkmf stops, as MRI's does without
+// ruby.h. mkmf's link tests (have_func) link with the C API and libmruby as
+// static libraries in <prefix>/lib (make bin), so they find what the C API
+// has. Extensions are compiled into an oruby binary (oruby build), never
+// loaded as files.
+func buildConfig(prefix string) string {
+	hdr := ""
+	for _, d := range []string{
+		filepath.Join(prefix, "include", "oruby-"+oruby.RubyVersion),
+		filepath.Join(prefix, "gem", "capi", "include"),
+	} {
+		if _, err := os.Stat(filepath.Join(d, "ruby", "ruby.h")); err == nil {
+			hdr = d
+			break
+		}
+	}
+	libdir := filepath.Join(prefix, "lib")
+	cc, cxx := "cc", "c++"
+	ccdl, cppflags, ldshared, ldsharedxx, dldflags, libs := "-fPIC", "", "$(CC) -shared", "$(CXX) -shared", "", "-lm -lpthread"
+	if runtime.GOOS == "darwin" {
+		ccdl = "-fno-common"
+		cppflags = "-D_XOPEN_SOURCE -D_DARWIN_C_SOURCE -D_DARWIN_UNLIMITED_SELECT -D_REENTRANT"
+		ldshared, ldsharedxx = "$(CC) -dynamic -bundle", "$(CXX) -dynamic -bundle"
+		dldflags = "-Wl,-undefined,dynamic_lookup"
+		libs = "-lpthread"
+	}
+	librubyarg := "-loruby-capi -lmruby -lm"
+	kv := map[string]string{
+		"CC": cc, "CXX": cxx, "CPP": cc + " -E", "GCC": "yes", "LDSHARED": ldshared, "LDSHAREDXX": ldsharedxx,
+		"optflags": "-O3 -fno-fast-math", "debugflags": "-ggdb3", "warnflags": "-Wall -Wno-unused-parameter",
+		"cflags": "-O3 -fno-fast-math -ggdb3 -Wall -Wno-unused-parameter", "cxxflags": "-O3 -ggdb3",
+		"CCDLFLAGS": ccdl, "CFLAGS": ccdl + " -O3 -fno-fast-math -ggdb3 -Wall -Wno-unused-parameter -pipe",
+		"CXXFLAGS": "-O3 -ggdb3", "CPPFLAGS": cppflags, "cppflags": "", "DEFS": "", "ARCH_FLAG": "",
+		"LDFLAGS": "-L. -L" + libdir, "DLDFLAGS": dldflags, "EXTDLDFLAGS": "", "EXTLDFLAGS": "", "DLDLIBS": "",
+		"LIBS": libs, "MAINLIBS": "", "SOLIBS": "", "LOCAL_LIBS": "",
+		"LIBRUBYARG": librubyarg, "LIBRUBYARG_STATIC": librubyarg, "LIBRUBYARG_SHARED": "",
+		"LIBPATHFLAG": " -L%s", "RPATHFLAG": "", "LIBARG": "-l%s", "LINK_SO": "", "TRY_LINK": "",
+		"OBJEXT": "o", "LIBEXT": "a", "ASMEXT": "S", "COUTFLAG": "-o ", "OUTFLAG": "-o ", "CSRCFLAG": "",
+		"CPPOUTFILE": "-o conftest.i", "CC_WRAPPER": "", "STRIP": "strip -S -x",
+		"INSTALL": "/usr/bin/install -c", "INSTALL_PROGRAM": "/usr/bin/install -c",
+		"INSTALL_SCRIPT": "/usr/bin/install -c", "INSTALL_DATA": "/usr/bin/install -c -m 644",
+		"MKDIR_P": "mkdir -p", "MAKEDIRS": "mkdir -p", "RM": "rm -f", "RMDIR": "rmdir", "RMDIRS": "rmdir -p",
+		"RMALL": "rm -fr", "CP": "cp", "AR": "ar", "ARFLAGS": "rcu", "RANLIB": "ranlib", "NULLCMD": ":",
+		"THREAD_MODEL": "pthread", "configure_args": "", "PLATFORM_DIR": "", "ENCOBJS": "",
+		"COMMON_HEADERS": "", "COMMON_MACROS": "", "COMMON_LIBS": "", "includedir": filepath.Join(prefix, "include"),
+		"PATH_SEPARATOR": string(os.PathListSeparator),
+		"sitearch": oruby.RubyArch(), "rubyarchprefix": filepath.Join(prefix, "lib", "oruby", oruby.RubyArch()),
+	}
+	if hdr != "" {
+		for _, k := range []string{"rubyhdrdir", "rubyarchhdrdir", "sitehdrdir", "sitearchhdrdir", "vendorhdrdir", "vendorarchhdrdir", "topdir"} {
+			kv[k] = hdr
+		}
+	}
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q => %q", k, kv[k])
+	}
+	b.WriteString("}")
+	return b.String()
 }

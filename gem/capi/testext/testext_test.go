@@ -28,7 +28,7 @@ func eval(t *testing.T, code, want string) {
 }
 
 func TestExtension(t *testing.T) {
-	if _, err := mrb.Resolve("capi_testext"); err != nil {
+	if _, err := mrb.Resolve("capi_testext.so"); err != nil {
 		t.Fatal(err)
 	}
 	eval(t, `CAPITest::ANSWER.inspect`, `42`)
@@ -54,7 +54,7 @@ func TestExtension(t *testing.T) {
 // A Data object's dmark keeps what it holds alive, and a registered
 // address keeps its VALUE: both through full GCs.
 func TestGC(t *testing.T) {
-	if _, err := mrb.Resolve("capi_testext"); err != nil {
+	if _, err := mrb.Resolve("capi_testext.so"); err != nil {
 		t.Fatal(err)
 	}
 	eval(t, `$boxes = 200.times.map { |i| CAPITest::Box.new("v#{i}" * 3) }; GC.start; 20.times { Array.new(1000) { "x" * 50 } }; GC.start; $boxes.map(&:held).last`, `v199v199v199`)

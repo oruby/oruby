@@ -796,18 +796,14 @@ func entryMatchesGroups(entry gemfileEntry, allowedGroups map[string]bool) bool 
 }
 
 // packGemfileGemsWithGroups resolves gems from Gemfile / Gemfile.lock filtered by groups (if non-empty) and packs their files into builder.
-func packGemfileGemsWithGroups(
-	mrb *oruby.MrbState,
-	builder *oruby.OrbBuilder,
-	gemfilePath string,
-	projectRoot string,
-	groups []string,
-	args *mrbcArgs,
-	packFileWithVirtual func(inPath, vpath string) error,
-) error {
+// resolveGemfileGems finds the gems of the Gemfile's groups, with their
+// dependencies (Gemfile.lock, installed gemspecs), on disk: the Gemfile's
+// entries and the gems found, sorted by name. Gems ORuby provides itself
+// (orubyNativeGems) are left out.
+func resolveGemfileGems(gemfilePath, projectRoot string, groups []string, verbose bool) ([]gemfileEntry, []*resolvedGemDir, error) {
 	allEntries, err := parseGemfile(gemfilePath)
 	if err != nil {
-		return fmt.Errorf("parsing %s: %w", gemfilePath, err)
+		return nil, nil, fmt.Errorf("parsing %s: %w", gemfilePath, err)
 	}
 
 	allowedGroups := make(map[string]bool)
@@ -876,7 +872,7 @@ func packGemfileGemsWithGroups(
 
 		gemDir, ok := findGemDir(name, lockedVer, gemRoots)
 		if !ok {
-			if args.verbose {
+			if verbose {
 				fmt.Fprintf(os.Stderr, "orubyc: note: gem %q not found on disk (may be built-in or unused)\n", name)
 			}
 			continue
@@ -896,6 +892,22 @@ func packGemfileGemsWithGroups(
 	sort.Slice(resolved, func(i, j int) bool {
 		return resolved[i].Name < resolved[j].Name
 	})
+	return entries, resolved, nil
+}
+
+func packGemfileGemsWithGroups(
+	mrb *oruby.MrbState,
+	builder *oruby.OrbBuilder,
+	gemfilePath string,
+	projectRoot string,
+	groups []string,
+	args *mrbcArgs,
+	packFileWithVirtual func(inPath, vpath string) error,
+) error {
+	entries, resolved, err := resolveGemfileGems(gemfilePath, projectRoot, groups, args != nil && args.verbose)
+	if err != nil {
+		return err
+	}
 
 	var binOutDir, libOutDir string
 	if args != nil && args.orbfile != "" {

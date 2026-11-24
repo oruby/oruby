@@ -25,5 +25,5 @@ import (
 )
 
 func init() {
-	capi.Extension("rbs_extension", unsafe.Pointer(C.Init_rbs_extension))
+	capi.GemExtension("rbs", "rbs_extension", unsafe.Pointer(C.Init_rbs_extension))
 }

@@ -111,16 +111,16 @@ class Array
     end
   end
 
+  # whether a class of item's below Object defines sym itself (any
+  # visibility): asked per class, not by listing each class's methods
   def self.__has_custom_method?(item, sym)
     sc = Kernel.__oruby_lookup_class(item)
     if sc.singleton_class?
-      all = (sc.instance_methods(false) rescue []) + (sc.private_instance_methods(false) rescue [])
-      return true if all.include?(sym)
+      return true if (sc.method_defined?(sym, false) || sc.private_method_defined?(sym, false) rescue false)
     end
     k = item.class rescue nil
     while k && k != Object && k != Kernel && k != BasicObject
-      all = (k.instance_methods(false) rescue []) + (k.private_instance_methods(false) rescue [])
-      return true if all.include?(sym)
+      return true if (k.method_defined?(sym, false) || k.private_method_defined?(sym, false) rescue false)
       k = k.superclass rescue nil
     end
     false

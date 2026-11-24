@@ -140,6 +140,17 @@ func BuiltinGemSpecs() []GemSpec {
 	return out
 }
 
+var nativeExtensionGems = map[string]bool{}
+
+// RegisterNativeExtensionGem records that the named gem's C extension is
+// compiled into the binary (gem/capi): RubyGems takes its extension as
+// built.
+func RegisterNativeExtensionGem(name string) { nativeExtensionGems[name] = true }
+
+// NativeExtensionGem reports whether the named gem's C extension is
+// compiled into the binary.
+func NativeExtensionGem(name string) bool { return nativeExtensionGems[name] }
+
 // GemAvailable reports whether name is a registered Go gem (initialized or
 // not); it initializes nothing
 func (mrb *MrbState) GemAvailable(name string) bool {

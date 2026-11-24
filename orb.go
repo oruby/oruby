@@ -1105,3 +1105,26 @@ func (mrb *MrbState) ExecuteOrbEntryWrapped(orb *OrbFile, entry *OrbEntry, mod, 
 		return mrb.NilValue(), fmt.Errorf("orb: entry %s is not executable code (kind=%d)", entry.Path, entry.Kind)
 	}
 }
+
+// OrbRelativePath is the virtual path of a mounted bundle's entry named by
+// a relative path p that is no file on disk: the file name a bundle's code
+// was compiled under, which __FILE__ gives (`File.open(__FILE__)`, as Logger
+// does).
+func (mrb *MrbState) OrbRelativePath(p string) (string, bool) {
+	if p == "" || filepath.IsAbs(p) || IsOrbVirtualPath(p) {
+		return "", false
+	}
+	mounts := mrb.MountedOrbs()
+	if len(mounts) == 0 {
+		return "", false
+	}
+	if _, err := os.Stat(p); err == nil {
+		return "", false
+	}
+	for _, o := range mounts {
+		if e, ok := o.Lookup(p); ok && e.Kind != OrbKindDir {
+			return o.VirtualPath(e), true
+		}
+	}
+	return "", false
+}

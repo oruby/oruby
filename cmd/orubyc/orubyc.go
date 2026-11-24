@@ -53,6 +53,8 @@ func usage(name string) {
 		"subcommands:",
 		"init [--docker] [--force] [dir]   create oruby.yml configuration file",
 		"build [-c oruby.yml] [options]    compile and pack project using oruby.yml",
+		"  --target=exe                    one executable: oruby, the gems' C extensions, the .orb",
+		"  --target=dev                    bin/oruby: oruby with the gems' C extensions compiled in",
 		"",
 		"switches:",
 		"-c             check syntax only",

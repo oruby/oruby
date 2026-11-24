@@ -26,7 +26,18 @@ all : libmruby.a $(DYN_LIB) bin
 # bin/ next to lib/oruby is the install layout, so bin/oruby runs in-tree.
 # scripts/gen_prism.rb writes Ruby::Prism and Ripper into lib/oruby/4.1.0
 # (generated from mruby's vendored Prism, ignored by git).
-bin : libmruby.a
+# lib/liboruby-capi.a and lib/libmruby.a: what mkmf's link tests link with
+# (RbConfig LIBRUBYARG), the Ruby C API (gem/capi) and libmruby as static
+# libraries; extensions themselves are compiled into an oruby binary by
+# `oruby build` (cmd/orubyc).
+CAPI_CFLAGS = -Igem/capi/include -I. -Imruby/include -Imruby/build/host/include -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_SYMBOL_MAX=0 -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET -DMRB_USE_COERCE -DMRB_USE_BIGINT -DMRB_USE_COMPLEX -DMRB_USE_REFINEMENTS -DMRB_USE_GC_WEAK
+
+capi-lib : libmruby.a
+	cc -O2 -c $(CAPI_CFLAGS) -o mruby/build/host/oruby-capi.o gem/capi/capi.c
+	ar rcs lib/liboruby-capi.a mruby/build/host/oruby-capi.o
+	$(COPY) mruby/build/host/lib/libmruby.a lib/libmruby.a
+
+bin : libmruby.a capi-lib
 	ruby scripts/gen_prism.rb
 	go build -o bin/oruby ./cmd/oruby
 	go build -o bin/orbi ./cmd/orbi
@@ -38,6 +49,9 @@ install : bin
 	install -d $(PREFIX)/bin $(PREFIX)/lib
 	install bin/oruby bin/orbi bin/orubyc $(PREFIX)/bin
 	cp -R lib/oruby $(PREFIX)/lib/
+	install -m 644 lib/liboruby-capi.a lib/libmruby.a $(PREFIX)/lib
+	install -d $(PREFIX)/include/oruby-4.1.0
+	cp -R gem/capi/include/ $(PREFIX)/include/oruby-4.1.0/
 
 test:
 	go test

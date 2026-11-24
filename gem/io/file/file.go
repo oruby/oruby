@@ -1708,6 +1708,11 @@ func openFile(mrb *oruby.MrbState, args oruby.RArgs) (*os.File, error) {
 	}
 
 	var f *os.File
+	if flags&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) == 0 {
+		if v, ok := mrb.OrbRelativePath(name); ok {
+			name = v // a bundle's __FILE__ (oruby.OrbRelativePath)
+		}
+	}
 	if oruby.IsOrbVirtualPath(name) {
 		if flags&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0 {
 			return nil, &os.PathError{Op: "open", Path: name, Err: syscall.EROFS}

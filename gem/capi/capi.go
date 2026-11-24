@@ -40,13 +40,22 @@ func Bind(mrb *oruby.MrbState) error {
 	return nil
 }
 
+// GemExtension is Extension for the C extension of the named gem, which
+// RubyGems then takes as built.
+func GemExtension(gem, name string, init unsafe.Pointer) {
+	oruby.RegisterNativeExtensionGem(gem)
+	Extension(name, init)
+}
+
 // Extension registers a C extension compiled into the binary under its
 // feature name (the name of its .so/.bundle in MRI, e.g. "rbs_extension"):
-// `require name` binds the C API and calls init, the extension's
+// `require name` (or "name.so", "name.bundle") binds the C API and calls init, the extension's
 // Init_<name> function (unsafe.Pointer(C.Init_name)). A raise in it is
 // the require's error.
 func Extension(name string, init unsafe.Pointer) {
-	oruby.LazyGem(name, func(mrb *oruby.MrbState) interface{} {
+	// named as its library: a Ruby file of the name on the load path comes
+	// first, as in MRI (gem/load)
+	oruby.LazyGem(name+".so", func(mrb *oruby.MrbState) interface{} {
 		if err := Bind(mrb); err != nil {
 			return &oruby.InitError{Err: err}
 		}

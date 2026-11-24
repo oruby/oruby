@@ -19,7 +19,7 @@ type OrubyConfig struct {
 	Name        string         `yaml:"name"`
 	Output      string         `yaml:"output"`
 	Entrypoint  string         `yaml:"entrypoint"`
-	Target      string         `yaml:"target"` // "orb" (default) or "native"
+	Target      string         `yaml:"target"` // "orb" (default), "exe", "dev" or "native"
 	Compiler    CompilerConfig `yaml:"compiler"`
 	Gems        GemsConfig     `yaml:"gems"`
 	Include     []string       `yaml:"include"`
@@ -164,7 +164,8 @@ func RenderOrubyYAML(cfg *OrubyConfig) string {
 	fmt.Fprintf(&b, "name: %s\n", cfg.Name)
 	fmt.Fprintf(&b, "output: %s\n", cfg.Output)
 	fmt.Fprintf(&b, "entrypoint: %s\n", cfg.Entrypoint)
-	fmt.Fprintf(&b, "target: %s # \"orb\" (RiteVM bytecode archive) or \"native\" (Go AOT binary)\n\n", cfg.Target)
+	fmt.Fprintf(&b, "target: %s # \"orb\" (RiteVM bytecode archive), \"exe\" (one executable: oruby, the gems' C\n"+
+		"            # extensions and the archive), \"dev\" (bin/oruby with the C extensions) or \"native\" (Go AOT)\n\n", cfg.Target)
 
 	b.WriteString("compiler:\n")
 	fmt.Fprintf(&b, "  debug_info: %v # Keep file/line info for backtraces\n", cfg.Compiler.DebugInfo)
@@ -601,6 +602,22 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 		cfg.Gems.Enabled = false
 	}
 
+	// dev: the project's bin/oruby, ORuby with the gems' C extensions
+	// compiled in, running the project from its files (binary.go)
+	if strings.EqualFold(cfg.Target, "dev") {
+		out := overrideOutput
+		if out == "" {
+			out = filepath.Join("bin", "oruby")
+		}
+		if !filepath.IsAbs(out) {
+			out = filepath.Join(projectDir, filepath.FromSlash(out))
+		}
+		if err := buildProjectBinary(prog, projectDir, cfg, nil, "", out, verbose); err != nil {
+			return exitFailure("%s build: %v\n", prog, err)
+		}
+		fmt.Printf("Built %s\n", out)
+		return 0
+	}
 	outPath := cfg.Output
 	if !filepath.IsAbs(outPath) {
 		outPath = filepath.Join(projectDir, filepath.FromSlash(outPath))
@@ -765,6 +782,12 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 		}
 	}
 
+	// exe: the bundle runs where ORuby is not installed, with its libraries
+	if strings.EqualFold(cfg.Target, "exe") {
+		if err := packStdlib(builder, packFileWithVirtual); err != nil {
+			return exitFailure("%s build: %v\n", prog, err)
+		}
+	}
 	if err := builder.WriteFile(absOut); err != nil {
 		return exitFailure("%s build: cannot write %s: %v\n", prog, absOut, err)
 	}
@@ -782,6 +805,15 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 		fmt.Printf("Built %s (%d project files packed)\n", cfg.Output, packedFiles)
 	}
 
+	// exe: one executable, ORuby with the gems' C extensions compiled in
+	// and the bundle embedded (binary.go)
+	if strings.EqualFold(cfg.Target, "exe") {
+		exe := strings.TrimSuffix(absOut, filepath.Ext(absOut))
+		if err := buildProjectBinary(prog, projectDir, cfg, cfg.Gems.Groups, absOut, exe, verbose); err != nil {
+			return exitFailure("%s build: %v\n", prog, err)
+		}
+		fmt.Printf("Built executable %s\n", exe)
+	}
 	if strings.EqualFold(cfg.Target, "native") || strings.EqualFold(cfg.Target, "go") {
 		goOutDir := strings.TrimSuffix(absOut, filepath.Ext(absOut)) + "_go"
 		comp := compiler.New(compiler.Options{

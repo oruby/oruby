@@ -22,6 +22,7 @@ rb_encoding *rb_enc_from_index(int);
 int rb_enc_to_index(rb_encoding *);
 rb_encoding *rb_enc_find(const char *);
 int rb_enc_find_index(const char *);
+int rb_define_dummy_encoding(const char *);
 rb_encoding *rb_to_encoding(VALUE);
 VALUE rb_enc_from_encoding(rb_encoding *);
 rb_encoding *rb_utf8_encoding(void);

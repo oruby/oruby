@@ -707,6 +707,14 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	}
 	lp := expandedLoadPath(mrb)
 
+	// a C extension compiled in (gem/capi) is a Go gem named as its library
+	// ("nkf.so"), whatever suffix it is asked for with; asked for without
+	// one, it is what the load path does not have (below)
+	if !isExplicit(feature) {
+		if e := filepath.Ext(feature); isSoExt(e) && mrb.GemAvailable(strings.TrimSuffix(feature, e)+".so") {
+			feature = strings.TrimSuffix(feature, e) + ".so"
+		}
+	}
 	// a Go gem: initialized once; MRI's built-in features stay "loaded"
 	if !isExplicit(feature) && mrb.GemAvailable(feature) {
 		provided := featureP(mrb, feature, 0, lp) != 0
@@ -769,6 +777,11 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	if path == "" {
 		if ft != 0 {
 			return mrb.FalseValue() // provided under the name
+		}
+		// a compiled-in C extension comes after the load path's files, as
+		// MRI finds a .rb before a .so: require "nkf" loads the gem's nkf.rb
+		if !isExplicit(feature) && mrb.GemAvailable(feature+".so") {
+			return doRequire(mrb, feature+".so")
 		}
 		return raiseCannotLoad(mrb, feature)
 	}

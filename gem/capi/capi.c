@@ -199,6 +199,18 @@ static const char capi_ruby[] =
   "  def self.__capi_send_kw(recv, mid, a, h, b) = recv.__send__(mid, *a, **h, &b)\n"
   "  def self.__capi_public_send_kw(recv, mid, a, h, b) = recv.public_send(mid, *a, **h, &b)\n"
   "  def self.__capi_warn(msg) = warn(msg, uplevel: 0)\n"
+  "end\n"
+  "class Encoding\n"
+  "  def self.__capi_find(name) = (find(name) rescue nil)\n"
+  "  # rb_define_dummy_encoding: a dummy encoding of that name, made unless one is\n"
+  "  def self.__capi_define_dummy(name)\n"
+  "    __capi_find(name) || begin\n"
+  "      enc = Class.instance_method(:new).bind_call(self, name.to_s, [], true, false)\n"
+  "      @by_name[name.to_s.upcase] = enc\n"
+  "      @list = (@list + [enc]).freeze\n"
+  "      enc\n"
+  "    end\n"
+  "  end\n"
   "end\n";
 
 static void root_hook(mrb_state *mrb);
@@ -1725,13 +1737,20 @@ rb_encoding *rb_enc_from_index(int i) { return i >= 0 && i < nencodings ? &encod
 int rb_enc_to_index(rb_encoding *e) { return e ? e->index : 0; }
 rb_encoding *rb_enc_find(const char *name) {
   for (int i = 0; i < nencodings; i++) if (strcasecmp(encodings[i].name, name) == 0) return &encodings[i];
-  mrb_value enc = call1(encoding_class(), "find", mrb_str_new_cstr(M, name));
-  return enc_of_encoding(enc);
+  mrb_value enc = call1(encoding_class(), "__capi_find", mrb_str_new_cstr(M, name));
+  return mrb_nil_p(enc) ? NULL : enc_of_encoding(enc);
+}
+int rb_define_dummy_encoding(const char *name) {
+  return enc_of_encoding(call1(encoding_class(), "__capi_define_dummy", mrb_str_new_cstr(M, name)))->index;
 }
 int rb_enc_find_index(const char *name) { rb_encoding *e = rb_enc_find(name); return e ? e->index : -1; }
 rb_encoding *rb_to_encoding(VALUE v) {
   mrb_value m = MV(v);
-  if (mrb_string_p(m)) return rb_enc_find(mrb_string_cstr(M, m));
+  if (mrb_string_p(m)) {
+    rb_encoding *e = rb_enc_find(mrb_string_cstr(M, m));
+    if (!e) rb_raise(rb_eArgError, "unknown encoding name - %s", mrb_string_cstr(M, m));
+    return e;
+  }
   return enc_of_encoding(m);
 }
 VALUE rb_enc_from_encoding(rb_encoding *e) {

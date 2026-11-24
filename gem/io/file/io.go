@@ -175,6 +175,9 @@ func ioBinreadInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		}
 	}
 
+	if v, ok := mrb.OrbRelativePath(name); ok {
+		name = v
+	}
 	if oruby.IsOrbVirtualPath(name) {
 		data, ok := mrb.OrbReadAsset(name)
 		if !ok {
@@ -281,6 +284,9 @@ func ioReadInternal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	var buf []byte
 	var n int
+	if v, ok := mrb.OrbRelativePath(name); ok {
+		name = v
+	}
 	if oruby.IsOrbVirtualPath(name) {
 		data, ok := mrb.OrbReadAsset(name)
 		if !ok {
