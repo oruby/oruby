@@ -1155,6 +1155,23 @@ class Rational
           return self.to_f ** other.to_f
         end
       end
+      if (op == :+ || op == :-) && Rational === other
+        begin
+          return __send__(orig, other)
+        rescue RangeError
+          a = self.numerator
+          b = self.denominator
+          c = other.numerator
+          d = other.denominator
+          g = b.gcd(d)
+          bd = b / g
+          dd = d / g
+          num = op == :+ ? (a * dd + c * bd) : (a * dd - c * bd)
+          den = bd * d
+          g2 = num.gcd(den)
+          return Rational(num / g2, den / g2)
+        end
+      end
       if Integer === other || Rational === other || Complex === other
         return __send__(orig, other)
       end

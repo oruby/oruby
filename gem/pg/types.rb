@@ -346,6 +346,43 @@ module PG
       end
     end
 
+    def self.format_float(val)
+      f = val.is_a?(::Float) ? val : Kernel.Float(val)
+      return "NaN" if f.nan?
+      return (f > 0 ? "Infinity" : "-Infinity") if f.infinite?
+      return "0.0" if f == 0.0
+      s15 = Kernel.format("%.14e", f)
+      if s15.to_f == f
+        s = s15
+      else
+        s16 = Kernel.format("%.15e", f)
+        abs_s16 = s16.start_with?("-") ? s16[1..-1] : s16
+        s = abs_s16 >= "9.00719925474099" ? s15 : s16
+      end
+      m, e = s.split("e", 2)
+      ei = e.to_i
+      neg = m.start_with?("-")
+      m = m[1..-1] if neg
+      digits = m.delete(".").sub(/0+\z/, "")
+      digits = "0" if digits.empty?
+      sign = neg ? "-" : ""
+      if ei >= 15 || ei < -4
+        if digits.length == 1
+          "#{sign}#{digits}e#{ei}"
+        else
+          "#{sign}#{digits[0]}.#{digits[1..-1]}e#{ei}"
+        end
+      elsif ei >= 0
+        if digits.length <= ei + 1
+          "#{sign}#{digits}#{"0" * (ei + 1 - digits.length)}.0"
+        else
+          "#{sign}#{digits[0, ei + 1]}.#{digits[(ei + 1)..-1]}"
+        end
+      else
+        "#{sign}0.#{"0" * (-ei - 1)}#{digits}"
+      end
+    end
+
     def self.format_timestamp(val, mode)
       return nil if val.nil?
       return val if val.is_a?(String)
@@ -360,12 +397,7 @@ module PG
         year = 1 - year
         bc_suffix = " BC"
       end
-      base = format("%04d-%02d-%02d %02d:%02d:%02d", year, t.mon, t.day, t.hour, t.min, t.sec)
-      nsec = t.nsec
-      if nsec != 0
-        frac = format("%09d", nsec).sub(/0+\z/, "")
-        base = "#{base}.#{frac}"
-      end
+      base = Kernel.format("%04d-%02d-%02d %02d:%02d:%02d.%09d", year, t.mon, t.day, t.hour, t.min, t.sec, t.nsec)
       if mode == :with_tz
         off = t.utc_offset
         sign = off < 0 ? "-" : "+"
@@ -373,7 +405,7 @@ module PG
         oh = off / 3600
         om = (off % 3600) / 60
         os = off % 60
-        tz = os == 0 ? format(" %s%02d:%02d", sign, oh, om) : format(" %s%02d:%02d:%02d", sign, oh, om, os)
+        tz = os == 0 ? Kernel.format(" %s%02d:%02d", sign, oh, om) : Kernel.format(" %s%02d:%02d:%02d", sign, oh, om, os)
         "#{base}#{tz}#{bc_suffix}"
       else
         "#{base}#{bc_suffix}"
@@ -415,14 +447,7 @@ module PG
     class Float < SimpleEncoder
       def encode(value, _encoding = nil)
         return nil if value.nil?
-        f = value.is_a?(::Float) ? value : Kernel.Float(value)
-        if f.nan?
-          "NaN"
-        elsif f.infinite?
-          f > 0 ? "Infinity" : "-Infinity"
-        else
-          f.to_s
-        end
+        CoderHelpers.format_float(value)
       end
     end
 
@@ -432,9 +457,7 @@ module PG
         case value
         when ::Integer then value.to_s
         when ::Float
-          return "NaN" if value.nan?
-          return (value > 0 ? "Infinity" : "-Infinity") if value.infinite?
-          value.to_s
+          CoderHelpers.format_float(value)
         else
           if defined?(::BigDecimal) && value.is_a?(::BigDecimal)
             return "NaN" if value.nan?
@@ -458,7 +481,7 @@ module PG
       def encode(value, _encoding = nil)
         return nil if value.nil?
         s = value.to_s
-        raise ArgumentError, "bytea string too large" if s.bytesize >= (1 << 30)
+        raise ArgumentError, "too large input string for bytea encoding" if s.bytesize >= (1 << 30) - 2
         PG::Connection.escape_bytea(s)
       end
     end
@@ -575,8 +598,8 @@ module PG
     class Array < CompositeEncoder
       def encode(value, encoding = nil)
         return nil if value.nil?
-        raise TypeError, "wrong argument type #{value.class} (expected Array)" unless value.is_a?(::Array)
-        enc = encoding ? Encoding.find(encoding) : Encoding::UTF_8
+        return value.to_s unless value.is_a?(::Array)
+        enc = encoding ? Encoding.find(encoding) : Encoding::ASCII_8BIT
         encode_array(value, enc, 1).force_encoding(enc)
       end
 
@@ -584,9 +607,12 @@ module PG
 
       def encode_array(arr, enc, depth)
         if depth > 6
-          raise ArgumentError, "too many array dimensions (max 6)"
+          raise ArgumentError, "number of array dimensions exceeds limit (6)"
         end
         if @dimensions && depth < @dimensions
+          if arr.empty?
+            raise ArgumentError, "less array dimensions (#{depth}) than expected (#{@dimensions})"
+          end
           arr.each do |el|
             unless el.is_a?(::Array)
               raise ArgumentError, "less array dimensions (#{depth}) than expected (#{@dimensions})"
@@ -603,7 +629,8 @@ module PG
             if s.nil?
               "NULL".encode(enc)
             else
-              s = s.encode(enc) if s.encoding != enc && s.encoding != Encoding::ASCII_8BIT
+              s = s.encode(enc) if enc != Encoding::ASCII_8BIT && s.encoding != enc && s.encoding != Encoding::ASCII_8BIT
+              s = s.b if enc == Encoding::ASCII_8BIT
               if @needs_quotation && needs_array_quoting?(s)
                 q = '"'.encode(enc)
                 bs = "\\".encode(enc)
@@ -635,6 +662,14 @@ module PG
         tm = @type_map
         tm = tm.fit_to_query(value) if tm && tm.respond_to?(:fit_to_query)
         total = 0
+        delim = @delimiter.encode(enc)
+        bs = "\\".encode(enc)
+        bs2 = bs + bs
+        nl_ch = "\n".encode(enc)
+        cr_ch = "\r".encode(enc)
+        bs_nl = bs + nl_ch
+        bs_cr = bs + cr_ch
+        bs_delim = bs + delim
         parts = value.each_with_index.map do |el, idx|
           if el.nil?
             @null_string.encode(enc)
@@ -650,15 +685,13 @@ module PG
             else
               raise ArgumentError, "copy row string size too large" if s.bytesize >= (1 << 30) || (total += s.bytesize) >= (1 << 30)
               s = s.encode(enc) if s.encoding != enc && s.encoding != Encoding::ASCII_8BIT
-              bs = "\\".encode(enc)
-              bs2 = bs + bs
-              s.gsub(bs) { bs2 }.gsub("\n".encode(enc)) { "\\n".encode(enc) }.gsub("\r".encode(enc)) { "\\r".encode(enc) }.gsub("\t".encode(enc)) { "\\t".encode(enc) }
+              out = s.gsub(bs) { bs2 }.gsub(nl_ch) { bs_nl }.gsub(cr_ch) { bs_cr }
+              out = out.gsub(delim) { bs_delim } if delim != bs && delim != nl_ch && delim != cr_ch
+              out
             end
           end
         end
-        delim = @delimiter.encode(enc)
-        nl = "\n".encode(enc)
-        (parts.join(delim) + nl).force_encoding(enc)
+        (parts.join(delim) + nl_ch).force_encoding(enc)
       end
     end
 
@@ -669,9 +702,14 @@ module PG
         enc = encoding ? Encoding.find(encoding) : Encoding::UTF_8
         tm = @type_map
         tm = tm.fit_to_query(value) if tm && tm.respond_to?(:fit_to_query)
+        q = '"'.encode(enc)
+        qq = '""'.encode(enc)
+        bs = "\\".encode(enc)
+        bs2 = bs + bs
+        empty_s = "".encode(enc)
         parts = value.each_with_index.map do |el, idx|
           if el.nil?
-            ""
+            empty_s
           else
             s = if tm
                   res = tm.__encode_param(el, idx, enc)
@@ -680,13 +718,14 @@ module PG
                   el.to_s
                 end
             if s.nil?
-              ""
+              empty_s
             else
-              '"' + s.gsub("\\") { "\\\\" }.gsub('"') { '""' } + '"'
+              s = s.encode(enc) if s.encoding != enc && s.encoding != Encoding::ASCII_8BIT
+              q + s.gsub(bs) { bs2 }.gsub(q) { qq } + q
             end
           end
         end
-        "(#{parts.join(",")})"
+        ("(".encode(enc) + parts.join(",".encode(enc)) + ")".encode(enc)).force_encoding(enc)
       end
     end
   end
@@ -799,10 +838,11 @@ module PG
     class FromBase64 < CompositeDecoder
       def decode(string, tuple = nil, field = nil)
         return nil if string.nil?
-        require "base64"
-        raw = ::Base64.decode64(string)
+        raw = string.unpack1("m")
         if @elements_type
           @elements_type.decode(raw.b, tuple, field)
+        elsif @format == 1
+          raw.b
         else
           raw.force_encoding(string.encoding)
         end
@@ -810,6 +850,11 @@ module PG
     end
 
     class TimestampWithoutTimeZone < SimpleDecoder
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_LOCAL | PG::Coder::TIMESTAMP_APP_LOCAL
+      end
+
       def decode(string, _tuple = nil, _field = nil)
         CoderHelpers.parse_timestamp(string, :local)
       end
@@ -817,12 +862,22 @@ module PG
     TimestampLocal = TimestampWithoutTimeZone
 
     class TimestampUtc < SimpleDecoder
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_UTC | PG::Coder::TIMESTAMP_APP_UTC
+      end
+
       def decode(string, _tuple = nil, _field = nil)
         CoderHelpers.parse_timestamp(string, :utc)
       end
     end
 
     class TimestampUtcToLocal < SimpleDecoder
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_UTC | PG::Coder::TIMESTAMP_APP_LOCAL
+      end
+
       def decode(string, _tuple = nil, _field = nil)
         CoderHelpers.parse_timestamp(string, :utc_to_local)
       end
@@ -862,22 +917,37 @@ module PG
     end
 
     class Array < CompositeDecoder
+      VALID_DIM_PREFIX = /\A(?:\[[+-]?\d*:[+-]?\d*\]|\[\])+=/
+      private_constant :VALID_DIM_PREFIX
+
       def decode(string, tuple = nil, field = nil)
         return nil if string.nil?
         raise TypeError, "wrong argument type #{string.class} (expected String)" unless string.is_a?(::String)
         err_mode = @flags & PG::Coder::FORMAT_ERROR_MASK
         s = string.strip
-        # Skip optional dimension prefix like [1:2][-1:+2]= {...}
+        # Check optional dimension prefix like [1:2][-1:+2]= {...} or []={...}
         if s.start_with?("[")
-          eq = s.index("=")
-          if eq
-            s = s[(eq + 1)..-1].lstrip
+          if (m = VALID_DIM_PREFIX.match(s))
+            s = s[m[0].length..-1].lstrip
           else
-            return format_error(string, [], err_mode, "missing '=' after array dimensions")
+            if err_mode == PG::Coder::FORMAT_ERROR_TO_RAISE
+              raise TypeError, "malformed array dimensions"
+            elsif err_mode == PG::Coder::FORMAT_ERROR_TO_STRING
+              return string
+            else
+              # Legacy partial mode: parse skipping leading junk before first '{' or ','
+              return parse_legacy_malformed(s, tuple, field)
+            end
           end
         end
         unless s.start_with?("{")
-          return format_error(string, [], err_mode, "malformed array literal: missing '{'")
+          if err_mode == PG::Coder::FORMAT_ERROR_TO_RAISE
+            raise TypeError, "malformed array literal: missing '{'"
+          elsif err_mode == PG::Coder::FORMAT_ERROR_TO_STRING
+            return string
+          else
+            return parse_legacy_malformed(s, tuple, field)
+          end
         end
         arr, pos, err = parse_array(s, 0, tuple, field)
         if err
@@ -890,6 +960,26 @@ module PG
       end
 
       private
+
+      def parse_legacy_malformed(s, tuple, field)
+        # Mimic ruby-pg's legacy parser when leading '{' is missing:
+        # Advance past first character (as if skipping '{') and parse until end
+        arr, _, _ = parse_array("{" + s[1..-1].to_s, 0, tuple, field)
+        # If there's a '{' inside s, legacy parser saw sub-array(s) and skipped unquoted prefix
+        if (bidx = s.index("{"))
+          sub, _, _ = parse_array(s, bidx, tuple, field)
+          return [sub]
+        end
+        # Otherwise (e.g. "1,2,3"): skip leading token before first delimiter, drop unterminated tail
+        parts = s.split(@delimiter, -1)
+        return [] if parts.length <= 1
+        out = [""]
+        parts[1...-1].each do |tok|
+          t = tok.strip
+          out << (t.casecmp("NULL") == 0 ? nil : (@elements_type ? @elements_type.decode(t, tuple, field) : t))
+        end
+        out
+      end
 
       def format_error(orig, partial, err_mode, msg)
         case err_mode
@@ -996,15 +1086,42 @@ module PG
           raise TypeError, "fit_to_copy_get must return kind of Integer" unless n.is_a?(::Integer)
           expected_cols = n if n > 0
         end
-        line = string.sub(/\r?\n\z/, "")
-        return [] if line.empty? && @delimiter != ""
-        fields = line.split(@delimiter, -1)
-        if expected_cols && fields.length != expected_cols
-          raise ArgumentError, "number of copy fields (#{fields.length}) does not match number of mapped columns (#{expected_cols})"
-        end
         enc = string.encoding
-        fields.each_with_index.map do |raw, idx|
-          if raw == @null_string
+        b = string.b
+        if b.end_with?("\r\n".b)
+          b = b.byteslice(0, b.bytesize - 2)
+        elsif b.end_with?("\n".b)
+          b = b.byteslice(0, b.bytesize - 1)
+        end
+        return [] if b.empty? && @delimiter != ""
+        # Scan byte-by-byte respecting backslash escapes before splitting on delimiter
+        delim_b = @delimiter.getbyte(0)
+        bs_b = 92 # '\\'
+        raw_fields = []
+        cur = "".b
+        i = 0
+        n = b.bytesize
+        while i < n
+          ch = b.getbyte(i)
+          if ch == bs_b && i + 1 < n
+            cur << b.byteslice(i, 2)
+            i += 2
+          elsif ch == delim_b
+            raw_fields << cur.force_encoding(enc)
+            cur = "".b
+            i += 1
+          else
+            cur << b.byteslice(i, 1)
+            i += 1
+          end
+        end
+        raw_fields << cur.force_encoding(enc)
+        if expected_cols && raw_fields.length != expected_cols
+          raise ArgumentError, "number of copy fields (#{raw_fields.length}) does not match number of mapped columns (#{expected_cols})"
+        end
+        null_s = @null_string.encode(enc)
+        raw_fields.each_with_index.map do |raw, idx|
+          if raw == null_s
             nil
           else
             val = unescape_copy_text(raw)
@@ -1016,12 +1133,14 @@ module PG
       private
 
       def unescape_copy_text(s)
-        return s unless s.include?("\\")
-        out = +""
+        enc = s.encoding
+        bs = "\\".encode(enc)
+        return s unless s.include?(bs)
+        out = "".dup.force_encoding(enc)
         i = 0
         n = s.length
         while i < n
-          if s[i] == "\\" && i + 1 < n
+          if s[i] == bs && i + 1 < n
             nxt = s[i + 1]
             case nxt
             when "b" then out << "\b"; i += 2
@@ -1030,7 +1149,6 @@ module PG
             when "r" then out << "\r"; i += 2
             when "t" then out << "\t"; i += 2
             when "v" then out << "\v"; i += 2
-            when "\\" then out << "\\"; i += 2
             else out << nxt; i += 2
             end
           else
@@ -1044,48 +1162,104 @@ module PG
 
     class Record < RecordDecoder
       def decode(string, _tuple = nil, _field = nil)
-        return string unless string.start_with?("(") && string.end_with?(")")
-        s = string[1...-1]
+        raise TypeError, "wrong argument type #{string.class} (expected String)" unless string.is_a?(::String)
+        enc = string.encoding
+        b = string.b
+        n = b.bytesize
+        if n == 0 || b.getbyte(0) != 40 # '('
+          raise ArgumentError, "\"#{string}\" - Missing left parenthesis"
+        end
+        i = 1
         fields = []
-        i = 0
-        n = s.length
-        while i <= n
-          if i == n
-            fields << nil if !fields.empty? && string[-2] == ","
-            break
-          end
-          if s[i] == '"'
+        if i < n && b.getbyte(i) == 41 # ')'
+          i += 1
+          raise ArgumentError, "\"#{string}\" - Junk after right parenthesis" if i < n
+          return fields
+        end
+        while i < n
+          if b.getbyte(i) == 34 # '"'
             i += 1
-            buf = +""
+            buf = "".b
+            closed = false
             while i < n
-              if s[i] == '"'
-                if s[i + 1] == '"'
+              ch = b.getbyte(i)
+              if ch == 34 # '"'
+                if i + 1 < n && b.getbyte(i + 1) == 34
                   buf << '"'
                   i += 2
                 else
                   i += 1
+                  closed = true
                   break
                 end
-              elsif s[i] == "\\" && i + 1 < n
-                buf << s[i + 1]
+              elsif ch == 92 # '\\'
+                raise ArgumentError, "\"#{string}\" - Unexpected end of input" if i + 1 >= n
+                buf << b.byteslice(i + 1, 1)
                 i += 2
               else
-                buf << s[i]
+                buf << b.byteslice(i, 1)
                 i += 1
               end
             end
-            fields << buf
-            i += 1 if i < n && s[i] == ","
+            raise ArgumentError, "\"#{string}\" - Unexpected end of input" unless closed
+            fields << buf.force_encoding(enc)
+            raise ArgumentError, "\"#{string}\" - Unexpected end of input" if i >= n
+            if b.getbyte(i) == 44 # ','
+              i += 1
+              if i < n && b.getbyte(i) == 41 # ')'
+                fields << nil
+                i += 1
+                raise ArgumentError, "\"#{string}\" - Junk after right parenthesis" if i < n
+                break
+              end
+            elsif b.getbyte(i) == 41 # ')'
+              i += 1
+              raise ArgumentError, "\"#{string}\" - Junk after right parenthesis" if i < n
+              break
+            else
+              raise ArgumentError, "\"#{string}\" - Unexpected character after quoted field"
+            end
           else
-            j = s.index(",", i) || n
-            tok = s[i...j]
-            fields << (tok.empty? ? nil : tok)
-            i = j + 1
+            buf = "".b
+            had_char = false
+            found_end = false
+            while i < n
+              ch = b.getbyte(i)
+              if ch == 92 # '\\'
+                raise ArgumentError, "\"#{string}\" - Unexpected end of input" if i + 1 >= n
+                buf << b.byteslice(i + 1, 1)
+                had_char = true
+                i += 2
+              elsif ch == 44 # ','
+                fields << (had_char ? buf.force_encoding(enc) : nil)
+                i += 1
+                if i < n && b.getbyte(i) == 41 # ')'
+                  fields << nil
+                  i += 1
+                  raise ArgumentError, "\"#{string}\" - Junk after right parenthesis" if i < n
+                  found_end = true
+                end
+                break
+              elsif ch == 41 # ')'
+                fields << (had_char ? buf.force_encoding(enc) : nil)
+                i += 1
+                raise ArgumentError, "\"#{string}\" - Junk after right parenthesis" if i < n
+                found_end = true
+                break
+              else
+                buf << b.byteslice(i, 1)
+                had_char = true
+                i += 1
+              end
+            end
+            break if found_end
+            raise ArgumentError, "\"#{string}\" - Unexpected end of input" if i >= n
           end
         end
+        raise ArgumentError, "\"#{string}\" - Unexpected end of input" if fields.empty? && n == 1
         if @type_map
           fields.each_with_index.map do |v, idx|
-            v.nil? ? nil : @type_map.__decode_copy_field(v, idx, 0)
+            v.nil? ? nil : @type_map.__decode_copy_field(v, idx, 0, enc)
           end
         else
           fields
@@ -1115,8 +1289,7 @@ module PG
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
         return nil if value.nil?
-        v = value.is_a?(::String) ? value.to_i : Kernel.Integer(value)
-        [v].pack("s>")
+        [value.to_i].pack("s>")
       end
     end
 
@@ -1124,8 +1297,7 @@ module PG
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
         return nil if value.nil?
-        v = value.is_a?(::String) ? value.to_i : Kernel.Integer(value)
-        [v].pack("l>")
+        [value.to_i].pack("l>")
       end
     end
 
@@ -1133,8 +1305,7 @@ module PG
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
         return nil if value.nil?
-        v = value.is_a?(::String) ? value.to_i : Kernel.Integer(value)
-        [v].pack("q>")
+        [value.to_i].pack("q>")
       end
     end
 
@@ -1183,6 +1354,11 @@ module PG
 
     class TimestampUtc < SimpleEncoder
       include Coder::BinaryFormatting
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_UTC
+      end
+
       def encode(value, _encoding = nil)
         if value.is_a?(::String)
           s = value.strip.downcase
@@ -1198,6 +1374,11 @@ module PG
 
     class TimestampLocal < SimpleEncoder
       include Coder::BinaryFormatting
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_LOCAL
+      end
+
       def encode(value, _encoding = nil)
         if value.is_a?(::String)
           s = value.strip.downcase
@@ -1244,7 +1425,7 @@ module PG
         elem_oid = @elements_type ? @elements_type.oid : 0
         if value.empty?
           if @dimensions && @dimensions > 1
-            raise ArgumentError, "less array dimensions (1) than expected (#{@dimensions})"
+            raise ArgumentError, "less array dimensions (0) than expected (#{@dimensions})"
           end
           return [0, 1, elem_oid].pack("l>l>L>")
         end
@@ -1255,25 +1436,27 @@ module PG
           cur = cur.first
         end
         if dims.length > 6
-          raise ArgumentError, "too many array dimensions (max 6)"
+          raise ArgumentError, "number of array dimensions (#{dims.length}) exceeds limit (6)"
         end
         if @dimensions && dims.length < @dimensions
           raise ArgumentError, "less array dimensions (#{dims.length}) than expected (#{@dimensions})"
         end
         flat = []
         collect = lambda do |arr, depth|
-          raise ArgumentError, "inconsistent array dimensions" unless arr.length == dims[depth]
+          unless arr.length == dims[depth]
+            raise ArgumentError, "varying number of elements in sub-arrays"
+          end
           arr.each do |el|
             if depth + 1 < dims.length
               unless el.is_a?(::Array)
-                raise ArgumentError, "inconsistent array dimensions"
+                raise ArgumentError, "expected Array instead of #{el.inspect} "
               end
               collect.call(el, depth + 1)
             else
               if el.nil?
                 flat << nil
               elsif el.is_a?(::Array) && @dimensions.nil?
-                raise ArgumentError, "inconsistent array dimensions"
+                raise ArgumentError, "unexpected Array at leaf dimension"
               else
                 s = @elements_type ? CoderHelpers.call_encode(@elements_type, el, enc) : el.to_s
                 flat << (s.nil? ? nil : s.b)
@@ -1301,6 +1484,7 @@ module PG
       def encode(value, encoding = nil)
         return nil if value.nil?
         raise TypeError, "wrong argument type #{value.class} (expected Array)" unless value.is_a?(::Array)
+        raise ArgumentError, "too many columns (#{value.length}, max 32767)" if value.length > 32767
         enc = encoding ? Encoding.find(encoding) : nil
         tm = @type_map
         tm = tm.fit_to_query(value) if tm && tm.respond_to?(:fit_to_query)
@@ -1372,7 +1556,8 @@ module PG
       include Coder::BinaryFormatting
       def decode(string, _tuple = nil, _field = nil)
         return nil if string.nil?
-        string.dup.force_encoding(Encoding::UTF_8)
+        s = string.dup.force_encoding(Encoding::UTF_8)
+        s.valid_encoding? ? s : string.dup
       end
     end
 
@@ -1396,6 +1581,11 @@ module PG
 
     class TimestampUtc < SimpleDecoder
       include Coder::BinaryFormatting
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_UTC | PG::Coder::TIMESTAMP_APP_UTC
+      end
+
       def decode(string, _tuple = nil, _field = nil)
         usec = string.unpack1("q>")
         return "infinity" if usec == CoderHelpers::INT64_MAX
@@ -1407,6 +1597,11 @@ module PG
 
     class TimestampUtcToLocal < SimpleDecoder
       include Coder::BinaryFormatting
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_UTC | PG::Coder::TIMESTAMP_APP_LOCAL
+      end
+
       def decode(string, _tuple = nil, _field = nil)
         usec = string.unpack1("q>")
         return "infinity" if usec == CoderHelpers::INT64_MAX
@@ -1418,6 +1613,11 @@ module PG
 
     class TimestampLocal < SimpleDecoder
       include Coder::BinaryFormatting
+      def initialize(hash = nil, **kwargs)
+        super
+        @flags = PG::Coder::TIMESTAMP_DB_LOCAL | PG::Coder::TIMESTAMP_APP_LOCAL
+      end
+
       def decode(string, _tuple = nil, _field = nil)
         usec = string.unpack1("q>")
         return "infinity" if usec == CoderHelpers::INT64_MAX
@@ -1444,13 +1644,29 @@ module PG
 
       def decode(string, tuple = nil, field = nil)
         b = string.b
-        ndim, _has_null, _elem_oid = b.unpack("l>l>L>")
-        return [] if ndim == 0
+        sz = b.bytesize
+        raise ArgumentError, "premature end of binary array" if sz < 12
+        ndim, flags, _elem_oid = b.unpack("l>l>L>")
+        if ndim < 0 || ndim > 6
+          raise ArgumentError, "invalid number of dimensions: #{ndim}"
+        end
+        if flags != 0 && flags != 1
+          raise ArgumentError, "invalid flags: #{flags}"
+        end
+        if ndim == 0
+          raise ArgumentError, "trailing bytes in binary array" if sz > 12
+          return []
+        end
         pos = 12
+        raise ArgumentError, "premature end of binary array" if pos + ndim * 8 > sz
         dims = []
+        total_elems = 1
         ndim.times do
           dim_len, _lbound = b.byteslice(pos, 8).unpack("l>l>")
+          raise ArgumentError, "invalid dimensions: #{dim_len}" if dim_len < 0
           dims << dim_len
+          total_elems *= dim_len
+          raise ArgumentError, "array size exceeds limit" if total_elems > (1 << 28)
           pos += 8
         end
         read_dim = lambda do |depth|
@@ -1460,11 +1676,13 @@ module PG
             if depth + 1 < dims.length
               arr[i] = read_dim.call(depth + 1)
             else
+              raise ArgumentError, "premature end of binary array" if pos + 4 > sz
               elen = b.byteslice(pos, 4).unpack1("l>")
               pos += 4
               if elen < 0
                 arr[i] = nil
               else
+                raise ArgumentError, "premature end of binary array" if pos + elen > sz
                 raw = b.byteslice(pos, elen)
                 pos += elen
                 arr[i] = @elements_type ? @elements_type.decode(raw, tuple, field) : raw
@@ -1473,7 +1691,9 @@ module PG
           end
           arr
         end
-        read_dim.call(0)
+        res = read_dim.call(0)
+        raise ArgumentError, "trailing bytes in binary array" if pos < sz
+        res
       end
     end
 
@@ -1484,28 +1704,36 @@ module PG
 
       def decode(string, _tuple = nil, _field = nil)
         b = string.b
+        sz = b.bytesize
         pos = 0
-        if b.bytesize >= 19 && b.byteslice(0, 11) == BINARY_SIG
+        if sz >= 19 && b.byteslice(0, 11) == BINARY_SIG
           ext_len = b.byteslice(15, 4).unpack1("l>")
           pos = 19 + ext_len
+          raise ArgumentError, "premature end of COPY data at position: #{pos + 1}" if pos > sz
         end
-        return nil if pos + 2 > b.bytesize
+        raise ArgumentError, "premature end of COPY data at position: #{pos + 1}" if pos + 2 > sz
         ncols = b.byteslice(pos, 2).unpack1("s>")
         pos += 2
-        return nil if ncols < 0 # trailer 0xFFFF == -1
+        if ncols < 0 # trailer 0xFFFF == -1
+          raise ArgumentError, "trailing data after COPY trailer at position: #{pos + 1}" if pos < sz
+          return nil
+        end
         tm = @type_map
         out = ::Array.new(ncols)
         ncols.times do |i|
+          raise ArgumentError, "premature end of COPY data at position: #{pos + 1}" if pos + 4 > sz
           flen = b.byteslice(pos, 4).unpack1("l>")
           pos += 4
           if flen < 0
             out[i] = nil
           else
+            raise ArgumentError, "premature end of COPY data at position: #{pos + 1}" if pos + flen > sz
             raw = b.byteslice(pos, flen)
             pos += flen
             out[i] = tm ? tm.__decode_copy_field(raw, i, 1) : raw
           end
         end
+        raise ArgumentError, "trailing data after COPY row at position: #{pos + 1}" if pos < sz
         out
       end
     end
@@ -1610,6 +1838,8 @@ module PG
           raise TypeError, "wrong argument type #{c.class} (expected PG::Coder or nil)"
         end
       end
+      @nfields = @coders.length
+      @__col_nonempty = true if @nfields > 0
     end
 
     def coders
