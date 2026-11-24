@@ -317,7 +317,7 @@ func TestRelaxNGAndDTDValidation(t *testing.T) {
 			rng.valid?(bad_attr),
 			rng.valid?(bad_empty),
 			dtd.elements.keys.sort,
-			dtd.entities["sig"],
+			dtd.entities["sig"].content,
 			dtd_good.validate.empty?,
 			dtd_bad.validate.length >= 2,
 		]
