@@ -54,6 +54,43 @@ func (sc *scanner) encName(mrb *oruby.MrbState, self oruby.Value) string {
 	return "UTF-8"
 }
 
+func (sc *scanner) sliceRubyChecked(mrb *oruby.MrbState, self oruby.Value, start, length int) oruby.Value {
+	sv := mrb.GetIV(self, "@string")
+	s := sv.String()
+	if start < 0 || start > len(s) {
+		return mrb.NilValue()
+	}
+	if length < 0 {
+		length = 0
+	}
+	if length > len(s)-start {
+		length = len(s) - start
+	}
+	res := mrb.BytesValue([]byte(s[start : start+length]))
+	// Preserve encoding of @string
+	if mrb.RespondTo(sv, mrb.Intern("encoding")) {
+		if enc, err := mrb.Funcall(sv, mrb.Intern("encoding")); err == nil && !enc.IsNil() {
+			_, _ = mrb.Funcall(res, mrb.Intern("force_encoding"), enc)
+		}
+	}
+	return res
+}
+
+func isAtCharBoundary(s string, pos int, enc string) bool {
+	if pos <= 0 || pos >= len(s) {
+		return true
+	}
+	switch enc {
+	case "UTF-16BE", "UTF-16LE", "UTF-16":
+		return pos%2 == 0
+	case "UTF-32BE", "UTF-32LE", "UCS-4BE", "UCS-4LE", "UTF-32":
+		return pos%4 == 0
+	case "UTF-8":
+		return (s[pos] & 0xC0) != 0x80
+	}
+	return true
+}
+
 func (sc *scanner) sliceRuby(mrb *oruby.MrbState, self oruby.Value, start, length int) oruby.Value {
 	sv := mrb.GetIV(self, "@string")
 	s := sv.String()
@@ -131,8 +168,12 @@ func toIntArg(mrb *oruby.MrbState, v oruby.Value) (int, error) {
 
 func initStrscan(mrb *oruby.MrbState) any {
 	cls := rb.DataClass(mrb.DefineClass("StringScanner", mrb.ObjectClass()))
-	mrb.ConstSet(cls, mrb.Intern("Version"), mrb.StrNew("3.1.8"))
-	mrb.ConstSet(cls, mrb.Intern("Id"), mrb.StrNew("$Id$"))
+	ver := mrb.StrNew("3.1.8")
+	mrb.ObjFreeze(ver)
+	mrb.ConstSet(cls, mrb.Intern("Version"), ver)
+	id := mrb.StrNew("$Id$")
+	mrb.ObjFreeze(id)
+	mrb.ConstSet(cls, mrb.Intern("Id"), id)
 	errCls := mrb.DefineClassUnder(cls, "Error", mrb.ExcGet("StandardError"))
 
 	cls.DefineClassMethod("must_C_version", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -348,7 +389,18 @@ func initStrscan(mrb *oruby.MrbState) any {
 		var names []string
 		var base int
 
+		enc := sc.encName(mrb, self)
+		if !isAtCharBoundary(s, sc.pos, enc) {
+			return mrb.NilValue()
+		}
+
 		if pattern.IsString() {
+			sv := mrb.GetIV(self, "@string")
+			if encCls := mrb.ClassGet("Encoding"); !encCls.IsNil() && mrb.RespondTo(encCls.Value(), mrb.Intern("compatible?")) {
+				if compat, err := mrb.Funcall(encCls, mrb.Intern("compatible?"), sv, pattern); err == nil && compat.IsNil() {
+					return rb.Raise(mrb, "Encoding::CompatibilityError", "incompatible encoding regexp match (%s regexp with %s string)", enc, enc)
+				}
+			}
 			pat := pattern.String()
 			if anchored {
 				if !strings.HasPrefix(rest, pat) {
@@ -366,7 +418,6 @@ func initStrscan(mrb *oruby.MrbState) any {
 			base = sc.pos
 			loc = []int{offset, offset + matchLen}
 		} else if re, ok := mrb.Data(pattern).(*rbregexp.Regexp); ok && re != nil {
-			enc := sc.encName(mrb, self)
 			if sc.fixedAnchor {
 				found, err := re.FindAtBytes(s, sc.pos, enc)
 				if err != nil {
@@ -625,7 +676,7 @@ func initStrscan(mrb *oruby.MrbState) any {
 		if !sc.matched || len(sc.loc) < 2 {
 			return mrb.NilValue()
 		}
-		return sc.sliceRuby(mrb, self, sc.matchBase+sc.loc[0], sc.loc[1]-sc.loc[0])
+		return sc.sliceRubyChecked(mrb, self, sc.matchBase+sc.loc[0], sc.loc[1]-sc.loc[0])
 	}, mrb.ArgsNone())
 
 	cls.DefineMethod("matched_size", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -633,7 +684,19 @@ func initStrscan(mrb *oruby.MrbState) any {
 		if !sc.matched || len(sc.loc) < 2 {
 			return mrb.NilValue()
 		}
-		return mrb.FixnumValue(sc.loc[1] - sc.loc[0])
+		s := sc.rawString(mrb, self)
+		start := sc.matchBase + sc.loc[0]
+		end := sc.matchBase + sc.loc[1]
+		if start < 0 || start > len(s) {
+			return mrb.NilValue()
+		}
+		if end > len(s) {
+			end = len(s)
+		}
+		if end < start {
+			return mrb.FixnumValue(0)
+		}
+		return mrb.FixnumValue(end - start)
 	}, mrb.ArgsNone())
 
 	cls.DefineMethod("pre_match", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -682,7 +745,7 @@ func initStrscan(mrb *oruby.MrbState) any {
 			// Pick last participating match with this name, or nil
 			for i := len(sc.names) - 1; i >= 1; i-- {
 				if i < ng && sc.names[i] == want && sc.loc[2*i] >= 0 {
-					return sc.sliceRuby(mrb, self, sc.matchBase+sc.loc[2*i], sc.loc[2*i+1]-sc.loc[2*i]), nil
+					return sc.sliceRubyChecked(mrb, self, sc.matchBase+sc.loc[2*i], sc.loc[2*i+1]-sc.loc[2*i]), nil
 				}
 			}
 			return mrb.NilValue(), nil
@@ -701,7 +764,7 @@ func initStrscan(mrb *oruby.MrbState) any {
 		if s < 0 || e < 0 {
 			return mrb.NilValue(), nil
 		}
-		return sc.sliceRuby(mrb, self, sc.matchBase+s, e-s), nil
+		return sc.sliceRubyChecked(mrb, self, sc.matchBase+s, e-s), nil
 	}
 
 	cls.DefineMethod("[]", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -712,6 +775,31 @@ func initStrscan(mrb *oruby.MrbState) any {
 		}
 		return v
 	}, mrb.ArgsReq(1))
+
+	cls.DefineMethod("integer_at", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs()
+		sc := getSC(mrb, self)
+		v, err := groupAt(mrb, self, sc, args.Item(0))
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		if v.IsNil() || !v.IsString() || len(v.String()) == 0 {
+			return mrb.NilValue()
+		}
+		base := 10
+		if args.Len() > 1 {
+			b, bErr := toIntArg(mrb, args.Item(1))
+			if bErr != nil {
+				return mrb.RaiseError(bErr)
+			}
+			base = b
+		}
+		res, rErr := mrb.Funcall(v, oruby.Sym_to_i, mrb.FixnumValue(base))
+		if rErr != nil {
+			return mrb.RaiseError(rErr)
+		}
+		return res
+	}, mrb.ArgsArg(1, 1))
 
 	cls.DefineMethod("size", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		sc := getSC(mrb, self)
@@ -767,14 +855,13 @@ func initStrscan(mrb *oruby.MrbState) any {
 			if sc.names[i] == "" {
 				continue
 			}
+			key := mrb.StrNew(sc.names[i])
 			s, e := sc.loc[2*i], sc.loc[2*i+1]
-			var v oruby.Value
-			if s < 0 || e < 0 {
-				v = mrb.NilValue()
-			} else {
-				v = sc.sliceRuby(mrb, self, sc.matchBase+s, e-s)
+			if s >= 0 && e >= 0 {
+				mrb.HashSet(h, key, sc.sliceRubyChecked(mrb, self, sc.matchBase+s, e-s))
+			} else if !mrb.HashKeyP(h, key) {
+				mrb.HashSet(h, key, mrb.NilValue())
 			}
-			mrb.HashSet(h, mrb.StrNew(sc.names[i]), v)
 		}
 		return h
 	}, mrb.ArgsNone())

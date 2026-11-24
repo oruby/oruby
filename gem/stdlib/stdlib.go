@@ -138,7 +138,11 @@ func init() {
 		rb.LoadRuby(mrb, "<internal:stringio>", src)
 		return nil
 	})
-	oruby.GemAlias("tempfile", "io/file")
+	oruby.LazyGem("tempfile", func(mrb *oruby.MrbState) interface{} {
+		mrb.Resolve("io/file")
+		mrb.Resolve("tmpdir")
+		return nil
+	})
 	for _, name := range []string{"set", "fiber", "enumerator", "rational", "continuation", "thread.rb", "io/nonblock", "io/wait", "English"} {
 		oruby.LazyGem(name, func(*oruby.MrbState) interface{} { return nil })
 	}

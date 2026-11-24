@@ -139,6 +139,108 @@ func isValidProtocol(b []byte) bool {
 		b[6] == '.' && b[7] >= '0' && b[7] <= '9'
 }
 
+func isValidProtocolPrefix(b []byte) bool {
+	// Allow optional trailing '\r' when the line has not received '\n' yet
+	if len(b) > 0 && b[len(b)-1] == '\r' {
+		return isValidProtocol(b[:len(b)-1])
+	}
+	if len(b) > 8 {
+		return false
+	}
+	const prefix = "HTTP/"
+	for i, c := range b {
+		switch i {
+		case 0, 1, 2, 3, 4:
+			if c != prefix[i] {
+				return false
+			}
+		case 5, 7:
+			if c < '0' || c > '9' {
+				return false
+			}
+		case 6:
+			if c != '.' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isInvalidPathChar(c byte) bool {
+	if c <= 0x20 || c >= 0x7f {
+		return true
+	}
+	switch c {
+	case '{', '}', '`', '\\':
+		return true
+	}
+	return false
+}
+
+func isAbsoluteURI(b []byte) bool {
+	idx := bytes.Index(b, []byte("://"))
+	if idx <= 0 {
+		return false
+	}
+	for i := 0; i < idx; i++ {
+		c := b[i]
+		isAlpha := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+		isDigit := c >= '0' && c <= '9'
+		if i == 0 && !isAlpha {
+			return false
+		}
+		if !isAlpha && !isDigit && c != '+' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePartialRequestLine(rem []byte) error {
+	sp1 := bytes.IndexByte(rem, ' ')
+	if sp1 < 0 {
+		if len(rem) > 20 {
+			return fmt.Errorf("Invalid HTTP format, parsing fails.")
+		}
+		for _, c := range rem {
+			if !isMethodChar(c) {
+				return fmt.Errorf("Invalid HTTP format, parsing fails.")
+			}
+		}
+		return nil
+	}
+	if sp1 == 0 || sp1 > 20 {
+		return fmt.Errorf("Invalid HTTP format, parsing fails.")
+	}
+	for _, c := range rem[:sp1] {
+		if !isMethodChar(c) {
+			return fmt.Errorf("Invalid HTTP format, parsing fails.")
+		}
+	}
+	rest := rem[sp1+1:]
+	sp2 := bytes.IndexByte(rest, ' ')
+	if sp2 < 0 {
+		if len(rest) > maxRequestURILen+maxFragmentLen+1 {
+			return fmt.Errorf("HTTP element REQUEST_URI is longer than the %d allowed length", maxRequestURILen)
+		}
+		for _, c := range rest {
+			if c <= 0x20 || c >= 0x7f {
+				return fmt.Errorf("Invalid HTTP format, parsing fails.")
+			}
+		}
+		return nil
+	}
+	if sp2 == 0 {
+		return fmt.Errorf("Invalid HTTP format, parsing fails.")
+	}
+	proto := rest[sp2+1:]
+	if !isValidProtocolPrefix(proto) {
+		return fmt.Errorf("Invalid HTTP format, parsing fails.")
+	}
+	return nil
+}
+
 func isOWS(c byte) bool {
 	return c == ' ' || c == '\t'
 }
@@ -163,9 +265,9 @@ func setEnvHeader(mrb *oruby.MrbState, env oruby.Value, nameBytes, valBytes []by
 		valBytes = valBytes[:len(valBytes)-1]
 	}
 
-	// Reject NUL/CR/LF inside header value
+	// Reject CTL characters inside header value (allow HTAB 0x09 and printable / obs-text)
 	for _, c := range valBytes {
-		if c == 0 || c == '\r' || c == '\n' {
+		if (c < 0x20 && c != '\t') || c == 0x7f {
 			return fmt.Errorf("Invalid HTTP format, parsing fails.")
 		}
 	}
@@ -233,9 +335,21 @@ func parseRequestLine(mrb *oruby.MrbState, env oruby.Value, line []byte) error {
 
 	// Validate target has no control chars or spaces
 	for _, c := range target {
-		if c <= 0x20 || c == 0x7f {
+		if c <= 0x20 || c >= 0x7f {
 			return fmt.Errorf("Invalid HTTP format, parsing fails.")
 		}
+	}
+
+	// Absolute-form URI (e.g. http://host:port/path?query): Puma's C parser
+	// populates REQUEST_URI only and leaves REQUEST_PATH/QUERY_STRING/FRAGMENT nil.
+	if isAbsoluteURI(target) {
+		if len(target) > maxRequestURILen {
+			return fmt.Errorf("HTTP element REQUEST_URI is longer than the %d allowed length (was %d)", maxRequestURILen, len(target))
+		}
+		setEnvStr(mrb, env, "REQUEST_METHOD", string(method))
+		setEnvStr(mrb, env, "REQUEST_URI", string(target))
+		setEnvStr(mrb, env, "SERVER_PROTOCOL", string(proto))
+		return nil
 	}
 
 	// Split fragment (#...)
@@ -265,17 +379,13 @@ func parseRequestLine(mrb *oruby.MrbState, env oruby.Value, line []byte) error {
 		hasQuery = true
 	}
 
-	// Extract REQUEST_PATH for absolute-form URI (http://host/path)
-	reqPath := pathPart
-	if bytes.HasPrefix(pathPart, []byte("http://")) || bytes.HasPrefix(pathPart, []byte("https://")) {
-		schemeEnd := bytes.Index(pathPart, []byte("://"))
-		afterScheme := pathPart[schemeEnd+3:]
-		if slash := bytes.IndexByte(afterScheme, '/'); slash >= 0 {
-			reqPath = afterScheme[slash:]
-		} else {
-			reqPath = []byte("")
+	for _, c := range pathPart {
+		if isInvalidPathChar(c) {
+			return fmt.Errorf("Invalid HTTP format, parsing fails.")
 		}
 	}
+
+	reqPath := pathPart
 
 	if len(reqPath) > maxRequestPathLen {
 		return fmt.Errorf("HTTP element REQUEST_PATH is longer than the %d allowed length (was %d)", maxRequestPathLen, len(reqPath))
@@ -329,12 +439,17 @@ func hpExecute(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		rem := data[hp.lineStart:]
 		lfIdx := bytes.IndexByte(rem, '\n')
 		if lfIdx < 0 {
-			// Incomplete line; validate partial length and check for stray NUL/CR
+			// Incomplete line; validate partial length and incremental syntax
 			if len(data) > maxHeaderLen {
 				return raiseParseErr(mrb, hp, "HTTP element HEADER is longer than the %d allowed length (was %d)", maxHeaderLen, len(data))
 			}
 			if bytes.IndexByte(rem, 0) >= 0 {
 				return raiseParseErr(mrb, hp, "Invalid HTTP format, parsing fails. Are you trying to open an SSL connection to a non-SSL Puma?")
+			}
+			if hp.phase == phaseReqLine {
+				if err := validatePartialRequestLine(rem); err != nil {
+					return raiseParseErr(mrb, hp, "%s", err.Error())
+				}
 			}
 			hp.nread = len(data)
 			return mrb.FixnumValue(hp.nread)

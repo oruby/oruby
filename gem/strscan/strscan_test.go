@@ -71,6 +71,43 @@ rescue StringScanner::Error
   raised = true
 end
 raise "expected StringScanner::Error" unless raised
+
+# Version frozen
+raise "Version frozen" unless StringScanner::Version.is_a?(String) && StringScanner::Version.frozen?
+
+# integer_at
+si = StringScanner.new("before 20260514 0xa_f 111")
+si.skip_until(" ")
+raise "integer_at scan" unless si.scan(/(?<y>\d{4})(?<m>\d{2})(?<d>\d{2})/) == "20260514"
+raise "integer_at 0" unless si.integer_at(0) == 20260514
+raise "integer_at 1" unless si.integer_at(1) == 2026
+raise "integer_at :m" unless si.integer_at(:m) == 5
+raise "integer_at 'd'" unless si.integer_at("d") == 14
+raise "integer_at -1" unless si.integer_at(-1) == 14
+raise "integer_at oob" unless si.integer_at(4).nil?
+si.skip(" ")
+si.scan(/0x[\h_]+/)
+raise "integer_at base 0" unless si.integer_at(0, 0) == 0xaf
+si.skip(" ")
+si.scan(/\d+/)
+raise "integer_at base 2" unless si.integer_at(0, 2) == 7
+
+# matched / matched_size when underlying string shrinks
+sh = StringScanner.new(+"before 29 after")
+sh.skip_until(" ")
+sh.scan(/\d+/)
+raise "shrunk 0" unless sh.matched == "29" && sh.matched_size == 2
+sh.string.replace("before 2")
+raise "shrunk 1" unless sh.matched == "2" && sh.matched_size == 1 && sh.integer_at(0) == 2
+sh.string.replace("before ")
+raise "shrunk 2" unless sh.matched == "" && sh.matched_size == 0 && sh.integer_at(0).nil?
+sh.string.replace("before")
+raise "shrunk 3" unless sh.matched.nil? && sh.matched_size.nil? && sh.integer_at(0).nil?
+
+# named_captures same-name union preserves matching branch
+su = StringScanner.new("123")
+raise "union match" unless su.match?(/(?<number>0)|(?<number>1)|(?<number>2)/) == 1
+raise "union named_captures: #{su.named_captures.inspect}" unless su.named_captures == {"number" => "1"}
 `)
 	if err != nil {
 		t.Fatalf("strscan test failed: %v", err)

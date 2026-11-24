@@ -72,6 +72,12 @@ func TestPumaHttpParserExactParity(t *testing.T) {
 			"GET / HTTP/1.1\nHost: x\n\n",                       # bare LF
 			"GET / HTTP/1.1\r\nBad Header : val\r\n\r\n",        # space before colon
 			"GET / BADPROTO\r\nHost: x\r\n\r\n",                 # invalid protocol
+			"GET / SsUTF/1.1",                                   # partial invalid protocol
+			"GET /path{here HTTP/1.1\r\n\r\n",                   # unescaped '{'
+			"GET /path}here HTTP/1.1\r\n\r\n",                   # unescaped '}'
+			"GET /path` + "`" + `here HTTP/1.1\r\n\r\n",                   # unescaped backtick
+			"GET /path\\here HTTP/1.1\r\n\r\n",                  # unescaped backslash
+			"GET / HTTP/1.1\r\nX-Test: bad\x01val\r\n\r\n",      # control char in header value
 			"\x16\x03\x01\x00\x05hello".b,                       # TLS ClientHello
 		]
 		bad_inputs.each do |bad|
@@ -84,6 +90,15 @@ func TestPumaHttpParserExactParity(t *testing.T) {
 			end
 			raise "expected HttpParserError for #{bad.inspect}" unless raised && p2.error?
 		end
+
+		# Absolute-form URI sets REQUEST_URI only (matching Puma's C parser)
+		p3 = Puma::HttpParser.new
+		env3 = {}
+		abs = "GET http://192.168.1.96:3000/api/v1/matches/test?1=1 HTTP/1.1\r\n\r\n"
+		p3.execute(env3, abs, 0)
+		raise "abs finished" unless p3.finished?
+		raise "abs uri" unless env3["REQUEST_URI"] == "http://192.168.1.96:3000/api/v1/matches/test?1=1"
+		raise "abs path must be nil" unless env3["REQUEST_PATH"].nil? && env3["QUERY_STRING"].nil? && env3["FRAGMENT"].nil?
 	`)
 	if err != nil {
 		t.Fatalf("Puma::HttpParser test failed: %v", err)
