@@ -14,6 +14,11 @@ module PG
     end
   end
 
+  class RollbackTransaction < StandardError
+  end
+
+  DuplicatePstatement = DuplicatePreparedStatement unless const_defined?(:DuplicatePstatement)
+
   def self.require_bigdecimal_without_warning
     require "bigdecimal"
   end
@@ -50,13 +55,59 @@ module PG
 
   class Connection
     @async_api = true
+    PROGRAM_NAME = PG.make_shareable($0.to_s.dup)
+
+    KNOWN_CONN_OPTIONS = %w[
+      host hostaddr port dbname user password passfile require_auth
+      channel_binding connect_timeout client_encoding options
+      application_name fallback_application_name keepalives keepalives_idle
+      keepalives_interval keepalives_count tcp_user_timeout
+      replication gssencmode sslmode requiressl sslnegotiation
+      sslcompression sslcert sslkey sslpassword sslcertmode sslrootcert
+      sslcrl sslcrldir sslsni requirepeer ssl_min_protocol_version
+      ssl_max_protocol_version krbsrvname gsslib gssdelegation
+      service target_session_attrs load_balance_hosts tty
+      min_protocol_version max_protocol_version
+    ].freeze
+    private_constant :KNOWN_CONN_OPTIONS
+
+    CONN_DEFAULTS_SPEC = [
+      ["user", "PGUSER", nil, "Database-user", "", 20],
+      ["password", "PGPASSWORD", nil, "Database-password", "*", 20],
+      ["dbname", "PGDATABASE", nil, "Database-name", "", 20],
+      ["host", "PGHOST", nil, "Database-host", "", 40],
+      ["hostaddr", "PGHOSTADDR", nil, "Database-host-IPv4-address", "", 45],
+      ["port", "PGPORT", "5432", "Database-port", "", 6],
+      ["options", "PGOPTIONS", nil, "Backend-Debug-Options", "", 40],
+      ["tty", "PGTTY", nil, "Backend-Debug-TTY", "", 40],
+      ["fallback_application_name", nil, nil, "Fallback-Application-Name", "", 64],
+      ["application_name", "PGAPPNAME", nil, "Application-Name", "", 64],
+      ["sslmode", "PGSSLMODE", "prefer", "SSL-Mode", "", 12],
+      ["connect_timeout", "PGCONNECT_TIMEOUT", nil, "Connect-timeout", "", 10],
+      ["service", "PGSERVICE", nil, "Database-service", "", 20],
+      ["client_encoding", "PGCLIENTENCODING", nil, "Client-Encoding", "", 20],
+      ["target_session_attrs", "PGTARGETSESSIONATTRS", nil, "Target-Session-Attrs", "", 20],
+      ["keepalives", nil, nil, "TCP-Keepalives", "", 1],
+      ["keepalives_idle", nil, nil, "TCP-Keepalives-Idle", "", 10],
+      ["keepalives_interval", nil, nil, "TCP-Keepalives-Interval", "", 10],
+      ["keepalives_count", nil, nil, "TCP-Keepalives-Count", "", 10],
+      ["sslcert", "PGSSLCERT", nil, "SSL-Client-Cert", "", 64],
+      ["sslkey", "PGSSLKEY", nil, "SSL-Client-Key", "", 64],
+      ["sslrootcert", "PGSSLROOTCERT", nil, "SSL-Root-Cert", "", 64],
+    ].freeze
+    private_constant :CONN_DEFAULTS_SPEC
 
     class << self
       attr_accessor :async_api
 
-      def open(*args, **kw)
-        conn = kw.empty? ? new(*args) : new(*args, **kw)
-        return conn unless block_given?
+      def new(*args, **kw, &block)
+        conn = allocate
+        if kw.empty?
+          conn.send(:initialize, *args)
+        else
+          conn.send(:initialize, *args, **kw)
+        end
+        return conn unless block
         begin
           yield conn
         ensure
@@ -64,25 +115,45 @@ module PG
         end
       end
 
-      alias connect open
+      alias open new
+      alias connect new
+      alias sync_connect new
+      alias async_connect new
+      alias setdb new
+      alias setdblogin new
       alias isthreadsafe threadsafe? if respond_to?(:threadsafe?)
 
       def ping(*args, **kw)
+        begin
+          parsed_str = kw.empty? ? parse_connect_args(*args) : parse_connect_args(*args, **kw)
+          parsed = conninfo_parse(parsed_str)
+          parsed.each do |entry|
+            if !entry[:val].nil? && !KNOWN_CONN_OPTIONS.include?(entry[:keyword])
+              return PQPING_NO_ATTEMPT
+            end
+          end
+        rescue ArgumentError, PG::Error
+          return PQPING_NO_ATTEMPT
+        end
         conn = kw.empty? ? new(*args) : new(*args, **kw)
         conn.close
         PQPING_OK
-      rescue PG::ConnectionBad
-        PQPING_NO_RESPONSE
+      rescue PG::ConnectionBad => e
+        msg = e.message.to_s
+        if msg.include?("cannot parse") || msg.include?("invalid port") || msg.include?("unrecognized configuration parameter")
+          PQPING_NO_ATTEMPT
+        else
+          PQPING_NO_RESPONSE
+        end
       end
 
       def conndefaults
-        [
-          { keyword: "host", envvar: "PGHOST", compiled: nil, val: ENV["PGHOST"], label: "Database-host", dispchar: "", dispsize: 40 },
-          { keyword: "port", envvar: "PGPORT", compiled: "5432", val: ENV["PGPORT"] || "5432", label: "Database-port", dispchar: "", dispsize: 6 },
-          { keyword: "dbname", envvar: "PGDATABASE", compiled: nil, val: ENV["PGDATABASE"], label: "Database-name", dispchar: "", dispsize: 20 },
-          { keyword: "user", envvar: "PGUSER", compiled: nil, val: ENV["PGUSER"] || ENV["USER"], label: "Database-user", dispchar: "", dispsize: 20 },
-          { keyword: "password", envvar: "PGPASSWORD", compiled: nil, val: ENV["PGPASSWORD"], label: "Database-password", dispchar: "*", dispsize: 20 },
-        ]
+        CONN_DEFAULTS_SPEC.map do |kw, envvar, compiled, label, dispchar, dispsize|
+          val = envvar ? ENV[envvar] : nil
+          val = compiled if val.nil?
+          val = ENV["USER"] if kw == "user" && val.nil?
+          { keyword: kw, envvar: envvar, compiled: compiled, val: val, label: label, dispchar: dispchar, dispsize: dispsize }
+        end
       end
 
       def conndefaults_hash
@@ -91,26 +162,93 @@ module PG
         h
       end
 
-      def parse_connect_args(*args)
-        return "" if args.empty?
-        if args.length == 1 && args[0].is_a?(String)
-          args[0]
-        elsif args.length == 1 && args[0].is_a?(Hash)
-          args[0].reject { |_, v| v.nil? }.map { |k, v| "#{k}='#{v.to_s.gsub("'", "\\'")}'" }.join(" ")
-        else
-          keys = [:host, :port, :options, :tty, :dbname, :user, :password]
-          pairs = []
-          args.each_with_index do |v, i|
-            next if v.nil? || keys[i].nil?
-            pairs << "#{keys[i]}='#{v.to_s.gsub("'", "\\'")}'"
-          end
-          pairs.join(" ")
-        end
+      def quote_connstr(v)
+        bs = "\\"
+        bs2 = "\\\\"
+        sq = "'"
+        sqe = "\\'"
+        "'" + v.to_s.gsub(bs) { bs2 }.gsub(sq) { sqe } + "'"
       end
+
+      def connect_hash_to_string(hash)
+        hash.reject { |_, v| v.nil? }.map { |k, v| "#{k}=#{quote_connstr(v)}" }.join(" ")
+      end
+
+      def __fallback_app_name
+        name = PROGRAM_NAME.to_s
+        return name if name.length <= 64
+        name[0, 30] + "..." + name[-31, 31]
+      end
+      private :__fallback_app_name
+
+      def parse_connect_args(*args)
+        hash = {}
+        if !args.empty? && args.last.is_a?(Hash)
+          extra_hash = args.pop
+        else
+          extra_hash = nil
+        end
+
+        if args.length > 7
+          raise ArgumentError, "extra positional parameter #{args.length}: #{args[7].inspect}"
+        end
+
+        if args.length == 1
+          a0 = args[0]
+          is_uri = (defined?(URI::Generic) && a0.is_a?(URI::Generic)) ||
+                   (a0.respond_to?(:scheme) && a0.respond_to?(:to_s) && !a0.is_a?(String))
+          s = a0.to_s
+          if is_uri || s.start_with?("postgres://", "postgresql://") || s.include?("=")
+            conninfo_parse(s).each do |entry|
+              hash[entry[:keyword]] = entry[:val] unless entry[:val].nil?
+            end
+          elsif !a0.nil?
+            hash["host"] = s
+          end
+        elsif args.length > 1
+          keys = %w[host port options tty dbname user password]
+          args.each_with_index do |v, i|
+            next if v.nil?
+            hash[keys[i]] = v.to_s
+          end
+        end
+
+        ordered = {}
+        CONN_DEFAULTS_SPEC.each do |kw, *|
+          ordered[kw] = hash[kw] if hash.key?(kw)
+        end
+        hash.each do |k, v|
+          ordered[k] = v unless ordered.key?(k)
+        end
+
+        if extra_hash
+          extra_hash.each do |k, v|
+            ks = k.to_s
+            if v.nil?
+              ordered.delete(ks)
+            else
+              ordered[ks] = v.to_s
+            end
+          end
+        end
+
+        if !ordered.key?("application_name") && !ordered.key?("fallback_application_name")
+          ordered["fallback_application_name"] = __fallback_app_name
+        end
+
+        connect_hash_to_string(ordered)
+      end
+
+      def __pct_decode(str)
+        str.gsub(/%([0-9A-Fa-f]{2})/) { $1.to_i(16).chr }
+      end
+      private :__pct_decode
 
       def conninfo_parse(str)
         s = str.to_s.strip
-        defaults = conndefaults.map(&:dup)
+        defaults = CONN_DEFAULTS_SPEC.map do |kw, envvar, compiled, label, dispchar, dispsize|
+          { keyword: kw, envvar: envvar, compiled: compiled, val: nil, label: label, dispchar: dispchar, dispsize: dispsize }
+        end
         by_key = {}
         defaults.each { |d| by_key[d[:keyword]] = d }
         set_kv = lambda do |k, v|
@@ -123,19 +261,72 @@ module PG
           end
         end
         if s.start_with?("postgres://", "postgresql://")
-          require "uri"
-          u = URI.parse(s)
-          set_kv.call("host", u.host) if u.host && !u.host.empty?
-          set_kv.call("port", u.port.to_s) if u.port
-          set_kv.call("user", URI.decode_www_form_component(u.user)) if u.user
-          set_kv.call("password", URI.decode_www_form_component(u.password)) if u.password
-          db = u.path.to_s.sub(/\A\//, "")
-          set_kv.call("dbname", URI.decode_www_form_component(db)) unless db.empty?
-          if u.query
-            u.query.split("&").each do |pair|
+          rest = s.sub(/\Apostgres(?:ql)?:\/\//, "")
+          query_str = nil
+          if (qidx = rest.index("?"))
+            query_str = rest[(qidx + 1)..]
+            rest = rest[0...qidx]
+          end
+          path_str = nil
+          if (pidx = rest.index("/"))
+            path_str = rest[(pidx + 1)..]
+            rest = rest[0...pidx]
+          end
+          authority = rest
+          if (at_idx = authority.rindex("@"))
+            userinfo = authority[0...at_idx]
+            hostport = authority[(at_idx + 1)..]
+            if (cidx = userinfo.index(":"))
+              set_kv.call("user", __pct_decode(userinfo[0...cidx]))
+              set_kv.call("password", __pct_decode(userinfo[(cidx + 1)..]))
+            else
+              set_kv.call("user", __pct_decode(userinfo)) unless userinfo.empty?
+            end
+          else
+            hostport = authority
+          end
+          unless hostport.empty?
+            hosts = []
+            ports = []
+            has_port = false
+            hostport.split(",", -1).each do |hp|
+              if hp.start_with?("[")
+                if (rb_idx = hp.index("]"))
+                  h = hp[1...rb_idx]
+                  after = hp[(rb_idx + 1)..]
+                  if after.start_with?(":")
+                    hosts << __pct_decode(h)
+                    ports << after[1..]
+                    has_port = true
+                  else
+                    hosts << __pct_decode(h)
+                    ports << ""
+                  end
+                else
+                  hosts << __pct_decode(hp)
+                  ports << ""
+                end
+              elsif (cidx = hp.rindex(":"))
+                hosts << __pct_decode(hp[0...cidx])
+                ports << hp[(cidx + 1)..]
+                has_port = true
+              else
+                hosts << __pct_decode(hp)
+                ports << ""
+              end
+            end
+            hstr = hosts.join(",")
+            set_kv.call("host", hstr) unless hstr.empty?
+            set_kv.call("port", ports.join(",")) if has_port
+          end
+          if path_str && !path_str.empty?
+            set_kv.call("dbname", __pct_decode(path_str))
+          end
+          if query_str && !query_str.empty?
+            query_str.split("&").each do |pair|
               k, v = pair.split("=", 2)
               next unless k && !k.empty?
-              set_kv.call(URI.decode_www_form_component(k), v ? URI.decode_www_form_component(v) : "")
+              set_kv.call(__pct_decode(k), v ? __pct_decode(v) : "")
             end
           end
         else
@@ -145,8 +336,9 @@ module PG
             i += 1 while i < n && s[i] =~ /\s/
             break if i >= n
             eq = s.index("=", i)
-            raise ArgumentError, "missing '=' after #{s[i..].inspect} in connection info string" unless eq
+            raise PG::Error, "missing \"=\" after \"#{s[i..]}\" in connection info string" unless eq
             k = s[i...eq].strip
+            raise PG::Error, "missing \"=\" after \"#{s[i..]}\" in connection info string" if k.empty?
             i = eq + 1
             i += 1 while i < n && s[i] =~ /\s/
             if i < n && s[i] == "'"
@@ -161,13 +353,19 @@ module PG
                   i += 1
                 end
               end
-              raise ArgumentError, "unterminated quoted string in connection info string" unless i < n && s[i] == "'"
+              raise PG::Error, "unterminated quoted string in connection info string" unless i < n && s[i] == "'"
               i += 1
             else
-              j = i
-              j += 1 while j < n && s[j] !~ /\s/
-              v = s[i...j]
-              i = j
+              v = +""
+              while i < n && s[i] !~ /\s/
+                if s[i] == "\\" && i + 1 < n
+                  v << s[i + 1]
+                  i += 2
+                else
+                  v << s[i]
+                  i += 1
+                end
+              end
             end
             set_kv.call(k, v)
           end
@@ -188,7 +386,67 @@ module PG
     alias async_prepare prepare
     alias sync_describe_prepared describe_prepared
     alias async_describe_prepared describe_prepared
+    alias sync_describe_portal describe_portal if method_defined?(:describe_portal)
+    alias async_describe_portal describe_portal if method_defined?(:describe_portal)
     alias sync_set_client_encoding set_client_encoding if method_defined?(:set_client_encoding)
+
+    CONN_STATUS_NAMES = {
+      CONNECTION_OK => "CONNECTION_OK",
+      CONNECTION_BAD => "CONNECTION_BAD",
+      CONNECTION_STARTED => "CONNECTION_STARTED",
+      CONNECTION_MADE => "CONNECTION_MADE",
+      CONNECTION_AWAITING_RESPONSE => "CONNECTION_AWAITING_RESPONSE",
+      CONNECTION_AUTH_OK => "CONNECTION_AUTH_OK",
+      CONNECTION_SETENV => "CONNECTION_SETENV",
+      CONNECTION_SSL_STARTUP => "CONNECTION_SSL_STARTUP",
+      CONNECTION_NEEDED => "CONNECTION_NEEDED",
+      CONNECTION_CHECK_WRITABLE => "CONNECTION_CHECK_WRITABLE",
+      CONNECTION_CONSUME => "CONNECTION_CONSUME",
+    }.freeze
+    private_constant :CONN_STATUS_NAMES
+
+    TX_STATUS_NAMES = {
+      PQTRANS_IDLE => "PQTRANS_IDLE",
+      PQTRANS_ACTIVE => "PQTRANS_ACTIVE",
+      PQTRANS_INTRANS => "PQTRANS_INTRANS",
+      PQTRANS_INERROR => "PQTRANS_INERROR",
+      PQTRANS_UNKNOWN => "PQTRANS_UNKNOWN",
+    }.freeze
+    private_constant :TX_STATUS_NAMES
+
+    PIPELINE_STATUS_NAMES = {
+      PQ_PIPELINE_OFF => "PQ_PIPELINE_OFF",
+      PQ_PIPELINE_ON => "PQ_PIPELINE_ON",
+      PQ_PIPELINE_ABORTED => "PQ_PIPELINE_ABORTED",
+    }.freeze
+    private_constant :PIPELINE_STATUS_NAMES
+
+    def inspect
+      id = "0x#{object_id.to_s(16)}"
+      return "#<#{self.class}:#{id} finished>" if finished?
+      parts = ["#<#{self.class}:#{id}"]
+      parts << "host=#{host}"
+      parts << "port=#{port}"
+      parts << "user=#{user}"
+      st = status
+      parts << "status=#{CONN_STATUS_NAMES[st] || st}" if st != CONNECTION_OK
+      ps = pipeline_status
+      parts << "pipeline_status=#{PIPELINE_STATUS_NAMES[ps] || ps}" if ps != PQ_PIPELINE_OFF
+      ts = transaction_status
+      parts << "transaction_status=#{TX_STATUS_NAMES[ts] || ts}" if st == CONNECTION_OK && ts != PQTRANS_IDLE
+      parts << "nonblocking=true" if nonblocking?
+      if st == CONNECTION_OK
+        ce = client_encoding
+        parts << "client_encoding=#{ce}" if ce && ce.upcase != "UTF8"
+      end
+      tm_r = @__tm_res
+      parts << "type_map_for_results=#<#{tm_r.class}:0x#{tm_r.object_id.to_s(16)}>" if tm_r && !tm_r.is_a?(PG::TypeMapAllStrings)
+      tm_q = @__tm_qry
+      parts << "type_map_for_queries=#<#{tm_q.class}:0x#{tm_q.object_id.to_s(16)}>" if tm_q && !tm_q.is_a?(PG::TypeMapAllStrings)
+      parts << "encoder_for_put_copy_data=#<#{@encoder_for_put_copy_data.class}:0x#{@encoder_for_put_copy_data.object_id.to_s(16)}>" if @encoder_for_put_copy_data
+      parts << "decoder_for_get_copy_data=#<#{@decoder_for_get_copy_data.class}:0x#{@decoder_for_get_copy_data.object_id.to_s(16)}>" if @decoder_for_get_copy_data
+      parts.join(" ") + ">"
+    end
 
     def options
       ""
@@ -204,7 +462,13 @@ module PG
     end
 
     def reset_start2(*args, **kw)
+      args.each do |a|
+        if a.is_a?(String) && a.include?("\0")
+          raise ArgumentError, "string contains null byte"
+        end
+      end
       str = kw.empty? ? self.class.parse_connect_args(*args) : self.class.parse_connect_args(*args, **kw)
+      raise ArgumentError, "string contains null byte" if str.include?("\0")
       self.class.conninfo_parse(str)
       reset
       true
@@ -435,7 +699,7 @@ module PG
           self.decoder_for_get_copy_data = old_coder if coder
         end
       else
-        raise PG::InvalidResultStatus.new("unexpected result status #{res.result_status} for COPY", connection: self, result: res)
+        raise ArgumentError, "no COPY statement (got result status #{res.result_status})"
       end
     end
 
@@ -480,6 +744,8 @@ module PG
       "EUC_JP" => "EUC-JP",
       "EUC-JP" => "EUC-JP",
       "EUCJP" => "EUC-JP",
+      "EUC_KR" => "EUC-KR",
+      "EUC-KR" => "EUC-KR",
       "LATIN1" => "ISO-8859-1",
       "ISO8859-1" => "ISO-8859-1",
       "ISO-8859-1" => "ISO-8859-1",
@@ -492,72 +758,136 @@ module PG
       "LATIN4" => "ISO-8859-4",
       "ISO8859-4" => "ISO-8859-4",
       "ISO-8859-4" => "ISO-8859-4",
+      "ISO_8859_5" => "ISO-8859-5",
+      "ISO_8859_6" => "ISO-8859-6",
+      "ISO_8859_7" => "ISO-8859-7",
+      "ISO_8859_8" => "ISO-8859-8",
+      "LATIN5" => "ISO-8859-9",
+      "LATIN6" => "ISO-8859-10",
+      "LATIN7" => "ISO-8859-13",
+      "LATIN8" => "ISO-8859-14",
+      "LATIN9" => "ISO-8859-15",
+      "ISO8859-15" => "ISO-8859-15",
+      "ISO-8859-15" => "ISO-8859-15",
+      "LATIN10" => "ISO-8859-16",
+      "KOI8R" => "KOI8-R",
+      "KOI8-R" => "KOI8-R",
+      "KOI8U" => "KOI8-U",
       "SQL_ASCII" => "ASCII-8BIT",
       "SJIS" => "Shift_JIS",
+      "WIN1250" => "Windows-1250",
+      "WIN1251" => "Windows-1251",
       "WIN1252" => "Windows-1252",
+      "WIN1253" => "Windows-1253",
+      "WIN1254" => "Windows-1254",
+      "WIN1255" => "Windows-1255",
+      "WIN1256" => "Windows-1256",
+      "WIN1257" => "Windows-1257",
+      "WIN1258" => "Windows-1258",
+      "BIG5" => "Big5",
+      "GBK" => "GBK",
+      "GB18030" => "GB18030",
     }.freeze
     private_constant :PG_ENCODING_MAP
 
     RUBY_TO_PG_ENCODING = {
       "UTF-8" => "UTF8",
       "EUC-JP" => "EUC_JP",
+      "EUC-KR" => "EUC_KR",
       "ISO-8859-1" => "LATIN1",
+      "ISO8859-1" => "LATIN1",
       "ISO-8859-2" => "LATIN2",
+      "ISO8859-2" => "LATIN2",
       "ISO-8859-3" => "LATIN3",
       "ISO-8859-4" => "LATIN4",
+      "ISO-8859-5" => "ISO_8859_5",
+      "ISO-8859-6" => "ISO_8859_6",
+      "ISO-8859-7" => "ISO_8859_7",
+      "ISO-8859-8" => "ISO_8859_8",
+      "ISO-8859-9" => "LATIN5",
+      "ISO-8859-10" => "LATIN6",
+      "ISO-8859-13" => "LATIN7",
+      "ISO-8859-14" => "LATIN8",
+      "ISO-8859-15" => "LATIN9",
+      "ISO8859-15" => "LATIN9",
+      "ISO-8859-16" => "LATIN10",
+      "KOI8-R" => "KOI8R",
+      "KOI8-U" => "KOI8U",
       "ASCII-8BIT" => "SQL_ASCII",
+      "BINARY" => "SQL_ASCII",
       "US-ASCII" => "SQL_ASCII",
       "SHIFT_JIS" => "SJIS",
+      "WINDOWS-1250" => "WIN1250",
+      "WINDOWS-1251" => "WIN1251",
+      "WINDOWS-1252" => "WIN1252",
+      "BIG5" => "BIG5",
+      "GBK" => "GBK",
+      "GB18030" => "GB18030",
     }.freeze
     private_constant :RUBY_TO_PG_ENCODING
 
+    def __pg_to_ruby_encoding(pg_name)
+      return Encoding::ASCII_8BIT unless pg_name
+      rb_name = PG_ENCODING_MAP[pg_name.upcase]
+      return Encoding::ASCII_8BIT unless rb_name
+      Encoding.find(rb_name)
+    rescue ArgumentError
+      Encoding::ASCII_8BIT
+    end
+    private :__pg_to_ruby_encoding
+
     def set_client_encoding(enc)
       raise FrozenError, "can't modify frozen PG::Connection" if frozen?
-      raw = enc.is_a?(Encoding) ? enc.name : enc.to_s
-      pg_name = RUBY_TO_PG_ENCODING[raw.upcase] || raw
-      @client_encoding = pg_name
-      exec("SET client_encoding TO '#{escape_string(pg_name)}'")
-      rb_name = PG_ENCODING_MAP[pg_name.upcase] || raw
-      begin
-        @external_encoding = Encoding.find(rb_name)
-      rescue ArgumentError
-        @external_encoding = Encoding::UTF_8
+      unless enc.is_a?(String)
+        if enc.respond_to?(:to_str)
+          enc = enc.to_str
+        else
+          raise TypeError, "no implicit conversion of #{enc.class} into String"
+        end
       end
+      pg_name = RUBY_TO_PG_ENCODING[enc.upcase] || enc
+      exec("SET client_encoding TO '#{PG::Connection.escape_string(pg_name)}'")
       nil
     end
     alias client_encoding= set_client_encoding
 
     def client_encoding
-      @client_encoding || parameter_status("client_encoding") || "UTF8"
+      parameter_status("client_encoding") || "UTF8"
     end
     alias get_client_encoding client_encoding
 
     def set_default_encoding
-      @internal_encoding = Encoding.default_internal
-      rb_name = PG_ENCODING_MAP[client_encoding.upcase] || "UTF-8"
-      @external_encoding = begin
-        Encoding.find(rb_name)
-      rescue ArgumentError
-        Encoding::UTF_8
+      raise FrozenError, "can't modify frozen PG::Connection" if frozen?
+      enc = Encoding.default_internal
+      if enc
+        pg_name = RUBY_TO_PG_ENCODING[enc.name.upcase] || enc.name
+        if pg_name.upcase != client_encoding.upcase
+          set_client_encoding(pg_name)
+        end
       end
+      nil
     end
 
     def internal_encoding
-      @internal_encoding
+      __pg_to_ruby_encoding(client_encoding)
     end
 
     def internal_encoding=(enc)
       raise FrozenError, "can't modify frozen PG::Connection" if frozen?
-      @internal_encoding = enc.nil? ? nil : (enc.is_a?(Encoding) ? enc : Encoding.find(enc.to_s))
+      if enc.nil?
+        set_client_encoding("SQL_ASCII")
+        return nil
+      end
+      rb_enc = enc.is_a?(Encoding) ? enc : Encoding.find(enc.to_s)
+      pg_name = RUBY_TO_PG_ENCODING[rb_enc.name.upcase] || rb_enc.name
+      if pg_name.upcase != client_encoding.upcase
+        set_client_encoding(pg_name)
+      end
+      rb_enc
     end
 
     def external_encoding
-      @external_encoding || begin
-        rb_name = PG_ENCODING_MAP[client_encoding.upcase] || "UTF-8"
-        Encoding.find(rb_name)
-      rescue ArgumentError
-        Encoding::UTF_8
-      end
+      __pg_to_ruby_encoding(parameter_status("server_encoding") || "UTF8")
     end
 
     def setnonblocking(flag)
@@ -575,17 +905,36 @@ module PG
 
     def transaction
       exec("BEGIN")
+      in_tx = true
+      res = nil
       begin
         res = yield self
+        exec("COMMIT")
+        in_tx = false
+        res
+      rescue PG::RollbackTransaction
+        in_tx = false
+        exec("ROLLBACK")
+        nil
       rescue Exception
+        in_tx = false
         begin
           exec("ROLLBACK")
         rescue Exception
         end
         raise
+      ensure
+        if in_tx
+          begin
+            if Thread.current.status == "aborting"
+              exec("ROLLBACK")
+            else
+              exec("COMMIT")
+            end
+          rescue Exception
+          end
+        end
       end
-      exec("COMMIT")
-      res
     end
 
     def conndefaults
@@ -604,11 +953,12 @@ module PG
         { keyword: "user", envvar: "PGUSER", compiled: nil, val: user, label: "Database-user", dispchar: "", dispsize: 20 },
         { keyword: "password", envvar: "PGPASSWORD", compiled: nil, val: pass.empty? ? nil : pass, label: "Database-password", dispchar: "*", dispsize: 20 },
         { keyword: "connect_timeout", envvar: "PGCONNECT_TIMEOUT", compiled: nil, val: __connect_timeout, label: "Connect-timeout", dispchar: "", dispsize: 10 },
+        { keyword: "service", envvar: "PGSERVICE", compiled: nil, val: __service_name, label: "Database-service", dispchar: "", dispsize: 20 },
       ]
     end
 
     def conninfo_hash
-      {
+      h = {
         host: host,
         port: port.to_s,
         dbname: db,
@@ -616,6 +966,9 @@ module PG
         password: pass.empty? ? nil : pass,
         connect_timeout: __connect_timeout,
       }
+      svc = __service_name
+      h[:service] = svc if svc
+      h
     end
   end
 
@@ -635,11 +988,24 @@ module PG
       t
     end
 
+    def self.__build_detached(keys, vals)
+      t = allocate
+      t.__init_detached(keys, vals)
+      t
+    end
+
     def __init(result, index, keys)
       @result = result
       @index = index
       @keys = keys
       @values = Array.new(keys.length, UNSET)
+    end
+
+    def __init_detached(keys, vals)
+      @result = nil
+      @index = 0
+      @keys = keys
+      @values = vals
     end
 
     def __val(idx)
@@ -831,6 +1197,7 @@ module PG
     end
 
     def tuple(index)
+      raise TypeError, "no implicit conversion of #{index.class} into Integer" unless index.is_a?(Integer)
       raise IndexError, "Index #{index} is out of range" if index < 0 || index >= ntuples
       ks = field_name_type == :symbol ? fields.map(&:to_sym) : fields
       Tuple.__build(self, index, ks)
@@ -857,7 +1224,8 @@ module PG
     def __check_streamable!
       raise FrozenError, "can't modify frozen PG::Result" if frozen?
       check if result_status == PGRES_FATAL_ERROR
-      if result_status == PGRES_TUPLES_OK && !__single_row?
+      st = result_status
+      if st != PGRES_SINGLE_TUPLE && !__single_row?
         raise PG::InvalidResultStatus, "result is not in single row mode"
       end
     end
@@ -866,13 +1234,10 @@ module PG
     def stream_each
       __check_streamable!
       return enum_for(:stream_each) unless block_given?
-      ntuples.times do |i|
-        begin
-          yield self[i]
-        rescue Exception
-          __keep_single_row(i)
-          raise
-        end
+      while result_status == PGRES_SINGLE_TUPLE
+        yield self[0]
+        __advance_single_row
+        check if result_status == PGRES_FATAL_ERROR
       end
       self
     end
@@ -880,13 +1245,10 @@ module PG
     def stream_each_row
       __check_streamable!
       return enum_for(:stream_each_row) unless block_given?
-      ntuples.times do |i|
-        begin
-          yield tuple_values(i)
-        rescue Exception
-          __keep_single_row(i)
-          raise
-        end
+      while result_status == PGRES_SINGLE_TUPLE
+        yield tuple_values(0)
+        __advance_single_row
+        check if result_status == PGRES_FATAL_ERROR
       end
       self
     end
@@ -894,14 +1256,17 @@ module PG
     def stream_each_tuple
       __check_streamable!
       return enum_for(:stream_each_tuple) unless block_given?
+      return self unless result_status == PGRES_SINGLE_TUPLE
       ks = field_name_type == :symbol ? fields.map(&:to_sym) : fields
-      ntuples.times do |i|
-        begin
-          yield Tuple.__build(self, i, ks)
-        rescue Exception
-          clear
-          raise
+      begin
+        while result_status == PGRES_SINGLE_TUPLE
+          yield Tuple.__build_detached(ks, tuple_values(0))
+          __advance_single_row
+          check if result_status == PGRES_FATAL_ERROR
         end
+      rescue Exception
+        clear unless cleared?
+        raise
       end
       self
     end
@@ -910,10 +1275,6 @@ module PG
       idx = fnumber(name)
       raise IndexError, "no such field #{name.inspect}" if idx < 0
       column_values(idx)
-    end
-
-    def autoclear?
-      false
     end
 
     def result_verbose_error_message(verbosity = PQERRORS_DEFAULT, _show_context = PQSHOW_CONTEXT_ERRORS)
