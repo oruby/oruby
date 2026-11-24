@@ -269,7 +269,7 @@ func (p *xmlParser) parseInto(root *domNode) {
 		}
 
 		// DOCTYPE: <!DOCTYPE ...>
-		if strings.HasPrefix(strings.ToUpper(rem), "<!DOCTYPE") {
+		if len(rem) >= 9 && strings.EqualFold(rem[:9], "<!DOCTYPE") {
 			p.advance(9)
 			p.skipWS()
 			dtName := p.readName()

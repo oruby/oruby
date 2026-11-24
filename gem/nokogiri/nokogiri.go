@@ -734,10 +734,16 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
+		if child.isAncestorOrSelf(n) {
+			return mrb.EArgumentError().Raise("cannot reparent a node into its own descendant")
+		}
 		if child.kind == DocumentFragNode {
 			var added []*domNode
 			for c := child.first; c != nil; {
 				nxt := c.next
+				if c.isAncestorOrSelf(n) {
+					return mrb.EArgumentError().Raise("cannot reparent a node into its own descendant")
+				}
 				n.appendChild(c)
 				added = append(added, c)
 				c = nxt
@@ -753,6 +759,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
+		if child.isAncestorOrSelf(n) {
+			return mrb.EArgumentError().Raise("cannot reparent a node into its own descendant")
+		}
 		return wrapNode(mrb, n.prependChild(child))
 	}, mrb.ArgsReq(1))
 
@@ -761,6 +770,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		sib, err := parseNodeArg(mrb, n.doc, mrb.GetArgsFirst())
 		if err != nil {
 			return mrb.RaiseError(err)
+		}
+		if n.parent != nil && sib.isAncestorOrSelf(n.parent) {
+			return mrb.EArgumentError().Raise("cannot reparent a node into its own descendant")
 		}
 		return wrapNode(mrb, n.insertAfter(sib))
 	}, mrb.ArgsReq(1))
@@ -771,6 +783,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
+		if n.parent != nil && sib.isAncestorOrSelf(n.parent) {
+			return mrb.EArgumentError().Raise("cannot reparent a node into its own descendant")
+		}
 		return wrapNode(mrb, n.insertBefore(sib))
 	}, mrb.ArgsReq(1))
 
@@ -779,6 +794,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		rep, err := parseNodeArg(mrb, n.doc, mrb.GetArgsFirst())
 		if err != nil {
 			return mrb.RaiseError(err)
+		}
+		if n.parent != nil && rep.isAncestorOrSelf(n.parent) {
+			return mrb.EArgumentError().Raise("cannot reparent a node into its own descendant")
 		}
 		return wrapNode(mrb, n.replaceWith(rep))
 	}, mrb.ArgsReq(1))
@@ -950,10 +968,10 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		return mrb.StrNew(n.canonicalize(mode, incl, withComments))
 	}, mrb.ArgsOpt(3))
 
-	nodeCls.DefineMethod("inner_html", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	nodeCls.DefineMethod("__inner_html", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
 		return mrb.StrNew(n.innerHTML(n.isHTMLDoc()))
-	}, mrb.ArgsOpt(1))
+	}, mrb.ArgsNone())
 
 	nodeCls.DefineMethod("inner_html=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
@@ -1276,12 +1294,18 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		args := mrb.GetArgs()
 		src := args.Item(0).String()
 		url := ""
-		if !args.Item(1).IsNil() {
+		if !args.Item(1).IsNil() && args.Item(1).IsString() {
 			url = args.Item(1).String()
 		}
 		enc := ""
 		if !args.Item(2).IsNil() {
-			enc = args.Item(2).String()
+			if args.Item(2).IsString() {
+				enc = args.Item(2).String()
+			} else if mrb.RespondTo(args.Item(2), mrb.Intern("name")) {
+				if nv, err := mrb.Funcall(args.Item(2), mrb.Intern("name")); err == nil && nv.IsString() {
+					enc = nv.String()
+				}
+			}
 		}
 		opts := args.Item(3).Int()
 		strict := (opts & poRecover) == 0
@@ -1306,12 +1330,18 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		args := mrb.GetArgs()
 		src := args.Item(0).String()
 		url := ""
-		if !args.Item(1).IsNil() {
+		if !args.Item(1).IsNil() && args.Item(1).IsString() {
 			url = args.Item(1).String()
 		}
 		enc := ""
 		if !args.Item(2).IsNil() {
-			enc = args.Item(2).String()
+			if args.Item(2).IsString() {
+				enc = args.Item(2).String()
+			} else if mrb.RespondTo(args.Item(2), mrb.Intern("name")) {
+				if nv, err := mrb.Funcall(args.Item(2), mrb.Intern("name")); err == nil && nv.IsString() {
+					enc = nv.String()
+				}
+			}
 		}
 		opts := args.Item(3).Int()
 		isHTML5 := args.Item(4).Bool()
@@ -1624,6 +1654,19 @@ func defineNodeSetMethods(mrb *oruby.MrbState, cls oruby.RClass) {
 		rb.Set(mrb, self, &nodeSetData{doc: doc, nodes: nodes})
 		return self
 	}, mrb.ArgsOpt(2))
+
+	cls.DefineMethod("initialize_copy", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		orig := mrb.GetArgsFirst()
+		ons, ok := getNodeSet(mrb, orig)
+		if !ok || ons == nil {
+			rb.Set(mrb, self, &nodeSetData{})
+			return self
+		}
+		cp := make([]*domNode, len(ons.nodes))
+		copy(cp, ons.nodes)
+		rb.Set(mrb, self, &nodeSetData{doc: ons.doc, nodes: cp})
+		return self
+	}, mrb.ArgsReq(1))
 
 	cls.DefineMethod("document", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ns, _ := getNodeSet(mrb, self)
@@ -1983,12 +2026,18 @@ func defineSAXAndReader(mrb *oruby.MrbState, xmlMod, html4Mod oruby.RClass) {
 		args := mrb.GetArgs()
 		src := args.Item(0).String()
 		url := ""
-		if args.Len() >= 2 && !args.Item(1).IsNil() {
+		if args.Len() >= 2 && !args.Item(1).IsNil() && args.Item(1).IsString() {
 			url = args.Item(1).String()
 		}
 		enc := "UTF-8"
 		if args.Len() >= 3 && !args.Item(2).IsNil() {
-			enc = args.Item(2).String()
+			if args.Item(2).IsString() {
+				enc = args.Item(2).String()
+			} else if mrb.RespondTo(args.Item(2), mrb.Intern("name")) {
+				if nv, err := mrb.Funcall(args.Item(2), mrb.Intern("name")); err == nil && nv.IsString() {
+					enc = nv.String()
+				}
+			}
 		}
 		doc := parseXMLDocument(src, url, enc, false, false, false)
 		r := buildReaderEvents(doc)

@@ -189,8 +189,20 @@ func (n *domNode) setDocRecursive(doc *domNode) {
 	}
 }
 
+func (n *domNode) isAncestorOrSelf(target *domNode) bool {
+	if n == nil || target == nil {
+		return false
+	}
+	for cur := target; cur != nil; cur = cur.parent {
+		if cur == n {
+			return true
+		}
+	}
+	return false
+}
+
 func (n *domNode) appendChild(child *domNode) *domNode {
-	if child == nil || child == n {
+	if child == nil || child == n || child.isAncestorOrSelf(n) {
 		return child
 	}
 	if child.kind == DocumentFragNode {
@@ -222,7 +234,7 @@ func (n *domNode) appendChild(child *domNode) *domNode {
 }
 
 func (n *domNode) prependChild(child *domNode) *domNode {
-	if child == nil || child == n {
+	if child == nil || child == n || child.isAncestorOrSelf(n) {
 		return child
 	}
 	if child.kind == DocumentFragNode {
@@ -261,7 +273,7 @@ func (n *domNode) prependChild(child *domNode) *domNode {
 }
 
 func (n *domNode) insertBefore(sibling *domNode) *domNode {
-	if sibling == nil || n.parent == nil || sibling == n {
+	if sibling == nil || n.parent == nil || sibling == n || sibling.isAncestorOrSelf(n.parent) {
 		return sibling
 	}
 	if sibling.kind == DocumentFragNode {
@@ -292,7 +304,7 @@ func (n *domNode) insertBefore(sibling *domNode) *domNode {
 }
 
 func (n *domNode) insertAfter(sibling *domNode) *domNode {
-	if sibling == nil || n.parent == nil || sibling == n {
+	if sibling == nil || n.parent == nil || sibling == n || sibling.isAncestorOrSelf(n.parent) {
 		return sibling
 	}
 	if sibling.kind == DocumentFragNode {

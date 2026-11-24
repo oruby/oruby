@@ -744,19 +744,31 @@ module Nokogiri
         [as_html, indent || 0, xml_decl, no_empty]
       end
 
+      def __encode_output(str, options)
+        enc = options.is_a?(Hash) ? options[:encoding] : nil
+        return str if enc.nil? || enc.to_s.empty?
+        target = enc.is_a?(Encoding) ? enc : Encoding.find(enc.to_s)
+        return str if target == Encoding::UTF_8
+        str.encode(target, fallback: ->(c) { "&##{c.ord};" })
+      end
+
+      def inner_html(options = {})
+        __encode_output(__inner_html, options)
+      end
+
       def to_xml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
-        __serialize(as_html, indent, xml_decl, no_empty)
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty), options)
       end
 
       def to_html(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, true, false)
-        __serialize(as_html, indent, xml_decl, no_empty)
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty), options)
       end
 
       def to_xhtml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
-        __serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with))
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with)), options)
       end
 
       def write_to(io, *options)
@@ -1233,15 +1245,15 @@ module Nokogiri
           end
         end
 
-        def parse_memory(data)
+        def parse_memory(data, _encoding = nil)
           SAX.__emit(@document, data.to_s, false)
         end
 
-        def parse_io(io)
+        def parse_io(io, _encoding = nil)
           parse_memory(io.read)
         end
 
-        def parse_file(filename)
+        def parse_file(filename, _encoding = nil)
           parse_memory(File.read(filename))
         end
       end
@@ -1671,10 +1683,10 @@ module Nokogiri
 
     class Document
       def self.parse(thing, url = nil, encoding = nil, **options, &block)
-        src = thing.respond_to?(:read) ? thing.read : thing.to_s
+        src = HTML5.read_and_encode(thing, encoding)
         max_errors = options[:max_errors]
         max_tree_depth = options[:max_tree_depth]
-        doc = __parse_html(src, url, encoding, XML::ParseOptions::DEFAULT_HTML, true, max_errors, max_tree_depth)
+        doc = __parse_html(src, url, nil, XML::ParseOptions::DEFAULT_HTML, true, max_errors, max_tree_depth)
         if options.key?(:parse_noscript_content_as_text)
           doc.parse_noscript_content_as_text = options[:parse_noscript_content_as_text]
         end
@@ -1705,8 +1717,12 @@ module Nokogiri
     class DocumentFragment
       def self.parse(tags, encoding = nil, context: nil, **_options)
         doc = HTML5::Document.new
-        doc.encoding = encoding if encoding
-        new(doc, tags, context)
+        src = HTML5.read_and_encode(tags, encoding)
+        new(doc, src, context)
+      end
+
+      def quirks_mode
+        document ? document.quirks_mode : QuirksMode::NO_QUIRKS
       end
     end
 
@@ -1719,13 +1735,45 @@ module Nokogiri
     end
 
     def self.read_and_encode(string, encoding)
+      return "" if string.nil?
       src = string.respond_to?(:read) ? string.read : string.to_s
-      encoding ? src.dup.force_encoding(encoding) : src
+      if encoding && !encoding.to_s.empty?
+        enc = encoding.is_a?(Encoding) ? encoding : Encoding.find(encoding.to_s)
+        src = src.dup.force_encoding(enc)
+      end
+      if src.encoding != Encoding::UTF_8 && src.encoding != Encoding::ASCII_8BIT
+        src = src.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+      elsif src.encoding == Encoding::ASCII_8BIT && !src.valid_encoding?
+        src = src.encode(Encoding::UTF_8, Encoding::WINDOWS_1252, invalid: :replace, undef: :replace)
+      end
+      src
     end
   end
 
   module CSS
     class SelectorCache
+      @default = nil
+
+      def self.default
+        @default ||= new
+      end
+
+      def self.[](key)
+        default[key]
+      end
+
+      def self.[]=(key, value)
+        default[key] = value
+      end
+
+      def self.clear_cache
+        default.clear_cache
+      end
+
+      def self.key(selector:, visitor:)
+        default.key(selector: selector, visitor: visitor)
+      end
+
       def initialize
         @cache = {}
       end
@@ -1825,9 +1873,20 @@ module Nokogiri
     def self.clear_aliases!
       @handlers.clear
     end
+
+    def self.install_default_aliases
+      self.alias("UTF-8", "UTF8")
+      nil
+    end
   end
 
   module XML
+    class EntityReference < Node
+      def initialize(document, name)
+        super(name.to_s, document)
+      end
+    end
+
     module SAX
       class ParserContext
         attr_accessor :replace_entities, :recovery
