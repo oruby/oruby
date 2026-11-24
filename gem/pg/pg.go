@@ -92,6 +92,16 @@ const (
 	pgresPollingReading = 1
 	pgresPollingWriting = 2
 	pgresPollingOK      = 3
+
+	connectionStarted       = 2
+	connectionMade          = 3
+	connectionAwaitingResp  = 4
+	connectionAuthOK        = 5
+	connectionSetEnv        = 6
+	connectionSSLStartup    = 7
+	connectionNeeded        = 8
+	connectionCheckWritable = 9
+	connectionConsume       = 10
 )
 
 func init() {
@@ -113,6 +123,16 @@ func initPG(mrb *oruby.MrbState) any {
 	for name, val := range map[string]int{
 		"CONNECTION_OK":                 connectionOK,
 		"CONNECTION_BAD":                connectionBad,
+		"CONNECTION_STARTED":            connectionStarted,
+		"CONNECTION_MADE":               connectionMade,
+		"CONNECTION_AWAITING_RESPONSE":  connectionAwaitingResp,
+		"CONNECTION_AUTH_OK":            connectionAuthOK,
+		"CONNECTION_SETENV":             connectionSetEnv,
+		"CONNECTION_SSL_STARTUP":        connectionSSLStartup,
+		"CONNECTION_NEEDED":             connectionNeeded,
+		"CONNECTION_CHECK_WRITABLE":     connectionCheckWritable,
+		"CONNECTION_CONSUME":            connectionConsume,
+		"DEF_PGPORT":                    5432,
 		"PGRES_EMPTY_QUERY":             pgresEmptyQuery,
 		"PGRES_COMMAND_OK":              pgresCommandOK,
 		"PGRES_TUPLES_OK":               pgresTuplesOK,
@@ -311,24 +331,23 @@ func defineErrors(mrb *oruby.MrbState, mod oruby.RClass) {
 }
 
 func raisePGError(mrb *oruby.MrbState, connVal oruby.Value, err error) oruby.MrbValue {
-	clsName := "Error"
 	var pgErr *pgconn.PgError
 	var resVal oruby.Value = mrb.NilValue()
+	excCls := rb.ClassPath(mrb, "PG::Error")
 	if errors.As(err, &pgErr) {
-		if mapped, ok := sqlstateToClass[pgErr.Code]; ok {
-			clsName = mapped
-		} else if len(pgErr.Code) >= 2 {
-			switch pgErr.Code[:2] {
-			case "22":
-				clsName = "DataException"
-			case "23":
-				clsName = "IntegrityConstraintViolation"
-			case "40":
-				clsName = "TransactionRollback"
-			case "42":
-				clsName = "SyntaxErrorOrAccessRuleViolation"
-			case "57":
-				clsName = "OperatorIntervention"
+		// Look up dynamically in PG::ERROR_CLASSES (respecting user modifications)
+		pgMod := mrb.ModuleGet("PG")
+		if errClasses := mrb.ConstGet(pgMod, mrb.Intern("ERROR_CLASSES")); errClasses.IsHash() {
+			if c, cerr := mrb.Funcall(errClasses, mrb.Intern("[]"), mrb.StrNew(pgErr.Code)); cerr == nil && c.IsClass() {
+				excCls = mrb.ClassPtr(c)
+			} else if len(pgErr.Code) >= 2 {
+				if c2, cerr2 := mrb.Funcall(errClasses, mrb.Intern("[]"), mrb.StrNew(pgErr.Code[:2])); cerr2 == nil && c2.IsClass() {
+					excCls = mrb.ClassPtr(c2)
+				} else {
+					excCls = rb.ClassPath(mrb, "PG::ServerError")
+				}
+			} else {
+				excCls = rb.ClassPath(mrb, "PG::ServerError")
 			}
 		}
 		resCls := rb.ClassPath(mrb, "PG::Result")
@@ -341,7 +360,6 @@ func raisePGError(mrb *oruby.MrbState, connVal oruby.Value, err error) oruby.Mrb
 		resVal = mrb.DataWrapInterface(resCls, r).Value()
 	}
 
-	excCls := rb.ClassPath(mrb, "PG::"+clsName)
 	exc, callErr := mrb.Funcall(excCls, mrb.Intern("new"), mrb.StrNew(err.Error()))
 	if callErr != nil {
 		return mrb.Raise(excCls, err.Error())
@@ -364,10 +382,11 @@ type connectRes struct {
 }
 
 type asyncRes struct {
-	res       *pgconn.Result
-	paramOIDs []uint32
-	prepName  string
-	prepDesc  *pgconn.StatementDescription
+	res          *pgconn.Result
+	paramOIDs    []uint32
+	prepName     string
+	prepDesc     *pgconn.StatementDescription
+	forcedStatus int
 }
 
 type copyDone struct {
@@ -421,6 +440,16 @@ func detectCopySQL(sql string) (mode int, binary bool) {
 	return 0, false
 }
 
+type pipelineCmd struct {
+	kind    int // 1=query_params, 2=prepare, 3=query_prepared
+	sql     string
+	name    string
+	vals    [][]byte
+	oids    []uint32
+	fmts    []int16
+	resFmts []int16
+}
+
 type pgConn struct {
 	conn           *pgconn.PgConn
 	cfg            *pgconn.Config
@@ -438,6 +467,9 @@ type pgConn struct {
 	prepared       map[string]*pgconn.StatementDescription
 	connectDone    chan connectRes
 	connectCancel  context.CancelFunc
+	singleRowMode  bool
+	pipelineStatus int
+	pipelineQueue  []pipelineCmd
 
 	// Active COPY state
 	copyMode    int // 0, pgresCopyIn, pgresCopyOut
@@ -535,6 +567,68 @@ func (c *pgConn) pollConnect(wait time.Duration) int {
 	}
 }
 
+func (c *pgConn) flushPipeline(mrb *oruby.MrbState, self oruby.Value, addSync bool) {
+	if len(c.pipelineQueue) == 0 && !addSync {
+		return
+	}
+	queue := c.pipelineQueue
+	c.pipelineQueue = nil
+	ctx := mrb.GoContext()
+	for _, cmd := range queue {
+		if c.pipelineStatus == pqPipelineAborted {
+			c.pendingRaw = append(c.pendingRaw, asyncRes{res: &pgconn.Result{Err: errors.New("pipeline aborted")}, forcedStatus: pgresPipelineAborted})
+			continue
+		}
+		switch cmd.kind {
+		case 1: // query_params
+			var res *pgconn.Result
+			mrb.Blocking(func() {
+				res = readResultWithFields(c.conn.ExecParams(ctx, cmd.sql, cmd.vals, cmd.oids, cmd.fmts, cmd.resFmts))
+			})
+			c.flushNotices(mrb, self)
+			if res.Err != nil {
+				c.pipelineStatus = pqPipelineAborted
+			}
+			c.pendingRaw = append(c.pendingRaw, asyncRes{res: res})
+		case 2: // prepare
+			var sd *pgconn.StatementDescription
+			var perr error
+			mrb.Blocking(func() {
+				sd, perr = c.conn.Prepare(ctx, cmd.name, cmd.sql, cmd.oids)
+			})
+			c.flushNotices(mrb, self)
+			if perr != nil {
+				c.pipelineStatus = pqPipelineAborted
+				c.pendingRaw = append(c.pendingRaw, asyncRes{res: &pgconn.Result{Err: perr}})
+			} else {
+				c.prepared[cmd.name] = sd
+				c.pendingRaw = append(c.pendingRaw, asyncRes{
+					res:       &pgconn.Result{FieldDescriptions: sd.Fields},
+					paramOIDs: sd.ParamOIDs,
+					prepName:  cmd.name,
+					prepDesc:  sd,
+				})
+			}
+		case 3: // query_prepared
+			var res *pgconn.Result
+			mrb.Blocking(func() {
+				res = readResultWithFields(c.conn.ExecPrepared(ctx, cmd.name, cmd.vals, cmd.fmts, cmd.resFmts))
+			})
+			c.flushNotices(mrb, self)
+			if res.Err != nil {
+				c.pipelineStatus = pqPipelineAborted
+			}
+			c.pendingRaw = append(c.pendingRaw, asyncRes{res: res})
+		}
+	}
+	if addSync {
+		if c.pipelineStatus == pqPipelineAborted {
+			c.pipelineStatus = pqPipelineOn
+		}
+		c.pendingRaw = append(c.pendingRaw, asyncRes{res: &pgconn.Result{}, forcedStatus: pgresPipelineSync})
+	}
+}
+
 func (c *pgConn) cleanupCopyOnClose() {
 	if c.copyInW != nil {
 		_ = c.copyInW.CloseWithError(errors.New("connection closed"))
@@ -579,24 +673,46 @@ func checkNoNullByte(s string) error {
 }
 
 func sqlToUTF8(mrb *oruby.MrbState, v oruby.Value) (string, error) {
-	var s string
 	if !v.IsString() {
-		s = mrb.String(v)
-	} else {
-		if encVal, err := mrb.Funcall(v, mrb.Intern("encoding")); err == nil && !encVal.IsNil() {
-			if nameVal, nerr := mrb.Funcall(encVal, mrb.Intern("name")); nerr == nil {
-				name := nameVal.String()
-				if name != "UTF-8" && name != "US-ASCII" && name != "ASCII-8BIT" {
-					if conv, cerr := mrb.Funcall(v, mrb.Intern("encode"), mrb.StrNew("UTF-8")); cerr == nil {
-						s = conv.String()
-						return s, checkNoNullByte(s)
-					}
+		s := mrb.String(v)
+		return s, checkNoNullByte(s)
+	}
+	if encVal, err := mrb.Funcall(v, mrb.Intern("encoding")); err == nil && !encVal.IsNil() {
+		if nameVal, nerr := mrb.Funcall(encVal, mrb.Intern("name")); nerr == nil {
+			name := nameVal.String()
+			if name != "UTF-8" && name != "US-ASCII" && name != "ASCII-8BIT" {
+				if conv, cerr := mrb.Funcall(v, mrb.Intern("encode"), mrb.StrNew("UTF-8")); cerr == nil {
+					s := conv.String()
+					return s, checkNoNullByte(s)
 				}
 			}
 		}
-		s = v.String()
 	}
+	s := v.String()
 	return s, checkNoNullByte(s)
+}
+
+func connTargetEncoding(mrb *oruby.MrbState, connVal oruby.Value) (oruby.Value, oruby.Value) {
+	if connVal.IsNil() {
+		return mrb.NilValue(), mrb.NilValue()
+	}
+	extEnc, _ := mrb.Funcall(connVal, mrb.Intern("external_encoding"))
+	intEnc, _ := mrb.Funcall(connVal, mrb.Intern("internal_encoding"))
+	return extEnc, intEnc
+}
+
+func applyResultEncoding(mrb *oruby.MrbState, strVal, extEnc, intEnc oruby.Value) oruby.Value {
+	if !extEnc.IsNil() {
+		_, _ = mrb.Funcall(strVal, mrb.Intern("force_encoding"), extEnc)
+	}
+	if !intEnc.IsNil() && !extEnc.IsNil() {
+		if eq, err := mrb.Funcall(extEnc, mrb.Intern("=="), intEnc); err == nil && !eq.Bool() {
+			if conv, cerr := mrb.Funcall(strVal, mrb.Intern("encode"), intEnc); cerr == nil {
+				return conv
+			}
+		}
+	}
+	return strVal
 }
 
 func (c *pgConn) flushNotices(mrb *oruby.MrbState, self oruby.Value) {
@@ -769,7 +885,14 @@ func unescapeBytea(s string) ([]byte, error) {
 	return out, nil
 }
 
-func extractParams(mrb *oruby.MrbState, paramsVal, typeMap oruby.Value) ([][]byte, []uint32, []int16, error) {
+func connInternalEncoding(mrb *oruby.MrbState, self oruby.Value) oruby.Value {
+	if enc, err := mrb.Funcall(self, mrb.Intern("internal_encoding")); err == nil {
+		return enc
+	}
+	return mrb.NilValue()
+}
+
+func extractParams(mrb *oruby.MrbState, self, paramsVal, typeMap oruby.Value) ([][]byte, []uint32, []int16, error) {
 	if paramsVal.IsNil() {
 		return nil, nil, nil, nil
 	}
@@ -791,6 +914,7 @@ func extractParams(mrb *oruby.MrbState, paramsVal, typeMap oruby.Value) ([][]byt
 			typeMap = fitted
 		}
 	}
+	paramEnc := connInternalEncoding(mrb, self)
 	const maxTotalParamBytes = (1 << 30) - 1024
 	var totalBytes int64
 	for i := 0; i < n; i++ {
@@ -803,44 +927,8 @@ func extractParams(mrb *oruby.MrbState, paramsVal, typeMap oruby.Value) ([][]byt
 			fmts[i] = 0
 			continue
 		}
-		if item.IsHash() {
-			// Check if this is a param spec hash ({value:, format:, type:}) or a plain Hash to be encoded by typeMap
-			hasValKey, _ := mrb.Funcall(item, mrb.Intern("key?"), mrb.Intern("value").Value())
-			hasFmtKey, _ := mrb.Funcall(item, mrb.Intern("key?"), mrb.Intern("format").Value())
-			hasTypeKey, _ := mrb.Funcall(item, mrb.Intern("key?"), mrb.Intern("type").Value())
-			if !useTypeMap || hasValKey.Bool() || hasFmtKey.Bool() || hasTypeKey.Bool() {
-				v, _ := mrb.Funcall(item, mrb.Intern("[]"), mrb.Intern("value").Value())
-				f, _ := mrb.Funcall(item, mrb.Intern("[]"), mrb.Intern("format").Value())
-				t, _ := mrb.Funcall(item, mrb.Intern("[]"), mrb.Intern("type").Value())
-				if v.IsNil() {
-					vals[i] = nil
-				} else if v.IsString() {
-					b := v.Bytes()
-					if int64(len(b))+totalBytes > maxTotalParamBytes {
-						return nil, nil, nil, errParamTooLarge
-					}
-					vals[i] = append([]byte(nil), b...)
-					totalBytes += int64(len(b))
-				} else {
-					s := mrb.String(v)
-					if int64(len(s))+totalBytes > maxTotalParamBytes {
-						return nil, nil, nil, errParamTooLarge
-					}
-					vals[i] = []byte(s)
-					totalBytes += int64(len(s))
-				}
-				if !f.IsNil() {
-					fmts[i] = int16(f.Int())
-				}
-				if !t.IsNil() && t.IsInt() {
-					oids[i] = uint32(t.Int64())
-					hasOID = true
-				}
-				continue
-			}
-		}
 		if useTypeMap {
-			enc, err := mrb.Funcall(typeMap, mrb.Intern("__encode_param"), item, mrb.FixnumValue(i))
+			enc, err := mrb.Funcall(typeMap, mrb.Intern("__encode_param"), item, mrb.FixnumValue(i), paramEnc)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -875,6 +963,36 @@ func extractParams(mrb *oruby.MrbState, paramsVal, typeMap oruby.Value) ([][]byt
 				continue
 			}
 		}
+		if item.IsHash() {
+			v, _ := mrb.Funcall(item, mrb.Intern("[]"), mrb.Intern("value").Value())
+			f, _ := mrb.Funcall(item, mrb.Intern("[]"), mrb.Intern("format").Value())
+			t, _ := mrb.Funcall(item, mrb.Intern("[]"), mrb.Intern("type").Value())
+			if v.IsNil() {
+				vals[i] = nil
+			} else if v.IsString() {
+				b := v.Bytes()
+				if int64(len(b))+totalBytes > maxTotalParamBytes {
+					return nil, nil, nil, errParamTooLarge
+				}
+				vals[i] = append([]byte(nil), b...)
+				totalBytes += int64(len(b))
+			} else {
+				s := mrb.String(v)
+				if int64(len(s))+totalBytes > maxTotalParamBytes {
+					return nil, nil, nil, errParamTooLarge
+				}
+				vals[i] = []byte(s)
+				totalBytes += int64(len(s))
+			}
+			if !f.IsNil() {
+				fmts[i] = int16(f.Int())
+			}
+			if !t.IsNil() && t.IsInt() {
+				oids[i] = uint32(t.Int64())
+				hasOID = true
+			}
+			continue
+		}
 		switch item.Type() {
 		case oruby.MrbTTTrue:
 			vals[i] = []byte("t")
@@ -885,7 +1003,11 @@ func extractParams(mrb *oruby.MrbState, paramsVal, typeMap oruby.Value) ([][]byt
 		case oruby.MrbTTFloat:
 			vals[i] = []byte(strconv.FormatFloat(item.Float64(), 'g', -1, 64))
 		case oruby.MrbTTString:
+			// Transcode non-ASCII-compatible text strings (e.g. UTF-16LE) to UTF-8 for text params
 			b := item.Bytes()
+			if sv, serr := sqlToUTF8(mrb, item); serr == nil {
+				b = []byte(sv)
+			}
 			if int64(len(b))+totalBytes > maxTotalParamBytes {
 				return nil, nil, nil, errParamTooLarge
 			}
@@ -906,7 +1028,7 @@ func extractParams(mrb *oruby.MrbState, paramsVal, typeMap oruby.Value) ([][]byt
 	return vals, oids, fmts, nil
 }
 
-func wrapPGResult(mrb *oruby.MrbState, c *pgConn, r *pgconn.Result) oruby.Value {
+func wrapPGResult(mrb *oruby.MrbState, connVal oruby.Value, c *pgConn, r *pgconn.Result) oruby.Value {
 	resCls := rb.ClassPath(mrb, "PG::Result")
 	status := pgresCommandOK
 	if r.Err != nil {
@@ -922,6 +1044,7 @@ func wrapPGResult(mrb *oruby.MrbState, c *pgConn, r *pgconn.Result) oruby.Value 
 		errors.As(r.Err, &pgErr)
 		errMsg = r.Err.Error()
 	}
+	extEnc, intEnc := connTargetEncoding(mrb, connVal)
 	res := &pgResult{
 		status:       status,
 		fields:       r.FieldDescriptions,
@@ -931,6 +1054,9 @@ func wrapPGResult(mrb *oruby.MrbState, c *pgConn, r *pgconn.Result) oruby.Value 
 		errMsg:       errMsg,
 		typeMap:      c.typeMapResults,
 		fieldNameSym: c.fieldNameSym,
+		extEnc:       extEnc,
+		intEnc:       intEnc,
+		connVal:      connVal,
 	}
 	val := mrb.DataWrapInterface(resCls, res).Value()
 	if !res.typeMap.IsNil() {
@@ -940,6 +1066,12 @@ func wrapPGResult(mrb *oruby.MrbState, c *pgConn, r *pgconn.Result) oruby.Value 
 			}
 		}
 		mrb.IVSet(val, mrb.Intern("@__type_map"), res.typeMap)
+	}
+	if !extEnc.IsNil() {
+		mrb.IVSet(val, mrb.Intern("@__ext_enc"), extEnc)
+	}
+	if !intEnc.IsNil() {
+		mrb.IVSet(val, mrb.Intern("@__int_enc"), intEnc)
 	}
 	return val
 }
@@ -1248,6 +1380,13 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		c, _ := getConn(mrb, self)
 		return mrb.FixnumValue(int(c.cfg.Port))
 	}, mrb.ArgsNone())
+	cls.DefineMethod("__connect_timeout", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, _ := getConn(mrb, self)
+		if c.cfg != nil && c.cfg.ConnectTimeout > 0 {
+			return mrb.StrNew(strconv.Itoa(int(c.cfg.ConnectTimeout / time.Second)))
+		}
+		return mrb.NilValue()
+	}, mrb.ArgsNone())
 
 	cls.DefineMethod("backend_pid", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		c, err := getConn(mrb, self)
@@ -1497,9 +1636,9 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		c.lastErr = ""
 		var resVal oruby.Value
 		if len(results) == 0 {
-			resVal = wrapPGResult(mrb, c, &pgconn.Result{})
+			resVal = wrapPGResult(mrb, self, c, &pgconn.Result{})
 		} else {
-			resVal = wrapPGResult(mrb, c, results[len(results)-1])
+			resVal = wrapPGResult(mrb, self, c, results[len(results)-1])
 		}
 		return yieldAndClearResult(mrb, resVal, blk)
 	}
@@ -1543,7 +1682,10 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		}
 		args := mrb.GetArgs()
 		name := args.Item(0).String()
-		sql := args.Item(1).String()
+		sql, serr := sqlToUTF8(mrb, args.Item(1))
+		if serr != nil {
+			return mrb.RaiseError(serr)
+		}
 		var oids []uint32
 		if args.Len() >= 3 && args.Item(2).IsArray() {
 			a := args.Item(2)
@@ -1564,7 +1706,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		}
 		c.lastErr = ""
 		c.prepared[name] = sd
-		resVal := wrapPGResult(mrb, c, &pgconn.Result{FieldDescriptions: sd.Fields})
+		resVal := wrapPGResult(mrb, self, c, &pgconn.Result{FieldDescriptions: sd.Fields})
 		if r, gerr := getRes(mrb, resVal); gerr == nil {
 			r.paramOIDs = sd.ParamOIDs
 		}
@@ -1581,7 +1723,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if !ok {
 			return rb.Raise(mrb, "PG::InvalidSqlStatementName", "prepared statement %q does not exist", name)
 		}
-		resVal := wrapPGResult(mrb, c, &pgconn.Result{FieldDescriptions: sd.Fields})
+		resVal := wrapPGResult(mrb, self, c, &pgconn.Result{FieldDescriptions: sd.Fields})
 		if r, gerr := getRes(mrb, resVal); gerr == nil {
 			r.paramOIDs = sd.ParamOIDs
 		}
@@ -1608,7 +1750,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if args.Len() >= 4 && !args.Item(3).IsNil() {
 			tm = args.Item(3)
 		}
-		vals, _, fmts, err := extractParams(mrb, params, tm)
+		vals, _, fmts, err := extractParams(mrb, self, params, tm)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -1627,9 +1769,77 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			return raisePGError(mrb, self, res.Err)
 		}
 		c.lastErr = ""
-		resVal := wrapPGResult(mrb, c, res)
+		resVal := wrapPGResult(mrb, self, c, res)
 		return yieldAndClearResult(mrb, resVal, blk)
 	}, mrb.ArgsReq(1)|mrb.ArgsOpt(3)|mrb.ArgsBlock())
+
+	// Pipeline mode methods
+	cls.DefineMethod("enter_pipeline_mode", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, err := getConn(mrb, self)
+		if err != nil || c.checkOpen() != nil {
+			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
+		}
+		if c.pipelineStatus == pqPipelineOff {
+			c.pipelineStatus = pqPipelineOn
+		}
+		return mrb.NilValue()
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("exit_pipeline_mode", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, err := getConn(mrb, self)
+		if err != nil || c.checkOpen() != nil {
+			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
+		}
+		if c.pipelineStatus == pqPipelineOff {
+			return mrb.NilValue()
+		}
+		if len(c.pipelineQueue) > 0 || len(c.pendingRaw) > 0 || c.asyncDone != nil {
+			return rb.Raise(mrb, "PG::Error", "cannot exit pipeline mode with unretrieved results")
+		}
+		c.pipelineStatus = pqPipelineOff
+		return mrb.NilValue()
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("pipeline_status", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, err := getConn(mrb, self)
+		if err != nil || c.checkOpen() != nil {
+			return mrb.FixnumValue(pqPipelineOff)
+		}
+		return mrb.FixnumValue(c.pipelineStatus)
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("pipeline_sync", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, err := getConn(mrb, self)
+		if err != nil || c.checkOpen() != nil {
+			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
+		}
+		if c.pipelineStatus == pqPipelineOff {
+			return rb.Raise(mrb, "PG::Error", "not in pipeline mode")
+		}
+		c.flushPipeline(mrb, self, true)
+		return mrb.NilValue()
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("send_flush_request", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, err := getConn(mrb, self)
+		if err != nil || c.checkOpen() != nil {
+			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
+		}
+		c.flushPipeline(mrb, self, false)
+		return mrb.NilValue()
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("set_single_row_mode", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, err := getConn(mrb, self)
+		if err != nil || c.checkOpen() != nil {
+			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
+		}
+		if c.asyncDone == nil && len(c.pendingRaw) == 0 && len(c.pipelineQueue) == 0 {
+			return rb.Raise(mrb, "PG::Error", "cannot set single row mode when no query is in progress")
+		}
+		c.singleRowMode = true
+		return mrb.NilValue()
+	}, mrb.ArgsNone())
 
 	// Truly asynchronous query methods (send_query* run in a Go goroutine so
 	// callers can cancel, wait_for_notify, or check is_busy while the query runs).
@@ -1638,12 +1848,11 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if err != nil || c.checkOpen() != nil {
 			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
 		}
-		c.pollAsyncNonBlocking()
-		if c.asyncDone != nil {
-			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
-		}
 		args := mrb.GetArgs()
-		sql := args.Item(0).String()
+		sql, serr := sqlToUTF8(mrb, args.Item(0))
+		if serr != nil {
+			return mrb.RaiseError(serr)
+		}
 		if args.Len() >= 2 && !args.Item(1).IsNil() {
 			resFmt := 0
 			if args.Len() >= 3 && !args.Item(2).IsNil() {
@@ -1653,13 +1862,21 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			if args.Len() >= 4 && !args.Item(3).IsNil() {
 				tm = args.Item(3)
 			}
-			vals, oids, fmts, perr := extractParams(mrb, args.Item(1), tm)
+			vals, oids, fmts, perr := extractParams(mrb, self, args.Item(1), tm)
 			if perr != nil {
 				return mrb.RaiseError(perr)
 			}
 			var resFmts []int16
 			if resFmt != 0 {
 				resFmts = []int16{int16(resFmt)}
+			}
+			if c.pipelineStatus != pqPipelineOff {
+				c.pipelineQueue = append(c.pipelineQueue, pipelineCmd{kind: 1, sql: sql, vals: vals, oids: oids, fmts: fmts, resFmts: resFmts})
+				return mrb.NilValue()
+			}
+			c.pollAsyncNonBlocking()
+			if c.asyncDone != nil {
+				return rb.Raise(mrb, "PG::Error", "another command is already in progress")
 			}
 			ctx := mrb.GoContext()
 			ch := make(chan []asyncRes, 1)
@@ -1670,6 +1887,13 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 				close(ch)
 			}()
 			return mrb.NilValue()
+		}
+		if c.pipelineStatus != pqPipelineOff {
+			return rb.Raise(mrb, "PG::Error", "synchronous/simple query not allowed in pipeline mode")
+		}
+		c.pollAsyncNonBlocking()
+		if c.asyncDone != nil {
+			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
 		}
 		ctx := mrb.GoContext()
 		ch := make(chan []asyncRes, 1)
@@ -1700,12 +1924,11 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if err != nil || c.checkOpen() != nil {
 			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
 		}
-		c.pollAsyncNonBlocking()
-		if c.asyncDone != nil {
-			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
-		}
 		args := mrb.GetArgs()
-		sql := args.Item(0).String()
+		sql, serr := sqlToUTF8(mrb, args.Item(0))
+		if serr != nil {
+			return mrb.RaiseError(serr)
+		}
 		params := mrb.NilValue()
 		if args.Len() >= 2 {
 			params = args.Item(1)
@@ -1718,13 +1941,21 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if args.Len() >= 4 && !args.Item(3).IsNil() {
 			tm = args.Item(3)
 		}
-		vals, oids, fmts, perr := extractParams(mrb, params, tm)
+		vals, oids, fmts, perr := extractParams(mrb, self, params, tm)
 		if perr != nil {
 			return mrb.RaiseError(perr)
 		}
 		var resFmts []int16
 		if resFmt != 0 {
 			resFmts = []int16{int16(resFmt)}
+		}
+		if c.pipelineStatus != pqPipelineOff {
+			c.pipelineQueue = append(c.pipelineQueue, pipelineCmd{kind: 1, sql: sql, vals: vals, oids: oids, fmts: fmts, resFmts: resFmts})
+			return mrb.NilValue()
+		}
+		c.pollAsyncNonBlocking()
+		if c.asyncDone != nil {
+			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
 		}
 		ctx := mrb.GoContext()
 		ch := make(chan []asyncRes, 1)
@@ -1742,13 +1973,12 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if err != nil || c.checkOpen() != nil {
 			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
 		}
-		c.pollAsyncNonBlocking()
-		if c.asyncDone != nil {
-			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
-		}
 		args := mrb.GetArgs()
 		name := args.Item(0).String()
-		sql := args.Item(1).String()
+		sql, serr := sqlToUTF8(mrb, args.Item(1))
+		if serr != nil {
+			return mrb.RaiseError(serr)
+		}
 		var oids []uint32
 		if args.Len() >= 3 && args.Item(2).IsArray() {
 			a := args.Item(2)
@@ -1756,6 +1986,14 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			for i := 0; i < len(oids); i++ {
 				oids[i] = uint32(mrb.AryRef(a, i).Int64())
 			}
+		}
+		if c.pipelineStatus != pqPipelineOff {
+			c.pipelineQueue = append(c.pipelineQueue, pipelineCmd{kind: 2, name: name, sql: sql, oids: oids})
+			return mrb.NilValue()
+		}
+		c.pollAsyncNonBlocking()
+		if c.asyncDone != nil {
+			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
 		}
 		ctx := mrb.GoContext()
 		ch := make(chan []asyncRes, 1)
@@ -1782,10 +2020,6 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if err != nil || c.checkOpen() != nil {
 			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
 		}
-		c.pollAsyncNonBlocking()
-		if c.asyncDone != nil {
-			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
-		}
 		args := mrb.GetArgs()
 		name := args.Item(0).String()
 		params := mrb.NilValue()
@@ -1800,13 +2034,21 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if args.Len() >= 4 && !args.Item(3).IsNil() {
 			tm = args.Item(3)
 		}
-		vals, _, fmts, perr := extractParams(mrb, params, tm)
+		vals, _, fmts, perr := extractParams(mrb, self, params, tm)
 		if perr != nil {
 			return mrb.RaiseError(perr)
 		}
 		var resFmts []int16
 		if resFmt != 0 {
 			resFmts = []int16{int16(resFmt)}
+		}
+		if c.pipelineStatus != pqPipelineOff {
+			c.pipelineQueue = append(c.pipelineQueue, pipelineCmd{kind: 3, name: name, vals: vals, fmts: fmts, resFmts: resFmts})
+			return mrb.NilValue()
+		}
+		c.pollAsyncNonBlocking()
+		if c.asyncDone != nil {
+			return rb.Raise(mrb, "PG::Error", "another command is already in progress")
 		}
 		ctx := mrb.GoContext()
 		ch := make(chan []asyncRes, 1)
@@ -1903,11 +2145,18 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		return mrb.TrueValue()
 	}, mrb.ArgsOpt(1))
 
-	wrapAsyncRes := func(mrb *oruby.MrbState, c *pgConn, ar asyncRes) oruby.Value {
-		rv := wrapPGResult(mrb, c, ar.res)
-		if len(ar.paramOIDs) > 0 {
-			if r, gerr := getRes(mrb, rv); gerr == nil {
+	wrapAsyncRes := func(mrb *oruby.MrbState, self oruby.Value, c *pgConn, ar asyncRes) oruby.Value {
+		rv := wrapPGResult(mrb, self, c, ar.res)
+		if r, gerr := getRes(mrb, rv); gerr == nil {
+			if len(ar.paramOIDs) > 0 {
 				r.paramOIDs = ar.paramOIDs
+			}
+			if ar.forcedStatus != 0 {
+				r.status = ar.forcedStatus
+			}
+			if c.singleRowMode {
+				r.singleRow = true
+				c.singleRowMode = false
 			}
 		}
 		return rv
@@ -1948,7 +2197,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		}
 		ar := c.pendingRaw[0]
 		c.pendingRaw = c.pendingRaw[1:]
-		rv := wrapAsyncRes(mrb, c, ar)
+		rv := wrapAsyncRes(mrb, self, c, ar)
 		blk := mrb.GetArgsBlock()
 		return yieldAndClearResult(mrb, rv, blk)
 	}, mrb.ArgsBlock())
@@ -1992,7 +2241,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			c.lastErr = ar.res.Err.Error()
 			return raisePGError(mrb, self, ar.res.Err)
 		}
-		rv := wrapAsyncRes(mrb, c, ar)
+		rv := wrapAsyncRes(mrb, self, c, ar)
 		blk := mrb.GetArgsBlock()
 		return yieldAndClearResult(mrb, rv, blk)
 	}, mrb.ArgsBlock())
@@ -2175,7 +2424,8 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		if c.copyBinary {
 			strVal = mrb.Call(mrb.BytesValue(chunk), "b").Value()
 		} else {
-			strVal = mrb.BytesValue(chunk)
+			extEnc, intEnc := connTargetEncoding(mrb, self)
+			strVal = applyResultEncoding(mrb, mrb.BytesValue(chunk).Value(), extEnc, intEnc)
 		}
 		if !coder.IsNil() {
 			dec, derr := mrb.Funcall(coder, mrb.Intern("decode"), strVal)
@@ -2420,7 +2670,7 @@ func startCopyExec(mrb *oruby.MrbState, self oruby.Value, c *pgConn, sql string,
 }
 
 func execParamsImpl(mrb *oruby.MrbState, self oruby.Value, c *pgConn, sql string, params oruby.Value, resFmt int, typeMap oruby.Value, blk oruby.RProc) oruby.MrbValue {
-	vals, oids, fmts, err := extractParams(mrb, params, typeMap)
+	vals, oids, fmts, err := extractParams(mrb, self, params, typeMap)
 	if err != nil {
 		if errors.Is(err, errParamTooLarge) {
 			excCls := rb.ClassPath(mrb, "PG::UnableToSend")
@@ -2448,7 +2698,7 @@ func execParamsImpl(mrb *oruby.MrbState, self oruby.Value, c *pgConn, sql string
 		return raisePGError(mrb, self, res.Err)
 	}
 	c.lastErr = ""
-	resVal := wrapPGResult(mrb, c, res)
+	resVal := wrapPGResult(mrb, self, c, res)
 	return yieldAndClearResult(mrb, resVal, blk)
 }
 
@@ -2480,9 +2730,16 @@ type pgResult struct {
 	fieldNameSym bool
 	fieldsCalled bool
 	paramOIDs    []uint32
+	extEnc       oruby.Value
+	intEnc       oruby.Value
+	singleRow    bool
+	connVal      oruby.Value
 }
 
 func (r *pgResult) Memsize() int {
+	if r.cleared {
+		return 48
+	}
 	return 1024 + len(r.fields)*64 + len(r.rows)*128
 }
 
@@ -2528,7 +2785,8 @@ func (r *pgResult) rawCell(mrb *oruby.MrbState, row, col int) oruby.Value {
 	if col < len(r.fields) && r.fields[col].Format != 0 {
 		return mrb.Call(mrb.BytesValue(cell), "b").Value()
 	}
-	return mrb.BytesValue(cell)
+	raw := mrb.BytesValue(cell).Value()
+	return applyResultEncoding(mrb, raw, r.extEnc, r.intEnc)
 }
 
 func (r *pgResult) decodeCell(mrb *oruby.MrbState, self oruby.Value, row, col int) (oruby.Value, error) {
@@ -2567,6 +2825,22 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		}
 		return mrb.NilValue()
 	}, mrb.ArgsNone())
+
+	cls.DefineMethod("__single_row?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r, err := getRes(mrb, self)
+		return mrb.BoolValue(err == nil && r.singleRow)
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("__keep_single_row", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r, err := getRes(mrb, self)
+		if err == nil {
+			idx := mrb.GetArgsFirst().Int()
+			if idx >= 0 && idx < len(r.rows) {
+				r.rows = [][][]byte{r.rows[idx]}
+			}
+		}
+		return mrb.NilValue()
+	}, mrb.ArgsReq(1))
 
 	cls.DefineMethod("cleared?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		r, err := getRes(mrb, self)
@@ -2934,7 +3208,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 				return mrb.RaiseError(ferr)
 			}
 			if !mrb.ObjIsKindOf(fitted, tmCls) {
-				return mrb.ETypeError().Raise("fit_to_result must return a PG::TypeMap")
+				return mrb.ETypeError().Raise("fit_to_result must return a kind of PG::TypeMap")
 			}
 			v = fitted
 		}

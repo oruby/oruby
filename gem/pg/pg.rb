@@ -75,16 +75,6 @@ module PG
         PQPING_NO_RESPONSE
       end
 
-      def quote_ident(str)
-        s = str.to_s
-        '"' + s.gsub('"', '""') + '"'
-      end
-
-      def escape_string(str)
-        str.to_s.gsub("'", "''")
-      end
-      alias escape escape_string
-
       def conndefaults
         [
           { keyword: "host", envvar: "PGHOST", compiled: nil, val: ENV["PGHOST"], label: "Database-host", dispchar: "", dispsize: 40 },
@@ -213,6 +203,13 @@ module PG
       true
     end
 
+    def reset_start2(*args, **kw)
+      str = kw.empty? ? self.class.parse_connect_args(*args) : self.class.parse_connect_args(*args, **kw)
+      self.class.conninfo_parse(str)
+      reset
+      true
+    end
+
     def reset_poll
       finished? ? PGRES_POLLING_FAILED : PGRES_POLLING_OK
     end
@@ -221,12 +218,8 @@ module PG
       true
     end
 
-    def set_single_row_mode
-      nil
-    end
-
     def set_chunked_rows_mode(_size = 1)
-      nil
+      set_single_row_mode
     end
 
     SAFE_TYPE_NAME_PART_RE = /\A[A-Za-z_][A-Za-z0-9_$]*\z/
@@ -480,20 +473,73 @@ module PG
       old
     end
 
+    PG_ENCODING_MAP = {
+      "UTF8" => "UTF-8",
+      "UNICODE" => "UTF-8",
+      "UTF-8" => "UTF-8",
+      "EUC_JP" => "EUC-JP",
+      "EUC-JP" => "EUC-JP",
+      "EUCJP" => "EUC-JP",
+      "LATIN1" => "ISO-8859-1",
+      "ISO8859-1" => "ISO-8859-1",
+      "ISO-8859-1" => "ISO-8859-1",
+      "LATIN2" => "ISO-8859-2",
+      "ISO8859-2" => "ISO-8859-2",
+      "ISO-8859-2" => "ISO-8859-2",
+      "LATIN3" => "ISO-8859-3",
+      "ISO8859-3" => "ISO-8859-3",
+      "ISO-8859-3" => "ISO-8859-3",
+      "LATIN4" => "ISO-8859-4",
+      "ISO8859-4" => "ISO-8859-4",
+      "ISO-8859-4" => "ISO-8859-4",
+      "SQL_ASCII" => "ASCII-8BIT",
+      "SJIS" => "Shift_JIS",
+      "WIN1252" => "Windows-1252",
+    }.freeze
+    private_constant :PG_ENCODING_MAP
+
+    RUBY_TO_PG_ENCODING = {
+      "UTF-8" => "UTF8",
+      "EUC-JP" => "EUC_JP",
+      "ISO-8859-1" => "LATIN1",
+      "ISO-8859-2" => "LATIN2",
+      "ISO-8859-3" => "LATIN3",
+      "ISO-8859-4" => "LATIN4",
+      "ASCII-8BIT" => "SQL_ASCII",
+      "US-ASCII" => "SQL_ASCII",
+      "SHIFT_JIS" => "SJIS",
+    }.freeze
+    private_constant :RUBY_TO_PG_ENCODING
+
     def set_client_encoding(enc)
-      @client_encoding = enc.to_s
-      exec("SET client_encoding TO '#{escape_string(@client_encoding)}'")
-      0
+      raise FrozenError, "can't modify frozen PG::Connection" if frozen?
+      raw = enc.is_a?(Encoding) ? enc.name : enc.to_s
+      pg_name = RUBY_TO_PG_ENCODING[raw.upcase] || raw
+      @client_encoding = pg_name
+      exec("SET client_encoding TO '#{escape_string(pg_name)}'")
+      rb_name = PG_ENCODING_MAP[pg_name.upcase] || raw
+      begin
+        @external_encoding = Encoding.find(rb_name)
+      rescue ArgumentError
+        @external_encoding = Encoding::UTF_8
+      end
+      nil
     end
     alias client_encoding= set_client_encoding
 
     def client_encoding
       @client_encoding || parameter_status("client_encoding") || "UTF8"
     end
+    alias get_client_encoding client_encoding
 
     def set_default_encoding
-      @internal_encoding = Encoding::UTF_8
-      @external_encoding = Encoding::UTF_8
+      @internal_encoding = Encoding.default_internal
+      rb_name = PG_ENCODING_MAP[client_encoding.upcase] || "UTF-8"
+      @external_encoding = begin
+        Encoding.find(rb_name)
+      rescue ArgumentError
+        Encoding::UTF_8
+      end
     end
 
     def internal_encoding
@@ -501,11 +547,17 @@ module PG
     end
 
     def internal_encoding=(enc)
-      @internal_encoding = enc
+      raise FrozenError, "can't modify frozen PG::Connection" if frozen?
+      @internal_encoding = enc.nil? ? nil : (enc.is_a?(Encoding) ? enc : Encoding.find(enc.to_s))
     end
 
     def external_encoding
-      @external_encoding || Encoding::UTF_8
+      @external_encoding || begin
+        rb_name = PG_ENCODING_MAP[client_encoding.upcase] || "UTF-8"
+        Encoding.find(rb_name)
+      rescue ArgumentError
+        Encoding::UTF_8
+      end
     end
 
     def setnonblocking(flag)
@@ -536,13 +588,22 @@ module PG
       res
     end
 
+    def conndefaults
+      self.class.conndefaults
+    end
+
+    def conndefaults_hash
+      self.class.conndefaults_hash
+    end
+
     def conninfo
       [
-        { keyword: "host", val: host },
-        { keyword: "port", val: port.to_s },
-        { keyword: "dbname", val: db },
-        { keyword: "user", val: user },
-        { keyword: "password", val: pass },
+        { keyword: "host", envvar: "PGHOST", compiled: nil, val: host, label: "Database-host", dispchar: "", dispsize: 40 },
+        { keyword: "port", envvar: "PGPORT", compiled: "5432", val: port.to_s, label: "Database-port", dispchar: "", dispsize: 6 },
+        { keyword: "dbname", envvar: "PGDATABASE", compiled: nil, val: db, label: "Database-name", dispchar: "", dispsize: 20 },
+        { keyword: "user", envvar: "PGUSER", compiled: nil, val: user, label: "Database-user", dispchar: "", dispsize: 20 },
+        { keyword: "password", envvar: "PGPASSWORD", compiled: nil, val: pass.empty? ? nil : pass, label: "Database-password", dispchar: "*", dispsize: 20 },
+        { keyword: "connect_timeout", envvar: "PGCONNECT_TIMEOUT", compiled: nil, val: __connect_timeout, label: "Connect-timeout", dispchar: "", dispsize: 10 },
       ]
     end
 
@@ -552,6 +613,8 @@ module PG
         port: port.to_s,
         dbname: db,
         user: user,
+        password: pass.empty? ? nil : pass,
+        connect_timeout: __connect_timeout,
       }
     end
   end
@@ -730,6 +793,7 @@ module PG
   class Result
     class << self
       undef_method :new
+      undef_method :allocate
     end
 
     def inspect
@@ -767,10 +831,9 @@ module PG
     end
 
     def tuple(index)
-      idx = index < 0 ? ntuples + index : index
-      raise IndexError, "Index #{index} is out of range" if idx < 0 || idx >= ntuples
+      raise IndexError, "Index #{index} is out of range" if index < 0 || index >= ntuples
       ks = field_name_type == :symbol ? fields.map(&:to_sym) : fields
-      Tuple.__build(self, idx, ks)
+      Tuple.__build(self, index, ks)
     end
 
     def each
@@ -778,21 +841,70 @@ module PG
       ntuples.times { |i| yield self[i] }
       self
     end
-    alias stream_each each
 
     def each_row
       return enum_for(:each_row) { ntuples } unless block_given?
       ntuples.times { |i| yield tuple_values(i) }
       self
     end
-    alias stream_each_row each_row
 
     def each_tuple
       return enum_for(:each_tuple) { ntuples } unless block_given?
       ntuples.times { |i| yield tuple(i) }
       self
     end
-    alias stream_each_tuple each_tuple
+
+    def __check_streamable!
+      raise FrozenError, "can't modify frozen PG::Result" if frozen?
+      check if result_status == PGRES_FATAL_ERROR
+      if result_status == PGRES_TUPLES_OK && !__single_row?
+        raise PG::InvalidResultStatus, "result is not in single row mode"
+      end
+    end
+    private :__check_streamable!
+
+    def stream_each
+      __check_streamable!
+      return enum_for(:stream_each) unless block_given?
+      ntuples.times do |i|
+        begin
+          yield self[i]
+        rescue Exception
+          __keep_single_row(i)
+          raise
+        end
+      end
+      self
+    end
+
+    def stream_each_row
+      __check_streamable!
+      return enum_for(:stream_each_row) unless block_given?
+      ntuples.times do |i|
+        begin
+          yield tuple_values(i)
+        rescue Exception
+          __keep_single_row(i)
+          raise
+        end
+      end
+      self
+    end
+
+    def stream_each_tuple
+      __check_streamable!
+      return enum_for(:stream_each_tuple) unless block_given?
+      ks = field_name_type == :symbol ? fields.map(&:to_sym) : fields
+      ntuples.times do |i|
+        begin
+          yield Tuple.__build(self, i, ks)
+        rescue Exception
+          clear
+          raise
+        end
+      end
+      self
+    end
 
     def field_values(name)
       idx = fnumber(name)

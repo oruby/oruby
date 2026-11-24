@@ -238,9 +238,67 @@ func TestPGWireProtocolAndAPI(t *testing.T) {
 			raise "SQLSTATE" unless caught.result.error_field(PG::PG_DIAG_SQLSTATE) == "23505"
 			raise "constraint" unless caught.result.error_field(PG::PG_DIAG_CONSTRAINT_NAME) == "users_pkey"
 			raise "table" unless caught.result.error_field(PG::PG_DIAG_TABLE_NAME) == "users"
+
+			# Tuple lazy access, inspect, Marshal
+			res5 = conn.exec("SELECT 1")
+			tup = res5.tuple(0)
+			raise "tuple [] int" unless tup[0] == 42
+			raise "tuple [] key" unless tup["name"] == "alice"
+			raise "tuple inspect" unless tup.inspect.include?('name: "alice"')
+			tup2 = PG::Tuple.allocate
+			tup2.marshal_load(tup.marshal_dump)
+			raise "tuple marshal" unless tup2 == tup
+
+			# embed_params with TypeMapByClass
+			tm = PG::TypeMapByClass.new
+			tm[Integer] = PG::TextEncoder::Integer.new(name: "int4", oid: 23)
+			embedded = conn.embed_params("SELECT $1, '$1', $2", [42, "o'brien"], type_map: tm)
+			raise "embed_params: #{embedded}" unless embedded == "SELECT '42'::int4, '$1', 'o''brien'"
+
+			# Result frozen / inspect / fields
+			res5.freeze
+			raise "result inspect" unless res5.inspect.include?("status=PGRES_TUPLES_OK")
+			raise "frozen fields" unless res5.fields.all?(&:frozen?)
 		end
 	`, host, port))
 	if err != nil {
 		t.Fatalf("PG wire protocol test failed: %v", err)
+	}
+}
+
+func TestPGCodersAndTypeMaps(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+		require "pg"
+
+		# PG::Coder text & binary roundtrips
+		ti = PG::TextEncoder::Integer.new
+		di = PG::TextDecoder::Integer.new
+		raise "int text" unless di.decode(ti.encode(123456)) == 123456
+
+		bi = PG::BinaryEncoder::Int8.new
+		bdi = PG::BinaryDecoder::Integer.new
+		raise "int8 bin" unless bdi.decode(bi.encode(-9876543210)) == -9876543210
+
+		ta = PG::TextEncoder::Array.new(elements_type: PG::TextEncoder::String.new)
+		da = PG::TextDecoder::Array.new(elements_type: PG::TextDecoder::String.new)
+		encoded = ta.encode(["a,b", 'c"d', nil, "plain"])
+		raise "array roundtrip: #{encoded}" unless da.decode(encoded) == ["a,b", 'c"d', nil, "plain"]
+
+		# CopyRow text escaping (including backslash in bytea)
+		tm = PG::TypeMapByColumn.new([PG::TextEncoder::Bytea.new, PG::TextEncoder::Integer.new])
+		cr = PG::TextEncoder::CopyRow.new(type_map: tm)
+		line = cr.encode(["\xff\x00".b, 42])
+		raise "copy row: #{line.inspect}" unless line == "\\\\xff00\t42\n"
+
+		# BasicTypeRegistry
+		reg = PG::BasicTypeRegistry.new.register_default_types
+		raise "registry int4" unless reg.coders_for(0, :decoder)["int4"].is_a?(PG::TextDecoder::Integer)
+		raise "registry bin int8" unless reg.coders_for(1, :encoder)["int8"].is_a?(PG::BinaryEncoder::Int8)
+	`)
+	if err != nil {
+		t.Fatalf("PG coders/typemaps test failed: %v", err)
 	}
 }

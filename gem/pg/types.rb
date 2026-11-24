@@ -276,6 +276,20 @@ module PG
     INT32_MAX = (1 << 31) - 1
     INT32_MIN = -(1 << 31)
 
+    def self.call_encode(coder, value, encoding = nil)
+      return nil if value.nil?
+      arity = coder.method(:encode).arity
+      res = if arity == 1
+              coder.encode(value)
+            else
+              coder.encode(value, encoding)
+            end
+      if !res.nil? && !res.is_a?(::String)
+        raise TypeError, "wrong return type #{res.class} from #{coder.class}#encode (expected String or nil)"
+      end
+      res
+    end
+
     def self.parse_timestamp(str, mode)
       return nil if str.nil?
       raise TypeError, "wrong argument type #{str.class} (expected String)" unless str.is_a?(::String)
@@ -393,7 +407,7 @@ module PG
         elsif value.respond_to?(:to_int)
           value.to_int.to_s
         else
-          raise TypeError, "can't convert #{value.class} into Integer"
+          value.to_i.to_s
         end
       end
     end
@@ -469,14 +483,28 @@ module PG
       end
     end
 
+    class QuotedLiteral < CompositeEncoder
+      def encode(value, encoding = nil)
+        return nil if value.nil?
+        enc = encoding ? Encoding.find(encoding) : nil
+        raw = @elements_type ? CoderHelpers.call_encode(@elements_type, value, enc) : value.to_s
+        return nil if raw.nil?
+        s = enc ? raw.encode(enc) : raw
+        q = "'".encode(s.encoding)
+        qq = "''".encode(s.encoding)
+        q + s.gsub(q, qq) + q
+      end
+    end
+
     class ToBase64 < CompositeEncoder
       def encode(value, encoding = nil)
         return nil if value.nil?
         require "base64"
-        raw = @elements_type ? @elements_type.encode(value, encoding) : value.to_s
+        enc = encoding ? Encoding.find(encoding) : Encoding::UTF_8
+        raw = @elements_type ? CoderHelpers.call_encode(@elements_type, value, enc) : value.to_s
         return nil if raw.nil?
-        raw = raw.encode(Encoding.find(encoding)) if encoding && raw.encoding != Encoding::ASCII_8BIT
-        ::Base64.strict_encode64(raw.b).force_encoding(Encoding::UTF_8)
+        raw = raw.encode(enc) if encoding && raw.encoding != Encoding::ASCII_8BIT
+        ::Base64.strict_encode64(raw.b).force_encoding(enc)
       end
     end
 
@@ -501,18 +529,19 @@ module PG
 
     class Date < SimpleEncoder
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         return value if value.is_a?(::String)
         if defined?(::Date) && value.is_a?(::Date)
           # PostgreSQL uses proleptic Gregorian calendar
           d = value.gregorian
           year = d.year
           if year <= 0
-            format("%04d-%02d-%02d BC", 1 - year, d.mon, d.day)
+            Kernel.format("%04d-%02d-%02d BC", 1 - year, d.mon, d.day)
           else
-            format("%04d-%02d-%02d", year, d.mon, d.day)
+            Kernel.format("%04d-%02d-%02d", year, d.mon, d.day)
           end
         elsif value.is_a?(::Time)
-          format("%04d-%02d-%02d", value.year, value.mon, value.day)
+          Kernel.format("%04d-%02d-%02d", value.year, value.mon, value.day)
         else
           raise TypeError, "wrong argument type #{value.class} (expected Date)"
         end
@@ -545,43 +574,73 @@ module PG
 
     class Array < CompositeEncoder
       def encode(value, encoding = nil)
+        return nil if value.nil?
         raise TypeError, "wrong argument type #{value.class} (expected Array)" unless value.is_a?(::Array)
-        encode_array(value, encoding)
+        enc = encoding ? Encoding.find(encoding) : Encoding::UTF_8
+        encode_array(value, enc, 1).force_encoding(enc)
       end
 
       private
 
-      def encode_array(arr, encoding)
-        parts = arr.map do |el|
-          if el.nil?
-            "NULL"
-          elsif el.is_a?(::Array)
-            encode_array(el, encoding)
-          else
-            s = @elements_type ? @elements_type.encode(el, encoding) : el.to_s
-            if @needs_quotation
-              '"' + s.gsub('\\', '\\\\').gsub('"', '\\"') + '"'
-            else
-              s
+      def encode_array(arr, enc, depth)
+        if depth > 6
+          raise ArgumentError, "too many array dimensions (max 6)"
+        end
+        if @dimensions && depth < @dimensions
+          arr.each do |el|
+            unless el.is_a?(::Array)
+              raise ArgumentError, "less array dimensions (#{depth}) than expected (#{@dimensions})"
             end
           end
         end
-        "{#{parts.join(@delimiter)}}"
+        parts = arr.map do |el|
+          if el.nil?
+            "NULL".encode(enc)
+          elsif el.is_a?(::Array) && (@dimensions.nil? || depth < @dimensions)
+            encode_array(el, enc, depth + 1)
+          else
+            s = @elements_type ? CoderHelpers.call_encode(@elements_type, el, enc) : el.to_s
+            if s.nil?
+              "NULL".encode(enc)
+            else
+              s = s.encode(enc) if s.encoding != enc && s.encoding != Encoding::ASCII_8BIT
+              if @needs_quotation && needs_array_quoting?(s)
+                q = '"'.encode(enc)
+                bs = "\\".encode(enc)
+                bs2 = bs + bs
+                bsq = bs + q
+                q + s.gsub(bs) { bs2 }.gsub(q) { bsq } + q
+              else
+                s
+              end
+            end
+          end
+        end
+        "{".encode(enc) + parts.join(@delimiter.encode(enc)) + "}".encode(enc)
+      end
+
+      def needs_array_quoting?(s)
+        return true if s.empty?
+        return true if s.casecmp("NULL") == 0
+        s.include?(@delimiter) || s.include?('"') || s.include?("\\") ||
+          s.include?("{") || s.include?("}") || s =~ /\s/
       end
     end
 
     class CopyRow < CopyEncoder
       def encode(value, encoding = nil)
+        return nil if value.nil?
         raise TypeError, "wrong argument type #{value.class} (expected Array)" unless value.is_a?(::Array)
         enc = encoding ? Encoding.find(encoding) : Encoding::UTF_8
         tm = @type_map
+        tm = tm.fit_to_query(value) if tm && tm.respond_to?(:fit_to_query)
         total = 0
         parts = value.each_with_index.map do |el, idx|
           if el.nil?
             @null_string.encode(enc)
           else
             s = if tm
-                  res = tm.__encode_param(el, idx)
+                  res = tm.__encode_param(el, idx, enc)
                   res ? res[0] : el.to_s
                 else
                   el.to_s
@@ -591,7 +650,9 @@ module PG
             else
               raise ArgumentError, "copy row string size too large" if s.bytesize >= (1 << 30) || (total += s.bytesize) >= (1 << 30)
               s = s.encode(enc) if s.encoding != enc && s.encoding != Encoding::ASCII_8BIT
-              s.gsub("\\", "\\\\").gsub("\n", "\\n").gsub("\r", "\\r").gsub("\t", "\\t")
+              bs = "\\".encode(enc)
+              bs2 = bs + bs
+              s.gsub(bs) { bs2 }.gsub("\n".encode(enc)) { "\\n".encode(enc) }.gsub("\r".encode(enc)) { "\\r".encode(enc) }.gsub("\t".encode(enc)) { "\\t".encode(enc) }
             end
           end
         end
@@ -602,25 +663,26 @@ module PG
     end
 
     class Record < RecordEncoder
-      def encode(value, _encoding = nil)
+      def encode(value, encoding = nil)
+        return nil if value.nil?
         raise TypeError, "wrong argument type #{value.class} (expected Array)" unless value.is_a?(::Array)
+        enc = encoding ? Encoding.find(encoding) : Encoding::UTF_8
         tm = @type_map
+        tm = tm.fit_to_query(value) if tm && tm.respond_to?(:fit_to_query)
         parts = value.each_with_index.map do |el, idx|
           if el.nil?
             ""
           else
             s = if tm
-                  enc = tm.__encode_param(el, idx)
-                  enc ? enc[0] : el.to_s
+                  res = tm.__encode_param(el, idx, enc)
+                  res ? res[0] : el.to_s
                 else
                   el.to_s
                 end
             if s.nil?
               ""
-            elsif s.empty? || s.include?(",") || s.include?("(") || s.include?(")") || s.include?('"') || s.include?("\\") || s =~ /\s/
-              '"' + s.gsub("\\", "\\\\").gsub('"', '""') + '"'
             else
-              s
+              '"' + s.gsub("\\") { "\\\\" }.gsub('"') { '""' } + '"'
             end
           end
         end
@@ -801,35 +863,75 @@ module PG
 
     class Array < CompositeDecoder
       def decode(string, tuple = nil, field = nil)
-        s = string
-        # Skip optional dimension prefix like [1:2]={...}
+        return nil if string.nil?
+        raise TypeError, "wrong argument type #{string.class} (expected String)" unless string.is_a?(::String)
+        err_mode = @flags & PG::Coder::FORMAT_ERROR_MASK
+        s = string.strip
+        # Skip optional dimension prefix like [1:2][-1:+2]= {...}
         if s.start_with?("[")
           eq = s.index("=")
-          s = s[(eq + 1)..-1] if eq
+          if eq
+            s = s[(eq + 1)..-1].lstrip
+          else
+            return format_error(string, [], err_mode, "missing '=' after array dimensions")
+          end
         end
-        return string unless s.start_with?("{") && s.end_with?("}")
-        arr, _ = parse_array(s, 0, tuple, field)
+        unless s.start_with?("{")
+          return format_error(string, [], err_mode, "malformed array literal: missing '{'")
+        end
+        arr, pos, err = parse_array(s, 0, tuple, field)
+        if err
+          return format_error(string, arr, err_mode, err)
+        end
+        if pos < s.length
+          return format_error(string, arr, err_mode, "malformed array literal: trailing characters")
+        end
         arr
       end
 
       private
+
+      def format_error(orig, partial, err_mode, msg)
+        case err_mode
+        when PG::Coder::FORMAT_ERROR_TO_RAISE
+          raise TypeError, msg
+        when PG::Coder::FORMAT_ERROR_TO_STRING
+          orig
+        else
+          partial
+        end
+      end
 
       def parse_array(s, pos, tuple, field)
         pos += 1 # skip '{'
         out = []
         n = s.length
         delim = @delimiter
+        expect_elem = false
         while pos < n
+          pos += 1 while pos < n && (s[pos] == " " || s[pos] == "\t" || s[pos] == "\n" || s[pos] == "\r")
+          return [out, pos, "premature end of array"] if pos >= n
           c = s[pos]
           if c == "}"
-            return [out, pos + 1]
+            return [out, pos, "unexpected '}' after delimiter"] if expect_elem
+            return [out, pos + 1, nil]
           elsif c == "{"
-            sub, pos = parse_array(s, pos, tuple, field)
+            sub, pos, err = parse_array(s, pos, tuple, field)
             out << sub
-            pos += 1 if pos < n && s[pos] == delim
+            return [out, pos, err] if err
+            pos += 1 while pos < n && (s[pos] == " " || s[pos] == "\t" || s[pos] == "\n" || s[pos] == "\r")
+            if pos < n && s[pos] == delim
+              pos += 1
+              expect_elem = true
+            elsif pos < n && s[pos] == "}"
+              expect_elem = false
+            else
+              return [out, pos, "expected delimiter or '}'"]
+            end
           elsif c == '"'
             pos += 1
             buf = +""
+            closed = false
             while pos < n
               ch = s[pos]
               if ch == "\\" && pos + 1 < n
@@ -837,44 +939,76 @@ module PG
                 pos += 2
               elsif ch == '"'
                 pos += 1
+                closed = true
                 break
               else
                 buf << ch
                 pos += 1
               end
             end
+            return [out, pos, "unterminated quoted string"] unless closed
             out << (@elements_type ? @elements_type.decode(buf, tuple, field) : buf)
-            pos += 1 if pos < n && s[pos] == delim
+            pos += 1 while pos < n && (s[pos] == " " || s[pos] == "\t" || s[pos] == "\n" || s[pos] == "\r")
+            if pos < n && s[pos] == delim
+              pos += 1
+              expect_elem = true
+            elsif pos < n && s[pos] == "}"
+              expect_elem = false
+            else
+              return [out, pos, "expected delimiter or '}' after quoted string"]
+            end
           else
             buf = +""
             while pos < n && s[pos] != delim && s[pos] != "}"
+              if s[pos] == "{" || s[pos] == '"'
+                return [out, pos, "unexpected #{s[pos].inspect} in unquoted array element"]
+              end
               buf << s[pos]
               pos += 1
             end
-            if buf.casecmp("NULL") == 0
+            return [out, pos, "premature end of array"] if pos >= n
+            trimmed = buf.rstrip
+            return [out, pos, "empty unquoted element"] if trimmed.empty?
+            if trimmed.casecmp("NULL") == 0
               out << nil
             else
-              out << (@elements_type ? @elements_type.decode(buf, tuple, field) : buf)
+              out << (@elements_type ? @elements_type.decode(trimmed, tuple, field) : trimmed)
             end
-            pos += 1 if pos < n && s[pos] == delim
+            if s[pos] == delim
+              pos += 1
+              expect_elem = true
+            else
+              expect_elem = false
+            end
           end
         end
-        [out, pos]
+        [out, pos, "premature end of array"]
       end
     end
 
     class CopyRow < CopyDecoder
       def decode(string, _tuple = nil, _field = nil)
+        return nil if string.nil?
+        tm = @type_map
+        expected_cols = nil
+        if tm && tm.respond_to?(:fit_to_copy_get)
+          n = tm.fit_to_copy_get
+          raise TypeError, "fit_to_copy_get must return kind of Integer" unless n.is_a?(::Integer)
+          expected_cols = n if n > 0
+        end
         line = string.sub(/\r?\n\z/, "")
         return [] if line.empty? && @delimiter != ""
         fields = line.split(@delimiter, -1)
-        tm = @type_map
+        if expected_cols && fields.length != expected_cols
+          raise ArgumentError, "number of copy fields (#{fields.length}) does not match number of mapped columns (#{expected_cols})"
+        end
+        enc = string.encoding
         fields.each_with_index.map do |raw, idx|
           if raw == @null_string
             nil
           else
             val = unescape_copy_text(raw)
-            tm ? tm.__decode_copy_field(val, idx, 0) : val
+            tm ? tm.__decode_copy_field(val, idx, 0, enc) : val
           end
         end
       end
@@ -1104,38 +1238,51 @@ module PG
       include Coder::BinaryFormatting
 
       def encode(value, encoding = nil)
+        return nil if value.nil?
         raise TypeError, "wrong argument type #{value.class} (expected Array)" unless value.is_a?(::Array)
+        enc = encoding ? Encoding.find(encoding) : Encoding::UTF_8
+        elem_oid = @elements_type ? @elements_type.oid : 0
+        if value.empty?
+          if @dimensions && @dimensions > 1
+            raise ArgumentError, "less array dimensions (1) than expected (#{@dimensions})"
+          end
+          return [0, 1, elem_oid].pack("l>l>L>")
+        end
         dims = []
         cur = value
-        while cur.is_a?(::Array)
+        while cur.is_a?(::Array) && (@dimensions.nil? || dims.length < @dimensions)
           dims << cur.length
           cur = cur.first
         end
-        elem_oid = @elements_type ? @elements_type.oid : 25
+        if dims.length > 6
+          raise ArgumentError, "too many array dimensions (max 6)"
+        end
+        if @dimensions && dims.length < @dimensions
+          raise ArgumentError, "less array dimensions (#{dims.length}) than expected (#{@dimensions})"
+        end
         flat = []
-        has_null = 0
         collect = lambda do |arr, depth|
           raise ArgumentError, "inconsistent array dimensions" unless arr.length == dims[depth]
           arr.each do |el|
             if depth + 1 < dims.length
-              raise ArgumentError, "inconsistent array dimensions" unless el.is_a?(::Array)
+              unless el.is_a?(::Array)
+                raise ArgumentError, "inconsistent array dimensions"
+              end
               collect.call(el, depth + 1)
             else
               if el.nil?
-                has_null = 1
                 flat << nil
+              elsif el.is_a?(::Array) && @dimensions.nil?
+                raise ArgumentError, "inconsistent array dimensions"
               else
-                enc = @elements_type ? @elements_type.encode(el, encoding) : el.to_s
-                flat << enc.b
+                s = @elements_type ? CoderHelpers.call_encode(@elements_type, el, enc) : el.to_s
+                flat << (s.nil? ? nil : s.b)
               end
             end
           end
         end
-        collect.call(value, 0) unless dims == [0]
-        if dims == [0]
-          return [0, 0, elem_oid].pack("l>l>L>")
-        end
-        buf = [dims.length, has_null, elem_oid].pack("l>l>L>")
+        collect.call(value, 0)
+        buf = [dims.length, 1, elem_oid].pack("l>l>L>")
         dims.each { |d| buf << [d, 1].pack("l>l>") }
         flat.each do |el|
           if el.nil?
@@ -1152,9 +1299,11 @@ module PG
       include Coder::BinaryFormatting
 
       def encode(value, encoding = nil)
+        return nil if value.nil?
         raise TypeError, "wrong argument type #{value.class} (expected Array)" unless value.is_a?(::Array)
         enc = encoding ? Encoding.find(encoding) : nil
         tm = @type_map
+        tm = tm.fit_to_query(value) if tm && tm.respond_to?(:fit_to_query)
         buf = [value.length].pack("s>")
         total = 2
         value.each_with_index do |el, idx|
@@ -1163,7 +1312,7 @@ module PG
             total += 4
           else
             raw = if tm
-                    res = tm.__encode_param(el, idx)
+                    res = tm.__encode_param(el, idx, enc || Encoding::UTF_8)
                     res ? res[0] : el.to_s
                   else
                     el.to_s
@@ -1407,17 +1556,17 @@ module PG
       end
     end
 
-    def __decode_copy_field(raw, col, fmt)
+    def __decode_copy_field(raw, col, fmt, enc = Encoding::UTF_8)
       if @default_type_map
-        @default_type_map.__decode_copy_field(raw, col, fmt)
+        @default_type_map.__decode_copy_field(raw, col, fmt, enc)
       else
         raw
       end
     end
 
-    def __encode_param(value, idx)
+    def __encode_param(value, idx, enc = Encoding::UTF_8)
       if @default_type_map
-        @default_type_map.__encode_param(value, idx)
+        @default_type_map.__encode_param(value, idx, enc)
       else
         nil
       end
@@ -1441,11 +1590,11 @@ module PG
       raw
     end
 
-    def __decode_copy_field(raw, _col, _fmt)
+    def __decode_copy_field(raw, _col, _fmt, _enc = Encoding::UTF_8)
       raw
     end
 
-    def __encode_param(_value, _idx)
+    def __encode_param(_value, _idx, _enc = Encoding::UTF_8)
       nil
     end
   end
@@ -1480,6 +1629,7 @@ module PG
       if result.nfields != @coders.length
         raise ArgumentError, "number of result fields (#{result.nfields}) does not match number of mapped columns (#{@coders.length})"
       end
+      @default_type_map.fit_to_result(result) if @default_type_map
       self
     end
 
@@ -1488,7 +1638,19 @@ module PG
       if params.length != @coders.length
         raise ArgumentError, "number of query params (#{params.length}) does not match number of mapped columns (#{@coders.length})"
       end
+      @default_type_map.fit_to_query(params) if @default_type_map
       self
+    end
+
+    def fit_to_copy_get
+      raise NotImplementedError, "#{self.class} not initialized" unless @coders
+      if @default_type_map && @default_type_map.respond_to?(:fit_to_copy_get)
+        dn = @default_type_map.fit_to_copy_get
+        if dn.is_a?(::Integer) && dn > 0 && dn != @coders.length
+          raise ArgumentError, "number of copy fields (#{@coders.length}) does not match default type map columns (#{dn})"
+        end
+      end
+      @coders.length
     end
 
     def query_param_encoders(params)
@@ -1506,7 +1668,7 @@ module PG
       end
     end
 
-    def __decode_copy_field(raw, col, fmt)
+    def __decode_copy_field(raw, col, fmt, enc = Encoding::UTF_8)
       raise NotImplementedError, "#{self.class} not initialized" unless @coders
       c = @coders[col]
       if c && c.respond_to?(:decode)
@@ -1516,11 +1678,11 @@ module PG
       end
     end
 
-    def __encode_param(value, idx)
+    def __encode_param(value, idx, enc = Encoding::UTF_8)
       raise NotImplementedError, "#{self.class} not initialized" unless @coders
       c = @coders[idx]
       if c && c.respond_to?(:encode)
-        [c.encode(value), c.oid, c.format]
+        [CoderHelpers.call_encode(c, value, enc), c.oid, c.format]
       else
         super
       end
@@ -1534,8 +1696,12 @@ module PG
       @max_rows_for_online_lookup = 10
     end
 
-    def fit_to_result(_result)
-      self
+    def fit_to_result(result)
+      if result.ntuples > @max_rows_for_online_lookup
+        build_column_map(result)
+      else
+        self
+      end
     end
 
     attr_reader :max_rows_for_online_lookup
@@ -1611,10 +1777,8 @@ module PG
       raise TypeError, "key must be a Module or Class" unless klass.is_a?(Module)
       if coder.nil?
         @coders.delete(klass)
-      elsif coder.is_a?(PG::Coder) || coder.is_a?(Symbol) || coder.respond_to?(:call)
-        @coders[klass] = coder
       else
-        raise TypeError, "value must be a PG::Coder, Symbol, Proc, or nil"
+        @coders[klass] = coder
       end
       coder
     end
@@ -1627,10 +1791,10 @@ module PG
       @coders.dup
     end
 
-    def __encode_param(value, idx)
+    def __encode_param(value, idx, enc = Encoding::UTF_8)
       c = resolve_coder(value)
       if c.is_a?(PG::Coder) && c.respond_to?(:encode)
-        [c.encode(value), c.oid, c.format]
+        [CoderHelpers.call_encode(c, value, enc), c.oid, c.format]
       else
         super
       end
@@ -1640,13 +1804,14 @@ module PG
 
     def resolve_coder(value)
       c = lookup_coder(value)
+      return nil if c.nil?
       if c.is_a?(Symbol)
         c = send(c, value)
-      elsif c && !c.is_a?(PG::Coder) && c.respond_to?(:call)
+      elsif !c.is_a?(PG::Coder)
         c = c.call(value)
       end
       if !c.nil? && !c.is_a?(PG::Coder)
-        raise TypeError, "wrong encoder type #{c.class} (expected PG::Coder or nil)"
+        raise TypeError, "wrong argument type #{c.class} (expected PG::Coder or nil)"
       end
       c
     end
@@ -1663,14 +1828,14 @@ module PG
 
   class TypeMapByMriType < TypeMap
     VALID_TYPES = %w[
-      T_NONE T_OBJECT T_CLASS T_MODULE T_FLOAT T_STRING T_REGEXP T_ARRAY
-      T_HASH T_STRUCT T_BIGNUM T_FILE T_DATA T_MATCH T_COMPLEX T_RATIONAL
-      T_NIL T_TRUE T_FALSE T_SYMBOL T_FIXNUM T_UNDEF T_IMEMO T_NODE T_ICLASS T_ZOMBIE
+      T_FIXNUM T_FLOAT T_SYMBOL T_HASH T_ARRAY T_BIGNUM T_CLASS T_COMPLEX
+      T_DATA T_FALSE T_FILE T_MODULE T_OBJECT T_RATIONAL T_REGEXP T_STRING
+      T_STRUCT T_TRUE
     ].freeze
 
     def initialize
       super()
-      @coders = {}
+      @coders = VALID_TYPES.each_with_object({}) { |t, h| h[t] = nil }
     end
 
     def fit_to_query(params)
@@ -1689,30 +1854,25 @@ module PG
 
     def []=(mri_type, coder)
       raise FrozenError, "can't modify frozen #{self.class}" if frozen?
-      key = mri_type.to_s
-      raise ArgumentError, "invalid mri_type #{mri_type.inspect}" unless VALID_TYPES.include?(key)
-      if coder.nil?
-        @coders.delete(key)
-      elsif coder.is_a?(PG::Coder) || coder.is_a?(Symbol) || coder.respond_to?(:call)
-        @coders[key] = coder
-      else
-        raise TypeError, "value must be a PG::Coder, Symbol, Proc, or nil"
-      end
-      coder
+      raise TypeError, "wrong argument type #{mri_type.class} (expected String)" unless mri_type.is_a?(::String)
+      raise ArgumentError, "invalid mri_type #{mri_type.inspect}" unless @coders.key?(mri_type)
+      @coders[mri_type] = coder
     end
 
     def [](mri_type)
-      @coders[mri_type.to_s]
+      raise TypeError, "wrong argument type #{mri_type.class} (expected String)" unless mri_type.is_a?(::String)
+      raise ArgumentError, "invalid mri_type #{mri_type.inspect}" unless @coders.key?(mri_type)
+      @coders[mri_type]
     end
 
     def coders
       @coders.dup
     end
 
-    def __encode_param(value, idx)
+    def __encode_param(value, idx, enc = Encoding::UTF_8)
       c = resolve_coder(value)
       if c.is_a?(PG::Coder) && c.respond_to?(:encode)
-        [c.encode(value), c.oid, c.format]
+        [CoderHelpers.call_encode(c, value, enc), c.oid, c.format]
       else
         super
       end
@@ -1723,20 +1883,20 @@ module PG
     def resolve_coder(value)
       key = mri_type_of(value)
       c = @coders[key]
+      return nil if c.nil?
       if c.is_a?(Symbol)
         c = send(c, value)
-      elsif c && !c.is_a?(PG::Coder) && c.respond_to?(:call)
+      elsif !c.is_a?(PG::Coder)
         c = c.call(value)
       end
       if !c.nil? && !c.is_a?(PG::Coder)
-        raise TypeError, "wrong encoder type #{c.class} (expected PG::Coder or nil)"
+        raise TypeError, "wrong argument type #{c.class} (expected PG::Coder or nil)"
       end
       c
     end
 
     def mri_type_of(v)
       case v
-      when nil then "T_NIL"
       when true then "T_TRUE"
       when false then "T_FALSE"
       when ::Integer then "T_FIXNUM"
@@ -1780,18 +1940,13 @@ module PG
       end
     end
 
-    def typecast_query_param(param, field)
-      if @default_type_map
-        res = @default_type_map.__encode_param(param, field)
-        res ? res[0] : param
-      else
-        param
-      end
+    def typecast_query_param(_param, _field)
+      nil
     end
 
-    def typecast_copy_get(field_str, fieldno, format, _enc)
+    def typecast_copy_get(field_str, fieldno, format, enc)
       if @default_type_map
-        @default_type_map.__decode_copy_field(field_str, fieldno, format)
+        @default_type_map.__decode_copy_field(field_str, fieldno, format, enc)
       else
         field_str
       end
@@ -1801,18 +1956,18 @@ module PG
       typecast_result_value(result, row, col)
     end
 
-    def __decode_copy_field(raw, col, fmt)
-      typecast_copy_get(raw, col, fmt, Encoding::UTF_8)
+    def __decode_copy_field(raw, col, fmt, enc = Encoding::UTF_8)
+      typecast_copy_get(raw, col, fmt, enc)
     end
 
-    def __encode_param(value, idx)
-      res = typecast_query_param(value, idx)
-      if res.is_a?(PG::Coder)
-        [res.encode(value), res.oid, res.format]
-      elsif res.nil?
-        [nil, 0, 0]
+    def __encode_param(value, idx, enc = Encoding::UTF_8)
+      c = typecast_query_param(value, idx)
+      if c.nil?
+        super
+      elsif c.is_a?(PG::Coder)
+        [CoderHelpers.call_encode(c, value, enc), c.oid, c.format]
       else
-        [res.to_s, 0, 0]
+        raise TypeError, "return value of typecast_query_param must be nil or kind of PG::Coder (got #{c.class})"
       end
     end
   end
