@@ -25,6 +25,7 @@
 #include <math.h>
 #include <float.h>
 #include "go-mrb.h"
+#include "oruby-vm-compat.h"
 #include <mruby/opcode.h>
 #include <mruby/proc.h>
 #include <mruby/hash.h>
@@ -821,8 +822,8 @@ static mrb_value d_str_mod(mrb_state *mrb, mrb_value self) {
   return mrb_funcall_argv(mrb, mrb_obj_value(mrb->kernel_module), MRB_SYM(__oruby_csprintf), n + 1, buf);
 }
 
-/* String#to_sym: an encoding a Symbol need not record (core_ext keeps the
-   others in Symbol.__sym_encodings) */
+/* String#to_sym: an encoding a Symbol need not record (core_ext interns the
+   others in their encoding, String#__oruby_intern_enc) */
 static mrb_bool p_str_to_sym(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
   if (argc != 0 || !mrb_nil_p(blk)) return FALSE;
   if (RSTR_ENCODING(mrb_str_ptr(self)) != ORB_ENC_BINARY) return TRUE;
@@ -839,8 +840,7 @@ static mrb_bool p_sym_inspect(mrb_state *mrb, mrb_value self, mrb_int argc, cons
   for (mrb_int i = 0; i < len; i++) if ((unsigned char)s[i] & 0x80) return FALSE;
   if (len == 2 && (memcmp(s, "&&", 2) == 0 || memcmp(s, "||", 2) == 0)) return FALSE;
   if (len >= 2 && (s[len - 1] == '?' || s[len - 1] == '!') && ((s[0] >= 'A' && s[0] <= 'Z') || s[0] == '_')) return FALSE;
-  mrb_value tbl = mrb_iv_get(mrb, mrb_obj_value(mrb->symbol_class), MRB_IVSYM(__sym_encodings));
-  if (mrb_hash_p(tbl) && !mrb_hash_empty_p(mrb, tbl) && mrb_hash_key_p(mrb, tbl, self)) return FALSE;
+  if (oruby_sym_slot_of(mrb, mrb_symbol(self))) return FALSE;
   return TRUE;
 }
 

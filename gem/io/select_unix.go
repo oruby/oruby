@@ -20,6 +20,7 @@ func initSelect(mrb *oruby.MrbState, cIO oruby.RClass) {
 	cIO.DefineMethod("__write_nonblock", ioWriteNonblock, mrb.ArgsReq(1))
 	cIO.DefineMethod("__nonblock", ioNonblock, mrb.ArgsReq(1))
 	cIO.DefineMethod("__nonblock?", ioIsNonblock, mrb.ArgsNone())
+	cIO.DefineMethod("__reader_gone?", ioReaderGone, mrb.ArgsNone())
 }
 
 func fdOf(mrb *oruby.MrbState, self oruby.Value) (int, bool) {
@@ -196,6 +197,21 @@ func ioIsNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.SysFail(err)
 	}
 	return mrb.BoolValue(fl&unix.O_NONBLOCK != 0)
+}
+
+// ioReaderGone reports whether nothing reads the other end of the IO (a
+// pipe whose read end is closed: POLLERR on Linux, POLLHUP on macOS), where
+// data MRI would still hold in its write buffer could no longer be written.
+func ioReaderGone(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	fd, ok := fdOf(mrb, self)
+	if !ok || fd <= 2 {
+		return oruby.False
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
+	if n, err := unix.Poll(fds, 0); err != nil || n == 0 {
+		return oruby.False
+	}
+	return mrb.BoolValue(fds[0].Revents&(unix.POLLERR|unix.POLLHUP) != 0)
 }
 
 func withNonblock(fd int, f func() (int, error)) (int, error) {

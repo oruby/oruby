@@ -44,6 +44,11 @@ type engine struct {
 }
 
 func compile(source string, options int) (rx.Engine, error) {
+	if rx.SelfBackref(source, options) {
+		if e, err := compileNative(source, options); err == nil {
+			return e, nil
+		}
+	}
 	pattern, named, err := rx.TranslateFull(source, options)
 	if rx.NeedsNativeSyntax(err) {
 		return compileNative(source, options)

@@ -99,9 +99,22 @@ func (mrb *MrbState) Resolve(name string) (bool, error) {
 
 	// mark first, so recursive requires of the same feature terminate
 	mrb.features[name] = nil
-	mrb.features[name] = initFn(mrb)
+	data := initFn(mrb)
+	if ie, ok := data.(*InitError); ok {
+		delete(mrb.features, name)
+		return true, ie
+	}
+	mrb.features[name] = data
 	return true, nil
 }
+
+// InitError is what a gem's init function returns when the gem could not
+// be set up: Resolve reports it (its Err, a Ruby exception from a Funcall
+// among them, is what require raises) and the gem stays unloaded.
+type InitError struct{ Err error }
+
+func (e *InitError) Error() string { return e.Err.Error() }
+func (e *InitError) Unwrap() error { return e.Err }
 
 // GemSpec describes a compiled-in Go gem so RubyGems and Bundler can discover
 // and satisfy dependencies on it without external gemspec files or C builds.

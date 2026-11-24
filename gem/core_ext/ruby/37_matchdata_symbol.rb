@@ -134,25 +134,22 @@ if Object.const_defined?(:MatchData)
 end
 
 class String
+  # a name in another encoding than UTF-8 (or US-ASCII) is another Symbol
+  # than the same bytes in UTF-8, as MRI's: "Vπ".b.to_sym is not :"Vπ"
   alias __orig_str_to_sym to_sym
   def to_sym
-    sym = __orig_str_to_sym
     enc = encoding
     if !enc.ascii_compatible? || enc.dummy? || (!ascii_only? && enc != Encoding::UTF_8)
-      Symbol.__sym_encodings[sym] = enc
+      __oruby_intern_enc(enc.name)
+    else
+      __orig_str_to_sym
     end
-    sym
   end
   alias intern to_sym
 end
 
 class Symbol
-  @__sym_encodings = {}
   @__sym_names = {}
-
-  def self.__sym_encodings
-    @__sym_encodings
-  end
 
   def self.__sym_names
     @__sym_names
@@ -162,8 +159,8 @@ class Symbol
   alias __orig_sym_inspect inspect
 
   def encoding
-    if (e = Symbol.__sym_encodings[self])
-      return e
+    if (name = __oruby_encoding_name)
+      return Encoding.find(name)
     end
     s = __orig_sym_to_s
     return Encoding::US_ASCII if s.ascii_only?
@@ -246,6 +243,8 @@ class Symbol
     # name in the symbol's own encoding (a BINARY one is no broken UTF-8)
     raw = raw.dup.force_encoding(enc) unless raw.encoding == enc
     return ":#{raw}" if raw.match?(/\A[A-Z_][A-Za-z0-9_]*[!?]\z/)
+    # a name in another encoding than UTF-8 is quoted as its String is
+    return ":" + raw.inspect if enc != Encoding::UTF_8 && !raw.ascii_only?
     if enc == Encoding::UTF_8 && Encoding.default_external == Encoding::UTF_8 && raw.valid_encoding? && !raw.ascii_only?
       unless raw.match?(/[\x00-\x20"#'(),.:;<>?\[\\\]`{|}~]/)
         return ":#{raw}"

@@ -1061,6 +1061,17 @@ func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
 			}
 			replacement := `"` + label.String() + `".force_encoding(::Encoding.find("` + encName + `")).to_sym =>`
 			r.add(s[0], e[0], func(*rewriter) string { return replacement })
+		case C.ORB_SYMBOL_ENCODING:
+			// mruby symbols have no encoding slot: String#to_sym records the
+			// source's for a non-ASCII name. The name's text is kept as
+			// written, in a String literal quoted as the symbol was.
+			q := `"`
+			if src[s[0]+1] == '\'' {
+				q = `'`
+			}
+			name := q + string(src[s[1]:e[1]]) + q
+			replacement := `(::String.new(` + name + `, encoding: ::Encoding.find("` + encName + `")).to_sym)`
+			r.add(s[0], e[0], func(*rewriter) string { return replacement })
 		case C.ORB_LITERAL_ENCODING:
 			// MRI tags a literal with its source encoding; \u escapes make it
 			// UTF-8, which is oruby's default already

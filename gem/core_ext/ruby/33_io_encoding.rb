@@ -194,11 +194,27 @@ class IO
     __oruby_go_syswrite(obj)
   end
 
-  # what empties MRI's write buffer clears the flag
+  # what empties MRI's write buffer clears the flag. A pipe whose reader has
+  # gone since is EPIPE, as MRI's flush of that buffer is; the data stays
+  # pending, so close raises it too (after closing).
+  def __oruby_buffer_lost?
+    @__oruby_wpending && respond_to?(:__reader_gone?, true) && __reader_gone?
+  end
+
   alias __oruby_wp_flush flush
   def flush
+    raise Errno::EPIPE if __oruby_buffer_lost?
     @__oruby_wpending = nil
     __oruby_wp_flush
+  end
+
+  alias __oruby_wp_close close
+  def close
+    lost = !closed? && __oruby_buffer_lost?
+    @__oruby_wpending = nil
+    r = __oruby_wp_close
+    raise Errno::EPIPE if lost
+    r
   end
 
   alias __oruby_wp_fsync fsync
@@ -846,6 +862,7 @@ class IO
         r.__oruby_init_encoding("r", nil)
         w.__oruby_init_encoding("w", nil)
       end
+      w.sync = true # as MRI's rb_io_synchronized for the write end
       r.set_encoding(*args, **opts) unless args.empty?
       return [r, w] unless block
       begin

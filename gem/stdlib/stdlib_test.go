@@ -195,7 +195,8 @@ func TestPPLazyLoadAndOutput(t *testing.T) {
 	got, err := mrb.Eval(`
     class PPCapture
       def initialize; @text = ""; end
-      def write(text); @text << text; end
+      def <<(text); @text << text; self; end
+      def write(text); @text << text; text.bytesize; end
       def to_s; @text; end
     end
     out = PPCapture.new

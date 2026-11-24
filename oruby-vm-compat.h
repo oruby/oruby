@@ -47,4 +47,26 @@ mrb_value mrb_mod_eqq(mrb_state *, mrb_value);
    ORubyVMCompat.metaclass_class), not a singleton class of its own. */
 mrb_bool oruby_own_sclass_p(mrb_state *, const struct RBasic *);
 
+/* A class or module body's proc (OP_EXEC). The bit is MRB_PROC_NOARG, which
+   only a cfunc proc reads; a body's proc is never one. It tells
+   `class Object ... end` from the top level and from a method written there,
+   which all carry Object as their scope's class (class variable access from
+   toplevel, variable.c). */
+#define ORUBY_PROC_CLASS_BODY MRB_PROC_NOARG
+
+/* Symbol encodings (symbol.c, ORubyVMCompat.symbol_encodings): a slot 1..63
+   names an encoding other than UTF-8 / US-ASCII; 0 is the default. */
+uint8_t oruby_sym_enc_slot(const char *encoding_name);
+const char *oruby_sym_enc_name(uint8_t slot);
+mrb_sym oruby_intern_enc(mrb_state *, const char *, size_t, uint8_t slot);
+uint8_t oruby_sym_slot_of(mrb_state *, mrb_sym);
+extern _Thread_local uint8_t oruby_load_sym_slot;
+void oruby_eval_source_encoding_set(const char *src, size_t len, const char *encoding_name);
+const char *oruby_eval_source_encoding_take(const char *src, size_t len);
+
+/* GC hooks for the Ruby C API layer (gem/capi; gc.c, capi_gc_hooks) */
+struct RData;
+extern void (*oruby_gc_root_hook)(mrb_state *);
+extern size_t (*oruby_gc_cdata_mark_hook)(mrb_state *, struct RData *);
+
 #endif

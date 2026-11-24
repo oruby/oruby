@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "82a797fa1bd80e4a"
+const presymTable = "67439203972f6259"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -72,7 +72,6 @@ const (
 	IvSym___ret                                 MrbSym = C.MRB_IVSYM____ret                                 // "@__ret"
 	IvSym___sel                                 MrbSym = C.MRB_IVSYM____sel                                 // "@__sel"
 	IvSym___state                               MrbSym = C.MRB_IVSYM____state                               // "@__state"
-	IvSym___sym_encodings                       MrbSym = C.MRB_IVSYM____sym_encodings                       // "@__sym_encodings"
 	IvSym___t                                   MrbSym = C.MRB_IVSYM____t                                   // "@__t"
 	IvSym___timeout                             MrbSym = C.MRB_IVSYM____timeout                             // "@__timeout"
 	IvSym___tm_qry                              MrbSym = C.MRB_IVSYM____tm_qry                              // "@__tm_qry"
@@ -297,6 +296,7 @@ const (
 	SymQ___oruby_buffered                       MrbSym = C.MRB_SYM_Q____oruby_buffered                      // "__oruby_buffered?"
 	SymQ___oruby_core_proc                      MrbSym = C.MRB_SYM_Q____oruby_core_proc                     // "__oruby_core_proc?"
 	SymQ___oruby_inspect_symbol_quote           MrbSym = C.MRB_SYM_Q____oruby_inspect_symbol_quote          // "__oruby_inspect_symbol_quote?"
+	SymQ___oruby_native_extension               MrbSym = C.MRB_SYM_Q____oruby_native_extension              // "__oruby_native_extension?"
 	SymQ___oruby_own_hook                       MrbSym = C.MRB_SYM_Q____oruby_own_hook                      // "__oruby_own_hook?"
 	SymQ___oruby_plain_string                   MrbSym = C.MRB_SYM_Q____oruby_plain_string                  // "__oruby_plain_string?"
 	SymQ___oruby_popen_duplex                   MrbSym = C.MRB_SYM_Q____oruby_popen_duplex                  // "__oruby_popen_duplex?"
@@ -304,6 +304,7 @@ const (
 	SymQ___oruby_readable                       MrbSym = C.MRB_SYM_Q____oruby_readable                      // "__oruby_readable?"
 	SymQ___oruby_str_comparable                 MrbSym = C.MRB_SYM_Q____oruby_str_comparable                // "__oruby_str_comparable?"
 	SymQ___oruby_writable                       MrbSym = C.MRB_SYM_Q____oruby_writable                      // "__oruby_writable?"
+	SymQ___reader_gone                          MrbSym = C.MRB_SYM_Q____reader_gone                         // "__reader_gone?"
 	SymQ___set                                  MrbSym = C.MRB_SYM_Q____set                                 // "__set?"
 	SymQ___should_break                         MrbSym = C.MRB_SYM_Q____should_break                        // "__should_break?"
 	SymQ__str_match                             MrbSym = C.MRB_SYM_Q___str_match                            // "_str_match?"
@@ -697,6 +698,7 @@ const (
 	Sym_ORuby                                   MrbSym = C.MRB_SYM__ORuby                                   // "ORuby"
 	Sym_ORubyAotBreak                           MrbSym = C.MRB_SYM__ORubyAotBreak                           // "ORubyAotBreak"
 	Sym_ORubyAotReturn                          MrbSym = C.MRB_SYM__ORubyAotReturn                          // "ORubyAotReturn"
+	Sym_ORubyCAPI                               MrbSym = C.MRB_SYM__ORubyCAPI                               // "ORubyCAPI"
 	Sym_OS                                      MrbSym = C.MRB_SYM__OS                                      // "OS"
 	Sym_ObjectSpace                             MrbSym = C.MRB_SYM__ObjectSpace                             // "ObjectSpace"
 	Sym_Oj                                      MrbSym = C.MRB_SYM__Oj                                      // "Oj"
@@ -994,6 +996,7 @@ const (
 	Sym___identical                             MrbSym = C.MRB_SYM____identical                             // "__identical"
 	Sym___implicit                              MrbSym = C.MRB_SYM____implicit                              // "__implicit"
 	Sym___inflate_init                          MrbSym = C.MRB_SYM____inflate_init                          // "__inflate_init"
+	Sym___init_extension                        MrbSym = C.MRB_SYM____init_extension                        // "__init_extension"
 	Sym___insert                                MrbSym = C.MRB_SYM____insert                                // "__insert"
 	Sym___invalid_spans                         MrbSym = C.MRB_SYM____invalid_spans                         // "__invalid_spans"
 	Sym___invoke                                MrbSym = C.MRB_SYM____invoke                                // "__invoke"
@@ -1067,6 +1070,7 @@ const (
 	Sym___oruby_enc_concat                      MrbSym = C.MRB_SYM____oruby_enc_concat                      // "__oruby_enc_concat"
 	Sym___oruby_enc_inspect                     MrbSym = C.MRB_SYM____oruby_enc_inspect                     // "__oruby_enc_inspect"
 	Sym___oruby_enc_length                      MrbSym = C.MRB_SYM____oruby_enc_length                      // "__oruby_enc_length"
+	Sym___oruby_encoding_name                   MrbSym = C.MRB_SYM____oruby_encoding_name                   // "__oruby_encoding_name"
 	Sym___oruby_errinfo__                       MrbSym = C.MRB_SYM____oruby_errinfo__                       // "__oruby_errinfo__"
 	Sym___oruby_eval                            MrbSym = C.MRB_SYM____oruby_eval                            // "__oruby_eval"
 	Sym___oruby_expire                          MrbSym = C.MRB_SYM____oruby_expire                          // "__oruby_expire"
@@ -1096,6 +1100,7 @@ const (
 	Sym___oruby_inspect_part                    MrbSym = C.MRB_SYM____oruby_inspect_part                    // "__oruby_inspect_part"
 	Sym___oruby_install_defaults__              MrbSym = C.MRB_SYM____oruby_install_defaults__              // "__oruby_install_defaults__"
 	Sym___oruby_instrument                      MrbSym = C.MRB_SYM____oruby_instrument                      // "__oruby_instrument"
+	Sym___oruby_intern_enc                      MrbSym = C.MRB_SYM____oruby_intern_enc                      // "__oruby_intern_enc"
 	Sym___oruby_interrupt                       MrbSym = C.MRB_SYM____oruby_interrupt                       // "__oruby_interrupt"
 	Sym___oruby_interrupt_taken                 MrbSym = C.MRB_SYM____oruby_interrupt_taken                 // "__oruby_interrupt_taken"
 	Sym___oruby_io_enum                         MrbSym = C.MRB_SYM____oruby_io_enum                         // "__oruby_io_enum"
@@ -1755,6 +1760,7 @@ const (
 	Sym_instance_variables                      MrbSym = C.MRB_SYM__instance_variables                      // "instance_variables"
 	Sym_instance_variables_to_inspect           MrbSym = C.MRB_SYM__instance_variables_to_inspect           // "instance_variables_to_inspect"
 	Sym_int32                                   MrbSym = C.MRB_SYM__int32                                   // "int32"
+	Sym_integer_at                              MrbSym = C.MRB_SYM__integer_at                              // "integer_at"
 	Sym_interests                               MrbSym = C.MRB_SYM__interests                               // "interests"
 	Sym_internal_class_of                       MrbSym = C.MRB_SYM__internal_class_of                       // "internal_class_of"
 	Sym_internal_encoding                       MrbSym = C.MRB_SYM__internal_encoding                       // "internal_encoding"

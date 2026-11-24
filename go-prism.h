@@ -26,6 +26,7 @@ enum {
   ORB_SOURCE_ENCODING,    // s0: __ENCODING__
   ORB_LITERAL_ENCODING,   // s0: literal in non-UTF-8 source; flags 1: \u (UTF-8), 2: binary
   ORB_HASH_LABEL_ENCODING, // s0: bare non-ASCII Hash label, s1: label text
+  ORB_SYMBOL_ENCODING,    // s0: :sym / :"sym" literal of non-ASCII bytes in non-UTF-8 source, s1: its bytes (unescaped by Go)
   ORB_MASGN_VALUE,        // s0: the single value of a, b = value, s1: the assignment; flags 1: its value is unused
   ORB_MASGN_OPERAND,      // s0: a receiver or index evaluated before the RHS, s1: the assignment
   ORB_KWSPLAT,            // s0: the value of **value in a call or Hash literal

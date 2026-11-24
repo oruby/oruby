@@ -83,3 +83,22 @@ class Method
   def <<(g) = to_proc << g
   def >>(g) = to_proc >> g
 end
+
+# MRI's prelude: binding.irb loads IRB, whose Binding#irb replaces this one.
+# IRB is a bundled gem: where RubyGems was not loaded at startup (the mspec
+# runner's children), it is loaded to find it.
+class Binding
+  def irb
+    begin
+      require 'irb'
+    rescue LoadError
+      raise if defined?(::Gem)
+      require 'rubygems'
+      require 'irb'
+    end
+    irb
+  end
+
+  # suppress redefinition warning
+  alias irb irb
+end

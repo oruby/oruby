@@ -384,28 +384,28 @@ class Pathname
 
   # -- IO / File / Dir / FileTest delegation -----------------------------------
 
-  def each_line(*args, &block)
-    File.foreach(@path, *args, &block)
+  def each_line(*args, **kw, &block)
+    File.foreach(@path, *args, **kw, &block)
   end
 
-  def read(*args)
-    File.read(@path, *args)
+  def read(*args, **kw)
+    File.read(@path, *args, **kw)
   end
 
-  def binread(*args)
-    File.binread(@path, *args)
+  def binread(*args, **kw)
+    File.binread(@path, *args, **kw)
   end
 
-  def readlines(*args)
-    File.readlines(@path, *args)
+  def readlines(*args, **kw)
+    File.readlines(@path, *args, **kw)
   end
 
   def write(*args, **kw)
     File.write(@path, *args, **kw)
   end
 
-  def binwrite(*args)
-    File.binwrite(@path, *args)
+  def binwrite(*args, **kw)
+    File.binwrite(@path, *args, **kw)
   end
 
   def sysopen(*args)

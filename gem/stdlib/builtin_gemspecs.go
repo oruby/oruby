@@ -15,13 +15,17 @@ func init() {
 		{Name: "bigdecimal", Version: "3.2.2", Feature: "bigdecimal", Summary: "ORuby built-in BigDecimal", Files: []string{"lib/bigdecimal.rb"}},
 		{Name: "csv", Version: "3.3.2", Feature: "csv", Summary: "ORuby built-in CSV", Files: []string{"lib/csv.rb"}},
 		{Name: "drb", Version: "2.2.1", Feature: "drb", Summary: "ORuby built-in dRuby", Files: []string{"lib/drb.rb"}},
-		{Name: "logger", Version: "1.6.6", Feature: "logger", Summary: "ORuby built-in Logger", Files: []string{"lib/logger.rb"}},
+		{Name: "logger", Version: "1.7.0", Summary: "ORuby built-in Logger (lib/oruby/4.1.0)", Files: []string{"lib/logger.rb"}},
 		{Name: "matrix", Version: "0.4.2", Feature: "matrix", Summary: "ORuby built-in Matrix", Files: []string{"lib/matrix.rb"}},
 		{Name: "observer", Version: "0.1.2", Feature: "observer", Summary: "ORuby built-in Observer", Files: []string{"lib/observer.rb"}},
 		{Name: "ostruct", Version: "0.6.1", Feature: "ostruct", Summary: "ORuby built-in OpenStruct", Files: []string{"lib/ostruct.rb"}},
 		{Name: "prime", Version: "0.1.3", Feature: "prime", Summary: "ORuby built-in Prime", Files: []string{"lib/prime.rb"}},
 		{Name: "racc", Version: "1.8.1", Feature: "racc", Summary: "ORuby built-in Racc LALR parser runtime", Files: []string{"lib/racc.rb", "lib/racc/parser.rb"}},
 		{Name: "syslog", Version: "0.2.0", Feature: "syslog", Summary: "ORuby built-in Syslog", Files: []string{"lib/syslog.rb"}},
+		{Name: "tsort", Version: "0.2.0", Feature: "tsort", Summary: "ORuby built-in TSort", Files: []string{"lib/tsort.rb"}},
+		// prism is MRI's C extension; oruby's is the Ruby::Prism library over
+		// the parser in libmruby (lib/oruby/4.1.0/prism.rb, scripts/gen_prism.rb)
+		{Name: "prism", Version: "1.9.0", Summary: "ORuby Prism (Ruby::Prism over libmruby's parser)", Files: []string{"lib/prism.rb"}},
 
 		// Compiled-in pure-Go / native replacements for C-extension gems
 		{Name: "nokogiri", Version: "1.19.7", Feature: "nokogiri", Summary: "ORuby pure-Go Nokogiri (XML/HTML5/XPath/CSS/XSD/XSLT/RelaxNG)", Files: []string{"lib/nokogiri.rb"}},
@@ -100,6 +104,10 @@ func initRubyGemsDefaults(mrb *oruby.MrbState) any {
 		return ary
 	}, mrb.ArgsNone())
 
+	gemMod.DefineClassMethod("__oruby_native_extension?", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		return mrb.BoolValue(mrb.GemAvailable(mrb.String(mrb.GetArgsFirst())))
+	}, mrb.ArgsReq(1))
+
 	rb.LoadRuby(mrb, "<internal:rubygems/defaults/oruby>", []byte(`
 module ORubyDefaultGemSpecs
   def __oruby_builtin_specs
@@ -138,6 +146,18 @@ module ORubyDefaultGemSpecs
 end
 
 Gem::Specification.singleton_class.prepend(ORubyDefaultGemSpecs)
+
+# A gem's C extension that oruby compiles in (a Go gem registered under the
+# extension's name, through the Ruby C API layer gem/capi: rbs_extension)
+# is built: RubyGems neither ignores the gem nor asks for a build.
+module ORubyNativeExtensions
+  def missing_extensions?
+    return false if !extensions.empty? &&
+      extensions.all? { |e| Gem.__oruby_native_extension?(File.basename(File.dirname(e))) }
+    super
+  end
+end
+Gem::Specification.prepend(ORubyNativeExtensions)
 `))
 	return nil
 }

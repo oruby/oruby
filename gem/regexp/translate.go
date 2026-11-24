@@ -721,6 +721,16 @@ func (tr *translator) escape() error {
 		}
 	default:
 		tr.i -= 2
+		if rs, err := tr.codepointList(); err != nil {
+			return err
+		} else if rs != nil {
+			// \u{a b c} is the characters in sequence; a quantifier after it
+			// repeats the last one, as Onigmo
+			for _, r := range rs {
+				tr.atom(literal(r))
+			}
+			return nil
+		}
 		r, err := tr.escapedChar()
 		if err != nil {
 			return err
@@ -728,6 +738,33 @@ func (tr *translator) escape() error {
 		tr.atom(literal(r))
 	}
 	return nil
+}
+
+// codepointList reads a \u{...} escape holding more than one code point at
+// tr.i and returns them; nil (tr.i unchanged) for any other escape.
+func (tr *translator) codepointList() ([]rune, error) {
+	src := tr.src
+	if !strings.HasPrefix(src[tr.i:], `\u{`) {
+		return nil, nil
+	}
+	end := strings.IndexByte(src[tr.i:], '}')
+	if end < 0 {
+		return nil, nil
+	}
+	body := strings.Fields(src[tr.i+3 : tr.i+end])
+	if len(body) < 2 {
+		return nil, nil
+	}
+	rs := make([]rune, 0, len(body))
+	for _, f := range body {
+		n, err := strconv.ParseUint(f, 16, 32)
+		if err != nil || n > unicode.MaxRune || len(f) > 6 {
+			return nil, tr.errorf("invalid Unicode list")
+		}
+		rs = append(rs, rune(n))
+	}
+	tr.i += end + 1
+	return rs, nil
 }
 
 // escapedChar reads a character escape at tr.i (pointing at '\\') and
@@ -1147,6 +1184,14 @@ func (tr *translator) parseClass() (*cset, error) {
 			}
 			cur.items = append(cur.items, it)
 		default:
+			if rs, err := tr.codepointList(); err != nil {
+				return nil, err
+			} else if rs != nil {
+				for _, r := range rs {
+					cur.items = append(cur.items, citem{frag: classLiteral(r)})
+				}
+				continue
+			}
 			lo, err := tr.classChar()
 			if err != nil {
 				return nil, err

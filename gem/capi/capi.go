@@ -1,0 +1,62 @@
+// Package capi is ORuby's Ruby C API: MRI's C extension API (ruby.h)
+// implemented over the mruby C API, so a C extension compiles from source
+// into a standalone oruby process or a compiled oruby app.
+//
+// The API has no mrb_state argument, so it is bound to one state: the one
+// that requires the first extension. That is the process's only state in
+// standalone oruby; an embedding that opens more states can use the
+// extensions from the first one alone (a require from another raises).
+//
+// An extension is compiled by a Go package of its own, which includes the
+// extension's C sources and registers it with Extension: `require name`
+// then runs the extension's Init function. The headers are in include/
+// (cgo: -I${SRCDIR}/../capi/include).
+package capi
+
+/*
+#cgo CFLAGS: -I${SRCDIR}/include -I${SRCDIR}/../.. -I${SRCDIR}/../../mruby/include -I${SRCDIR}/../../mruby/build/host/include
+#cgo CFLAGS: -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_SYMBOL_MAX=0 -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET -DMRB_USE_COERCE -DMRB_USE_BIGINT -DMRB_USE_COMPLEX -DMRB_USE_REFINEMENTS -DMRB_USE_GC_WEAK
+#include "capi.h"
+*/
+import "C"
+
+import (
+	"errors"
+	"unsafe"
+
+	"github.com/oruby/oruby"
+)
+
+// ErrOtherState is returned when an extension is required from another
+// mrb_state than the one the C API is bound to.
+var ErrOtherState = errors.New("the Ruby C API is bound to another mrb_state (C extensions run in one state per process)")
+
+// Bind binds the C API to mrb, the state extensions run in. Extension does
+// it on the first require; it is an error once another state is bound.
+func Bind(mrb *oruby.MrbState) error {
+	if C.orb_capi_bind_addr(C.uintptr_t(mrb.State())) == 0 {
+		return ErrOtherState
+	}
+	return nil
+}
+
+// Extension registers a C extension compiled into the binary under its
+// feature name (the name of its .so/.bundle in MRI, e.g. "rbs_extension"):
+// `require name` binds the C API and calls init, the extension's
+// Init_<name> function (unsafe.Pointer(C.Init_name)). A raise in it is
+// the require's error.
+func Extension(name string, init unsafe.Pointer) {
+	oruby.LazyGem(name, func(mrb *oruby.MrbState) interface{} {
+		if err := Bind(mrb); err != nil {
+			return &oruby.InitError{Err: err}
+		}
+		if !mrb.ClassDefined("ORubyCAPI") {
+			return &oruby.InitError{Err: ErrOtherState}
+		}
+		mod := mrb.ModuleGet("ORubyCAPI")
+		if _, err := mrb.Funcall(mod.Value(), mrb.Intern("__init_extension"), mrb.CPtrValue(uintptr(init))); err != nil {
+			return &oruby.InitError{Err: err}
+		}
+		return nil
+	})
+}

@@ -57,11 +57,13 @@ v, err := mrb.Eval(`ruby code`)
 | `signal.go`, `go-signal.c` | Asynchronous requests into Ruby: OS signals (`signal.Notify`) and `Timeout.timeout` deadlines (a Go `context.WithTimeoutCause` per block, derived from the state's current one: `mrb.GoContext()`). A goroutine marks the request and arms a one-shot `code_fetch_hook` (or the injector polls it), which raises at the VM's next instruction (`Signal.__oruby_signal__`, `Timeout.__oruby_expire`). `gem/signal` and `gem/stdlib/ruby/timeout.rb` hold the Ruby side; `cmd/oruby` installs MRI's default signal handlers (`signal.InstallDefaults`). |
 | `gems.go` | Go-gem registry: `oruby.Gem(name, initFn)`, `Resolve`, `Require`. |
 | `gem/<name>/` | Stdlib-like gems implemented in Go (base64, json, io, regexp, time, process, zlib, database (sqlite3), erubi, …). `gem/fullcore` blank-imports a standard set. |
+| `gem/capi/` | Ruby C API: MRI's extension API (`include/ruby.h`, `ruby/*.h`: own headers with MRI's names, signatures and VALUE layout, not copies) over the mruby C API, for the one `mrb_state` of standalone oruby (`orb_capi_bind`; unbound when it closes). A VALUE is a word as MRI's (immediates encoded as MRI does, an object is its mruby address, others boxed); TypedData `dmark` and `rb_gc_register_address` are GC hooks (`ORubyVMCompat.capi_gc_hooks`). An extension is a Go package that includes its C sources and calls `capi.Extension(name, unsafe.Pointer(C.Init_name))`; `require name` runs Init (a raise in it is the require's error). `gem/capi/testext` tests it. Static only so far: no `.bundle` loading or mkmf build. |
+| `gem/rbs/` | The rbs gem's C extension (`rbs_extension`) compiled through `gem/capi` from the vendored gem's sources (`lib/oruby/gems/4.1.0/gems/rbs-4.2.0`, unchanged). `cmd/oruby` and `cmd/orbi` import it. A gem whose extension is a Go gem by that name counts as built (`missing_extensions?`, `gem/stdlib/builtin_gemspecs.go`). |
 | `cmd/orbi` | REPL (mirb equivalent). |
 | `cmd/oruby` | Script runner (mruby equivalent). |
 | `cmd/orubyc` | Compiler (mrbc equivalent). |
 | `scripts/` | mruby build configs, gembox, API-coverage and `.def` scripts. |
-| `lib/oruby/` | Install layout of the Ruby libraries ORuby ships as files: vendored RubyGems/Bundler 4.1.0.beta2 (`4.1.0/`) and MRI default gem specs (`gems/4.1.0/specifications/default`). Unmodified upstream copies — do not edit. `golayout.go` finds it from the executable (`<prefix>/bin/oruby`). |
+| `lib/oruby/` | Install layout of the Ruby libraries ORuby ships as files: vendored RubyGems/Bundler 4.1.0.beta2 (`4.1.0/`), MRI default gem specs (`gems/4.1.0/specifications/default`) and MRI 4.1's bundled gems rbs, rdoc, irb and reline (`gems/4.1.0/gems`, `specifications`). Unmodified upstream copies — do not edit. `golayout.go` finds it from the executable (`<prefix>/bin/oruby`). |
 | `mruby/` | Submodule — **do not edit**. |
 
 ## Conventions

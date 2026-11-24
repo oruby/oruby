@@ -399,7 +399,18 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
       }
       const char *s = RSTRING_PTR(argv[0]);
       mrb_int len = RSTRING_LEN(argv[0]);
-      if (!mrb_nil_p(str_enc_tag(mrb, argv[0])) ||
+      /* the encoding a source other than UTF-8 is parsed in (symbol.c's
+         slot table keeps the name), set below for the string parsed */
+      const char *src_enc = NULL;
+      mrb_value tag = str_enc_tag(mrb, argv[0]);
+      if (!mrb_nil_p(tag)) {
+        mrb_value name = mrb_funcall_id(mrb, tag, MRB_SYM(name), 0);
+        if (mrb_string_p(name)) src_enc = oruby_sym_enc_name(oruby_sym_enc_slot(mrb_str_to_cstr(mrb, name)));
+      }
+      else if (RSTR_BINARY_P(mrb_str_ptr(argv[0])) && !str_is_ascii(s, len)) {
+        src_enc = oruby_sym_enc_name(oruby_sym_enc_slot("ASCII-8BIT"));
+      }
+      if (!mrb_nil_p(tag) ||
           /* a BINARY source with other than ASCII: its literals are BINARY */
           (RSTR_BINARY_P(mrb_str_ptr(argv[0])) && !str_is_ascii(s, len)) ||
           src_contains(s, len, "alias") || src_contains(s, len, "undef") ||
@@ -448,6 +459,10 @@ static mrb_value eval_call(mrb_state *mrb, mrb_value self, int which) {
         ci->stack[1] = mrb_ary_new_from_values(mrb, n, args);
         ci->stack[2] = blk;
         ci->n = 15;
+      }
+      if (src_enc) {
+        mrb_value src = mrb_get_argv(mrb)[0];
+        if (mrb_string_p(src)) oruby_eval_source_encoding_set(RSTRING_PTR(src), (size_t)RSTRING_LEN(src), src_enc);
       }
     }
   }
@@ -2627,13 +2642,9 @@ static int hash_inspect_entry(mrb_state *mrb, mrb_value key, mrb_value value, vo
       mrb_bool ascii = inspect_ascii(name);
       if (ascii) us_ascii_str(mrb, name);
       else {
-        mrb_value tags = mrb_iv_get(mrb, mrb_obj_value(mrb->symbol_class), MRB_IVSYM(__sym_encodings));
-        if (mrb_hash_p(tags)) {
-          mrb_value tag = mrb_hash_get(mrb, tags, key);
-          if (!mrb_nil_p(tag)) {
-            RSTR_ENCODING_SET(mrb_str_ptr(name), MRB_STR_ENCODING_BINARY);
-            mrb_iv_set(mrb, name, MRB_SYM(__encoding), tag);
-          }
+        if (oruby_sym_slot_of(mrb, sym)) {
+          /* the name in the Symbol's own encoding (Symbol#to_s) */
+          name = mrb_funcall_id(mrb, key, MRB_SYM(to_s), 0);
         }
       }
       mrb_bool quote = ascii || !b->normalize ? sym_key_needs_quote(mrb, sym) :
@@ -4142,7 +4153,25 @@ static mrb_value k_dsyms_m(mrb_state *mrb, mrb_value self) {
   return a;
 }
 
+/* String#__oruby_intern_enc(name): the Symbol of the string's bytes in the
+   named encoding, which is another Symbol than the same bytes in UTF-8
+   (symbol.c, ORubyVMCompat.symbol_encodings) */
+static mrb_value str_intern_enc_m(mrb_state *mrb, mrb_value self) {
+  mrb_value name = mrb_get_arg1(mrb);
+  uint8_t slot = mrb_string_p(name) ? oruby_sym_enc_slot(mrb_str_to_cstr(mrb, name)) : 0;
+  return mrb_symbol_value(oruby_intern_enc(mrb, RSTRING_PTR(self), (size_t)RSTRING_LEN(self), slot));
+}
+
+/* Symbol#__oruby_encoding_name: the encoding a Symbol was interned in, nil
+   for the default (UTF-8, or US-ASCII for an ASCII name) */
+static mrb_value sym_enc_name_m(mrb_state *mrb, mrb_value self) {
+  const char *name = oruby_sym_enc_name(oruby_sym_slot_of(mrb, mrb_symbol(self)));
+  return name ? mrb_str_new_cstr(mrb, name) : mrb_nil_value();
+}
+
 static void install_method_identity(mrb_state *mrb) {
+  mrb_define_method_id(mrb, mrb->string_class, MRB_SYM(__oruby_intern_enc), str_intern_enc_m, MRB_ARGS_REQ(1));
+  mrb_define_method_id(mrb, mrb->symbol_class, MRB_SYM(__oruby_encoding_name), sym_enc_name_m, MRB_ARGS_NONE());
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_fwd), k_fwd_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_dsym), k_dsym_m, MRB_ARGS_REQ(1));
   mrb_define_class_method_id(mrb, mrb->kernel_module, MRB_SYM(__oruby_dsyms), k_dsyms_m, MRB_ARGS_REQ(1));

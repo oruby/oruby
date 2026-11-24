@@ -211,16 +211,25 @@ func (r *reader) symlink() (oruby.MrbSym, error) {
 	return r.symbols[id], nil
 }
 
-// symreal reads a Symbol's name, and its encoding when ivar (mruby keeps no
-// encoding in a Symbol: the name's bytes are its identity)
+// symreal reads a Symbol's name, and its encoding when ivar: a name in
+// another encoding than UTF-8 is another Symbol (String#__oruby_intern_enc),
+// and one dumped without an encoding is BINARY unless it is ASCII
 func (r *reader) symreal(ivar bool) (oruby.MrbSym, error) {
 	name, err := r.bytes()
 	if err != nil {
 		return 0, err
 	}
-	sym := r.mrb.Intern(string(name))
-	r.symbols = append(r.symbols, sym)
-	if ivar {
+	idx := len(r.symbols)
+	r.symbols = append(r.symbols, 0) // the ivars below may add symbols
+	enc := ""
+	if !ivar {
+		for _, b := range name {
+			if b >= 0x80 {
+				enc = "ASCII-8BIT"
+				break
+			}
+		}
+	} else {
 		n, err := r.count()
 		if err != nil {
 			return 0, err
@@ -230,14 +239,30 @@ func (r *reader) symreal(ivar bool) (oruby.MrbSym, error) {
 			if err != nil {
 				return 0, err
 			}
-			if _, err := r.object(); err != nil {
+			v, err := r.object()
+			if err != nil {
 				return 0, err
 			}
-			if k := r.mrb.SymName(key); k != "E" && k != "encoding" {
+			switch r.mrb.SymName(key) {
+			case "E":
+			case "encoding":
+				if v.Type() == oruby.MrbTTString {
+					enc = r.mrb.String(v)
+				}
+			default:
 				return 0, oruby.EArgumentError("invalid symbol ivar")
 			}
 		}
 	}
+	sym := r.mrb.Intern(string(name))
+	if enc != "" {
+		v, err := r.mrb.Funcall(r.mrb.StringValue(string(name)), r.mrb.Intern("__oruby_intern_enc"), enc)
+		if err != nil {
+			return 0, err
+		}
+		sym = v.Symbol()
+	}
+	r.symbols[idx] = sym
 	return sym, nil
 }
 

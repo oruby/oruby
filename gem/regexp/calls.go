@@ -309,3 +309,62 @@ func decodeGroupName(name string) string {
 	}
 	return string(b)
 }
+
+// SelfBackref reports whether a backreference (\N, \k<name>) is written
+// inside the group it refers to, as in /(a\1?){2}/. Onigmo resets such a
+// reference before each match of its group; regexp2 keeps the previous
+// iteration's capture, so the fallback sends these patterns to the native
+// engine.
+func SelfBackref(src string, options int) bool {
+	if !strings.Contains(src, `\`) {
+		return false
+	}
+	groups, _, err := scanGroups(src, options&Extended != 0)
+	if err != nil {
+		return false
+	}
+	for _, g := range groups {
+		body := src[g.bodyStart:g.bodyEnd]
+		classDepth := 0
+		for i := 0; i < len(body); i++ {
+			c := body[i]
+			if classDepth > 0 {
+				switch c {
+				case '\\':
+					i++
+				case '[':
+					classDepth++
+				case ']':
+					classDepth--
+				}
+				continue
+			}
+			switch c {
+			case '[':
+				classDepth = 1
+			case '\\':
+				if i+1 >= len(body) {
+					continue
+				}
+				n := body[i+1]
+				switch {
+				case n >= '1' && n <= '9':
+					j := i + 1
+					for j < len(body) && body[j] >= '0' && body[j] <= '9' {
+						j++
+					}
+					if num, err := strconv.Atoi(body[i+1 : j]); err == nil && num == g.num {
+						return true
+					}
+				case n == 'k' && g.name != "" && i+2 < len(body) && (body[i+2] == '<' || body[i+2] == '\''):
+					if rest := body[i+3:]; strings.HasPrefix(rest, g.name) && len(rest) > len(g.name) &&
+						(rest[len(g.name)] == '>' || rest[len(g.name)] == '\'') {
+						return true
+					}
+				}
+				i++
+			}
+		}
+	}
+	return false
+}

@@ -613,6 +613,7 @@ visit(const pm_node_t *node, void *data)
       span(r, 1, a->new_name);
       span(r, 2, a->old_name);
     }
+    else if (sc->nonutf8) return PM_VISIT_SKIP; /* names stay literals (ORB_SYMBOL_ENCODING) */
     break;
   }
   case PM_UNDEF_NODE: {
@@ -627,6 +628,26 @@ visit(const pm_node_t *node, void *data)
         span(nr, 0, u->names.nodes[i]);
         keep_dsym(sc, u->names.nodes[i]);
       }
+    }
+    else if (sc->nonutf8) return PM_VISIT_SKIP; /* names stay literals (ORB_SYMBOL_ENCODING) */
+    break;
+  }
+  case PM_SYMBOL_NODE: {
+    /* MRI gives a non-ASCII symbol the source's encoding; mruby symbols have
+       no encoding, so it is made by String#to_sym, which records one. Only
+       :sym and :"sym": a label or a %i[] element is not an expression. */
+    const pm_symbol_node_t *sym = (const pm_symbol_node_t *)node;
+    if (!sc->nonutf8 || sym->opening_loc.length == 0 || sc->src[sym->opening_loc.start] != ':') break;
+    if (PM_NODE_FLAG_P(node, PM_SYMBOL_FLAGS_FORCED_UTF8_ENCODING)) break;
+    const uint8_t *bs = pm_string_source(&sym->unescaped);
+    size_t bl = pm_string_length(&sym->unescaped);
+    for (size_t j = 0; j < bl; j++) {
+      if (bs[j] < 0x80) continue;
+      r = add(sc, ORB_SYMBOL_ENCODING);
+      span(r, 0, node);
+      r->s[1] = (int32_t)sym->content_loc.start;
+      r->e[1] = r->s[1] + (int32_t)sym->content_loc.length;
+      break;
     }
     break;
   }

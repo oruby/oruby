@@ -370,6 +370,7 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       "      if (svar_own_scope_p(p) || (MRB_PROC_SCOPE_P(p) && MRB_PROC_ENV(p) == CI_ENV(ci))) {\n")
     strcat_private_to_s(source)
     class_block_return(source)
+    class_body_proc(source)
     gvar_uninitialized_warning(source)
     vcall_name_error(source)
     # a module method bound to an unrelated receiver runs under an ICLASS whose
@@ -440,6 +441,13 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
     C
   end
 
+  # a class or module body's proc is marked, so the class variable walk
+  # (variable.c) tells `class Object` from the top level
+  def self.class_body_proc(source)
+    replace(source, "      p->flags |= MRB_PROC_SCOPE | MRB_PROC_CREF;\n\n      /* prepare call stack */",
+      "      p->flags |= MRB_PROC_SCOPE | MRB_PROC_CREF | ORUBY_PROC_CLASS_BODY;\n\n      /* prepare call stack */")
+  end
+
   # "#{obj}" calls obj's #to_s even when it is private, as CRuby's
   # rb_obj_as_string does: the send in OP_STRCAT's slow path (the static
   # prepare_exec_strcat_irep) is exempt from the visibility check.
@@ -452,6 +460,10 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <prism/internal/encoding.h>")
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     class_method_definitions(source)
+    # alias (alias_method) in a module also finds Object's methods, as
+    # CRuby's rb_alias: `module M; alias ruby_load load; end`
+    replace(source, "  mrb_method_t m = mrb_method_search_vm(mrb, &owner, b);\n  if (MRB_METHOD_UNDEF_P(m)) {\n    mrb_name_error(mrb, b, \"undefined method '%n' for class %C\", b, c);",
+      "  mrb_method_t m = mrb_method_search_vm(mrb, &owner, b);\n  if (MRB_METHOD_UNDEF_P(m) && c->tt == MRB_TT_MODULE) {\n    owner = mrb->object_class;\n    m = mrb_method_search_vm(mrb, &owner, b);\n  }\n  if (MRB_METHOD_UNDEF_P(m)) {\n    mrb_name_error(mrb, b, \"undefined method '%n' for class %C\", b, c);")
     replace(source, "static mrb_value\nmrb_mod_eqq(mrb_state *mrb,", "mrb_value\nmrb_mod_eqq(mrb_state *mrb,")
     replace(source, '  if (o->c->tt == MRB_TT_SCLASS) return;', <<~'C'.chomp.gsub(/^/, "  "))
       if (o->c->tt == MRB_TT_SCLASS) return;
@@ -820,6 +832,107 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       "    for (c2 = c->super; c2 && c2->tt == MRB_TT_ICLASS; c2 = c2->super) ;\n" \
       "    if (c2 && c2 != mrb->object_class && const_lookup(mrb, c2, sym, &v, load)) return v;\n" \
       "  }\n")
+    cvar_checks(source)
+  end
+
+  # class variables as CRuby: one read or written where the scope's class is
+  # the top level's (the file, or a method or block written there, not a
+  # `class Object` body) is a RuntimeError, and so is one an ancestor also
+  # has: the subclass's copy is "overtaken" (Module#class_variable_get/set
+  # included, as rb_cvar_get/set).
+  def self.cvar_checks(source)
+    replace(source, "  mrb_value v = mrb_nil_value();\n  mrb_bool given = FALSE;\n\n  while (c) {\n    if (iv_get(mrb, class_iv_ptr(c), sym, &v)) {\n      given = TRUE;\n    }\n    c = c->super;\n  }\n  if (given) return v;\n",
+      <<~'C')
+        mrb_value v = mrb_nil_value();
+        mrb_bool given = FALSE;
+        struct RClass *front = NULL, *target = NULL;
+
+        while (c) {
+          if (iv_get(mrb, class_iv_ptr(c), sym, &v)) {
+            given = TRUE;
+            if (!front) front = c;
+            target = c;
+          }
+          c = c->super;
+        }
+        if (given) {
+          oruby_cvar_overtaken(mrb, front, target, sym);
+          return v;
+        }
+      C
+    replace(source, "  struct RClass * cls = c;\n\n  while (c) {\n    iv_tbl *t = class_iv_ptr(c);\n    int pos = iv_get(mrb, t, sym, NULL);\n\n    if (pos) {\n",
+      <<~'C')
+        struct RClass * cls = c;
+
+        while (c) {
+          iv_tbl *t = class_iv_ptr(c);
+          int pos = iv_get(mrb, t, sym, NULL);
+
+          if (pos) {
+            for (struct RClass *s = c->super; s; s = s->super) {
+              if (iv_get(mrb, class_iv_ptr(s), sym, NULL)) oruby_cvar_overtaken(mrb, c, s, sym);
+            }
+      C
+    replace(source, "mrb_value\nmrb_mod_cv_get(", <<~'C'.chomp)
+      static struct RClass*
+      oruby_cvar_origin(struct RClass *c)
+      {
+        return c->tt == MRB_TT_ICLASS ? c->c : c;
+      }
+
+      static void
+      oruby_cvar_overtaken(mrb_state *mrb, struct RClass *front, struct RClass *target, mrb_sym sym)
+      {
+        if (front == target) return;
+        front = oruby_cvar_origin(front);
+        target = oruby_cvar_origin(target);
+        if (front == target) return;
+        mrb_raisef(mrb, E_RUNTIME_ERROR, "class variable %n of %v is overtaken by %v",
+                   sym, mrb_obj_value(front), mrb_obj_value(target));
+      }
+
+      mrb_value
+      mrb_mod_cv_get(
+    C
+    replace(source, "mrb_value\nmrb_vm_cv_get(mrb_state *mrb, mrb_sym sym)\n{\n  return mrb_mod_cv_get(mrb, cv_scope_class(mrb, mrb->c->ci->proc), sym);\n}\n",
+      <<~'C')
+        /* Whether the scope a class variable written in `p` is read from is the
+           top level: walked as cv_scope_class(), a scope carrying Object is a
+           `class Object` body, or the file's own proc (no upper), or a method
+           or an eval string written in some other scope, which is then the
+           one asked. */
+        static mrb_bool
+        oruby_cv_toplevel_p(mrb_state *mrb, const struct RProc *p)
+        {
+          for (; p && !MRB_PROC_CFUNC_P(p); p = p->upper) {
+            if (!MRB_PROC_CREF_P(p) || MRB_PROC_GIVEN_P(p)) continue;
+            struct RClass *c = MRB_PROC_TARGET_CLASS(p);
+            if (!c || c->tt == MRB_TT_SCLASS) continue;
+            if (c != mrb->object_class) return FALSE;
+            if (p->flags & ORUBY_PROC_CLASS_BODY) return FALSE;
+          }
+          return TRUE;
+        }
+
+        static struct RClass*
+        oruby_cv_class(mrb_state *mrb)
+        {
+          const struct RProc *p = mrb->c->ci->proc;
+          struct RClass *c = cv_scope_class(mrb, p);
+          if (c == mrb->object_class && oruby_cv_toplevel_p(mrb, p)) {
+            mrb_raise(mrb, E_RUNTIME_ERROR, "class variable access from toplevel");
+          }
+          return c;
+        }
+
+        mrb_value
+        mrb_vm_cv_get(mrb_state *mrb, mrb_sym sym)
+        {
+          return mrb_mod_cv_get(mrb, oruby_cv_class(mrb), sym);
+        }
+      C
+    replace(source, "  mrb_mod_cv_set(mrb, cv_scope_class(mrb, mrb->c->ci->proc), sym, v);\n",
+      "  mrb_mod_cv_set(mrb, oruby_cv_class(mrb), sym, v);\n")
   end
 
   def self.implicit_rest(source)
@@ -1188,6 +1301,180 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       "      mrb_iv_defined(mrb, self, MRB_IVSYM(__oruby_symproc))) {")
   end
 
+  # Symbols keyed by bytes and encoding, as CRuby's: "Vπ".b.to_sym is not
+  # :"Vπ". The encoding of a symbol whose name needs one (String#to_sym of a
+  # non-UTF-8 name, a name in non-UTF-8 source) is a slot, 1..63, in the
+  # spare sym_flags bits; slot 0 is the default (UTF-8 / US-ASCII), which is
+  # every symbol C code interns. The slot is passed down the lookup and
+  # compared with the name, so a raise leaves nothing behind. Slots name
+  # encodings in a process-wide table (the names are kept for good).
+  def self.symbol_encodings(source)
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <pthread.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, "#define SYM_FL_MARK     0x02  /* marked during symbol GC */\n", <<~'C')
+      #define SYM_FL_MARK     0x02  /* marked during symbol GC */
+      #define ORUBY_SYM_ENC_SHIFT 2
+      #define ORUBY_SYM_ENC_MASK  0x3f
+
+      static char oruby_sym_enc_names[ORUBY_SYM_ENC_MASK + 1][32];
+      static int oruby_sym_enc_count;
+      static pthread_mutex_t oruby_sym_enc_lock = PTHREAD_MUTEX_INITIALIZER;
+      _Thread_local uint8_t oruby_load_sym_slot;
+      static _Thread_local const char *oruby_eval_src;
+      static _Thread_local size_t oruby_eval_src_len;
+      static _Thread_local const char *oruby_eval_src_enc;
+
+      uint8_t
+      oruby_sym_enc_slot(const char *name)
+      {
+        if (!name || !*name || strcmp(name, "UTF-8") == 0 || strcmp(name, "US-ASCII") == 0) return 0;
+        if (strlen(name) >= sizeof(oruby_sym_enc_names[0])) return 0;
+        uint8_t slot = 0;
+        pthread_mutex_lock(&oruby_sym_enc_lock);
+        for (int i = 1; i <= oruby_sym_enc_count; i++) {
+          if (strcmp(oruby_sym_enc_names[i], name) == 0) { slot = (uint8_t)i; break; }
+        }
+        if (!slot && oruby_sym_enc_count < ORUBY_SYM_ENC_MASK) {
+          slot = (uint8_t)++oruby_sym_enc_count;
+          strcpy(oruby_sym_enc_names[slot], name);
+        }
+        pthread_mutex_unlock(&oruby_sym_enc_lock);
+        return slot;
+      }
+
+      const char*
+      oruby_sym_enc_name(uint8_t slot)
+      {
+        if (slot == 0 || slot > ORUBY_SYM_ENC_MASK) return NULL;
+        return oruby_sym_enc_names[slot][0] ? oruby_sym_enc_names[slot] : NULL;
+      }
+
+      /* eval of a string in another encoding than UTF-8: the compiler reads
+         the `len` bytes at `src` in it (compile.c asks with what it parses).
+         Every parse takes the hint away, its own or not, so one left by an
+         eval that raised before parsing is gone by the next. */
+      void
+      oruby_eval_source_encoding_set(const char *src, size_t len, const char *enc)
+      {
+        oruby_eval_src = src;
+        oruby_eval_src_len = len;
+        oruby_eval_src_enc = enc;
+      }
+
+      const char*
+      oruby_eval_source_encoding_take(const char *src, size_t len)
+      {
+        const char *enc = (oruby_eval_src && src == oruby_eval_src && len == oruby_eval_src_len) ? oruby_eval_src_enc : NULL;
+        oruby_eval_src = NULL;
+        oruby_eval_src_enc = NULL;
+        return enc;
+      }
+    C
+    replace(source, "sym_check(mrb_state *mrb, const char *name, size_t len, mrb_sym i)\n{\n  const char *tagged_ptr = mrb->symtbl[i];\n  if (tagged_ptr == NULL) return FALSE;  /* tombstone (freed by symbol GC) */\n",
+      "sym_check(mrb_state *mrb, const char *name, size_t len, mrb_sym i, uint8_t slot)\n{\n  const char *tagged_ptr = mrb->symtbl[i];\n  if (tagged_ptr == NULL) return FALSE;  /* tombstone (freed by symbol GC) */\n" \
+      "  if (((mrb->sym_flags[i] >> ORUBY_SYM_ENC_SHIFT) & ORUBY_SYM_ENC_MASK) != slot) return FALSE;\n")
+    n = source.scan("sym_check(mrb, name, len, i)").size
+    raise "ORubyVMCompat: sym_check calls #{n}" unless n == 3
+    source.gsub!("sym_check(mrb, name, len, i)", "sym_check(mrb, name, len, i, slot)")
+    replace(source, "find_symbol_linear(mrb_state *mrb, const char *name, size_t len)\n", "find_symbol_linear(mrb_state *mrb, const char *name, size_t len, uint8_t slot)\n")
+    replace(source, "find_symbol_hash(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp)\n", "find_symbol_hash(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp, uint8_t slot)\n")
+    replace(source, "static mrb_sym\nfind_symbol(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp)\n{\n  mrb_sym i;\n\n  /* presym */\n  i = presym_find(name, len);\n  if (i > 0) return i;\n\n  /* inline symbol */\n  i = sym_inline_pack(name, len);\n  if (i > 0) return i;\n",
+      "static mrb_sym\nfind_symbol_slot(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp, uint8_t slot)\n{\n  mrb_sym i;\n\n  if (slot == 0) {\n  /* presym */\n  i = presym_find(name, len);\n  if (i > 0) return i;\n\n  /* inline symbol */\n  i = sym_inline_pack(name, len);\n  if (i > 0) return i;\n  }\n")
+    replace(source, "    return find_symbol_hash(mrb, name, len, hashp);", "    return find_symbol_hash(mrb, name, len, hashp, slot);")
+    replace(source, "    return find_symbol_linear(mrb, name, len);", "    return find_symbol_linear(mrb, name, len, slot);")
+    replace(source, "static void\nmigrate_to_hash_table(mrb_state *mrb)\n", <<~'C')
+      static mrb_sym
+      find_symbol(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp)
+      {
+        return find_symbol_slot(mrb, name, len, hashp, 0);
+      }
+
+      static void
+      migrate_to_hash_table(mrb_state *mrb)
+    C
+    replace(source, "sym_intern_common(mrb_state *mrb, const char *name, size_t len, mrb_bool lit)\n", "sym_intern_common(mrb_state *mrb, const char *name, size_t len, mrb_bool lit, uint8_t slot)\n")
+    replace(source, "    mrb->sym_flags[sym] = SYM_FL_DYNAMIC;\n", "    mrb->sym_flags[sym] = SYM_FL_DYNAMIC | (uint8_t)(slot << ORUBY_SYM_ENC_SHIFT);\n")
+    replace(source, "  else {\n    mrb->sym_flags[sym] = 0;\n  }\n  return sym;\n", "  else {\n    mrb->sym_flags[sym] = (uint8_t)(slot << ORUBY_SYM_ENC_SHIFT);\n  }\n  return sym;\n")
+    %w[linear hash].each do |mode|
+      replace(source, "sym_intern_#{mode}_mode(mrb_state *mrb, const char *name, size_t len, mrb_bool lit)\n{\n  mrb_sym sym = sym_intern_common(mrb, name, len, lit);",
+        "sym_intern_#{mode}_mode(mrb_state *mrb, const char *name, size_t len, mrb_bool lit, uint8_t slot)\n{\n  mrb_sym sym = sym_intern_common(mrb, name, len, lit, slot);")
+      replace(source, "    return sym_intern_#{mode}_mode(mrb, name, len, lit);", "    return sym_intern_#{mode}_mode(mrb, name, len, lit, slot);")
+    end
+    replace(source, "static mrb_sym\nsym_intern(mrb_state *mrb, const char *name, size_t len, mrb_bool lit)\n{\n  mrb_sym sym;\n\n  sym_validate_len(mrb, len);\n  sym = find_symbol(mrb, name, len, NULL);\n",
+      "static mrb_sym\nsym_intern_slot(mrb_state *mrb, const char *name, size_t len, mrb_bool lit, uint8_t slot)\n{\n  mrb_sym sym;\n\n  sym_validate_len(mrb, len);\n  sym = find_symbol_slot(mrb, name, len, NULL, slot);\n")
+    replace(source, "    sym = find_symbol(mrb, name, len, NULL);\n    if (sym > 0) return sym;\n    if (mrb->dynamic_sym_count >= MRB_SYMBOL_MAX) {",
+      "    sym = find_symbol_slot(mrb, name, len, NULL, slot);\n    if (sym > 0) return sym;\n    if (mrb->dynamic_sym_count >= MRB_SYMBOL_MAX) {")
+    replace(source, "MRB_API mrb_sym\nmrb_intern(mrb_state *mrb, const char *name, size_t len)\n", <<~'C')
+      /* A name with other than ASCII bytes in an irep read in while
+         oruby_load_sym_slot is set (mruby_compat.c, for non-UTF-8 source)
+         takes that encoding. */
+      static mrb_sym
+      sym_intern(mrb_state *mrb, const char *name, size_t len, mrb_bool lit)
+      {
+        uint8_t slot = 0;
+        if (oruby_load_sym_slot) {
+          for (size_t i = 0; i < len; i++) {
+            if ((unsigned char)name[i] >= 0x80) { slot = oruby_load_sym_slot; break; }
+          }
+        }
+        return sym_intern_slot(mrb, name, len, lit, slot);
+      }
+
+      mrb_sym
+      oruby_intern_enc(mrb_state *mrb, const char *name, size_t len, uint8_t slot)
+      {
+        return sym_intern_slot(mrb, name, len, FALSE, slot & ORUBY_SYM_ENC_MASK);
+      }
+
+      uint8_t
+      oruby_sym_slot_of(mrb_state *mrb, mrb_sym sym)
+      {
+        if (sym == 0 || SYMBOL_INLINE_P(sym) || sym <= MRB_PRESYM_MAX) return 0;
+        sym -= MRB_PRESYM_MAX;
+        if (sym > mrb->symidx || mrb->symtbl[sym] == NULL) return 0;
+        return (mrb->sym_flags[sym] >> ORUBY_SYM_ENC_SHIFT) & ORUBY_SYM_ENC_MASK;
+      }
+
+      MRB_API mrb_sym
+      mrb_intern(mrb_state *mrb, const char *name, size_t len)
+    C
+  end
+
+  # the eval of a string in another encoding than UTF-8 (go-mrb.c
+  # eval_call) is parsed in it, as CRuby's: a magic comment still decides
+  def self.compile_source_encoding(source)
+    source.gsub!('#include "../include/', '#include "')
+    replace(source, '#include "mrc_parser_util.h"', "#include \"mrc_parser_util.h\"\n/* libmruby's symbol.c has the real one; mrbc links this file without it */\n__attribute__((weak)) const char *oruby_eval_source_encoding_take(const char *src, size_t len) { (void)src; (void)len; return 0; }")
+    replace(source, "  mrc_pm_options_init(cc);\n#endif\n", <<~'C')
+        mrc_pm_options_init(cc);
+        {
+          const char *enc = oruby_eval_source_encoding_take((const char *)*source, size);
+          if (enc) {
+            if (!cc->options) cc->options = (pm_options_t *)mrc_calloc(cc, 1, sizeof(pm_options_t));
+            pm_options_encoding_set(cc->options, enc);
+          }
+        }
+      #endif
+    C
+  end
+
+  # the names in an irep compiled from source in another encoding than
+  # UTF-8 take it (symbol.c's oruby_load_sym_slot), as CRuby's identifiers
+  def self.load_symbol_encoding(source)
+    source.gsub!('#include "../include/', '#include "')
+    replace(source, '#include <string.h>', "#include <string.h>\n#include <prism/internal/parser.h>\n#include <prism/internal/encoding.h>\n#include \"oruby-vm-compat.h\"")
+    replace(source, "  rt->mir = mrb_read_irep_buf(mrb, rt->bin, bin_size);\n", <<~'C'.gsub(/^/, "  "))
+      oruby_load_sym_slot = (mc->p && mc->p->encoding) ? oruby_sym_enc_slot(mc->p->encoding->name) : 0;
+      rt->mir = mrb_read_irep_buf(mrb, rt->bin, bin_size);
+      oruby_load_sym_slot = 0;
+    C
+    # the eval hint names the caller's bytes; the parse reads a copy
+    replace(source, "  source[len] = '\\0';\n  p->s = (const char*)source;\n",
+      "  source[len] = '\\0';\n  {\n    const char *enc = oruby_eval_source_encoding_take(s, len);\n    if (enc) oruby_eval_source_encoding_set((const char*)source, len, enc);\n  }\n  p->s = (const char*)source;\n")
+    # a raise while reading leaves no slot behind
+    replace(source, "  result = mrb_protect_error(mrb, roundtrip, &rt, &failed);\n",
+      "  result = mrb_protect_error(mrb, roundtrip, &rt, &failed);\n  oruby_load_sym_slot = 0;\n")
+  end
+
   def self.proc_identity(source)
     replace(source, '  if (ra) return -(min + 1);', <<~'C'.chomp.gsub(/^/, "  "))
       if (ra && (!irep->lv || ma + op >= irep->nlocals - 1 ||
@@ -1200,6 +1487,12 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
           (mrb_proc_refined_p(mrb, p1) || mrb_proc_refined_p(mrb, p2))) return FALSE;
       #endif
     C
+    # A define_method body is a method scope (MRB_PROC_SCOPE_P) that still holds
+    # its creation env. Nested closures inside it must keep ci->mid (the defined
+    # method name), not inherit the dead outer def's mid from MRB_PROC_ENV(up).
+    replace(source,
+      '    if (MRB_PROC_ENV_P(up) && MRB_PROC_ENV(up)->cxt == NULL) {',
+      '    if (!MRB_PROC_SCOPE_P(up) && MRB_PROC_ENV_P(up) && MRB_PROC_ENV(up)->cxt == NULL) {')
   end
 
   def self.gc(source)
@@ -1234,6 +1527,25 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       }
       gc->state = MRB_GC_STATE_SWEEP;
     C
+    capi_gc_hooks(source)
+  end
+
+  # the Ruby C API layer (gem/capi) marks what the GC cannot see: the VALUE
+  # variables rb_gc_register_address() named, and what a TypedData's dmark
+  # function marks of the Data object being marked
+  def self.capi_gc_hooks(source)
+    replace(source, "#include \"oruby-alloc-trace.h\"", <<~'C'.chomp)
+      #include "oruby-alloc-trace.h"
+
+      void (*oruby_gc_root_hook)(mrb_state *mrb);
+      size_t (*oruby_gc_cdata_mark_hook)(mrb_state *mrb, struct RData *data);
+    C
+    n = source.scan("  mark_gc_roots(mrb, gc);\n").size
+    raise "ORubyVMCompat: mark_gc_roots calls #{n}" unless n == 2
+    source.gsub!("  mark_gc_roots(mrb, gc);\n", "  mark_gc_roots(mrb, gc);\n  if (oruby_gc_root_hook) oruby_gc_root_hook(mrb);\n")
+    replace(source, "  case MRB_TT_OBJECT:\n  case MRB_TT_CDATA:\n    children += mrb_gc_mark_iv(mrb, (struct RObject*)obj);\n    break;\n",
+      "  case MRB_TT_OBJECT:\n  case MRB_TT_CDATA:\n    children += mrb_gc_mark_iv(mrb, (struct RObject*)obj);\n" \
+      "    if (obj->tt == MRB_TT_CDATA && oruby_gc_cdata_mark_hook) children += oruby_gc_cdata_mark_hook(mrb, (struct RData*)obj);\n    break;\n")
   end
 
   def self.objectspace(source)
@@ -1462,7 +1774,8 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
     {
       "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement,
       "proc" => :proc_identity, "array" => :array_splat, "variable" => :variable,
-      "error" => :chilled_mutation, "kernel" => :defined_queries, "object" => :kind_of_mt
+      "error" => :chilled_mutation, "kernel" => :defined_queries, "object" => :kind_of_mt,
+      "symbol" => :symbol_encodings
     }.each do |name, patch|
       original = File.join(inputs, "#{name}.c")
       generated = File.join(overrides, "#{name}.c")
@@ -1477,22 +1790,34 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
     build.cc.define_rules(output, overrides, build.exts.object)
     build.cc.define_rules(output, overrides, build.exts.presym_preprocessed)
 
-    {
-      "mruby-objectspace-weakmap" => ["weakmap.c", :weakmap],
-      "mruby-objectspace" => ["mruby_objectspace.c", :objectspace],
-      "mruby-compiler" => ["codegen.c", :implicit_rest],
-      "mruby-string-ext" => ["string.c", :chilled_uplus],
-      "mruby-fiber" => ["fiber.c", :fiber_root_transfer],
-      "mruby-method" => ["method.c", :method_lookup],
-      "mruby-eval" => ["eval.c", :eval_source],
-      "mruby-metaprog" => ["metaprog.c", :metaclass_singleton_methods]
-    }.each do |name, (file, patch)|
+    [
+      ["mruby-objectspace-weakmap", "weakmap.c", :weakmap],
+      ["mruby-objectspace", "mruby_objectspace.c", :objectspace],
+      ["mruby-compiler", "codegen.c", :implicit_rest],
+      ["mruby-compiler", "compile.c", :compile_source_encoding],
+      ["mruby-compiler", "mruby_compat.c", :load_symbol_encoding],
+      ["mruby-string-ext", "string.c", :chilled_uplus],
+      ["mruby-fiber", "fiber.c", :fiber_root_transfer],
+      ["mruby-method", "method.c", :method_lookup],
+      ["mruby-eval", "eval.c", :eval_source],
+      ["mruby-metaprog", "metaprog.c", :metaclass_singleton_methods]
+    ].each do |name, file, patch|
+      relative = File.join("mrbgems", name, "src")
+      install_source(File.join(MRUBY_ROOT, relative, file), File.join(overrides, relative, file), patch)
+    end
+    [
+      "mruby-objectspace-weakmap", "mruby-objectspace", "mruby-compiler", "mruby-string-ext",
+      "mruby-fiber", "mruby-method", "mruby-eval", "mruby-metaprog"
+    ].each do |name|
       relative = File.join("mrbgems", name, "src")
       gem_output = File.join(build.build_dir, relative)
       gem_overrides = File.join(overrides, relative)
-      install_source(File.join(MRUBY_ROOT, relative, file), File.join(gem_overrides, file), patch)
-      build.cc.define_rules(gem_output, gem_overrides, build.exts.object)
-      build.cc.define_rules(gem_output, gem_overrides, build.exts.presym_preprocessed)
+      # mruby-compiler's sources need its own flags (Prism's allocator and
+      # depth, MRC_TARGET_MRUBY), which its mrbgem.rake sets up after this
+      # runs: the rule asks for its compiler when it fires
+      compiler = proc { (name == "mruby-compiler" && build.gems.find { |g| g.name == name }&.cc) || build.cc }
+      build.cc.define_rules(gem_output, gem_overrides, build.exts.object, &compiler)
+      build.cc.define_rules(gem_output, gem_overrides, build.exts.presym_preprocessed, &compiler)
     end
 
     if build.name == "host"

@@ -53,6 +53,7 @@ class IO
     readable, writable = __oruby_popen_access(mode, io_opts[:flags])
     io = allocate
     io.__oruby_popen_start(env, cmd, readable, writable, exec_opts)
+    io.sync = true if writable # MRI's popen stream is synchronized
     if io.respond_to?(:__oruby_init_encoding, true)
       io.__oruby_init_encoding(mode || (writable ? (readable ? "r+" : "w") : "r"), io_opts)
     end
