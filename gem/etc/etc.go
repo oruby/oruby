@@ -12,6 +12,12 @@ package etc
 #include <stdlib.h>
 #include <sys/utsname.h>
 
+#ifdef _CS_DARWIN_USER_TEMP_DIR
+#define GO_CS_USER_TEMP_DIR _CS_DARWIN_USER_TEMP_DIR
+#else
+#define GO_CS_USER_TEMP_DIR (-1)
+#endif
+
 static long go_sysconf(int name, int *err) {
 	errno = 0;
 	long v = sysconf(name);
@@ -244,12 +250,12 @@ func uname(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 }
 
 func systmpdir() string {
-	if runtime.GOOS == "darwin" {
-		size := C.confstr(C._CS_DARWIN_USER_TEMP_DIR, nil, 0)
+	if C.GO_CS_USER_TEMP_DIR >= 0 {
+		size := C.confstr(C.GO_CS_USER_TEMP_DIR, nil, 0)
 		if size > 0 {
 			buf := (*C.char)(C.malloc(size))
 			defer C.free(unsafe.Pointer(buf))
-			C.confstr(C._CS_DARWIN_USER_TEMP_DIR, buf, size)
+			C.confstr(C.GO_CS_USER_TEMP_DIR, buf, size)
 			if s := C.GoString(buf); s != "" {
 				if len(s) > 1 && s[len(s)-1] == '/' {
 					s = s[:len(s)-1]

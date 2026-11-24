@@ -478,3 +478,47 @@ raise "rsa generate" unless rsa.private? && rsa.public_key.public?
 		t.Fatalf("OpenSSL KDF/X509/Ed25519 test failed: %v", err)
 	}
 }
+
+// RubyGems' cert store: set_default_paths, then add_file for its bundled CA
+func TestOpenSSLStoreAddFileAndPath(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+	dir := t.TempDir()
+	mrb.SetGV("$__dir", dir)
+	_, err := mrb.Eval(`
+require "openssl"
+
+key = OpenSSL::PKey::EC.generate("prime256v1")
+cert = OpenSSL::X509::Certificate.new
+cert.version = 2
+cert.serial = 1
+cert.subject = OpenSSL::X509::Name.parse("/CN=store test")
+cert.issuer = cert.subject
+cert.public_key = key
+cert.not_before = Time.now - 60
+cert.not_after = Time.now + 3600
+cert.sign(key, OpenSSL::Digest::SHA256.new)
+pem = File.join($__dir, "ca.pem")
+File.write(pem, cert.to_pem)
+
+store = OpenSSL::X509::Store.new
+raise "verified without the cert" if store.verify(cert)
+store.set_default_paths
+raise "add_file returns the store" unless store.add_file(pem).equal?(store)
+raise "add_file: #{store.error_string}" unless store.verify(cert)
+
+store = OpenSSL::X509::Store.new
+store.add_path($__dir)
+raise "add_path: #{store.error_string}" unless store.verify(cert)
+
+File.write(File.join($__dir, "empty.pem"), "no certificate\n")
+begin
+  OpenSSL::X509::Store.new.add_file(File.join($__dir, "empty.pem"))
+  raise "add_file of a file without certificates"
+rescue OpenSSL::X509::StoreError
+end
+`)
+	if err != nil {
+		t.Fatalf("OpenSSL Store#add_file/add_path test failed: %v", err)
+	}
+}

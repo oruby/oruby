@@ -38,6 +38,13 @@ func parseXMLDocumentOpts(src, url, encoding string, strict, stopOnError, noblan
 		doc.encoding = detectedEnc
 	}
 	if strings.TrimSpace(decoded) == "" {
+		if strict {
+			doc.errors = append(doc.errors, domError{
+				message: "Document is empty",
+				line:    1,
+				level:   3,
+			})
+		}
 		return doc
 	}
 	p := &xmlParser{
@@ -370,12 +377,13 @@ func (p *xmlParser) parseInto(root *domNode) {
 			dn := newNode(p.doc, DocumentTypeNode, dtName, meta)
 			dn.line = lineNo
 			parseDoctypeIDs(dn, meta)
-			if ents := extractDTDEntities(meta); len(ents) > 0 {
-				if p.entities == nil {
-					p.entities = map[string]string{}
-				}
-				for k, v := range ents {
-					p.entities[k] = v
+			parseDTDInternalSubset(p.doc, dn, meta)
+			for c := dn.first; c != nil; c = c.next {
+				if c.kind == EntityDecl && c.entityType == 1 {
+					if p.entities == nil {
+						p.entities = map[string]string{}
+					}
+					p.entities[c.name] = c.data
 				}
 			}
 			cur().appendChild(dn)
@@ -600,18 +608,202 @@ func extractQuotedAttr(s, name string) string {
 }
 
 func parseDoctypeIDs(dn *domNode, meta string) {
-	upper := strings.ToUpper(meta)
+	header := meta
+	if idx := strings.IndexByte(meta, '['); idx >= 0 {
+		header = meta[:idx]
+	}
+	upper := strings.ToUpper(header)
 	if idx := strings.Index(upper, "PUBLIC"); idx >= 0 {
-		rest := meta[idx+6:]
+		rest := header[idx+6:]
 		q1, rest := readNextQuoted(rest)
 		q2, _ := readNextQuoted(rest)
 		dn.pubID = q1
 		dn.sysID = q2
 	} else if idx := strings.Index(upper, "SYSTEM"); idx >= 0 {
-		rest := meta[idx+6:]
+		rest := header[idx+6:]
 		q1, _ := readNextQuoted(rest)
 		dn.sysID = q1
 	}
+}
+
+func parseDTDInternalSubset(doc *domNode, dn *domNode, meta string) {
+	open := strings.IndexByte(meta, '[')
+	closeIdx := strings.LastIndexByte(meta, ']')
+	if open < 0 || closeIdx <= open {
+		return
+	}
+	sub := meta[open+1 : closeIdx]
+	i := 0
+	for i < len(sub) {
+		idx := strings.Index(sub[i:], "<!")
+		if idx < 0 {
+			break
+		}
+		i += idx
+		// Skip comments <!-- ... -->
+		if strings.HasPrefix(sub[i:], "<!--") {
+			end := strings.Index(sub[i+4:], "-->")
+			if end < 0 {
+				break
+			}
+			i += 4 + end + 3
+			continue
+		}
+		// Find matching '>' outside quotes
+		j := i + 2
+		quote := byte(0)
+		for j < len(sub) {
+			c := sub[j]
+			if quote != 0 {
+				if c == quote {
+					quote = 0
+				}
+			} else if c == '"' || c == '\'' {
+				quote = c
+			} else if c == '>' {
+				break
+			}
+			j++
+		}
+		if j >= len(sub) {
+			break
+		}
+		decl := strings.TrimSpace(sub[i+2 : j])
+		i = j + 1
+
+		upper := strings.ToUpper(decl)
+		switch {
+		case strings.HasPrefix(upper, "ENTITY"):
+			rest := strings.TrimSpace(decl[6:])
+			isParam := false
+			if strings.HasPrefix(rest, "%") {
+				isParam = true
+				rest = strings.TrimSpace(rest[1:])
+			}
+			name, tail := splitFirstToken(rest)
+			if name == "" {
+				continue
+			}
+			ed := newNode(doc, EntityDecl, name, "")
+			tailUp := strings.ToUpper(tail)
+			if strings.HasPrefix(tailUp, "PUBLIC") {
+				r := tail[6:]
+				q1, r := readNextQuoted(r)
+				q2, r := readNextQuoted(r)
+				ed.pubID = q1
+				ed.sysID = q2
+				if isParam {
+					ed.entityType = 5
+				} else if strings.Contains(strings.ToUpper(r), "NDATA") {
+					ed.entityType = 3
+				} else {
+					ed.entityType = 2
+				}
+			} else if strings.HasPrefix(tailUp, "SYSTEM") {
+				r := tail[6:]
+				q1, r := readNextQuoted(r)
+				ed.sysID = q1
+				if isParam {
+					ed.entityType = 5
+				} else if strings.Contains(strings.ToUpper(r), "NDATA") {
+					ed.entityType = 3
+				} else {
+					ed.entityType = 2
+				}
+			} else {
+				val, _ := readNextQuoted(tail)
+				ed.data = val
+				if isParam {
+					ed.entityType = 4
+				} else {
+					ed.entityType = 1
+				}
+			}
+			dn.appendChild(ed)
+
+		case strings.HasPrefix(upper, "ELEMENT"):
+			rest := strings.TrimSpace(decl[7:])
+			name, spec := splitFirstToken(rest)
+			if name == "" {
+				continue
+			}
+			el := newNode(doc, ElementDecl, name, strings.TrimSpace(spec))
+			dn.appendChild(el)
+
+		case strings.HasPrefix(upper, "ATTLIST"):
+			rest := strings.TrimSpace(decl[7:])
+			_, rest = splitFirstToken(rest) // element name
+			// Parse one or more (attrName attrType defaultDecl) tuples
+			for len(rest) > 0 {
+				attrName, r1 := splitFirstToken(rest)
+				if attrName == "" {
+					break
+				}
+				// Skip attrType (could be "(a|b|c)" or a token like CDATA/ID/NMTOKEN)
+				r1 = strings.TrimSpace(r1)
+				if strings.HasPrefix(r1, "(") {
+					if cp := strings.IndexByte(r1, ')'); cp >= 0 {
+						r1 = strings.TrimSpace(r1[cp+1:])
+					} else {
+						break
+					}
+				} else {
+					_, r1 = splitFirstToken(r1)
+				}
+				r1 = strings.TrimSpace(r1)
+				defVal := ""
+				r1Up := strings.ToUpper(r1)
+				if strings.HasPrefix(r1Up, "#FIXED") {
+					r1 = strings.TrimSpace(r1[6:])
+					defVal, r1 = readNextQuoted(r1)
+				} else if strings.HasPrefix(r1Up, "#REQUIRED") {
+					r1 = strings.TrimSpace(r1[9:])
+				} else if strings.HasPrefix(r1Up, "#IMPLIED") {
+					r1 = strings.TrimSpace(r1[8:])
+				} else if strings.HasPrefix(r1, "\"") || strings.HasPrefix(r1, "'") {
+					defVal, r1 = readNextQuoted(r1)
+				} else {
+					_, r1 = splitFirstToken(r1)
+				}
+				ad := newNode(doc, AttributeDecl, attrName, defVal)
+				dn.appendChild(ad)
+				rest = strings.TrimSpace(r1)
+			}
+
+		case strings.HasPrefix(upper, "NOTATION"):
+			rest := strings.TrimSpace(decl[8:])
+			name, tail := splitFirstToken(rest)
+			if name == "" {
+				continue
+			}
+			nt := newNode(doc, NotationNode, name, "")
+			tailUp := strings.ToUpper(tail)
+			if strings.HasPrefix(tailUp, "PUBLIC") {
+				r := tail[6:]
+				q1, r := readNextQuoted(r)
+				q2, _ := readNextQuoted(r)
+				nt.pubID = q1
+				nt.sysID = q2
+			} else if strings.HasPrefix(tailUp, "SYSTEM") {
+				r := tail[6:]
+				q1, _ := readNextQuoted(r)
+				nt.sysID = q1
+			}
+			dn.appendChild(nt)
+		}
+	}
+}
+
+func splitFirstToken(s string) (string, string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", ""
+	}
+	i := 0
+	for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' {
+		i++
+	}
+	return s[:i], strings.TrimSpace(s[i:])
 }
 
 func readNextQuoted(s string) (string, string) {

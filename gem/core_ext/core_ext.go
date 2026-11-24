@@ -118,11 +118,13 @@ module RbConfig
       var = $&
       if !(v = $1 || $2)
         '$'
-      elsif key = config[v = v[/\A[^:]+(?=(?::(.*?)=(.*))?\z)/]]
-        pat, sub = $1, $2
+      # MRI's, without its lookaheads (RE2, the regexp engine of a binary
+      # without gem/regexp/full, has none): $(name:pat=sub)
+      elsif v =~ /\A([^:]+)(?::(.*?)=(.*))?\z/ && (key = config[v = $1])
+        pat, sub = $2, $3
         config[v] = false
         config[v] = expand(key, config)
-        key = key.gsub(/#{Regexp.quote(pat)}(?=\s|\z)/n) { sub } if pat
+        key = key.gsub(/#{Regexp.quote(pat)}(\s|\z)/n) { sub + $1 } if pat
         key
       else
         var
@@ -152,6 +154,7 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		// calls the original, which must be the encoding-checking one
 		mrb.WrapStringConcat()
 		initCrypt(mrb)
+		initISeq(mrb)
 		// IO::Buffer (ruby/32_io_buffer.rb) sizes its mappings by the page size
 		mrb.Eval(fmt.Sprintf("class IO; class Buffer; PAGE_SIZE = %d; end; end", os.Getpagesize()))
 		floatClass := mrb.FloatClass()
@@ -217,7 +220,10 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		// @gem_prelude_index (the path itself): RubyGems puts activated gems'
 		// paths before the first (Gem.load_path_insert_index). RUBYLIB's come
 		// earlier, -I's later; neither is marked.
-		mrb.Resolve("load") // $LOAD_PATH
+		// (only with gem/load linked: it makes $LOAD_PATH)
+		if _, err := mrb.Resolve("load"); err != nil {
+			return nil
+		}
 		if def := oruby.DefaultLoadPath(); len(def) > 0 {
 			mrb.Eval(fmt.Sprintf("if (i = $LOAD_PATH.index(%q)); $LOAD_PATH[i..].each { |pa| pa.instance_variable_set(:@gem_prelude_index, pa) unless pa.frozen? }; end", def[0]))
 		}
@@ -352,7 +358,8 @@ func buildConfig(prefix string) string {
 		"THREAD_MODEL": "pthread", "configure_args": "", "PLATFORM_DIR": "", "ENCOBJS": "",
 		"COMMON_HEADERS": "", "COMMON_MACROS": "", "COMMON_LIBS": "", "includedir": filepath.Join(prefix, "include"),
 		"PATH_SEPARATOR": string(os.PathListSeparator),
-		"sitearch": oruby.RubyArch(), "rubyarchprefix": filepath.Join(prefix, "lib", "oruby", oruby.RubyArch()),
+		"sitearch":       oruby.RubyArch(),
+		"rubyarchprefix": filepath.Join(prefix, "lib", "oruby", oruby.RubyArch()),
 	}
 	if hdr != "" {
 		for _, k := range []string{"rubyhdrdir", "rubyarchhdrdir", "sitehdrdir", "sitearchhdrdir", "vendorhdrdir", "vendorarchhdrdir", "topdir"} {

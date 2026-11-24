@@ -43,12 +43,34 @@ func TestExtension(t *testing.T) {
 	eval(t, `CAPITest.numbers(2**40).inspect`,
 		`[4611686018427387903, -4611686018427387904, 18446744073709551615, 1.5, 1.0e+300, 1099511627777]`)
 	eval(t, `CAPITest.strings("ab").map { |x| x.is_a?(String) ? [x, x.encoding.to_s] : [x, x.encoding.to_s] }.inspect`,
-		`[["<ab>", "UTF-8"], ["UTF-8", "UTF-8"], ["\xCF\x80", "ASCII-8BIT"], [:"\xCF\x80", "ASCII-8BIT"]]`)
+		`[["<ab>", "ASCII-8BIT"], ["UTF-8", "ASCII-8BIT"], ["\xCF\x80", "ASCII-8BIT"], [:"\xCF\x80", "ASCII-8BIT"]]`)
 	eval(t, `CAPITest.hash_pairs({a: 1, "b" => "c"}).inspect`, `["a=1", "b=\"c\""]`)
 	eval(t, `class KW; attr_reader :a; def initialize(p, x:) = @a = [p, x]; end; CAPITest.new_kw(KW).a.inspect`, `[0, 1]`)
 	eval(t, `CAPITest.block_call([1, 2]).inspect`, `[11, 12]`)
 	eval(t, `CAPITest.types([nil, true, false, 1, :s, 1.5, "s", [], {}, Object.new, Object, Kernel, 2**70]).inspect`,
 		`[17, 18, 19, 21, 20, 4, 5, 7, 8, 1, 2, 3, 10]`)
+	eval(t, `["ab", "π", "ab".b, "ab".encode("UTF-16LE"), "ab".encode("EUC-JP")].map { CAPITest.enc_info(_1) }.inspect`,
+		`[[4, 1, true], [4, 1, false], [1, 1, true], [4, 2, false], [3, 1, true]]`)
+	eval(t, `CAPITest.st_hash("abc").inspect`, `[true, true]`)
+	eval(t, `["a\u00e9\u20ac\u{1F600}", "ab".b + "\xff".b, "\xe2\x82".dup.force_encoding("UTF-8"), "\xc0\x80", "\xff", "\xed\xa0\x80"].map { |s| CAPITest.codepoints(s) rescue $!.message }.inspect`,
+		`[[97, 233, 8364, 128512], [97, 98, 255], "invalid byte sequence in UTF-8", "invalid byte sequence in UTF-8", "invalid byte sequence in UTF-8", "invalid byte sequence in UTF-8"]`)
+	eval(t, `CAPITest.ary_sum((1..100).to_a)`, `5050`)
+	eval(t, `a = [1, 2, 3]; [CAPITest.ary_double(a) { |x| x }, a].inspect`, `[[2, 4, 6], [2, 4, 6]]`)
+	eval(t, `a = [1, 2, 3]; CAPITest.ary_double(a); a.inspect`, `[2, 4, 6]`)
+	eval(t, `a = [1, 2]; [CAPITest.ary_use(a), a].inspect`, `[:first, [:first, 2]]`)
+	eval(t, `CAPITest.ary_fresh([1, 2, 3]).inspect`, `[1, 7, 99, 4]`)
+	eval(t, `CAPITest.str_encs.inspect`, `["ASCII-8BIT", "ASCII-8BIT", "ASCII-8BIT", "ASCII-8BIT", "UTF-8", "UTF-8", `+
+		`"US-ASCII", "US-ASCII", "UTF-8", "UTF-8", "US-ASCII", "ASCII-8BIT", "UTF-8", "ASCII-8BIT", "EUC-JP", "ASCII-8BIT"]`)
+}
+
+func TestExtensionCXX(t *testing.T) {
+	if _, err := mrb.Resolve("capi_testext_cxx.so"); err != nil {
+		t.Fatal(err)
+	}
+	eval(t, `[CAPITestCXX.m0, CAPITestCXX.m1(2), CAPITestCXX.mv(1, 2, 3), CAPITestCXX.mv].inspect`, `[:m0, [:m1, 2], 3, 0]`)
+	eval(t, `CAPITestCXX.concat("ab", "cd").inspect`, `"abcd"`)
+	eval(t, `CAPITestCXX.keys({a: 1, b: 2}).inspect`, `[:a, :b]`)
+	eval(t, `CAPITestCXX.protect(7).inspect`, `[7]`)
 }
 
 // A Data object's dmark keeps what it holds alive, and a registered

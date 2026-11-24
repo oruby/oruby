@@ -404,7 +404,7 @@ end
 `)
 
 	// Standard Ruby constants
-	platform := runtime.GOARCH + "-" + runtime.GOOS
+	platform := RubyArch()
 	// the MRI version ORuby targets, not the bundled mruby's MRUBY_RUBY_VERSION
 	// each frozen, the same object as RUBY_X and Ruby::X (Ruby 4.0's module)
 	rubyMod := mrb.DefineModule("Ruby")

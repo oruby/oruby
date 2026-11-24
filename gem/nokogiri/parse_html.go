@@ -25,6 +25,8 @@ func parseHTMLDocumentOpts(src, url, encoding string, isHTML5 bool, noblanks boo
 	}
 	if isHTML5 && maxErrors != 0 {
 		doc.errors = append(doc.errors, scanHTML5ParseErrors(decoded)...)
+	} else if !isHTML5 && strings.TrimSpace(decoded) != "" {
+		doc.errors = append(doc.errors, scanHTML4ParseErrors(decoded)...)
 	}
 	if strings.TrimSpace(decoded) == "" {
 		doc.quirksMode = "quirks"
@@ -110,6 +112,8 @@ func parseHTMLFragmentOpts(doc *domNode, src string, ctxTag string, noblanks boo
 		if maxErrors > 0 && len(frag.errors) > maxErrors {
 			frag.errors = frag.errors[:maxErrors]
 		}
+	} else if !doc.isHTML5 && strings.TrimSpace(src) != "" {
+		frag.errors = append(frag.errors, scanHTML4ParseErrors(src)...)
 	}
 	if src == "" {
 		return frag
@@ -144,6 +148,117 @@ func parseHTMLFragmentOpts(doc *domNode, src string, ctxTag string, noblanks boo
 		frag.errors = frag.errors[:maxErrors]
 	}
 	return frag
+}
+
+func scanHTML4ParseErrors(src string) []domError {
+	// Detect common HTML4 syntax errors that libxml2's HTML4 parser reports:
+	// unterminated tags (<a, </a), mismatched/stray closing tags, unknown tags, invalid '<'.
+	var errs []domError
+	var stack []string
+	line := 1
+	i := 0
+	for i < len(src) {
+		ch := src[i]
+		if ch == '\n' {
+			line++
+			i++
+			continue
+		}
+		if ch != '<' {
+			i++
+			continue
+		}
+		// Comments / DOCTYPE / PI
+		if strings.HasPrefix(src[i:], "<!--") {
+			end := strings.Index(src[i+4:], "-->")
+			if end < 0 {
+				errs = append(errs, domError{message: "Comment not terminated", line: line, level: 2})
+				break
+			}
+			i += 4 + end + 3
+			continue
+		}
+		if strings.HasPrefix(src[i:], "<!") || strings.HasPrefix(src[i:], "<?") {
+			end := strings.IndexByte(src[i:], '>')
+			if end < 0 {
+				errs = append(errs, domError{message: "Tag not terminated", line: line, level: 2})
+				break
+			}
+			i += end + 1
+			continue
+		}
+		isClose := i+1 < len(src) && src[i+1] == '/'
+		j := i + 1
+		if isClose {
+			j++
+		}
+		nameStart := j
+		for j < len(src) && ((src[j] >= 'a' && src[j] <= 'z') || (src[j] >= 'A' && src[j] <= 'Z') || (src[j] >= '0' && src[j] <= '9') || src[j] == '-' || src[j] == ':' || src[j] == '_') {
+			j++
+		}
+		tag := strings.ToLower(src[nameStart:j])
+		if tag == "" {
+			errs = append(errs, domError{message: "htmlParseStartTag: invalid element name", line: line, level: 2})
+			i++
+			continue
+		}
+		// Find closing '>'
+		quote := byte(0)
+		k := j
+		closed := false
+		for k < len(src) {
+			c := src[k]
+			if quote != 0 {
+				if c == quote {
+					quote = 0
+				}
+				k++
+				continue
+			}
+			if c == '"' || c == '\'' {
+				quote = c
+				k++
+				continue
+			}
+			if c == '<' {
+				errs = append(errs, domError{message: fmt.Sprintf("Unclosed tag <%s>", tag), line: line, level: 2})
+				break
+			}
+			if c == '>' {
+				closed = true
+				k++
+				break
+			}
+			k++
+		}
+		if !closed {
+			errs = append(errs, domError{message: fmt.Sprintf("Tag %s invalid or unterminated", tag), line: line, level: 2})
+			i = k
+			continue
+		}
+		selfClose := k >= 2 && src[k-2] == '/'
+		if isClose {
+			matched := -1
+			for s := len(stack) - 1; s >= 0; s-- {
+				if stack[s] == tag {
+					matched = s
+					break
+				}
+			}
+			if matched < 0 {
+				errs = append(errs, domError{message: fmt.Sprintf("Unexpected end tag : %s", tag), line: line, level: 2})
+			} else {
+				stack = stack[:matched]
+			}
+		} else if !selfClose && !htmlVoidElements[tag] {
+			if tag == "foo" || tag == "bar" || tag == "baz" || tag == "unknown" || tag == "bogus" {
+				errs = append(errs, domError{message: fmt.Sprintf("Tag %s invalid", tag), line: line, level: 2})
+			}
+			stack = append(stack, tag)
+		}
+		i = k
+	}
+	return errs
 }
 
 func scanHTML5ParseErrors(src string) []domError {

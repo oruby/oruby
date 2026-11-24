@@ -6,8 +6,8 @@
  * extension compiles from source against it unchanged. What it leaves out
  * is a compile error rather than a wrong answer: there are no RBasic,
  * RString or RArray structs (mruby's objects are laid out differently), so
- * RSTRING_PTR and the like are functions, and RARRAY_PTR (a pointer to
- * VALUEs mruby does not have) is not provided.
+ * RSTRING_PTR and the like are functions, and RARRAY_PTR (VALUEs mruby
+ * does not have) is a snapshot of the array (rb_array_const_ptr).
  *
  * A VALUE is a word, as MRI's: Qfalse, Qnil, Qtrue and Qundef, Fixnums
  * (2n+1), Symbols (ID << 8 | 0x0c) and flonums are immediates encoded as MRI
@@ -17,9 +17,11 @@
 #ifndef ORUBY_CAPI_RUBY_H
 #define ORUBY_CAPI_RUBY_H 1
 
+#include "ruby/config.h" /* HAVE_ and SIZEOF_, first, as MRI's ruby.h has it */
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#define RBIMPL_STDBOOL_H 1 /* bool is stdbool's, as in MRI (ruby/internal/stdbool.h) */
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +36,8 @@
 #include <alloca.h>
 #include <assert.h>
 #include <unistd.h>
+#include <time.h>
+#include <sys/time.h>
 
 #if defined(__cplusplus)
 extern "C" {
@@ -55,7 +59,7 @@ __attribute__((weak, used, visibility("default"))) int oruby_capi_abi_1 = ORUBY_
 #define HAVE_RB_HASH_BULK_INSERT 0
 
 #define RUBY_EXTERN extern
-#define RUBY_FUNC_EXPORTED
+#define RUBY_FUNC_EXPORTED __attribute__((__visibility__("default"))) /* Init_<name> under -fvisibility=hidden */
 #define RUBY_SYMBOL_EXPORT_BEGIN
 #define RUBY_SYMBOL_EXPORT_END
 #define RBIMPL_ATTR_NORETURN() __attribute__((__noreturn__))
@@ -100,9 +104,13 @@ typedef intptr_t SIGNED_VALUE;
 #define PRI_SIZE_PREFIX "z"
 
 /* ANYARGS: a method function is cast to this and called with the arguments
-   its arity says */
+   its arity says; in C++, where () takes none, MRI's (...) */
+#if defined(__cplusplus)
+#define ANYARGS ...
+#else
 #define ANYARGS
-typedef VALUE (*rb_capi_anyargs_func)();
+#endif
+typedef VALUE (*rb_capi_anyargs_func)(ANYARGS);
 #define RUBY_METHOD_FUNC(func) ((rb_capi_anyargs_func)(func))
 
 /* ---- special constants (MRI's 64-bit flonum layout) ---- */
@@ -361,6 +369,7 @@ VALUE rb_obj_is_kind_of(VALUE, VALUE);
 VALUE rb_obj_is_instance_of(VALUE, VALUE);
 int rb_respond_to(VALUE, ID);
 int rb_obj_respond_to(VALUE, ID, int);
+int rb_method_boundp(VALUE, ID, int);
 VALUE rb_obj_freeze(VALUE);
 VALUE rb_obj_frozen_p(VALUE);
 void rb_check_frozen(VALUE);
@@ -431,6 +440,10 @@ VALUE rb_proc_call_with_block(VALUE, int, const VALUE *, VALUE);
 VALUE rb_obj_is_proc(VALUE);
 int rb_keyword_given_p(void);
 int rb_scan_args(int, const VALUE *, const char *, ...);
+#define RB_SCAN_ARGS_PASS_CALLED_KEYWORDS 0
+#define RB_SCAN_ARGS_KEYWORDS 1
+#define RB_SCAN_ARGS_LAST_HASH_KEYWORDS 3
+int rb_scan_args_kw(int, int, const VALUE *, const char *, ...);
 int rb_get_kwargs(VALUE, const ID *, int, int, VALUE *);
 VALUE rb_eval_string(const char *);
 VALUE rb_eval_string_protect(const char *, int *);
@@ -572,6 +585,24 @@ long rb_array_len(VALUE);
 #define RARRAY_LENINT(a) ((int)RARRAY_LEN(a))
 #define RARRAY_AREF(a, i) rb_ary_entry((VALUE)(a), (long)(i))
 #define RARRAY_ASET(a, i, v) rb_ary_store((VALUE)(a), (long)(i), (VALUE)(v))
+/* An Array's elements as VALUEs: mruby's arrays hold mrb_values, so this
+   is a snapshot of them, valid while the C method (or block) runs and the
+   array is not changed through the API or by Ruby code it calls. Writes
+   through RARRAY_PTR reach the array before Ruby code or the array API can
+   see it, and when the method returns; RARRAY_PTR_USE writes them back
+   when its expression is done. */
+const VALUE *rb_array_const_ptr(VALUE);
+VALUE *rb_capi_array_ptr(VALUE);
+void rb_capi_array_ptr_sync(void);
+#define RARRAY_CONST_PTR(a) rb_array_const_ptr((VALUE)(a))
+#define RARRAY_CONST_PTR_TRANSIENT(a) RARRAY_CONST_PTR(a)
+#define RARRAY_PTR(a) rb_capi_array_ptr((VALUE)(a))
+#define RARRAY_PTR_USE(ary, ptr_name, expr) do { \
+    VALUE *ptr_name = rb_capi_array_ptr((VALUE)(ary)); \
+    expr; \
+    rb_capi_array_ptr_sync(); \
+  } while (0)
+#define RARRAY_PTR_USE_TRANSIENT(ary, ptr_name, expr) RARRAY_PTR_USE(ary, ptr_name, expr)
 #define rb_array_len rb_array_len
 VALUE rb_ary_new(void);
 VALUE rb_ary_new_capa(long);
@@ -612,6 +643,14 @@ VALUE rb_get_values_at(VALUE, long, int, const VALUE *, VALUE (*)(VALUE, long));
 /* ---- Hashes ---- */
 enum st_retval { ST_CONTINUE, ST_STOP, ST_DELETE, ST_CHECK, ST_REPLACE };
 typedef uintptr_t st_data_t;
+typedef st_data_t st_index_t;
+/* MRI's hash function for extensions' own tables (not MRI's values: a
+   hash is not stable across implementations, or across runs in MRI) */
+st_index_t st_hash(const void *, size_t, st_index_t);
+st_index_t st_hash_uint32(st_index_t, uint32_t);
+st_index_t st_hash_uint(st_index_t, st_index_t);
+st_index_t st_hash_end(st_index_t);
+st_index_t st_hash_start(st_index_t);
 VALUE rb_hash_new(void);
 VALUE rb_hash_new_capa(long);
 VALUE rb_hash_aset(VALUE, VALUE, VALUE);
@@ -783,7 +822,171 @@ void rb_thread_schedule(void);
 void rb_thread_check_ints(void);
 int rb_thread_interrupted(VALUE);
 
+/* ---- what MRI's newer headers name with RB_ (ruby/internal/...) ---- */
+#define RUBY_INTEGER_UNIFICATION 1
+#define RB_ALLOC_N(type, n) ALLOC_N(type, n)
+#define RB_ALLOC(type) ALLOC(type)
+#define RB_ZALLOC_N(type, n) ZALLOC_N(type, n)
+#define RB_ZALLOC(type) ZALLOC(type)
+#define RB_REALLOC_N(var, type, n) REALLOC_N(var, type, n)
+#define RB_INT2NUM(v) INT2NUM(v)
+#define RB_NUM2INT(v) NUM2INT(v)
+#define RB_UINT2NUM(v) UINT2NUM(v)
+#define RB_NUM2UINT(v) NUM2UINT(v)
+#define RB_LONG2NUM(v) LONG2NUM(v)
+#define RB_NUM2LONG(v) NUM2LONG(v)
+#define RB_ULONG2NUM(v) ULONG2NUM(v)
+#define RB_NUM2ULONG(v) NUM2ULONG(v)
+#define RB_LL2NUM(v) LL2NUM(v)
+#define RB_ULL2NUM(v) ULL2NUM(v)
+#define RB_NUM2LL(v) NUM2LL(v)
+#define RB_NUM2ULL(v) NUM2ULL(v)
+#define RB_DBL2NUM(v) DBL2NUM(v)
+#define RB_NUM2DBL(v) NUM2DBL(v)
+#define RB_OBJ_FROZEN_RAW(v) RB_OBJ_FROZEN(v)
+#define OBJ_FROZEN_RAW(v) RB_OBJ_FROZEN(v)
+
+/* the object's class, its singleton class if it has one (RBasic klass) */
+VALUE rb_capi_basic_class(VALUE);
+#define RBASIC_CLASS(obj) rb_capi_basic_class((VALUE)(obj))
+VALUE rb_obj_hide(VALUE);
+VALUE rb_obj_reveal(VALUE, VALUE);
+
+/* Bignum: an Integer outside the Fixnum range, through its methods */
+VALUE rb_big2str(VALUE, int);
+long rb_big2long(VALUE);
+unsigned long rb_big2ulong(VALUE);
+long long rb_big2ll(VALUE);
+unsigned long long rb_big2ull(VALUE);
+double rb_big2dbl(VALUE);
+size_t rb_absint_size(VALUE, int *);
+int rb_big_sign(VALUE);
+#define RBIGNUM_SIGN(b) rb_big_sign(b)
+#define RBIGNUM_POSITIVE_P(b) (RBIGNUM_SIGN(b) == 1)
+#define RBIGNUM_NEGATIVE_P(b) (RBIGNUM_SIGN(b) == 0)
+
+VALUE rb_struct_size(VALUE);
+VALUE rb_struct_members(VALUE);
+VALUE rb_struct_s_members(VALUE);
+#define RSTRUCT_LEN(st) NUM2LONG(rb_struct_size(st))
+#define RSTRUCT_GET(st, i) rb_struct_aref((st), LONG2NUM(i))
+#define RSTRUCT_SET(st, i, v) rb_struct_aset((st), LONG2NUM(i), (v))
+
+int rb_obj_method_arity(VALUE, ID);
+int rb_mod_method_arity(VALUE, ID);
+int rb_proc_arity(VALUE);
+void rb_ivar_foreach(VALUE, int (*)(ID, VALUE, st_data_t), st_data_t);
+st_index_t rb_ivar_count(VALUE);
+st_index_t rb_memhash(const void *, long);
+
+struct timespec rb_time_timespec(VALUE);
+struct timeval rb_time_timeval(VALUE);
+VALUE rb_time_timespec_new(const struct timespec *, int);
+VALUE rb_rational_new(VALUE, VALUE);
+VALUE rb_complex_new(VALUE, VALUE);
+#define rb_rational_new1(x) rb_rational_new((x), INT2FIX(1))
+#define rb_rational_new2(x, y) rb_rational_new((x), (y))
+#define rb_complex_new1(x) rb_complex_new((x), INT2FIX(0))
+#define rb_complex_new2(x, y) rb_complex_new((x), (y))
+
+struct rb_capi_encoding; /* rb_encoding, ruby/encoding.h */
+VALUE rb_check_symbol_cstr(const char *, long, struct rb_capi_encoding *);
+VALUE rb_cstr_to_inum(const char *, int, int);
+VALUE rb_str_to_inum(VALUE, int, int);
+double rb_cstr_to_dbl(const char *, int);
+double rb_str_to_dbl(VALUE, int);
+RUBY_EXTERN VALUE rb_eSysStackError;
+VALUE rb_apply(VALUE, ID, VALUE);
+VALUE rb_catch_obj(VALUE, rb_block_call_func_t, VALUE);
+VALUE rb_catch(const char *, rb_block_call_func_t, VALUE);
+NORETURN(void rb_throw_obj(VALUE, VALUE));
+NORETURN(void rb_throw(const char *, VALUE));
+
+/* MRI's ASCII-only character classes (ruby/internal/ctype.h) */
+static inline int rb_isascii(int c) { return '\0' <= c && c <= '\x7f'; }
+static inline int rb_isupper(int c) { return 'A' <= c && c <= 'Z'; }
+static inline int rb_islower(int c) { return 'a' <= c && c <= 'z'; }
+static inline int rb_isalpha(int c) { return rb_isupper(c) || rb_islower(c); }
+static inline int rb_isdigit(int c) { return '0' <= c && c <= '9'; }
+static inline int rb_isalnum(int c) { return rb_isalpha(c) || rb_isdigit(c); }
+static inline int rb_isxdigit(int c) { return rb_isdigit(c) || ('A' <= c && c <= 'F') || ('a' <= c && c <= 'f'); }
+static inline int rb_isblank(int c) { return c == ' ' || c == '\t'; }
+static inline int rb_isspace(int c) { return c == ' ' || ('\t' <= c && c <= '\r'); }
+static inline int rb_iscntrl(int c) { return ('\0' <= c && c < ' ') || c == '\x7f'; }
+static inline int rb_isprint(int c) { return ' ' <= c && c <= '\x7e'; }
+static inline int rb_isgraph(int c) { return '!' <= c && c <= '\x7e'; }
+static inline int rb_ispunct(int c) { return rb_isgraph(c) && !rb_isalnum(c); }
+static inline int rb_tolower(int c) { return rb_isupper(c) ? (c | 0x20) : c; }
+static inline int rb_toupper(int c) { return rb_islower(c) ? (c & ~0x20) : c; }
+#ifndef ISDIGIT
+#define ISASCII(c) rb_isascii(c)
+#define ISPRINT(c) rb_isprint(c)
+#define ISGRAPH(c) rb_isgraph(c)
+#define ISSPACE(c) rb_isspace(c)
+#define ISUPPER(c) rb_isupper(c)
+#define ISLOWER(c) rb_islower(c)
+#define ISALNUM(c) rb_isalnum(c)
+#define ISALPHA(c) rb_isalpha(c)
+#define ISDIGIT(c) rb_isdigit(c)
+#define ISXDIGIT(c) rb_isxdigit(c)
+#define ISBLANK(c) rb_isblank(c)
+#define ISCNTRL(c) rb_iscntrl(c)
+#define ISPUNCT(c) rb_ispunct(c)
+#define TOUPPER(c) rb_toupper(c)
+#define TOLOWER(c) rb_tolower(c)
+#endif
+#ifndef UNREACHABLE
+#define UNREACHABLE __builtin_unreachable()
+#endif
+#define UNREACHABLE_RETURN(val) UNREACHABLE
+
+VALUE rb_str_replace(VALUE, VALUE);
+void rb_str_update(VALUE, long, long, VALUE);
+VALUE rb_io_flush(VALUE);
+
 #if defined(__cplusplus)
+}
+
+/* C++ (MRI's ruby/backward/cxxanyargs.hpp): a method function of any
+   signature, without the cast to ANYARGS that C++ would otherwise need, and
+   the ANYARGS casts older extensions make for the typed callbacks */
+extern "C++" {
+#define ORUBY_CAPI_CXX_DEFINE(name, params, args)                          \
+  template <typename R, typename... A>                                     \
+  inline void name params {                                                \
+    name args;                                                             \
+  }
+#define ORUBY_CAPI_CXX_FN reinterpret_cast<rb_capi_anyargs_func>(func)
+ORUBY_CAPI_CXX_DEFINE(rb_define_method, (VALUE klass, const char *mid, R (*func)(A...), int arity), (klass, mid, ORUBY_CAPI_CXX_FN, arity))
+ORUBY_CAPI_CXX_DEFINE(rb_define_method_id, (VALUE klass, ID mid, R (*func)(A...), int arity), (klass, mid, ORUBY_CAPI_CXX_FN, arity))
+ORUBY_CAPI_CXX_DEFINE(rb_define_private_method, (VALUE klass, const char *mid, R (*func)(A...), int arity), (klass, mid, ORUBY_CAPI_CXX_FN, arity))
+ORUBY_CAPI_CXX_DEFINE(rb_define_protected_method, (VALUE klass, const char *mid, R (*func)(A...), int arity), (klass, mid, ORUBY_CAPI_CXX_FN, arity))
+ORUBY_CAPI_CXX_DEFINE(rb_define_singleton_method, (VALUE obj, const char *mid, R (*func)(A...), int arity), (obj, mid, ORUBY_CAPI_CXX_FN, arity))
+ORUBY_CAPI_CXX_DEFINE(rb_define_module_function, (VALUE mod, const char *mid, R (*func)(A...), int arity), (mod, mid, ORUBY_CAPI_CXX_FN, arity))
+ORUBY_CAPI_CXX_DEFINE(rb_define_global_function, (const char *mid, R (*func)(A...), int arity), (mid, ORUBY_CAPI_CXX_FN, arity))
+#undef ORUBY_CAPI_CXX_FN
+#undef ORUBY_CAPI_CXX_DEFINE
+
+typedef VALUE (*rb_capi_cxx_value_func)(VALUE);
+typedef VALUE (*rb_capi_cxx_rescue_func)(VALUE, VALUE);
+inline VALUE rb_ensure(VALUE (*b)(...), VALUE d1, VALUE (*e)(...), VALUE d2) {
+  return rb_ensure(reinterpret_cast<rb_capi_cxx_value_func>(b), d1, reinterpret_cast<rb_capi_cxx_value_func>(e), d2);
+}
+inline VALUE rb_rescue(VALUE (*b)(...), VALUE d1, VALUE (*r)(...), VALUE d2) {
+  return rb_rescue(reinterpret_cast<rb_capi_cxx_value_func>(b), d1, reinterpret_cast<rb_capi_cxx_rescue_func>(r), d2);
+}
+inline VALUE rb_protect(VALUE (*b)(...), VALUE d, int *state) {
+  return rb_protect(reinterpret_cast<rb_capi_cxx_value_func>(b), d, state);
+}
+inline void rb_hash_foreach(VALUE h, int (*f)(...), VALUE arg) {
+  rb_hash_foreach(h, reinterpret_cast<int (*)(VALUE, VALUE, VALUE)>(f), arg);
+}
+inline VALUE rb_block_call(VALUE obj, ID mid, int argc, const VALUE *argv, VALUE (*f)(...), VALUE data) {
+  return rb_block_call(obj, mid, argc, argv, reinterpret_cast<rb_block_call_func_t>(f), data);
+}
+inline VALUE rb_proc_new(VALUE (*f)(...), VALUE data) {
+  return rb_proc_new(reinterpret_cast<rb_block_call_func_t>(f), data);
+}
 }
 #endif
 

@@ -9,8 +9,8 @@ import (
 // RubyVersion is the MRI version ORuby targets (RUBY_VERSION).
 const RubyVersion = "4.1.0"
 
-// RubyArch is the architecture name of RbConfig::CONFIG["arch"], MRI-style
-// (x86_64-linux, arm64-darwin).
+// RubyArch is the architecture name of RbConfig::CONFIG["arch"] and
+// RUBY_PLATFORM, MRI-style (x86_64-linux, aarch64-linux, arm64-darwin).
 func RubyArch() string {
 	cpu := runtime.GOARCH
 	switch cpu {
@@ -18,6 +18,10 @@ func RubyArch() string {
 		cpu = "x86_64"
 	case "386":
 		cpu = "i386"
+	case "arm64":
+		if runtime.GOOS != "darwin" {
+			cpu = "aarch64" // uname -m; Apple's is arm64
+		}
 	}
 	return cpu + "-" + runtime.GOOS
 }

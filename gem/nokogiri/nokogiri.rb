@@ -76,16 +76,16 @@ module Nokogiri
     []
   end
 
-  def self.XML(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_XML, &block)
-    XML::Document.parse(thing, url, encoding, options, &block)
+  def self.XML(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_XML, **kw, &block)
+    XML::Document.parse(thing, url, encoding, options, **kw, &block)
   end
 
-  def self.HTML4(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, &block)
-    HTML4::Document.parse(thing, url, encoding, options, &block)
+  def self.HTML4(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
+    HTML4::Document.parse(thing, url, encoding, options, **kw, &block)
   end
 
-  def self.HTML(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, &block)
-    HTML4(thing, url, encoding, options, &block)
+  def self.HTML(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
+    HTML4(thing, url, encoding, options, **kw, &block)
   end
 
   def self.HTML5(thing, url = nil, encoding = nil, **options, &block)
@@ -124,8 +124,8 @@ module Nokogiri
   end
 
   module XML
-    def self.parse(thing, url = nil, encoding = nil, options = ParseOptions::DEFAULT_XML, &block)
-      Document.parse(thing, url, encoding, options, &block)
+    def self.parse(thing, url = nil, encoding = nil, options = ParseOptions::DEFAULT_XML, **kw, &block)
+      Document.parse(thing, url, encoding, options, **kw, &block)
     end
 
     def self.fragment(string, options = ParseOptions::DEFAULT_XML, **kw, &block)
@@ -354,7 +354,7 @@ module Nokogiri
         out = NodeSet.new(document)
         paths.each do |path|
           p = path.to_s
-          if p.start_with?("/", "./", "(", "..")
+          if p == "." || p.start_with?("/", "./", "(", "..")
             r = __xpath(p, ns, handler, binds)
             out = out | r if r.is_a?(NodeSet)
           else
@@ -372,7 +372,7 @@ module Nokogiri
 
       def >(selector)
         sel = selector.to_s
-        if sel.start_with?("/", "./", "(", "..")
+        if sel == "." || sel.start_with?("/", "./", "(", "..")
           xpath(sel)
         else
           NodeSet.new(document, element_children.select { |c| c.matches?(sel) })
@@ -409,6 +409,13 @@ module Nokogiri
       include ClassResolver
       include Searchable
       include Enumerable
+
+      def self.new(*args, **kw, &block)
+        if self == Nokogiri::XML::Node
+          return kw.empty? ? Element.new(*args, &block) : Element.new(*args, **kw, &block)
+        end
+        kw.empty? ? super(*args, &block) : super(*args, **kw, &block)
+      end
 
       class SaveOptions
         FORMAT         = 1 << 0
@@ -507,8 +514,8 @@ module Nokogiri
       end
 
       def replace(node_or_tags)
+        raise RuntimeError, "Cannot replace a node with no parent" unless parent
         if node_or_tags.is_a?(String)
-          raise RuntimeError, "Cannot call replace on a node with no parent" unless parent
           node_or_tags = parent.coerce(node_or_tags)
         else
           node_or_tags = coerce(node_or_tags)
@@ -546,26 +553,42 @@ module Nokogiri
 
       def wrap(html_str)
         unless html_str.is_a?(String) || html_str.is_a?(XML::Node)
-          raise ArgumentError, "Requires a Node or String argument, and cannot accept a #{html_str.class}."
+          raise ArgumentError, "Requires a String or Node argument, and cannot accept a #{html_str.class}."
         end
+        ctx_node = (respond_to?(:parent) && parent && parent.element?) ? parent : nil
+        ctx_name = ctx_node ? ctx_node.name : (element? ? name : "body")
         wrapper =
           if html_str.is_a?(XML::Node)
             html_str
           else
             frag =
-              if document && document.html?
+              if document && document.is_a?(HTML5::Document)
+                if ctx_node
+                  ctx_node.fragment(html_str)
+                else
+                  document.fragment(html_str)
+                end
+              elsif document && document.html?
                 HTML4::DocumentFragment.parse(html_str)
+              elsif document
+                XML::DocumentFragment.new(document, html_str, ctx_node)
               else
                 XML::DocumentFragment.parse(html_str)
               end
             frag.first_element_child || frag.children.first
           end
-        raise RuntimeError, "Could not parse the tag's to build the node" unless wrapper
+        unless wrapper
+          raise RuntimeError, "Failed to parse '#{html_str}' in the context of a '#{ctx_name}' element"
+        end
         leaf = wrapper
         while leaf.first_element_child
           leaf = leaf.first_element_child
         end
-        add_previous_sibling(wrapper)
+        if respond_to?(:parent) && parent
+          add_previous_sibling(wrapper)
+        else
+          wrapper.unlink
+        end
         leaf.add_child(self)
         self
       end
@@ -608,7 +631,7 @@ module Nokogiri
       end
 
       def blank?
-        text? && content.strip.empty?
+        content.strip.empty?
       end
 
       def ancestors(selector = nil)
@@ -713,8 +736,12 @@ module Nokogiri
         node_type == ENTITY_DECL || node_type == ENTITY_REF_NODE || node_type == DTD_NODE || node_type == DOCUMENT_TYPE_NODE
       end
 
-      def data_ptr?
-        true
+      def clone(*args)
+        copy = __dup_node(*args)
+        singleton_methods(false).each do |m|
+          copy.define_singleton_method(m, method(m))
+        end
+        copy
       end
 
       def description
@@ -828,6 +855,10 @@ module Nokogiri
 
       def __encode_output(str, options)
         enc = options.is_a?(Hash) ? options[:encoding] : nil
+        if (enc.nil? || enc.to_s.empty?) && data_ptr?
+          doc_enc = document ? document.encoding : nil
+          enc = doc_enc if doc_enc && !doc_enc.empty? && doc_enc.upcase != "UTF-8" && doc_enc.upcase != "UTF8"
+        end
         return str if enc.nil? || enc.to_s.empty?
         target = enc.is_a?(Encoding) ? enc : Encoding.find(enc.to_s)
         return str if target == Encoding::UTF_8
@@ -869,8 +900,17 @@ module Nokogiri
         __encode_output(__serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with), preserve_nl), options)
       end
 
-      def write_to(io, *options)
-        opts = options.last.is_a?(Hash) ? options.last : {}
+      def write_to(io, *options, &block)
+        opts = options.last.is_a?(Hash) ? options.last.dup : {}
+        if options.first.is_a?(String) && !opts.key?(:encoding)
+          opts[:encoding] = options.first
+        end
+        if block
+          default_sw = html? ? SaveOptions::DEFAULT_HTML : SaveOptions::DEFAULT_XML
+          cfg = SaveOptions.new(opts[:save_with] || default_sw)
+          yield cfg
+          opts[:save_with] = cfg.options
+        end
         io << (html? ? to_html(opts) : to_xml(opts))
       end
 
@@ -887,13 +927,17 @@ module Nokogiri
       end
 
       def serialize(*args, &block)
-        opts = args.last.is_a?(Hash) ? args.last : {}
+        opts = args.last.is_a?(Hash) ? args.last.dup : {}
         if args.first.is_a?(String) && !opts.key?(:encoding)
-          opts = opts.merge(encoding: args.first)
+          opts[:encoding] = args.first
         end
-        out = html? ? to_html(opts) : to_xml(opts)
-        yield out if block
-        out
+        if block
+          default_sw = html? ? SaveOptions::DEFAULT_HTML : SaveOptions::DEFAULT_XML
+          cfg = SaveOptions.new(opts[:save_with] || default_sw)
+          yield cfg
+          opts[:save_with] = cfg.options
+        end
+        html? ? to_html(opts) : to_xml(opts)
       end
 
       def to_s(*args)
@@ -901,11 +945,18 @@ module Nokogiri
       end
 
       def inspect
+        return "#<#{self.class}:0x#{object_id.to_s(16)} (no data)>" unless data_ptr?
         "#<#{self.class}:0x#{pointer_id.to_s(16)} name=#{name.inspect}>"
       end
     end
 
     class Attr
+      undef_method :line=
+
+      def to_s
+        value
+      end
+
       def deconstruct_keys(_keys)
         {
           name: name,
@@ -916,7 +967,9 @@ module Nokogiri
     end
 
     class Document
-      undef_method :parent, :line, :line=, :attributes
+      undef_method :parent, :line, :line=, :attributes,
+                   :namespace, :namespace=, :namespace_definitions,
+                   :add_namespace_definition, :add_namespace, :default_namespace=, :swap
 
       def deconstruct_keys(_keys)
         {
@@ -925,10 +978,39 @@ module Nokogiri
         }
       end
 
-      def self.parse(thing, url = nil, encoding = nil, options = ParseOptions::DEFAULT_XML, &block)
+      def self.__read_input(thing)
+        if defined?(Pathname) && thing.is_a?(Pathname)
+          File.binread(thing.to_path)
+        elsif thing.respond_to?(:read)
+          if thing.method(:read).arity == 0
+            return thing.read.to_s
+          end
+          buf = +"".b
+          loop do
+            chunk = thing.read(4096)
+            break if chunk.nil? || chunk.empty?
+            buf << chunk.b
+          end
+          buf
+        elsif thing.respond_to?(:to_path) && File.exist?(thing.to_path)
+          File.binread(thing.to_path)
+        else
+          thing.to_s
+        end
+      end
+
+      def self.parse(thing, url = nil, encoding = nil, options = ParseOptions::DEFAULT_XML, **kw, &block)
+        url = kw[:url] if url.nil? && kw.key?(:url)
+        encoding = kw[:encoding] if encoding.nil? && kw.key?(:encoding)
+        options = kw[:options] if kw.key?(:options)
+        if url.nil? && thing.respond_to?(:path)
+          url = thing.path.to_s
+        elsif url.nil? && thing.respond_to?(:to_path)
+          url = thing.to_path.to_s
+        end
         opts = options.is_a?(ParseOptions) ? options : ParseOptions.new(options || ParseOptions::DEFAULT_XML)
         yield opts if block
-        src = thing.respond_to?(:read) ? thing.read : thing.to_s
+        src = __read_input(thing)
         __parse_xml(src, url, encoding, opts.to_i)
       end
 
@@ -938,10 +1020,19 @@ module Nokogiri
       end
 
       def create_element(name, *args, &block)
-        el = Node.new(name.to_s, self)
+        el = Element.new(name.to_s, self)
         args.each do |arg|
           if arg.is_a?(Hash)
-            arg.each { |k, v| el[k.to_s] = v.to_s }
+            arg.each do |k, v|
+              ks = k.to_s
+              if ks == "xmlns"
+                el.add_namespace_definition(nil, v.to_s)
+              elsif ks.start_with?("xmlns:")
+                el.add_namespace_definition(ks[6..-1], v.to_s)
+              else
+                el[ks] = v.to_s
+              end
+            end
           else
             el.content = arg.to_s
           end
@@ -1022,6 +1113,132 @@ module Nokogiri
 
       def pretty_print(pp)
         pp.text(inspect)
+      end
+    end
+
+    Notation = Struct.new(:name, :public_id, :system_id)
+
+    class DTD
+      undef_method :content, :line, :line=, :namespace, :namespace_definitions
+
+      def each(&block)
+        attributes.each(&block)
+      end
+    end
+
+    class EntityDecl
+      undef_method :attributes, :namespace, :namespace_definitions, :line, :line=
+
+      def self.new(name, doc, *args)
+        doc.create_entity(name, *args)
+      end
+
+      def inspect
+        "#<#{self.class.name}:#{format('0x%x', object_id)} #{to_s.inspect}>"
+      end
+    end
+
+    class ElementContent
+      PCDATA  = 1
+      ELEMENT = 2
+      SEQ     = 3
+      OR      = 4
+
+      ONCE = 1
+      OPT  = 2
+      MULT = 3
+      PLUS = 4
+
+      attr_reader :document, :type, :occur, :name, :prefix, :children
+
+      def initialize(document, type, occur, name, prefix, children)
+        @document = document
+        @type = type
+        @occur = occur
+        @name = name
+        @prefix = prefix
+        @children = children
+      end
+
+      def self.parse(doc, spec)
+        s = spec.to_s.strip
+        return nil if s.empty? || s == "EMPTY" || s == "ANY"
+        tokens = s.scan(/\(|\)|,|\||\?|\*|\+|#PCDATA|[^\s\(\),\|\?\*\+]+/)
+        pos = [0]
+        parse_group(doc, tokens, pos)
+      end
+
+      def self.parse_group(doc, tokens, pos)
+        node = parse_atom(doc, tokens, pos)
+        node
+      end
+
+      def self.parse_atom(doc, tokens, pos)
+        tok = tokens[pos[0]]
+        return nil unless tok
+        if tok == "("
+          pos[0] += 1
+          items = [parse_atom(doc, tokens, pos)]
+          sep = nil
+          while pos[0] < tokens.length && tokens[pos[0]] != ")"
+            if tokens[pos[0]] == "," || tokens[pos[0]] == "|"
+              sep ||= tokens[pos[0]]
+              pos[0] += 1
+            end
+            items << parse_atom(doc, tokens, pos)
+          end
+          pos[0] += 1 if pos[0] < tokens.length && tokens[pos[0]] == ")"
+          occur = parse_occur(tokens, pos)
+          if items.length == 1
+            it = items[0]
+            return it unless it
+            if occur != ONCE && it.occur == ONCE
+              return new(doc, it.type, occur, it.name, it.prefix, it.children)
+            end
+            return it
+          end
+          kind = (sep == "|") ? OR : SEQ
+          # Right-associative binary tree matching libxml2 xmlElementContent
+          acc = items[-1]
+          (items.length - 2).downto(0) do |i|
+            o = (i == 0) ? occur : ONCE
+            acc = new(doc, kind, o, nil, nil, [items[i], acc])
+          end
+          return acc
+        end
+        pos[0] += 1
+        occur = parse_occur(tokens, pos)
+        if tok == "#PCDATA"
+          return new(doc, PCDATA, occur, nil, nil, [])
+        end
+        if tok.include?(":")
+          pref, local = tok.split(":", 2)
+        else
+          pref, local = nil, tok
+        end
+        new(doc, ELEMENT, occur, local, pref, [])
+      end
+
+      def self.parse_occur(tokens, pos)
+        case tokens[pos[0]]
+        when "?"
+          pos[0] += 1
+          OPT
+        when "*"
+          pos[0] += 1
+          MULT
+        when "+"
+          pos[0] += 1
+          PLUS
+        else
+          ONCE
+        end
+      end
+    end
+
+    class ElementDecl
+      def content
+        ElementContent.parse(document, __raw_content_spec)
       end
     end
 
@@ -1554,6 +1771,7 @@ module Nokogiri
           @replace_entities = false
           @state = SAX::PushState.new
           @buf = +""
+          @last_error = nil
         end
 
         def replace_entities
@@ -1566,8 +1784,24 @@ module Nokogiri
 
         def write(chunk, last_chunk = false)
           if chunk && !chunk.empty?
-            @buf << chunk.to_s
-            @state.write(@document, chunk.to_s)
+            s = chunk.to_s
+            @buf << s
+            @state.write(@document, s)
+            # Check for obvious mid-stream malformed XML (e.g., "</foo>" without "<foo>", bad tag)
+            if (@options & ParseOptions::RECOVER) == 0 && s.include?("</")
+              check_doc = XML::Document.parse(@buf)
+              if !check_doc.errors.empty?
+                # Only raise mid-stream for mismatch / unexpected closing tag (not premature EOF)
+                fatal = check_doc.errors.find { |e| !e.message.start_with?("Premature end") }
+                if fatal
+                  @last_error = fatal
+                  if @document.respond_to?(:error)
+                    @document.error(fatal.message)
+                  end
+                  raise fatal
+                end
+              end
+            end
           end
           finish if last_chunk
           self
@@ -1576,9 +1810,27 @@ module Nokogiri
 
         def finish
           @state.finish(@document)
-          if (@options & ParseOptions::RECOVER) == 0
-            if @buf.strip.empty?
-              raise XML::SyntaxError, "Document is empty"
+          recover = (@options & ParseOptions::RECOVER) != 0
+          if @last_error && !recover
+            err = @last_error
+            @last_error = nil
+            raise err
+          end
+          if @buf.strip.empty?
+            if !recover
+              err = XML::SyntaxError.new("Document is empty")
+              @document.error(err.message) if @document.respond_to?(:error)
+              raise err
+            end
+          else
+            check_doc = XML::Document.parse(@buf)
+            unless check_doc.errors.empty?
+              check_doc.errors.each do |e|
+                @document.error(e.message) if @document.respond_to?(:error)
+              end
+              unless recover
+                raise check_doc.errors.first
+              end
             end
           end
           @state = SAX::PushState.new
@@ -1739,8 +1991,8 @@ module Nokogiri
   end
 
   module HTML4
-    def self.parse(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, &block)
-      Document.parse(thing, url, encoding, options, &block)
+    def self.parse(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
+      Document.parse(thing, url, encoding, options, **kw, &block)
     end
 
     def self.fragment(string, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
@@ -1872,10 +2124,18 @@ module Nokogiri
     end
 
     class Document
-      def self.parse(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, &block)
+      def self.parse(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
+        url = kw[:url] if url.nil? && kw.key?(:url)
+        encoding = kw[:encoding] if encoding.nil? && kw.key?(:encoding)
+        options = kw[:options] if kw.key?(:options)
+        if url.nil? && thing.respond_to?(:path)
+          url = thing.path.to_s
+        elsif url.nil? && thing.respond_to?(:to_path)
+          url = thing.to_path.to_s
+        end
         opts = options.is_a?(XML::ParseOptions) ? options : XML::ParseOptions.new(options || XML::ParseOptions::DEFAULT_HTML)
         yield opts if block
-        src = thing.respond_to?(:read) ? thing.read : thing.to_s
+        src = XML::Document.__read_input(thing)
         __parse_html(src, url, encoding, opts.to_i, false)
       end
 
@@ -1947,12 +2207,25 @@ module Nokogiri
 
     class DocumentFragment
       def self.parse(tags, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
+        encoding = kw.delete(:encoding) if encoding.nil? && kw.key?(:encoding)
+        raw = tags.respond_to?(:read) ? XML::Document.__read_input(tags) : tags
+        if encoding.nil? && raw.is_a?(String) && raw.encoding != Encoding::UTF_8 && raw.encoding != Encoding::ASCII_8BIT
+          encoding = raw.encoding.name
+        end
         doc = HTML4::Document.new
-        doc.encoding = encoding.to_s if encoding
+        if encoding
+          doc.encoding = encoding.is_a?(Encoding) ? encoding.name : encoding.to_s
+        end
+        if raw.is_a?(String) && encoding
+          enc_obj = encoding.is_a?(Encoding) ? encoding : Encoding.find(encoding.to_s)
+          if enc_obj != Encoding::UTF_8
+            raw = raw.dup.force_encoding(enc_obj).encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+          end
+        end
         if kw.empty?
-          new(doc, tags, nil, options, &block)
+          new(doc, raw, nil, options, &block)
         else
-          new(doc, tags, nil, options, **kw, &block)
+          new(doc, raw, nil, options, **kw, &block)
         end
       end
     end

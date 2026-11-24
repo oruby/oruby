@@ -866,7 +866,20 @@ func resolveGemfileGems(gemfilePath, projectRoot string, groups []string, verbos
 			}
 		}
 
-		if shouldSkipGemForOrb(name) {
+		// an embedded gem (oruby.GemSpec) stands in for its versions up to
+		// its own: the locked one, else the one installed; a newer one is
+		// packed and built as a gem
+		if ev, embedded := oruby.EmbeddedGemVersion(name); embedded {
+			v := lockedVer
+			if v == "" {
+				if gd, ok := findGemDir(name, "", gemRoots); ok {
+					v = gd.Version
+				}
+			}
+			if v == "" || oruby.CompareGemVersions(ev, v) >= 0 {
+				continue
+			}
+		} else if shouldSkipGemForOrb(name) {
 			continue
 		}
 

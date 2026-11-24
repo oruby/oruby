@@ -17,6 +17,36 @@ const (
 // canonicalize renders n (and its subtree) in W3C XML Canonicalization
 // (C14N 1.0 / Exclusive C14N 1.0 / C14N 1.1).
 func (n *domNode) canonicalize(mode int, inclusiveNS []string, withComments bool) string {
+	s, _ := n.canonicalizeEx(mode, inclusiveNS, withComments, nil)
+	return s
+}
+
+func (n *domNode) canonicalizeEx(mode int, inclusiveNS []string, withComments bool, includeFn func(node, parent *domNode) (bool, error)) (string, error) {
+	if mode != xmlC14N10 && mode != xmlC14NExclusive10 && mode != xmlC14N11 {
+		return "", fmt.Errorf("invalid C14N mode: %d", mode)
+	}
+	if len(inclusiveNS) > 0 && mode != xmlC14NExclusive10 {
+		return "", fmt.Errorf("inclusive namespaces are only allowed in exclusive C14N mode")
+	}
+	// Check for relative namespace URIs (forbidden by W3C C14N)
+	var checkRelNS func(cur *domNode) error
+	checkRelNS = func(cur *domNode) error {
+		for _, ns := range cur.nsDefs {
+			if ns.href != "" && !strings.ContainsRune(ns.href, ':') {
+				return fmt.Errorf("relative namespace URI %q is not allowed in C14N", ns.href)
+			}
+		}
+		for c := cur.first; c != nil; c = c.next {
+			if err := checkRelNS(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := checkRelNS(n); err != nil {
+		return "", err
+	}
+
 	var b strings.Builder
 	inclSet := map[string]bool{}
 	for _, p := range inclusiveNS {
@@ -28,13 +58,42 @@ func (n *domNode) canonicalize(mode int, inclusiveNS []string, withComments bool
 		for c := n.first; c != nil; c = c.next {
 			switch c.kind {
 			case ElementNode:
+				if includeFn != nil {
+					inc, err := includeFn(c, n)
+					if err != nil {
+						return "", err
+					}
+					// libxml2 also queries (doc, nil) when processing the document element
+					if _, err := includeFn(n, nil); err != nil {
+						return "", err
+					}
+					if !inc {
+						continue
+					}
+				}
 				if !first {
 					b.WriteByte('\n')
 				}
-				c.writeC14N(&b, mode, inclSet, withComments, renderedNS)
+				if err := c.writeC14NEx(&b, mode, inclSet, withComments, renderedNS, true, includeFn); err != nil {
+					return "", err
+				}
+				if includeFn != nil {
+					if _, err := includeFn(c, n); err != nil {
+						return "", err
+					}
+				}
 				first = false
 			case CommentNode:
 				if withComments {
+					if includeFn != nil {
+						inc, err := includeFn(c, n)
+						if err != nil {
+							return "", err
+						}
+						if !inc {
+							continue
+						}
+					}
 					if !first {
 						b.WriteByte('\n')
 					}
@@ -44,6 +103,15 @@ func (n *domNode) canonicalize(mode int, inclusiveNS []string, withComments bool
 					first = false
 				}
 			case PINode:
+				if includeFn != nil {
+					inc, err := includeFn(c, n)
+					if err != nil {
+						return "", err
+					}
+					if !inc {
+						continue
+					}
+				}
 				if !first {
 					b.WriteByte('\n')
 				}
@@ -57,13 +125,15 @@ func (n *domNode) canonicalize(mode int, inclusiveNS []string, withComments bool
 				first = false
 			}
 		}
-		return b.String()
+		return b.String(), nil
 	}
-	n.writeC14N(&b, mode, inclSet, withComments, renderedNS)
-	return b.String()
+	if err := n.writeC14NEx(&b, mode, inclSet, withComments, renderedNS, true, includeFn); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
-func (n *domNode) writeC14N(b *strings.Builder, mode int, inclSet map[string]bool, withComments bool, parentRendered map[string]string) {
+func (n *domNode) writeC14NEx(b *strings.Builder, mode int, inclSet map[string]bool, withComments bool, parentRendered map[string]string, isSubtreeRoot bool, includeFn func(node, parent *domNode) (bool, error)) error {
 	switch n.kind {
 	case TextNode, CDATASectionNode:
 		writeC14NText(b, n.data)
@@ -163,6 +233,25 @@ func (n *domNode) writeC14N(b *strings.Builder, mode int, inclSet map[string]boo
 
 		// Sort attributes: unprefixed first (empty nsURI), then by (nsURI, localName)
 		attrs := append([]*domAttr(nil), n.attrs...)
+		// In non-exclusive C14N 1.0 / 1.1, inherit xml:lang / xml:space (and xml:base in 1.0) from ancestors on subtree root
+		if isSubtreeRoot && mode != xmlC14NExclusive10 {
+			hasXMLAttr := map[string]bool{}
+			for _, a := range attrs {
+				if a.prefix == "xml" {
+					hasXMLAttr[a.name] = true
+				}
+			}
+			for anc := n.parent; anc != nil && anc.kind == ElementNode; anc = anc.parent {
+				for _, a := range anc.attrs {
+					if a.prefix == "xml" && !hasXMLAttr[a.name] {
+						if a.name == "lang" || a.name == "space" || (mode == xmlC14N10 && a.name == "base") {
+							hasXMLAttr[a.name] = true
+							attrs = append(attrs, a)
+						}
+					}
+				}
+			}
+		}
 		sort.Slice(attrs, func(i, j int) bool {
 			ui, uj := attrs[i].nsURI, attrs[j].nsURI
 			if ui != uj {
@@ -184,12 +273,24 @@ func (n *domNode) writeC14N(b *strings.Builder, mode int, inclSet map[string]boo
 
 		b.WriteByte('>')
 		for c := n.first; c != nil; c = c.next {
-			c.writeC14N(b, mode, inclSet, withComments, nextRendered)
+			if includeFn != nil {
+				inc, err := includeFn(c, n)
+				if err != nil {
+					return err
+				}
+				if !inc {
+					continue
+				}
+			}
+			if err := c.writeC14NEx(b, mode, inclSet, withComments, nextRendered, false, includeFn); err != nil {
+				return err
+			}
 		}
 		b.WriteString("</")
 		b.WriteString(qname)
 		b.WriteByte('>')
 	}
+	return nil
 }
 
 func (n *domNode) inScopeNamespaces() map[string]string {

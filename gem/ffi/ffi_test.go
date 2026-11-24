@@ -18,7 +18,7 @@ func TestFFIBasicLibcAndErrno(t *testing.T) {
 
 		module LibC
 			extend FFI::Library
-			ffi_lib FFI::Library::LIBC
+			ffi_lib FFI::Library::LIBC, "m" # sin, cos, sqrt: libm on glibc
 
 			attach_function :getpid, [], :pid_t
 			attach_function :abs, [:int], :int

@@ -27,7 +27,8 @@ func TestFiddleCoreAndClosures(t *testing.T) {
 		c_strlen = Fiddle::Function.new(libc["strlen"], [Fiddle::TYPE_VOIDP], Fiddle::TYPE_SIZE_T)
 		raise "strlen" unless c_strlen.call("hello fiddle") == 12
 
-		c_sin = Fiddle::Function.new(libc["sin"], [Fiddle::TYPE_DOUBLE], Fiddle::TYPE_DOUBLE)
+		# sin from the process: libm on glibc, not libc
+		c_sin = Fiddle::Function.new(Fiddle::Handle::DEFAULT["sin"], [Fiddle::TYPE_DOUBLE], Fiddle::TYPE_DOUBLE)
 		raise "sin" unless (c_sin.call(Math::PI / 2) - 1.0).abs < 1e-12
 
 		# Variadic Fiddle::Function (snprintf)

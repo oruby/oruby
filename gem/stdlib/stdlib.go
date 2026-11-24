@@ -228,7 +228,7 @@ func init() {
 	})
 	oruby.LazyGem("rbconfig/sizeof", func(mrb *oruby.MrbState) interface{} {
 		mrb.Require("rbconfig")
-		load(mrb, "sizeof")
+		rb.LoadRuby(mrb, "<internal:rbconfig/sizeof>", []byte(sizeofSource()))
 		return nil
 	})
 	// Reentrant SynchronizedMapBackend for concurrent-ruby (which falls back

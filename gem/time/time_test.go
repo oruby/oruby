@@ -89,6 +89,10 @@ func TestIsTimeDST(t *testing.T) {
 	dst := time.Date(2012, time.December, 23, 0, 0, 0, 0, time.UTC)
 	assert.Expect(t, !isDST(dst), "%v should not be dst", dst)
 
-	dst = time.Date(2012, time.July, 23, 0, 0, 0, 0, time.Local)
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skip("no tzdata:", err)
+	}
+	dst = time.Date(2012, time.July, 23, 0, 0, 0, 0, loc)
 	assert.Expect(t, isDST(dst), "%v should be dst", dst)
 }

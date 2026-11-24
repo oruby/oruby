@@ -1145,6 +1145,16 @@ module FFI
                 break
               rescue LoadError => e
                 last_err = e
+                # glibc's libc.so, libm.so, ... are GNU ld scripts: open the
+                # library the script names, as the ffi gem does
+                if (script = ld_script_target(e.message))
+                  begin
+                    opened = DynamicLibrary.open(script, flags)
+                    break
+                  rescue LoadError => e2
+                    last_err = e2
+                  end
+                end
               end
             end
             break if opened
@@ -1154,6 +1164,14 @@ module FFI
         end
       end
     end
+
+    def ld_script_target(message)
+      return unless message =~ /(([^ \t()])+\.so([^ \t:()])*):([ \t])*(invalid ELF header|file too short|invalid file format)/
+      File.binread($1) =~ /(?:GROUP|INPUT) *\( *([^ \)]+)/ ? $1 : nil
+    rescue SystemCallError
+      nil
+    end
+    private :ld_script_target
 
     def ffi_libraries
       @ffi_libs ||= [DynamicLibrary.open(nil, DynamicLibrary::RTLD_LAZY | DynamicLibrary::RTLD_LOCAL)]

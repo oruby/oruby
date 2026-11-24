@@ -3,7 +3,6 @@
 package process
 
 import (
-	"math"
 	"strings"
 	"syscall"
 
@@ -96,7 +95,7 @@ func rlimitValue(mrb *oruby.MrbState, v oruby.Value) (uint64, error) {
 	if ok {
 		switch strings.ToUpper(name) {
 		case "INFINITY", "SAVED_MAX", "SAVED_CUR":
-			return uint64(RLIM_INFINITY), nil
+			return RLIM_INFINITY, nil
 		}
 		return 0, oruby.EArgumentError("invalid resource value: %s", name)
 	}
@@ -104,11 +103,9 @@ func rlimitValue(mrb *oruby.MrbState, v oruby.Value) (uint64, error) {
 	return uint64(n), err
 }
 
-func rlimitInt(v uint64) oruby.Value {
-	if v > math.MaxInt64 {
-		v = math.MaxInt64
-	}
-	return oruby.Int64(int64(v)).Value()
+// rlimitInt is an rlim_t as an Integer: RLIM_INFINITY is 2**64-1 on Linux
+func rlimitInt(mrb *oruby.MrbState, v uint64) oruby.Value {
+	return mrb.Uint64Value(v)
 }
 
 func procGetrlimit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -120,7 +117,7 @@ func procGetrlimit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err := syscall.Getrlimit(res, &rl); err != nil {
 		return mrb.SysFail(err)
 	}
-	return mrb.AryNewFromValues(rlimitInt(uint64(rl.Cur)), rlimitInt(uint64(rl.Max)))
+	return mrb.AryNewFromValues(rlimitInt(mrb, uint64(rl.Cur)), rlimitInt(mrb, uint64(rl.Max)))
 }
 
 func procSetrlimit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

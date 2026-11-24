@@ -10,6 +10,7 @@ import (
 
 	"github.com/oruby/oruby"
 	gemIO "github.com/oruby/oruby/gem/io"
+	"golang.org/x/sys/unix"
 )
 
 func initIOMethods(mrb *oruby.MrbState) oruby.RClass {
@@ -541,7 +542,7 @@ func ioReopenIO(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	gemIO.DropReadBuffer(mrb, other)
 	fd, ofd := gemIO.RawFd(f), gemIO.RawFd(of)
 	if fd != ofd {
-		if err := syscall.Dup2(ofd, fd); err != nil {
+		if err := unix.Dup2(ofd, fd); err != nil {
 			return mrb.SysFail(err)
 		}
 	}
@@ -584,7 +585,7 @@ func ioReopenPath(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	f, ok := mrb.Data(self).(*os.File)
 	if ok && f != nil && !mrb.GetIV(self, "@closed").Bool() && gemIO.RawFd(f) >= 0 {
 		fd := gemIO.RawFd(f)
-		err := syscall.Dup2(gemIO.RawFd(nf), fd)
+		err := unix.Dup2(gemIO.RawFd(nf), fd)
 		_ = nf.Close()
 		if err != nil {
 			return mrb.SysFail(err)

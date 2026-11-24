@@ -104,6 +104,65 @@ func initNokogiri(mrb *oruby.MrbState) any {
 	rb.DataClass(piCls)
 	entityRefCls := mrb.DefineClassUnder(xmlMod, "EntityReference", nodeCls)
 	rb.DataClass(entityRefCls)
+	entityDeclCls := mrb.DefineClassUnder(xmlMod, "EntityDecl", nodeCls)
+	rb.DataClass(entityDeclCls)
+	for name, val := range map[string]int{
+		"INTERNAL_GENERAL":          1,
+		"EXTERNAL_GENERAL_PARSED":   2,
+		"EXTERNAL_GENERAL_UNPARSED": 3,
+		"INTERNAL_PARAMETER":        4,
+		"EXTERNAL_PARAMETER":        5,
+		"INTERNAL_PREDEFINED":       6,
+	} {
+		mrb.ConstSet(entityDeclCls, mrb.Intern(name), mrb.FixnumValue(val))
+	}
+	entityDeclCls.DefineMethod("external_id", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		if n.pubID == "" {
+			return mrb.NilValue()
+		}
+		return mrb.StrNew(n.pubID)
+	}, mrb.ArgsNone())
+	entityDeclCls.DefineMethod("system_id", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		if n.sysID == "" {
+			return mrb.NilValue()
+		}
+		return mrb.StrNew(n.sysID)
+	}, mrb.ArgsNone())
+	entityDeclCls.DefineMethod("entity_type", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		if n.entityType == 0 {
+			return mrb.FixnumValue(1)
+		}
+		return mrb.FixnumValue(n.entityType)
+	}, mrb.ArgsNone())
+	entityDeclCls.DefineMethod("original_content", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		return mrb.StrNew(n.data)
+	}, mrb.ArgsNone())
+	entityDeclCls.DefineMethod("content", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		return mrb.StrNew(n.data)
+	}, mrb.ArgsNone())
+
+	elemDeclCls := mrb.DefineClassUnder(xmlMod, "ElementDecl", nodeCls)
+	rb.DataClass(elemDeclCls)
+	elemDeclCls.DefineMethod("__raw_content_spec", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		return mrb.StrNew(n.data)
+	}, mrb.ArgsNone())
+
+	attrDeclCls := mrb.DefineClassUnder(xmlMod, "AttributeDecl", nodeCls)
+	rb.DataClass(attrDeclCls)
+	attrDeclCls.DefineMethod("default", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		if n.data == "" {
+			return mrb.NilValue()
+		}
+		return mrb.StrNew(n.data)
+	}, mrb.ArgsNone())
+
 	dtdCls := mrb.DefineClassUnder(xmlMod, "DTD", nodeCls)
 	rb.DataClass(dtdCls)
 	docCls := mrb.DefineClassUnder(xmlMod, "Document", nodeCls)
@@ -291,6 +350,12 @@ func wrapNode(mrb *oruby.MrbState, n *domNode) oruby.Value {
 			clsPath = "Nokogiri::XML::CDATA"
 		case EntityRefNode:
 			clsPath = "Nokogiri::XML::EntityReference"
+		case EntityDecl:
+			clsPath = "Nokogiri::XML::EntityDecl"
+		case ElementDecl:
+			clsPath = "Nokogiri::XML::ElementDecl"
+		case AttributeDecl:
+			clsPath = "Nokogiri::XML::AttributeDecl"
 		case CommentNode:
 			clsPath = "Nokogiri::XML::Comment"
 		case PINode:
@@ -425,17 +490,23 @@ func makeErrorsArray(mrb *oruby.MrbState, errs []domError) oruby.Value {
 // ---------------------------------------------------------------------------
 
 func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls, commentCls, piCls, attrCls oruby.RClass) {
-	// Node.new(name, document)
+	// Node.new(name, document) — Nokogiri::XML::Node.new returns XML::Element (see nokogiri.rb)
 	nodeCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args := mrb.GetArgs()
 		name := args.Item(0).String()
 		var doc *domNode
 		if args.Len() >= 2 {
 			d, ok := getDOMNode(mrb, args.Item(1))
-			if !ok || (d.kind != DocumentNode && d.kind != HTMLDocumentNode) {
+			if !ok {
 				return mrb.EArgumentError().Raise("Document must be a Nokogiri::XML::Document")
 			}
-			doc = d
+			if d.kind == DocumentNode || d.kind == HTMLDocumentNode {
+				doc = d
+			} else if d.doc != nil {
+				doc = d.doc
+			} else {
+				return mrb.EArgumentError().Raise("Document must be a Nokogiri::XML::Document")
+			}
 		}
 		if doc == nil {
 			doc = newDocument(false, false)
@@ -443,9 +514,25 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		prefix, local := splitQName(name)
 		n := newNode(doc, ElementNode, local, "")
 		n.prefix = prefix
+		n.rbClass = mrb.ClassOf(self)
+		n.hasClass = true
 		rb.Set(mrb, self, n)
 		return self
 	}, mrb.ArgsReq(1)|mrb.ArgsOpt(1))
+
+	attrCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs()
+		d, ok := getDOMNode(mrb, args.Item(0))
+		if !ok || (d.kind != DocumentNode && d.kind != HTMLDocumentNode) {
+			return mrb.EArgumentError().Raise("Document must be a Nokogiri::XML::Document")
+		}
+		name := args.Item(1).String()
+		prefix, local := splitQName(name)
+		n := newNode(d, AttributeNode, local, "")
+		n.prefix = prefix
+		rb.Set(mrb, self, n)
+		return self
+	}, mrb.ArgsReq(2))
 
 	textCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args := mrb.GetArgs()
@@ -529,6 +616,24 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 	nodeCls.DefineMethod("==", eqFn, mrb.ArgsReq(1))
 	nodeCls.DefineMethod("eql?", eqFn, mrb.ArgsReq(1))
 
+	nodeCls.DefineMethod("data_ptr?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, ok := getDOMNode(mrb, self)
+		return mrb.BoolValue(ok && n != nil)
+	}, mrb.ArgsNone())
+
+	nodeCls.DefineMethod("<=>", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n1, ok1 := getDOMNode(mrb, self)
+		n2, ok2 := getDOMNode(mrb, mrb.GetArgsFirst())
+		if !ok1 || !ok2 {
+			return mrb.NilValue()
+		}
+		cmp, ok := compareDocOrder(n1, n2)
+		if !ok {
+			return mrb.NilValue()
+		}
+		return mrb.FixnumValue(cmp)
+	}, mrb.ArgsReq(1))
+
 	nodeCls.DefineMethod("hash", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
 		return mrb.Uint64Value(uint64(uintptr(unsafe.Pointer(n))))
@@ -597,15 +702,24 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 
 	setContentFn := func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
-		s := mrb.String(mrb.GetArgsFirst())
+		raw := mrb.GetArgsFirst()
+		s := ""
+		if !raw.IsNil() {
+			s = mrb.String(raw)
+		}
 		switch n.kind {
 		case TextNode, CDATASectionNode, CommentNode, PINode:
 			n.data = s
 		case AttributeNode:
 			n.data = s
 			if n.parent != nil {
-				n.parent.setAttr(n.name, s)
+				key := n.name
+				if n.prefix != "" {
+					key = n.prefix + ":" + n.name
+				}
+				n.parent.setAttr(key, s)
 			}
+			return raw
 		default:
 			n.clearChildren()
 			if s != "" {
@@ -820,6 +934,24 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 	}, mrb.ArgsNone())
 
 	// Tree mutations (low-level Go primitives called by Ruby wrappers after coerce/parent validation)
+	checkDocMultiRoot := func(parent, child *domNode) bool {
+		if parent.kind != DocumentNode && parent.kind != HTMLDocumentNode {
+			return false
+		}
+		existingRoot := parent.rootElement() != nil
+		elemCount := 0
+		if child.kind == ElementNode {
+			elemCount = 1
+		} else if child.kind == DocumentFragNode {
+			for c := child.first; c != nil; c = c.next {
+				if c.kind == ElementNode {
+					elemCount++
+				}
+			}
+		}
+		return (existingRoot && elemCount > 0) || elemCount > 1
+	}
+
 	nodeCls.DefineMethod("__add_child", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
 		child, err := parseNodeArg(mrb, n.doc, mrb.GetArgsFirst())
@@ -828,6 +960,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		}
 		if child.isAncestorOrSelf(n) {
 			return mrb.ERuntimeError().Raise("cannot reparent a node into its own descendant")
+		}
+		if checkDocMultiRoot(n, child) {
+			return mrb.ERuntimeError().Raise("Document already has a root node")
 		}
 		if child.kind == DocumentFragNode {
 			var added []*domNode
@@ -854,6 +989,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		if child.isAncestorOrSelf(n) {
 			return mrb.ERuntimeError().Raise("cannot reparent a node into its own descendant")
 		}
+		if checkDocMultiRoot(n, child) {
+			return mrb.ERuntimeError().Raise("Document already has a root node")
+		}
 		if child.kind == DocumentFragNode {
 			var added []*domNode
 			for c := child.first; c != nil; c = c.next {
@@ -875,6 +1013,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		sib, err := parseNodeArg(mrb, n.doc, mrb.GetArgsFirst())
 		if err != nil {
 			return mrb.RaiseError(err)
+		}
+		if n.parent != nil && (n.parent.kind == DocumentNode || n.parent.kind == HTMLDocumentNode) && n.kind == ElementNode && sib.kind == ElementNode {
+			return mrb.EArgumentError().Raise("cannot add a sibling element to the document root")
 		}
 		if n.parent != nil && sib.isAncestorOrSelf(n.parent) {
 			return mrb.ERuntimeError().Raise("cannot reparent a node into its own descendant")
@@ -902,6 +1043,9 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		sib, err := parseNodeArg(mrb, n.doc, mrb.GetArgsFirst())
 		if err != nil {
 			return mrb.RaiseError(err)
+		}
+		if n.parent != nil && (n.parent.kind == DocumentNode || n.parent.kind == HTMLDocumentNode) && n.kind == ElementNode && sib.kind == ElementNode {
+			return mrb.EArgumentError().Raise("cannot add a sibling element to the document root")
 		}
 		if n.parent != nil && sib.isAncestorOrSelf(n.parent) {
 			return mrb.ERuntimeError().Raise("cannot reparent a node into its own descendant")
@@ -959,10 +1103,13 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 				targetDoc = d
 			}
 		}
-		return wrapNode(mrb, n.clone(deep, targetDoc))
+		cp := n.clone(deep, targetDoc)
+		cp.rbClass = mrb.ClassOf(self)
+		cp.hasClass = true
+		return wrapNode(mrb, cp)
 	}
 	nodeCls.DefineMethod("dup", dupFn, mrb.ArgsOpt(2))
-	nodeCls.DefineMethod("clone", dupFn, mrb.ArgsOpt(2))
+	nodeCls.DefineMethod("__dup_node", dupFn, mrb.ArgsOpt(2))
 
 	nodeCls.DefineMethod("initialize_copy_with_args", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args := mrb.GetArgs()
@@ -1112,20 +1259,45 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		args := mrb.GetArgs().Slice()
 		mode := xmlC14N10
 		if len(args) >= 1 && !args[0].IsNil() {
+			if !args[0].IsInt() {
+				return mrb.ETypeError().Raise("mode must be an Integer")
+			}
 			mode = args[0].Int()
 		}
 		var incl []string
-		if len(args) >= 2 && args[1].IsArray() {
+		if len(args) >= 2 && !args[1].IsNil() {
+			if !args[1].IsArray() {
+				return mrb.ETypeError().Raise("inclusive_namespaces must be an Array")
+			}
 			for i := 0; i < oruby.RArrayLen(args[1]); i++ {
-				incl = append(incl, mrb.AryRef(args[1], i).String())
+				s, err := rb.Str(mrb, mrb.AryRef(args[1], i))
+				if err != nil {
+					return mrb.ETypeError().Raise(err.Error())
+				}
+				incl = append(incl, s)
 			}
 		}
 		withComments := false
 		if len(args) >= 3 && !args[2].IsNil() {
 			withComments = args[2].Bool()
 		}
-		return mrb.StrNew(n.canonicalize(mode, incl, withComments))
-	}, mrb.ArgsOpt(3))
+		blk := mrb.GetArgsBlock()
+		var includeFn func(node, parent *domNode) (bool, error)
+		if !blk.IsNil() {
+			includeFn = func(node, parent *domNode) (bool, error) {
+				v, err := mrb.Funcall(blk, mrb.Intern("call"), wrapNode(mrb, node), wrapNode(mrb, parent))
+				if err != nil {
+					return false, err
+				}
+				return v.Bool(), nil
+			}
+		}
+		out, err := n.canonicalizeEx(mode, incl, withComments, includeFn)
+		if err != nil {
+			return mrb.ERuntimeError().Raise(err.Error())
+		}
+		return mrb.StrNew(out)
+	}, mrb.ArgsOpt(3)|mrb.ArgsBlock())
 
 	nodeCls.DefineMethod("__inner_html", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
@@ -1241,9 +1413,16 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 			d = n
 		}
 		for c := d.first; c != nil; c = c.next {
-			if c.kind == DocumentTypeNode || c.kind == DTDNode {
+			if c.kind == DocumentTypeNode {
 				return wrapNode(mrb, c)
 			}
+		}
+		if d.isHTML && !d.isHTML5 {
+			dt := newNode(d, DocumentTypeNode, "html", "")
+			dt.pubID = "-//W3C//DTD HTML 4.0 Transitional//EN"
+			dt.sysID = "http://www.w3.org/TR/REC-html40/loose.dtd"
+			d.prependChild(dt)
+			return wrapNode(mrb, dt)
 		}
 		return mrb.NilValue()
 	}, mrb.ArgsNone())
@@ -1255,18 +1434,23 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 			d = n
 		}
 		for c := d.first; c != nil; c = c.next {
-			if (c.kind == DocumentTypeNode || c.kind == DTDNode) && (c.pubID != "" || c.sysID != "") {
+			if c.kind == DTDNode {
 				return wrapNode(mrb, c)
 			}
 		}
 		return mrb.NilValue()
 	}, mrb.ArgsNone())
 
-	createSubsetFn := func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	nodeCls.DefineMethod("create_internal_subset", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
 		d := n.doc
 		if d == nil {
 			d = n
+		}
+		for c := d.first; c != nil; c = c.next {
+			if c.kind == DocumentTypeNode {
+				return mrb.ERuntimeError().Raise("Document already has an internal subset")
+			}
 		}
 		args := mrb.GetArgs()
 		name := args.Item(0).String()
@@ -1277,22 +1461,39 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		if !args.Item(2).IsNil() {
 			sysID = args.Item(2).String()
 		}
-		// Remove existing DTD node if present
-		for c := d.first; c != nil; {
-			nxt := c.next
-			if c.kind == DocumentTypeNode || c.kind == DTDNode {
-				c.unlink()
-			}
-			c = nxt
-		}
 		dt := newNode(d, DocumentTypeNode, name, "")
 		dt.pubID = pubID
 		dt.sysID = sysID
 		d.prependChild(dt)
 		return wrapNode(mrb, dt)
-	}
-	nodeCls.DefineMethod("create_internal_subset", createSubsetFn, mrb.ArgsReq(3))
-	nodeCls.DefineMethod("create_external_subset", createSubsetFn, mrb.ArgsReq(3))
+	}, mrb.ArgsReq(3))
+
+	nodeCls.DefineMethod("create_external_subset", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		d := n.doc
+		if d == nil {
+			d = n
+		}
+		for c := d.first; c != nil; c = c.next {
+			if c.kind == DTDNode {
+				return mrb.ERuntimeError().Raise("Document already has an external subset")
+			}
+		}
+		args := mrb.GetArgs()
+		name := args.Item(0).String()
+		pubID, sysID := "", ""
+		if !args.Item(1).IsNil() {
+			pubID = args.Item(1).String()
+		}
+		if !args.Item(2).IsNil() {
+			sysID = args.Item(2).String()
+		}
+		dt := newNode(d, DTDNode, name, "")
+		dt.pubID = pubID
+		dt.sysID = sysID
+		d.prependChild(dt)
+		return wrapNode(mrb, dt)
+	}, mrb.ArgsReq(3))
 
 	nodeCls.DefineMethod("__css", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
@@ -1381,26 +1582,67 @@ func defineDTDMethods(mrb *oruby.MrbState, dtdCls oruby.RClass) {
 
 	dtdCls.DefineMethod("elements", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
-		elems := extractDTDElements(n.data)
-		h := mrb.HashNewCapa(len(elems))
-		for k, v := range elems {
-			mrb.HashSet(h, mrb.StrNew(k), mrb.StrNew(v))
+		h := mrb.HashNew()
+		for c := n.first; c != nil; c = c.next {
+			if c.kind == ElementDecl {
+				mrb.HashSet(h, mrb.StrNew(c.name), wrapNode(mrb, c))
+			}
 		}
 		return h
 	}, mrb.ArgsNone())
 
 	dtdCls.DefineMethod("entities", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
-		ents := extractDTDEntities(n.data)
-		h := mrb.HashNewCapa(len(ents))
-		for k, v := range ents {
-			mrb.HashSet(h, mrb.StrNew(k), mrb.StrNew(v))
+		h := mrb.HashNew()
+		for c := n.first; c != nil; c = c.next {
+			if c.kind == EntityDecl {
+				mrb.HashSet(h, mrb.StrNew(c.name), wrapNode(mrb, c))
+			}
 		}
 		return h
 	}, mrb.ArgsNone())
 
+	dtdCls.DefineMethod("attributes", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		h := mrb.HashNew()
+		for c := n.first; c != nil; c = c.next {
+			if c.kind == AttributeDecl {
+				mrb.HashSet(h, mrb.StrNew(c.name), wrapNode(mrb, c))
+			}
+		}
+		return h
+	}, mrb.ArgsNone())
+
+	dtdCls.DefineMethod("keys", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		ary := mrb.AryNew()
+		for c := n.first; c != nil; c = c.next {
+			if c.kind == AttributeDecl {
+				mrb.AryPush(ary, mrb.StrNew(c.name))
+			}
+		}
+		return ary
+	}, mrb.ArgsNone())
+
 	dtdCls.DefineMethod("notations", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.HashNew()
+		n, _ := getDOMNode(mrb, self)
+		h := mrb.HashNew()
+		notCls := rb.ClassPath(mrb, "Nokogiri::XML::Notation")
+		for c := n.first; c != nil; c = c.next {
+			if c.kind == NotationNode {
+				var pubV, sysV oruby.Value = mrb.NilValue(), mrb.NilValue()
+				if c.pubID != "" {
+					pubV = mrb.StrNew(c.pubID)
+				}
+				if c.sysID != "" {
+					sysV = mrb.StrNew(c.sysID)
+				}
+				if obj, err := mrb.Funcall(notCls, mrb.Intern("new"), mrb.StrNew(c.name), pubV, sysV); err == nil {
+					mrb.HashSet(h, mrb.StrNew(c.name), obj)
+				}
+			}
+		}
+		return h
 	}, mrb.ArgsNone())
 
 	dtdCls.DefineMethod("validate", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -1420,7 +1662,7 @@ func defineDTDMethods(mrb *oruby.MrbState, dtdCls oruby.RClass) {
 
 	dtdCls.DefineMethod("html5_dtd?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		n, _ := getDOMNode(mrb, self)
-		return mrb.BoolValue(strings.EqualFold(n.name, "html") && n.pubID == "" && n.sysID == "")
+		return mrb.BoolValue(strings.EqualFold(n.name, "html") && n.pubID == "" && (n.sysID == "" || strings.EqualFold(n.sysID, "about:legacy-compat")))
 	}, mrb.ArgsNone())
 }
 
@@ -1430,7 +1672,7 @@ func defineDTDMethods(mrb *oruby.MrbState, dtdCls oruby.RClass) {
 
 func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, html4FragCls, html5DocCls, html5FragCls oruby.RClass) {
 	docCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		if existing, ok := getDOMNode(mrb, self); ok && existing != nil {
+		if existing, ok := getDOMNode(mrb, self); ok && existing != nil && existing.kind == DocumentNode {
 			existing.selfVal = self
 			existing.hasSelfVal = true
 			return self
@@ -1449,7 +1691,7 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 	}, mrb.ArgsAny())
 
 	html4DocCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		if existing, ok := getDOMNode(mrb, self); ok && existing != nil {
+		if existing, ok := getDOMNode(mrb, self); ok && existing != nil && existing.kind == HTMLDocumentNode && !existing.isHTML5 {
 			existing.selfVal = self
 			existing.hasSelfVal = true
 			return self
@@ -1464,7 +1706,7 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 	}, mrb.ArgsAny())
 
 	html5DocCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		if existing, ok := getDOMNode(mrb, self); ok && existing != nil {
+		if existing, ok := getDOMNode(mrb, self); ok && existing != nil && existing.kind == HTMLDocumentNode && existing.isHTML5 {
 			existing.selfVal = self
 			existing.hasSelfVal = true
 			return self
@@ -1548,6 +1790,9 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		}
 
 		doc := parseHTMLDocumentOpts(src, url, enc, isHTML5, noblanks, maxErrors, maxTreeDepth, parseNoScriptAsText)
+		if !isHTML5 && (opts&poRecover) == 0 && len(doc.errors) > 0 {
+			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", doc.errors[0].message)
+		}
 		cls := mrb.ClassPtr(self)
 		doc.rbClass = cls
 		doc.hasClass = true
@@ -1721,6 +1966,9 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		var frag *domNode
 		if doc.isHTML {
 			frag = parseHTMLFragmentOpts(doc, tags, ctxTag, noblanks, maxErrors, maxTreeDepth, parseNoScript)
+			if !doc.isHTML5 && strict && len(frag.errors) > 0 {
+				return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", frag.errors[0].message)
+			}
 			if doc.isHTML5 {
 				if !hasTags {
 					frag.quirksMode = ""
@@ -1905,6 +2153,10 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		d, _ := getDOMNode(mrb, self)
 		args := mrb.GetArgs()
 		name := args.Item(0).String()
+		entType := 1
+		if args.Len() >= 2 && !args.Item(1).IsNil() {
+			entType = args.Item(1).Int()
+		}
 		pubID, sysID, content := "", "", ""
 		if args.Len() >= 3 && !args.Item(2).IsNil() {
 			pubID = args.Item(2).String()
@@ -1916,6 +2168,7 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 			content = args.Item(4).String()
 		}
 		ent := newNode(d, EntityDecl, name, content)
+		ent.entityType = entType
 		ent.pubID = pubID
 		ent.sysID = sysID
 		return wrapNode(mrb, ent)

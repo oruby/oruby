@@ -65,13 +65,14 @@ type domNode struct {
 	prev   *domNode
 	next   *domNode
 
-	name   string // element local name, PI target, doctype name, attr name
-	prefix string // namespace prefix (if any)
-	nsURI  string // namespace URI (if any)
-	data   string // text, cdata, comment, PI content, doctype public/system
-	pubID  string // doctype public id
-	sysID  string // doctype system id
-	line   int
+	name       string // element local name, PI target, doctype name, attr name
+	prefix     string // namespace prefix (if any)
+	nsURI      string // namespace URI (if any)
+	data       string // text, cdata, comment, PI content, doctype public/system
+	pubID      string // doctype public id / entity external_id
+	sysID      string // doctype system id / entity system_id
+	entityType int    // EntityDecl type (1..6)
+	line       int
 
 	attrs  []*domAttr
 	nsDefs []*domNS
@@ -280,7 +281,15 @@ func (n *domNode) prependChild(child *domNode) *domNode {
 }
 
 func (n *domNode) insertBefore(sibling *domNode) *domNode {
-	if sibling == nil || n.parent == nil || sibling == n || sibling.isAncestorOrSelf(n.parent) {
+	if sibling == nil || sibling == n {
+		return sibling
+	}
+	if n.kind == TextNode && sibling.kind == TextNode {
+		sibling.unlink()
+		n.data = sibling.data + n.data
+		return n
+	}
+	if n.parent == nil || sibling.isAncestorOrSelf(n.parent) {
 		return sibling
 	}
 	if sibling.kind == DocumentFragNode {
@@ -311,7 +320,15 @@ func (n *domNode) insertBefore(sibling *domNode) *domNode {
 }
 
 func (n *domNode) insertAfter(sibling *domNode) *domNode {
-	if sibling == nil || n.parent == nil || sibling == n || sibling.isAncestorOrSelf(n.parent) {
+	if sibling == nil || sibling == n {
+		return sibling
+	}
+	if n.kind == TextNode && sibling.kind == TextNode {
+		sibling.unlink()
+		n.data = n.data + sibling.data
+		return n
+	}
+	if n.parent == nil || sibling.isAncestorOrSelf(n.parent) {
 		return sibling
 	}
 	if sibling.kind == DocumentFragNode {
@@ -727,6 +744,53 @@ func (n *domNode) path() string {
 // Serialization (XML & HTML)
 // ---------------------------------------------------------------------------
 
+var html4BooleanAttrs = map[string]bool{
+	"checked": true, "compact": true, "declare": true, "defer": true,
+	"disabled": true, "ismap": true, "multiple": true, "nohref": true,
+	"noresize": true, "noshade": true, "nowrap": true, "readonly": true,
+	"selected": true,
+}
+
+func compareDocOrder(a, b *domNode) (int, bool) {
+	if a == b {
+		return 0, true
+	}
+	if a == nil || b == nil {
+		return 0, false
+	}
+	// Walk up to find root ancestor of each
+	pathA := []*domNode{}
+	for cur := a; cur != nil; cur = cur.parent {
+		pathA = append(pathA, cur)
+	}
+	pathB := []*domNode{}
+	for cur := b; cur != nil; cur = cur.parent {
+		pathB = append(pathB, cur)
+	}
+	if pathA[len(pathA)-1] != pathB[len(pathB)-1] {
+		return 0, false
+	}
+	ia, ib := len(pathA)-1, len(pathB)-1
+	for ia >= 0 && ib >= 0 && pathA[ia] == pathB[ib] {
+		ia--
+		ib--
+	}
+	if ia < 0 {
+		return -1, true // a is ancestor of b
+	}
+	if ib < 0 {
+		return 1, true // b is ancestor of a
+	}
+	// Siblings under common parent
+	childA, childB := pathA[ia], pathB[ib]
+	for cur := childA.next; cur != nil; cur = cur.next {
+		if cur == childB {
+			return -1, true
+		}
+	}
+	return 1, true
+}
+
 var htmlVoidElements = map[string]bool{
 	"area": true, "base": true, "basefont": true, "bgsound": true, "br": true,
 	"col": true, "embed": true, "frame": true, "hr": true, "img": true,
@@ -932,12 +996,29 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 		sb.WriteByte('&')
 		sb.WriteString(n.name)
 		sb.WriteByte(';')
+	case EntityDecl:
+		sb.WriteString("<!ENTITY ")
+		if n.entityType == 4 || n.entityType == 5 {
+			sb.WriteString("% ")
+		}
+		sb.WriteString(n.name)
+		if n.pubID != "" {
+			fmt.Fprintf(sb, " PUBLIC %q %q", n.pubID, n.sysID)
+		} else if n.sysID != "" {
+			fmt.Fprintf(sb, " SYSTEM %q", n.sysID)
+		} else {
+			fmt.Fprintf(sb, " %q", n.data)
+		}
+		sb.WriteByte('>')
 	case AttributeNode:
 		if n.prefix != "" {
 			sb.WriteString(n.prefix)
 			sb.WriteByte(':')
 		}
 		sb.WriteString(n.name)
+		if asHTML && !isHTML5 && n.prefix == "" && html4BooleanAttrs[strings.ToLower(n.name)] && n.data == "" {
+			return
+		}
 		sb.WriteString(`="`)
 		sb.WriteString(escapeHTMLAttrVal(n.data, asHTML && isHTML5))
 		sb.WriteByte('"')
@@ -1000,20 +1081,24 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 		for _, a := range n.attrs {
 			sb.WriteByte(' ')
 			if asHTML && isHTML5 {
+				local := a.name
+				if idx := strings.IndexByte(local, ':'); idx >= 0 {
+					local = local[idx+1:]
+				}
 				switch a.nsURI {
 				case "http://www.w3.org/XML/1998/namespace":
 					sb.WriteString("xml:")
-					sb.WriteString(a.name)
+					sb.WriteString(local)
 				case "http://www.w3.org/2000/xmlns/":
-					if a.name == "xmlns" {
+					if local == "xmlns" {
 						sb.WriteString("xmlns")
 					} else {
 						sb.WriteString("xmlns:")
-						sb.WriteString(a.name)
+						sb.WriteString(local)
 					}
 				case "http://www.w3.org/1999/xlink":
 					sb.WriteString("xlink:")
-					sb.WriteString(a.name)
+					sb.WriteString(local)
 				default:
 					if a.prefix != "" {
 						sb.WriteString(a.prefix)
@@ -1027,6 +1112,9 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 					sb.WriteByte(':')
 				}
 				sb.WriteString(a.name)
+				if asHTML && !isHTML5 && a.prefix == "" && html4BooleanAttrs[strings.ToLower(a.name)] && a.value == "" {
+					continue
+				}
 			}
 			sb.WriteString(`="`)
 			val := a.value
@@ -1052,9 +1140,13 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 				sb.WriteString(tag)
 				sb.WriteByte('>')
 			} else if noEmptyTags {
-				sb.WriteString("></")
-				sb.WriteString(tag)
-				sb.WriteByte('>')
+				if n.isHTMLDoc() && n.nsURI == "" && htmlVoidElements[strings.ToLower(n.name)] {
+					sb.WriteString(" />")
+				} else {
+					sb.WriteString("></")
+					sb.WriteString(tag)
+					sb.WriteByte('>')
+				}
 			} else {
 				sb.WriteString("/>")
 			}

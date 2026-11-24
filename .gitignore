@@ -30,3 +30,5 @@ lib/oruby/4.1.0/prism.rb
 # make capi-lib (mkmf's link tests)
 lib/liboruby-capi.a
 lib/libmruby.a
+# gen_bin_stubs.rb: gem.build_complete of compiled-in extensions
+lib/oruby/gems/4.1.0/extensions/

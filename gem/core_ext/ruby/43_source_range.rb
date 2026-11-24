@@ -225,6 +225,60 @@ module RubyVM
   def self.keep_script_lines=(enabled)
     Kernel.instance_variable_set(:@__oruby_keep_script_lines, !!enabled)
   end
+
+  # MRI's compiled code object, as far as code that compiles source with it
+  # needs (power_assert, test-unit): compile checks the source (a
+  # SyntaxError as eval raises) and keeps it, eval runs it at top level.
+  # oruby compiles to mruby's bytecode, which has no ISeq form to give out.
+  class InstructionSequence
+    COMPILE_OPTION = { inline_const_cache: true, peephole_optimization: true, tailcall_optimization: false,
+      specialized_instruction: true, operands_unification: true, instructions_unification: false,
+      debug_frozen_string_literal: false, coverage_enabled: true, debug_level: 0, frozen_string_literal: nil }
+    @compile_option = COMPILE_OPTION.dup
+
+    class << self
+      def compile_option = @compile_option.dup
+
+      def compile_option=(opt)
+        case opt
+        when Hash then @compile_option = COMPILE_OPTION.merge(opt)
+        when true, false then @compile_option = COMPILE_OPTION.transform_values { |v| v.is_a?(Integer) || v.nil? ? v : opt }
+        when nil then @compile_option = COMPILE_OPTION.dup
+        else raise TypeError, "Compile option must be Hash/true/false/nil"
+        end
+      end
+
+      def compile(source, file = "<compiled>", path = nil, line = 1, options = nil)
+        source = source.to_str unless source.is_a?(String)
+        file = file.to_str unless file.is_a?(String)
+        Kernel.__oruby_syntax_check(source, file, line)
+        new(source, file, path || file, line)
+      end
+      alias new_with_source compile
+
+      def compile_file(file, options = nil)
+        compile(File.read(file), file, File.expand_path(file))
+      end
+
+      def compile_prism(source, file = "<compiled>", path = nil, line = 1, options = nil)
+        compile(source, file, path, line, options)
+      end
+    end
+
+    attr_reader :path, :absolute_path, :first_lineno
+
+    def initialize(source, path, absolute_path, line) # :nodoc:
+      @source, @path, @absolute_path, @first_lineno = source, path, absolute_path, line
+    end
+    private_class_method :new
+
+    def eval = TOPLEVEL_BINDING.eval(@source, @path, @first_lineno)
+    def label = "<compiled>"
+    def base_label = label
+    def script_lines = @source.lines
+    def inspect = "<RubyVM::InstructionSequence:#{label}@#{path}:#{first_lineno}>"
+    alias to_s inspect
+  end
 end
 
 class Thread::Backtrace::Location

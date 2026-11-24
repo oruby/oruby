@@ -33,6 +33,28 @@ module OpenSSL
         verify_hostname: true,
       }.freeze
 
+      SESSION_CACHE_OFF = 0x0
+      SESSION_CACHE_CLIENT = 0x1
+      SESSION_CACHE_SERVER = 0x2
+      SESSION_CACHE_BOTH = 0x3
+      SESSION_CACHE_NO_AUTO_CLEAR = 0x80
+      SESSION_CACHE_NO_INTERNAL_LOOKUP = 0x100
+      SESSION_CACHE_NO_INTERNAL_STORE = 0x200
+      SESSION_CACHE_NO_INTERNAL = 0x300
+
+      # Go's crypto/tls resumes sessions itself: the cache settings and
+      # callbacks are kept, none is called
+      attr_writer :session_cache_mode, :session_cache_size
+      attr_accessor :session_new_cb, :session_remove_cb, :session_get_cb
+
+      def session_cache_mode
+        @session_cache_mode || SESSION_CACHE_SERVER
+      end
+
+      def session_cache_size
+        @session_cache_size || 1024 * 20
+      end
+
       def set_params(params = {})
         DEFAULT_PARAMS.merge(params || {}).each do |k, v|
           setter = "#{k}="

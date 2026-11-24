@@ -14,6 +14,8 @@ typedef struct rb_capi_encoding {
   int index;
   int ascii_compatible;
   int dummy;
+  int max_enc_len; /* MRI's OnigEncodingType fields of the same name */
+  int min_enc_len;
 } rb_encoding;
 
 rb_encoding *rb_enc_get(VALUE);
@@ -53,6 +55,7 @@ ID rb_intern3(const char *, long, rb_encoding *);
 VALUE rb_enc_reg_new(const char *, long, rb_encoding *, int);
 rb_encoding *rb_enc_compatible(VALUE, VALUE);
 rb_encoding *rb_enc_check(VALUE, VALUE);
+long rb_enc_strlen(const char *, const char *, rb_encoding *);
 int rb_enc_mbclen(const char *, const char *, rb_encoding *);
 int rb_enc_codelen(int, rb_encoding *);
 unsigned int rb_enc_codepoint_len(const char *, const char *, int *, rb_encoding *);
@@ -67,7 +70,24 @@ int rb_enc_dummy_p(rb_encoding *);
 #define RUBY_ENC_CODERANGE_7BIT ENC_CODERANGE_7BIT
 #define RUBY_ENC_CODERANGE_VALID ENC_CODERANGE_VALID
 #define RUBY_ENC_CODERANGE_BROKEN ENC_CODERANGE_BROKEN
+#define ENC_CODERANGE_MASK 0x300000
+/* MRI caches a String's code range in its flags (UNKNOWN until scanned);
+   here it is scanned when asked, and there is no cache to set or clear */
+#define ENC_CODERANGE(obj) rb_enc_str_coderange((VALUE)(obj))
+#define ENC_CODERANGE_ASCIIONLY(obj) (ENC_CODERANGE(obj) == ENC_CODERANGE_7BIT)
+#define ENC_CODERANGE_SET(obj, cr) ((void)(obj), (void)(cr))
+#define ENC_CODERANGE_CLEAR(obj) ((void)(obj))
+#define RB_ENC_CODERANGE(obj) ENC_CODERANGE(obj)
+#define RB_ENC_CODERANGE_ASCIIONLY(obj) ENC_CODERANGE_ASCIIONLY(obj)
+#define RUBY_ENC_CODERANGE_UNKNOWN ENC_CODERANGE_UNKNOWN
+#define RUBY_ENC_CODERANGE_MASK ENC_CODERANGE_MASK
+#define rb_enc_mbmaxlen(enc) ((enc)->max_enc_len)
+#define rb_enc_mbminlen(enc) ((enc)->min_enc_len)
 #define ENCODING_GET(obj) rb_enc_get_index((VALUE)(obj))
+#define ENCODING_GET_INLINED(obj) ENCODING_GET(obj)
+#define RB_ENCODING_GET(obj) ENCODING_GET(obj)
+#define RB_ENCODING_GET_INLINED(obj) ENCODING_GET(obj)
+#define RB_ENCODING_SET(obj, i) ENCODING_SET(obj, i)
 #define ENCODING_SET(obj, i) rb_enc_associate_index((VALUE)(obj), (i))
 
 #if defined(__cplusplus)

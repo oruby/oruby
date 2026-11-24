@@ -19,6 +19,8 @@ import (
 	"hash"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -260,8 +262,64 @@ type x509Cert struct {
 
 type x509Store struct {
 	certs       []*x509.Certificate
+	systemRoots bool // set_default_paths: the system's trusted roots too
 	lastErr     int
 	lastErrText string
+}
+
+// rootPool is the pool the store trusts: the system roots after
+// set_default_paths, and the certificates added to it
+func (st *x509Store) rootPool() *x509.CertPool {
+	var pool *x509.CertPool
+	if st.systemRoots {
+		pool, _ = x509.SystemCertPool()
+	}
+	if pool == nil {
+		pool = x509.NewCertPool()
+	}
+	for _, c := range st.certs {
+		pool.AddCert(c)
+	}
+	return pool
+}
+
+// storePath is a path argument as FilePathValue takes it (#to_path, then
+// #to_str)
+func storePath(mrb *oruby.MrbState, v oruby.Value) (string, error) {
+	if !v.IsString() && mrb.RespondTo(v, oruby.Sym_to_path) {
+		p, err := mrb.Funcall(v, oruby.Sym_to_path)
+		if err != nil {
+			return "", err
+		}
+		v = p.Value()
+	}
+	return rb.Str(mrb, v)
+}
+
+// addPEMFile adds the certificates of a PEM file (X509_LOOKUP_load_file);
+// it reports how many it found
+func (st *x509Store) addPEMFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for {
+		var block *pem.Block
+		if block, data = pem.Decode(data); block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" && block.Type != "TRUSTED CERTIFICATE" {
+			continue
+		}
+		c, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return n, err
+		}
+		st.certs = append(st.certs, c)
+		n++
+	}
+	return n, nil
 }
 
 func rubyTimeToGo(mrb *oruby.MrbState, v oruby.Value) (time.Time, error) {
@@ -1080,6 +1138,42 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 		return self
 	}, mrb.ArgsReq(1))
 
+	// add_file(path): the certificates in a PEM file
+	storeCls.DefineMethod("add_file", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		st, ok := rb.Get[*x509Store](mrb, self)
+		if !ok {
+			return mrb.Raise(storeErrCls, "store not initialized")
+		}
+		path, err := storePath(mrb, mrb.GetArgsFirst())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		if n, err := st.addPEMFile(path); err != nil || n == 0 {
+			return mrb.Raise(storeErrCls, "X509_LOOKUP_load_file: no certificate or crl found")
+		}
+		return self
+	}, mrb.ArgsReq(1))
+
+	// add_path(dir): OpenSSL looks certificates up there by subject hash
+	// when it verifies; here every certificate in the directory's files
+	storeCls.DefineMethod("add_path", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		st, ok := rb.Get[*x509Store](mrb, self)
+		if !ok {
+			return mrb.Raise(storeErrCls, "store not initialized")
+		}
+		dir, err := storePath(mrb, mrb.GetArgsFirst())
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if !e.IsDir() {
+				st.addPEMFile(filepath.Join(dir, e.Name()))
+			}
+		}
+		return self
+	}, mrb.ArgsReq(1))
+
 	storeCls.DefineMethod("verify", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		st, ok := rb.Get[*x509Store](mrb, self)
 		if !ok {
@@ -1093,6 +1187,11 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 			return mrb.FalseValue()
 		}
 		roots := x509.NewCertPool()
+		if st.systemRoots {
+			if sys, err := x509.SystemCertPool(); err == nil {
+				roots = sys
+			}
+		}
 		intermediates := x509.NewCertPool()
 		for _, sc := range st.certs {
 			if bytes.Equal(sc.RawIssuer, sc.RawSubject) {
@@ -1139,6 +1238,9 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 	}, mrb.ArgsNone())
 
 	storeCls.DefineMethod("set_default_paths", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		if st, ok := rb.Get[*x509Store](mrb, self); ok {
+			st.systemRoots = true
+		}
 		return mrb.NilValue()
 	}, mrb.ArgsNone())
 

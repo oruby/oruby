@@ -2,7 +2,10 @@ package oruby
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 var gems = make(map[string]func(*MrbState) interface{})
@@ -140,7 +143,93 @@ func BuiltinGemSpecs() []GemSpec {
 	return out
 }
 
+// EmbeddedGemVersion is the version of the embedded gem name (a Go gem
+// with a GemSpec): it stands in for the gem's versions up to its own.
+func EmbeddedGemVersion(name string) (string, bool) {
+	for _, sp := range builtinGemSpecs {
+		if sp.Name == name {
+			return sp.Version, true
+		}
+	}
+	return "", false
+}
+
+// CompareGemVersions compares dotted release versions ("1.8.7", "1.10"):
+// -1, 0 or 1, numerically per segment; a missing segment is 0.
+func CompareGemVersions(a, b string) int {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var x, y int
+		if i < len(pa) {
+			x, _ = strconv.Atoi(pa[i])
+		}
+		if i < len(pb) {
+			y, _ = strconv.Atoi(pb[i])
+		}
+		if x != y {
+			if x > y {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+// GemDirVersion is the gem name and version of a path inside a gem's
+// directory (".../gems/<name>-<version>[-<platform>]/..."), as RubyGems
+// installs it and `oruby build` packs it.
+func GemDirVersion(path string) (name, version string, ok bool) {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i := len(parts) - 2; i >= 0; i-- {
+		if parts[i] != "gems" {
+			continue
+		}
+		dir := parts[i+1]
+		for j := 1; j < len(dir)-1; j++ {
+			if dir[j] == '-' && dir[j+1] >= '0' && dir[j+1] <= '9' {
+				version, _, _ = strings.Cut(dir[j+1:], "-")
+				return dir[:j], version, true
+			}
+		}
+	}
+	return "", "", false
+}
+
 var nativeExtensionGems = map[string]bool{}
+
+var afterLoad = map[string][]string{}
+
+// AfterLoad registers Ruby source that runs right after require loads the
+// library file lib of the ones ORuby ships unchanged (a path below
+// lib/oruby/<version>, as "bundler/resolver.rb"): ORuby's adjustment to an
+// upstream library, made where the library defines what it changes.
+func AfterLoad(lib, src string) { afterLoad[lib] = append(afterLoad[lib], src) }
+
+// AfterLoadSources is what AfterLoad registered for the file at path, nil
+// for a file that is not one of ORuby's libraries or has nothing registered.
+func AfterLoadSources(path string) (lib string, srcs []string) {
+	if len(afterLoad) == 0 {
+		return "", nil
+	}
+	// path is require's real path: the library directory's, if a symlink
+	// leads to it (an in-tree prefix)
+	base := filepath.Join(RubyLibPrefix(), RubyVersion)
+	for _, dir := range []string{base, realDir(base)} {
+		if rel, err := filepath.Rel(dir, path); err == nil && !strings.HasPrefix(rel, "..") {
+			rel = filepath.ToSlash(rel)
+			return rel, afterLoad[rel]
+		}
+	}
+	return "", nil
+}
+
+func realDir(dir string) string {
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		return r
+	}
+	return dir
+}
 
 // cExtensionLoader loads a C extension file (gem/capi registers it)
 var cExtensionLoader func(mrb *MrbState, path string) error
@@ -157,9 +246,25 @@ func CExtensionLoader() func(mrb *MrbState, path string) error { return cExtensi
 // built.
 func RegisterNativeExtensionGem(name string) { nativeExtensionGems[name] = true }
 
+var cExtensionFeatures = map[string]bool{}
+
+// RegisterCExtension records that the Go gem feature ("name.so") is a C
+// extension compiled in through the Ruby C API (gem/capi), not a Go gem's
+// own core that happens to have a library's name (bigdecimal.so)
+func RegisterCExtension(feature string) { cExtensionFeatures[feature] = true }
+
+// IsCExtension reports whether RegisterCExtension recorded feature
+func IsCExtension(feature string) bool { return cExtensionFeatures[feature] }
+
 // NativeExtensionGem reports whether the named gem's C extension is
 // compiled into the binary.
 func NativeExtensionGem(name string) bool { return nativeExtensionGems[name] }
+
+// GemInitialized reports whether the Go gem name is initialized in mrb
+func (mrb *MrbState) GemInitialized(name string) bool {
+	_, ok := mrb.features[name]
+	return ok
+}
 
 // GemAvailable reports whether name is a registered Go gem (initialized or
 // not); it initializes nothing

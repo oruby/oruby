@@ -52,13 +52,13 @@ IGNORED = {
   'mrb_define_private_method_id' => 'go-mrb.c defines private methods by name',
 }.freeze
 
-used = Dir["#{oruby_root}/*.go"].map { |f| File.read(f).scan(/\bC\.(\w+)\(/) }.flatten
-used += Dir["#{oruby_root}/go-*.{c,h}"].map { |f| File.read(f).scan(/\b(mrb_\w+|mempool_\w+)\s*\(/) }.flatten
+used = Dir["#{oruby_root}/*.go"].map { |f| File.read(f, encoding: "UTF-8").scan(/\bC\.(\w+)\(/) }.flatten
+used += Dir["#{oruby_root}/go-*.{c,h}"].map { |f| File.read(f, encoding: "UTF-8").scan(/\b(mrb_\w+|mempool_\w+)\s*\(/) }.flatten
 used = used.to_h { |n| [n, true] }
 
 missing = 0
 files.each do |f|
-  names = File.readlines(f).flat_map { |line| line.scan(/^MRB_API(?:.*?)\s*([A-Za-z_]\w*)\(/).flatten }
+  names = File.readlines(f, encoding: "UTF-8").flat_map { |line| line.scan(/^MRB_API(?:.*?)\s*([A-Za-z_]\w*)\(/).flatten }
   names = names.uniq.reject { |n| used[n] || IGNORED.key?(n) }
   next if names.empty?
 

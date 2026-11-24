@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/oruby/oruby"
 )
 
 func TestShellSplit(t *testing.T) {
@@ -76,5 +78,56 @@ func TestWriteExtensionPackage(t *testing.T) {
 	}
 	if w, _ := os.ReadFile(filepath.Join(dir, "src01_y.cc")); !strings.Contains(string(w), `#include "/src/y.cc"`) {
 		t.Errorf("wrapper: %s", w)
+	}
+}
+
+// An embedded gem's (oruby.GemSpec) installed versions up to its own are
+// left out of the build (the Go gem stands in for them, nothing to pack or
+// compile); a newer one is packed and its extension built, as any gem's.
+func TestEmbeddedGemVersionsInBuild(t *testing.T) {
+	ev, ok := oruby.EmbeddedGemVersion("msgpack")
+	if !ok {
+		t.Skip("no embedded msgpack")
+	}
+	for _, c := range []struct {
+		version string
+		packed  bool
+	}{{"1.0.0", false}, {ev, false}, {"99.0.0", true}} {
+		root := t.TempDir()
+		dir := filepath.Join(root, "gems", "msgpack-"+c.version)
+		if err := os.MkdirAll(filepath.Join(dir, "lib"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, "specifications"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GEM_PATH", root)
+		t.Setenv("GEM_HOME", root)
+		app := t.TempDir()
+		if err := os.WriteFile(filepath.Join(app, "Gemfile"), []byte("gem 'msgpack'\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if c.version == "99.0.0" {
+			// locked to the embedded version: what is installed besides does not count
+			lock := "GEM\n  specs:\n    msgpack (" + ev + ")\n\nDEPENDENCIES\n  msgpack\n"
+			if err := os.WriteFile(filepath.Join(app, "Gemfile.lock"), []byte(lock), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, gems, _ := resolveGemfileGems(filepath.Join(app, "Gemfile"), app, nil, false); len(gems) != 0 {
+				t.Errorf("msgpack locked to %s: packed %v", ev, gems[0])
+			}
+			os.Remove(filepath.Join(app, "Gemfile.lock"))
+		}
+		_, gems, err := resolveGemfileGems(filepath.Join(app, "Gemfile"), app, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packed := false
+		for _, g := range gems {
+			packed = packed || (g.Name == "msgpack" && g.Version == c.version)
+		}
+		if packed != c.packed {
+			t.Errorf("msgpack %s (embedded %s): packed = %v, want %v", c.version, ev, packed, c.packed)
+		}
 	}
 }

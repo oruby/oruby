@@ -24,7 +24,6 @@ const (
 	RLIMIT_CORE   = syscall.RLIMIT_CORE
 	RLIMIT_AS     = syscall.RLIMIT_AS
 	RLIMIT_NOFILE = syscall.RLIMIT_NOFILE
-	RLIM_INFINITY = syscall.RLIM_INFINITY
 )
 
 func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RClass) {

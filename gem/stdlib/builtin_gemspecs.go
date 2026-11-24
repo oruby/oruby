@@ -12,42 +12,42 @@ func init() {
 	specs := []oruby.GemSpec{
 		// Bundled / stdlib-extracted gems (not in MRI 4.1 default specs)
 		{Name: "base64", Version: "0.3.0", Feature: "base64", Summary: "ORuby built-in Base64", Files: []string{"lib/base64.rb"}},
-		{Name: "bigdecimal", Version: "3.2.2", Feature: "bigdecimal", Summary: "ORuby built-in BigDecimal", Files: []string{"lib/bigdecimal.rb"}},
+		{Name: "bigdecimal", Version: "4.1.3", Feature: "bigdecimal", Summary: "ORuby built-in BigDecimal", Files: []string{"lib/bigdecimal.rb"}},
 		{Name: "csv", Version: "3.3.2", Feature: "csv", Summary: "ORuby built-in CSV", Files: []string{"lib/csv.rb"}},
-		{Name: "drb", Version: "2.2.1", Feature: "drb", Summary: "ORuby built-in dRuby", Files: []string{"lib/drb.rb"}},
+		{Name: "drb", Version: "2.2.3", Feature: "drb", Summary: "ORuby built-in dRuby", Files: []string{"lib/drb.rb"}},
 		{Name: "logger", Version: "1.7.0", Summary: "ORuby built-in Logger (lib/oruby/4.1.0)", Files: []string{"lib/logger.rb"}},
-		{Name: "matrix", Version: "0.4.2", Feature: "matrix", Summary: "ORuby built-in Matrix", Files: []string{"lib/matrix.rb"}},
+		{Name: "matrix", Version: "0.4.3", Feature: "matrix", Summary: "ORuby built-in Matrix", Files: []string{"lib/matrix.rb"}},
 		{Name: "observer", Version: "0.1.2", Feature: "observer", Summary: "ORuby built-in Observer", Files: []string{"lib/observer.rb"}},
 		{Name: "ostruct", Version: "0.6.1", Feature: "ostruct", Summary: "ORuby built-in OpenStruct", Files: []string{"lib/ostruct.rb"}},
-		{Name: "prime", Version: "0.1.3", Feature: "prime", Summary: "ORuby built-in Prime", Files: []string{"lib/prime.rb"}},
+		{Name: "prime", Version: "0.1.4", Feature: "prime", Summary: "ORuby built-in Prime", Files: []string{"lib/prime.rb"}},
 		{Name: "racc", Version: "1.8.1", Feature: "racc", Summary: "ORuby built-in Racc LALR parser runtime", Files: []string{"lib/racc.rb", "lib/racc/parser.rb"}},
 		{Name: "syslog", Version: "0.2.0", Feature: "syslog", Summary: "ORuby built-in Syslog", Files: []string{"lib/syslog.rb"}},
 		{Name: "tsort", Version: "0.2.0", Feature: "tsort", Summary: "ORuby built-in TSort", Files: []string{"lib/tsort.rb"}},
 		// prism is MRI's C extension; oruby's is the Ruby::Prism library over
 		// the parser in libmruby (lib/oruby/4.1.0/prism.rb, scripts/gen_prism.rb)
-		{Name: "prism", Version: "1.9.0", Summary: "ORuby Prism (Ruby::Prism over libmruby's parser)", Files: []string{"lib/prism.rb"}},
+		{Name: "prism", Version: "2.1.0", Summary: "ORuby Prism (Ruby::Prism over libmruby's parser)", Files: []string{"lib/prism.rb"}},
 
 		// Compiled-in pure-Go / native replacements for C-extension gems
 		{Name: "nokogiri", Version: "1.19.7", Feature: "nokogiri", Summary: "ORuby pure-Go Nokogiri (XML/HTML5/XPath/CSS/XSD/XSLT/RelaxNG)", Files: []string{"lib/nokogiri.rb"}},
 		{Name: "oruby-vips", Version: "2.3.0", Feature: "oruby-vips", Summary: "ORuby united libvips/pure-Go image processor", Files: []string{"lib/oruby-vips.rb", "lib/vips.rb", "lib/ruby-vips.rb"}},
 		{Name: "ruby-vips", Version: "2.3.0", Feature: "oruby-vips", Summary: "ORuby ruby-vips compatibility provider", Files: []string{"lib/ruby-vips.rb", "lib/vips.rb"}},
-		{Name: "oj", Version: "3.16.10", Feature: "oj", Summary: "ORuby pure-Go Oj JSON", Files: []string{"lib/oj.rb"}},
-		{Name: "ffi", Version: "1.17.2", Feature: "ffi", Summary: "ORuby FFI", Files: []string{"lib/ffi.rb"}},
-		{Name: "pg", Version: "1.6.3", Feature: "pg", Summary: "ORuby pure-Go PostgreSQL driver (pgx)", Files: []string{"lib/pg.rb"}},
+		{Name: "oj", Version: "3.16.7", Feature: "oj", Summary: "ORuby pure-Go Oj JSON", Files: []string{"lib/oj.rb"}},
+		{Name: "ffi", Version: "1.17.4", Feature: "ffi", Summary: "ORuby FFI", Files: []string{"lib/ffi.rb"}},
+		{Name: "pg", Version: "1.5.9", Feature: "pg", Summary: "ORuby pure-Go PostgreSQL driver (pgx)", Files: []string{"lib/pg.rb"}},
 		{Name: "mysql2", Version: "0.5.6", Feature: "mysql2", Summary: "ORuby pure-Go MySQL driver", Files: []string{"lib/mysql2.rb"}},
 		{Name: "sqlite3", Version: "2.6.0", Feature: "sqlite3", Summary: "ORuby SQLite3 driver", Files: []string{"lib/sqlite3.rb"}},
 		{Name: "hiredis", Version: "0.6.3", Feature: "hiredis", Summary: "ORuby pure-Go Hiredis RESP driver", Files: []string{"lib/hiredis.rb"}},
-		{Name: "msgpack", Version: "1.8.0", Feature: "msgpack", Summary: "ORuby pure-Go MessagePack", Files: []string{"lib/msgpack.rb"}},
-		{Name: "nio4r", Version: "2.7.4", Feature: "nio4r", Summary: "ORuby pure-Go NIO4r selector", Files: []string{"lib/nio.rb", "lib/nio4r.rb"}},
+		{Name: "msgpack", Version: "1.8.7", Feature: "msgpack", Summary: "ORuby pure-Go MessagePack", Files: []string{"lib/msgpack.rb"}},
+		{Name: "nio4r", Version: "2.7.5", Feature: "nio4r", Summary: "ORuby pure-Go NIO4r selector", Files: []string{"lib/nio.rb", "lib/nio4r.rb"}},
 		{Name: "bcrypt", Version: "3.1.20", Feature: "bcrypt", Summary: "ORuby pure-Go bcrypt", Files: []string{"lib/bcrypt.rb"}},
 		{Name: "bcrypt_pbkdf", Version: "1.1.1", Feature: "bcrypt_pbkdf", Summary: "ORuby pure-Go bcrypt_pbkdf", Files: []string{"lib/bcrypt_pbkdf.rb"}},
 		{Name: "argon2", Version: "2.3.0", Feature: "argon2", Summary: "ORuby pure-Go Argon2", Files: []string{"lib/argon2.rb"}},
 		{Name: "scrypt", Version: "3.0.7", Feature: "scrypt", Summary: "ORuby pure-Go scrypt", Files: []string{"lib/scrypt.rb"}},
 		{Name: "rbnacl", Version: "7.1.2", Feature: "rbnacl", Summary: "ORuby pure-Go RbNaCl", Files: []string{"lib/rbnacl.rb"}},
-		{Name: "ed25519", Version: "1.3.0", Feature: "ed25519", Summary: "ORuby pure-Go Ed25519", Files: []string{"lib/ed25519.rb"}},
+		{Name: "ed25519", Version: "1.4.0", Feature: "ed25519", Summary: "ORuby pure-Go Ed25519", Files: []string{"lib/ed25519.rb"}},
 		{Name: "brotli", Version: "0.6.0", Feature: "brotli", Summary: "ORuby pure-Go Brotli", Files: []string{"lib/brotli.rb"}},
-		{Name: "zstd-ruby", Version: "1.5.6", Feature: "zstd-ruby", Summary: "ORuby pure-Go Zstandard", Files: []string{"lib/zstd-ruby.rb"}},
-		{Name: "commonmarker", Version: "1.1.5", Feature: "commonmarker", Summary: "ORuby pure-Go CommonMarker (Goldmark)", Files: []string{"lib/commonmarker.rb"}},
+		{Name: "zstd-ruby", Version: "1.5.4", Feature: "zstd-ruby", Summary: "ORuby pure-Go Zstandard", Files: []string{"lib/zstd-ruby.rb"}},
+		{Name: "commonmarker", Version: "2.0.0", Feature: "commonmarker", Summary: "ORuby pure-Go CommonMarker (Goldmark)", Files: []string{"lib/commonmarker.rb"}},
 
 		// Newly added oruby-* gems (registered under both oruby-* and replaced gem name)
 		{Name: "oruby-redcarpet", Version: "3.6.0", Feature: "oruby-redcarpet", Summary: "ORuby pure-Go Redcarpet (Goldmark)", Files: []string{"lib/oruby-redcarpet.rb", "lib/redcarpet.rb"}},
@@ -157,11 +157,106 @@ Gem::Specification.singleton_class.prepend(ORubyDefaultGemSpecs)
 module ORubyNativeExtensions
   def missing_extensions?
     return false if !extensions.empty? && (Gem.__oruby_native_gem?(name) ||
+      Gem.__oruby_embedded_covers?(name, version) ||
       extensions.all? { |e| Gem.__oruby_native_extension?(File.basename(File.dirname(e))) })
     super
   end
 end
 Gem::Specification.prepend(ORubyNativeExtensions)
+
+# The embedded gems (oruby's Go gems, default specs of their version) stand
+# in for every version of the gem up to their own: one of those is not
+# built (it would not run), and Bundler resolves to the embedded version
+# when the Gemfile allows it. A newer version the Gemfile or lockfile asks
+# for is installed and built as in MRI, and require loads it.
+module Gem
+  def self.__oruby_embedded_spec(name)
+    @__oruby_embedded ||= Gem::Specification.__oruby_builtin_specs.to_h { |s| [s.name, s] }
+    @__oruby_embedded[name]
+  end
+
+  # the embedded gem stands in for name at version: it is not older
+  def self.__oruby_embedded_covers?(name, version)
+    e = __oruby_embedded_spec(name)
+    !e.nil? && e.version >= Gem::Version.new(version)
+  end
+end
 `))
 	return nil
+}
+
+// After RubyGems' and Bundler's files load: their steps for an embedded
+// gem (Gem.__oruby_embedded_covers?).
+func init() {
+	oruby.AfterLoad("rubygems/ext/builder.rb", `
+module ORubyEmbeddedBuild
+  def build_extensions
+    return super if @spec.extensions.empty? || !Gem.__oruby_embedded_covers?(@spec.name, @spec.version)
+    say "#{@spec.full_name}: not building its extension, oruby's #{Gem.__oruby_embedded_spec(@spec.name).full_name} stands in for it"
+    require "fileutils"
+    FileUtils.mkdir_p @spec.extension_dir
+    FileUtils.touch @spec.gem_build_complete_path
+  end
+end
+Gem::Ext::Builder.prepend(ORubyEmbeddedBuild)
+`)
+	oruby.AfterLoad("bundler/source/rubygems.rb", `
+module Bundler
+  class Source
+    class Rubygems
+      # an embedded gem's default spec is a candidate even where the remote
+      # index has the gem, and takes the place of the remote spec of its
+      # version (whose dependencies are the C extension's)
+      module ORubyEmbeddedSpecs
+        def specs
+          super.tap do |index|
+            next unless @allow_local
+            default_specs.each { |s| index << s if Gem.__oruby_embedded_spec(s.name) }
+          end
+        end
+
+        # MRI's Bundler fetches and installs a default gem's .gem to cache
+        # it; an embedded gem's files would not run
+        def download(spec, options = {})
+          return super unless spec.default_gem? && Gem.__oruby_embedded_spec(spec.name)
+          true
+        end
+
+        def install(spec, options = {})
+          return super unless spec.default_gem? && Gem.__oruby_embedded_spec(spec.name)
+          print_using_message "Using #{version_message(spec, options[:previous_spec])}"
+          nil
+        end
+      end
+      prepend ORubyEmbeddedSpecs
+    end
+  end
+end
+`)
+	oruby.AfterLoad("bundler/resolver.rb", `
+module Bundler
+  class Resolver
+    # an embedded gem's package prefers the local versions, the embedded
+    # one first: remote versions only when the requirement excludes it
+    module ORubyEmbeddedPackage
+      def initialize(name, *args, **opts)
+        super
+        @prefer_local = true if Gem.__oruby_embedded_spec(name)
+      end
+    end
+    Package.prepend(ORubyEmbeddedPackage)
+
+    module ORubyEmbeddedFilter
+      def filter_remote_specs(specs, package)
+        if package.prefer_local? && Gem.__oruby_embedded_spec(package.name)
+          embedded = specs.select { |s| s.is_a?(StubSpecification) && s.default_gem? }
+          return embedded unless embedded.empty?
+        end
+        super
+      end
+    end
+    prepend ORubyEmbeddedFilter
+  end
+end
+`)
 }

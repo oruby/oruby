@@ -9,8 +9,13 @@
 # /bin/sh runs the oruby beside the script with -x, which skips to the
 # second #! line. So they work in-tree, installed, and moved, unchanged.
 # An executable whose file the gem does not have is left out.
+#
+# A shipped gem whose C extension is compiled into oruby (rbs: gem/rbs) gets
+# the gem.build_complete marker MRI's install leaves in its extension dir,
+# which Bundler takes as built (it does not ask Gem::Specification).
 require "rubygems"
 require "rubygems/installer"
+require "fileutils"
 
 dir = File.expand_path(ARGV[0] || File.join(__dir__, "..", "bin"))
 PROLOGUE = <<~SH
@@ -63,3 +68,11 @@ specs.sort_by(&:name).each do |spec|
   end
 end
 puts "gen_bin_stubs: #{written.sort.join(" ")} in #{dir}"
+
+Gem::Specification.each do |spec|
+  next if spec.default_gem? || spec.extensions.empty? || real.(spec.base_dir) != lib_gems
+  next if File.exist?(spec.gem_build_complete_path) || spec.missing_extensions?
+  FileUtils.mkdir_p(spec.extension_dir)
+  File.write(spec.gem_build_complete_path, "")
+  puts "gen_bin_stubs: #{spec.full_name}'s extension is compiled in"
+end

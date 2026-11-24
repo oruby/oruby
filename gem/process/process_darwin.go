@@ -8,6 +8,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// RLIM_INFINITY is RLIM_INFINITY as the rlim_t it is (2**63-1)
+const RLIM_INFINITY = uint64(syscall.RLIM_INFINITY)
+
 func initPlatformUnix(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
 	mrb.DefineModuleFunction(mProc, "getsid", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		a := mrb.GetArgs().Slice()

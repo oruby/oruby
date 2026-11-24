@@ -374,10 +374,8 @@ func Test_dirChroot(t *testing.T) {
 	defer mrb.Close()
 
 	if os.Geteuid() == 0 {
-		_, err := mrb.Eval(`Dir.chroot "testdata"`)
-		assert.NilError(t, err)
-
-		t.Fatalf("root not allowed")
+		// root's chroot succeeds, and the rest of the tests would run in it
+		t.Skip("running as root")
 	}
 
 	_, err := mrb.Eval(`Dir.chroot "testdata"`)

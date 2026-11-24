@@ -19,6 +19,9 @@
 #undef RARRAY_LENINT
 #undef RARRAY_AREF
 #undef RARRAY_ASET
+#undef RARRAY_PTR
+#undef RARRAY_CONST_PTR
+#undef RARRAY_PTR_USE
 #undef DATA_PTR
 #undef TRUE
 #undef FALSE
@@ -44,6 +47,7 @@
 #include <mruby/presym.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <math.h>
 #include <pthread.h>
 #include <dlfcn.h>
 #include "oruby-vm-compat.h"
@@ -149,11 +153,18 @@ static mrb_value *mv_array(int argc, const VALUE *argv, mrb_value *buf, int bufn
 }
 static void mv_done(mrb_value *mv, mrb_value *buf) { if (mv != buf) mrb_free(M, mv); }
 
-static mrb_value call(mrb_value recv, const char *name, mrb_int argc, const mrb_value *argv) {
-  return mrb_funcall_argv(M, recv, mrb_intern_cstr(M, name), argc, argv);
+static void ptr_flush(void);
+static void ptr_next_gen(void);
+
+/* calls by a literal method name: its symbol cached at the call site
+   (SYM), not interned on each call (the C API's hottest cost otherwise) */
+static mrb_value call_id(mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv) {
+  ptr_next_gen(); /* Ruby code may change what a snapshot shows */
+  return mrb_funcall_argv(M, recv, mid, argc, argv);
 }
-static mrb_value call0(mrb_value recv, const char *name) { return call(recv, name, 0, NULL); }
-static mrb_value call1(mrb_value recv, const char *name, mrb_value a) { return call(recv, name, 1, &a); }
+#define call(recv, name, argc, argv) call_id((recv), SYM(name), (argc), (argv))
+#define call0(recv, name) call_id((recv), SYM(name), 0, NULL)
+#define call1(recv, name, a) __extension__ ({ mrb_value call1_arg_ = (a); call_id((recv), SYM(name), 1, &call1_arg_); })
 static mrb_value kernel(void) { return mrb_obj_value(M->kernel_module); }
 
 /* ------------------------------------------------------------------ */
@@ -170,7 +181,7 @@ VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eArgError, rb_eType
   rb_eScriptError, rb_eLoadError, rb_eSyntaxError, rb_eNoMemError, rb_eSystemExit, rb_eInterrupt,
   rb_eSignal, rb_eFatal, rb_eSecurityError, rb_eEncodingError, rb_eEncCompatError, rb_eLocalJumpError,
   rb_eRegexpError, rb_eSystemCallError, rb_eThreadError, rb_eMathDomainError, rb_eNoMatchingPatternError,
-  rb_eNoMatchingPatternKeyError;
+  rb_eNoMatchingPatternKeyError, rb_eSysStackError;
 VALUE rb_stdout, rb_stderr, rb_stdin, rb_fs, rb_output_fs, rb_rs, rb_default_rs, rb_output_rs;
 
 static VALUE named(const char *path) {
@@ -257,7 +268,7 @@ int orb_capi_bind(mrb_state *mrb) {
   rb_eIOError = named("IOError"); rb_eEOFError = named("EOFError"); rb_eFrozenError = named("FrozenError");
   rb_eStopIteration = named("StopIteration"); rb_eZeroDivError = named("ZeroDivisionError");
   rb_eFloatDomainError = named("FloatDomainError"); rb_eScriptError = named("ScriptError");
-  rb_eLoadError = named("LoadError"); rb_eSyntaxError = named("SyntaxError"); rb_eNoMemError = named("NoMemoryError");
+  rb_eSysStackError = named("SystemStackError"); rb_eLoadError = named("LoadError"); rb_eSyntaxError = named("SyntaxError"); rb_eNoMemError = named("NoMemoryError");
   rb_eSystemExit = named("SystemExit"); rb_eInterrupt = named("Interrupt"); rb_eSignal = named("SignalException");
   rb_eFatal = named("fatal"); rb_eSecurityError = named("SecurityError"); rb_eEncodingError = named("EncodingError");
   rb_eEncCompatError = named("Encoding::CompatibilityError"); rb_eLocalJumpError = named("LocalJumpError");
@@ -389,9 +400,14 @@ long rb_num2long(VALUE v) {
   if (mrb_float_p(m)) return (long)mrb_float(m);
   return (long)mrb_as_int64(M, mrb_ensure_int_type(M, m));
 }
-unsigned long rb_num2ulong(VALUE v) { return (unsigned long)rb_num2long(v); }
+/* an unsigned conversion takes a Bignum up to 2**64-1 (rb_big2ull); a
+   negative Integer wraps, as MRI's */
+unsigned long long rb_num2ull(VALUE v) {
+  if (!SPECIAL_CONST_P(v) && rb_type(v) == T_BIGNUM) return rb_big2ull(v);
+  return (unsigned long long)rb_num2long(v);
+}
+unsigned long rb_num2ulong(VALUE v) { return (unsigned long)rb_num2ull(v); }
 long long rb_num2ll(VALUE v) { return (long long)rb_num2long(v); }
-unsigned long long rb_num2ull(VALUE v) { return (unsigned long long)rb_num2long(v); }
 char rb_num2chr(VALUE v) {
   if (!SPECIAL_CONST_P(v) && rb_type(v) == T_STRING && RSTRING_LEN(MV(v)) >= 1) return RSTRING_PTR(MV(v))[0];
   return (char)rb_num2long(v);
@@ -416,6 +432,18 @@ VALUE rb_str2inum(VALUE s, int base) {
   return V(mrb_funcall_argv(M, kernel(), SYM("Integer"), 2, a));
 }
 VALUE rb_cstr2inum(const char *s, int base) { return rb_str2inum(rb_str_new_cstr(s), base); }
+/* badcheck: anything but the number is an ArgumentError (Integer()), else
+   the number the string starts with (String#to_i) */
+VALUE rb_str_to_inum(VALUE s, int base, int badcheck) {
+  if (badcheck) return rb_str2inum(s, base == 0 ? 10 : base);
+  return V(call1(MV(s), "to_i", mrb_int_value(M, base == 0 ? 10 : base)));
+}
+VALUE rb_cstr_to_inum(const char *s, int base, int badcheck) { return rb_str_to_inum(rb_str_new_cstr(s), base, badcheck); }
+double rb_str_to_dbl(VALUE s, int badcheck) {
+  if (badcheck) return mrb_float(mrb_funcall_argv(M, kernel(), SYM("Float"), 1, (mrb_value[]){MV(s)}));
+  return mrb_float(call0(MV(s), "to_f"));
+}
+double rb_cstr_to_dbl(const char *s, int badcheck) { return rb_str_to_dbl(rb_str_new_cstr(s), badcheck); }
 VALUE rb_to_int(VALUE v) { return FIXNUM_P(v) ? v : V(mrb_ensure_int_type(M, MV(v))); }
 VALUE rb_fix2str(VALUE v, int base) { return V(call1(MV(v), "to_s", mrb_int_value(M, base))); }
 int rb_cmpint(VALUE r, VALUE a, VALUE b) {
@@ -453,6 +481,10 @@ ID rb_check_id(volatile VALUE *v) {
   return mrb_nil_p(s) ? 0 : mrb_symbol(s);
 }
 VALUE rb_check_symbol(volatile VALUE *v) { ID id = rb_check_id(v); return id ? ID2SYM(id) : Qnil; }
+VALUE rb_check_symbol_cstr(const char *p, long n, rb_encoding *enc) {
+  volatile VALUE s = rb_enc_str_new(p, n, enc ? enc : rb_utf8_encoding());
+  return rb_check_symbol(&s);
+}
 const char *rb_id2name(ID id) { return mrb_sym_name(M, (mrb_sym)id); }
 VALUE rb_id2str(ID id) { return V(mrb_sym_str(M, (mrb_sym)id)); }
 VALUE rb_id2sym(ID id) { return ID2SYM(id); }
@@ -500,6 +532,7 @@ static mrb_value trampoline(mrb_state *mrb, mrb_value self) {
   if (!mrb_nil_p(kw)) av[argc] = V(kw);
   VALUE s = V(self), r;
   rb_capi_anyargs_func f = cm->fn;
+  ptr_next_gen();
   if (cm->arity == CAPI_ALLOC) {
     r = ((f0)f)(s);
   }
@@ -527,6 +560,7 @@ static mrb_value trampoline(mrb_state *mrb, mrb_value self) {
     }
   }
   if (av != av_buf) mrb_free(mrb, av);
+  ptr_next_gen();
   return MV(r);
 }
 
@@ -644,6 +678,14 @@ VALUE rb_obj_alloc(VALUE k) { return V(call0(MV(k), "allocate")); }
 VALUE rb_obj_is_kind_of(VALUE v, VALUE k) { return B(mrb_obj_is_kind_of(M, MV(v), CLS(k))); }
 VALUE rb_obj_is_instance_of(VALUE v, VALUE k) { return B(mrb_obj_is_instance_of(M, MV(v), CLS(k))); }
 int rb_respond_to(VALUE v, ID id) { return mrb_respond_to(M, MV(v), (mrb_sym)id); }
+/* klass's instances have the method (ex: a public one) */
+int rb_method_boundp(VALUE klass, ID id, int ex) {
+  struct RClass *c = mrb_class_ptr(MV(klass));
+  if (!mrb_obj_respond_to(M, c, (mrb_sym)id)) return 0;
+  if (!ex) return 1;
+  mrb_value a[1] = {mrb_symbol_value((mrb_sym)id)};
+  return mrb_test(mrb_funcall_argv(M, mrb_obj_value(c), SYM("public_method_defined?"), 1, a));
+}
 int rb_obj_respond_to(VALUE v, ID id, int priv) {
   mrb_value a[2] = {mrb_symbol_value((mrb_sym)id), mrb_bool_value(priv)};
   return mrb_test(mrb_funcall_argv(M, MV(v), SYM("respond_to?"), 2, a));
@@ -687,7 +729,7 @@ VALUE rb_check_convert_type(VALUE v, int type, const char *tname, const char *me
   if (rb_type(v) == type) return v;
   mrb_value m = MV(v);
   if (!mrb_respond_to(M, m, mrb_intern_cstr(M, method))) return Qnil;
-  VALUE r = V(call0(m, method));
+  VALUE r = V(call_id(m, mrb_intern_cstr(M, method), 0, NULL));
   if (!NIL_P(r) && rb_type(r) != type) {
     rb_raise(rb_eTypeError, "can't convert %s to %s (%s#%s gives %s)", display_class(v), tname,
              display_class(v), method, display_class(r));
@@ -714,11 +756,17 @@ VALUE rb_check_funcall(VALUE recv, ID mid, int argc, const VALUE *argv) {
 /* calls and blocks                                                    */
 
 VALUE rb_funcallv(VALUE recv, ID mid, int argc, const VALUE *argv) {
+  ptr_next_gen();
   mrb_value buf[8];
   mrb_value *mv = mv_array(argc, argv, buf, 8);
   mrb_value r = mrb_funcall_argv(M, MV(recv), (mrb_sym)mid, argc, mv);
   mv_done(mv, buf);
   return V(r);
+}
+VALUE rb_apply(VALUE recv, ID mid, VALUE args) {
+  mrb_value a = MV(rb_Array(args));
+  ptr_next_gen();
+  return V(mrb_funcall_argv(M, MV(recv), (mrb_sym)mid, RARRAY_LEN(a), RARRAY_PTR(a)));
 }
 VALUE rb_funcall(VALUE recv, ID mid, int n, ...) {
   VALUE buf[16];
@@ -773,12 +821,14 @@ VALUE rb_funcall_passing_block(VALUE recv, ID mid, int argc, const VALUE *argv) 
   return send_kw(MV(recv), (mrb_sym)mid, argc, argv, current_block(), 0, 1);
 }
 VALUE rb_funcall_with_block(VALUE recv, ID mid, int argc, const VALUE *argv, VALUE blk) {
+  ptr_next_gen();
   return send_kw(MV(recv), (mrb_sym)mid, argc, argv, MV(blk), 0, 1);
 }
 VALUE rb_funcall_with_block_kw(VALUE recv, ID mid, int argc, const VALUE *argv, VALUE blk, int kw) {
   return send_kw(MV(recv), (mrb_sym)mid, argc, argv, MV(blk), kw, 1);
 }
 VALUE rb_call_super(int argc, const VALUE *argv) {
+  ptr_next_gen();
   (void)argc; (void)argv;
   rb_raise(rb_eNotImpError, "rb_call_super is not supported by oruby's C API");
 }
@@ -787,6 +837,7 @@ void rb_need_block(void) { if (!rb_block_given_p()) rb_raise(rb_eLocalJumpError,
 VALUE rb_block_proc(void) { return V(current_block()); }
 VALUE rb_block_lambda(void) { return rb_block_proc(); }
 VALUE rb_yield_values2(int argc, const VALUE *argv) {
+  ptr_next_gen();
   mrb_value blk = current_block();
   if (mrb_nil_p(blk)) rb_raise(rb_eLocalJumpError, "no block given (yield)");
   mrb_value buf[8];
@@ -823,8 +874,10 @@ static mrb_value block_trampoline(mrb_state *mrb, mrb_value self) {
   VALUE buf[16];
   VALUE *av = argc <= 16 ? buf : (VALUE *)mrb_malloc(mrb, sizeof(VALUE) * (size_t)argc);
   for (mrb_int i = 0; i < argc; i++) av[i] = V(args[i]);
+  ptr_next_gen();
   VALUE r = cb->fn(argc > 0 ? av[0] : Qnil, cb->data, (int)argc, av, V(blk));
   if (av != buf) mrb_free(mrb, av);
+  ptr_next_gen();
   return MV(r);
 }
 static mrb_value block_proc(rb_block_call_func_t fn, VALUE data) {
@@ -841,6 +894,7 @@ static mrb_value block_proc(rb_block_call_func_t fn, VALUE data) {
   return mrb_obj_value(mrb_proc_new_cfunc_with_env(M, block_trampoline, 2, env));
 }
 VALUE rb_block_call(VALUE obj, ID mid, int argc, const VALUE *argv, rb_block_call_func_t fn, VALUE data) {
+  ptr_next_gen();
   mrb_value blk = fn ? block_proc(fn, data) : mrb_nil_value();
   mrb_value buf[8];
   mrb_value *mv = mv_array(argc, argv, buf, 8);
@@ -857,6 +911,7 @@ VALUE rb_proc_call(VALUE proc, VALUE args) {
   return V(mrb_funcall_argv(M, MV(proc), SYM("call"), RARRAY_LEN(a), RARRAY_PTR(a)));
 }
 VALUE rb_proc_call_with_block(VALUE proc, int argc, const VALUE *argv, VALUE blk) {
+  ptr_next_gen();
   mrb_value buf[8];
   mrb_value *mv = mv_array(argc, argv, buf, 8);
   mrb_value r = mrb_funcall_with_block(M, MV(proc), SYM("call"), argc, mv, MV(blk));
@@ -879,7 +934,25 @@ VALUE rb_enumeratorize(VALUE obj, VALUE meth, int argc, const VALUE *argv) {
   return r;
 }
 
+/* kwf: RB_SCAN_ARGS_PASS_CALLED_KEYWORDS (0) takes a last Hash as the
+   keywords when the call passed keywords; KEYWORDS and LAST_HASH_KEYWORDS
+   take a last Hash as them in any case */
+static int scan_args_va(int kwf, int argc, const VALUE *argv, const char *fmt, va_list ap);
 int rb_scan_args(int argc, const VALUE *argv, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = scan_args_va(RB_SCAN_ARGS_PASS_CALLED_KEYWORDS, argc, argv, fmt, ap);
+  va_end(ap);
+  return n;
+}
+int rb_scan_args_kw(int kwf, int argc, const VALUE *argv, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = scan_args_va(kwf, argc, argv, fmt, ap);
+  va_end(ap);
+  return n;
+}
+static int scan_args_va(int kwf, int argc, const VALUE *argv, const char *fmt, va_list ap) {
   int lead = 0, opt = 0, trail = 0, rest = 0, hash = 0, block = 0;
   const char *p = fmt;
   if (isdigit((unsigned char)*p)) { lead = *p++ - '0'; if (isdigit((unsigned char)*p)) opt = *p++ - '0'; }
@@ -888,15 +961,13 @@ int rb_scan_args(int argc, const VALUE *argv, const char *fmt, ...) {
   if (*p == ':') { hash = 1; p++; }
   if (*p == '&') { block = 1; p++; }
   VALUE kw = Qnil;
-  if (hash && argc > 0 && rb_keyword_given_p() && rb_type(argv[argc - 1]) == T_HASH) {
+  if (hash && argc > 0 && (kwf != RB_SCAN_ARGS_PASS_CALLED_KEYWORDS || rb_keyword_given_p()) && rb_type(argv[argc - 1]) == T_HASH) {
     kw = argv[argc - 1];
     argc--;
   }
   if (argc < lead + trail || (!rest && argc > lead + opt + trail)) {
     rb_error_arity(argc, lead + trail, rest ? -1 : lead + opt + trail);
   }
-  va_list ap;
-  va_start(ap, fmt);
   int i = 0;
   for (int k = 0; k < lead; k++, i++) { VALUE *v = va_arg(ap, VALUE *); if (v) *v = argv[i]; }
   int avail = argc - lead - trail;
@@ -914,9 +985,21 @@ int rb_scan_args(int argc, const VALUE *argv, const char *fmt, ...) {
   for (int k = 0; k < trail; k++, i++) { VALUE *v = va_arg(ap, VALUE *); if (v) *v = argv[i]; }
   if (hash) { VALUE *v = va_arg(ap, VALUE *); if (v) *v = kw; }
   if (block) { VALUE *v = va_arg(ap, VALUE *); if (v) *v = rb_block_proc(); }
-  va_end(ap);
   return argc;
 }
+
+/* catch/throw: Kernel's, with the C function as the block */
+VALUE rb_catch_obj(VALUE tag, rb_block_call_func_t fn, VALUE data) {
+  mrb_value blk = MV(rb_proc_new(fn, data)), t = MV(tag);
+  return V(mrb_funcall_with_block(M, kernel(), SYM("catch"), 1, &t, blk));
+}
+VALUE rb_catch(const char *tag, rb_block_call_func_t fn, VALUE data) { return rb_catch_obj(ID2SYM(rb_intern(tag)), fn, data); }
+void rb_throw_obj(VALUE tag, VALUE val) {
+  mrb_value a[2] = {MV(tag), MV(val)};
+  mrb_funcall_argv(M, kernel(), SYM("throw"), 2, a);
+  abort(); /* throw does not return */
+}
+void rb_throw(const char *tag, VALUE val) { rb_throw_obj(ID2SYM(rb_intern(tag)), val); }
 
 int rb_get_kwargs(VALUE hash, const ID *table, int required, int optional, VALUE *values) {
   int rest = optional < 0;
@@ -1030,8 +1113,9 @@ static void vformat(mrb_value out, const char *fmt, va_list ap) {
   }
 }
 
+static mrb_value str_binary(mrb_value s);
 VALUE rb_vsprintf(const char *fmt, va_list ap) {
-  mrb_value s = mrb_str_new(M, NULL, 0);
+  mrb_value s = str_binary(mrb_str_new(M, NULL, 0)); /* ASCII-8BIT, as MRI's */
   va_list cp;
   va_copy(cp, ap);
   vformat(s, fmt, cp);
@@ -1255,16 +1339,29 @@ char *rb_string_value_cstr(volatile VALUE *v) {
   if (memchr(p, 0, (size_t)n)) rb_raise(rb_eArgError, "string contains null byte");
   return (char *)mrb_string_cstr(M, s);
 }
+/* MRI's rb_str_new & co. make ASCII-8BIT strings (an encoding is what
+   rb_enc_associate, rb_utf8_str_new, ... give one): a new string's binary
+   flag is all oruby's String#encoding reads for that (no tag yet) */
+static mrb_value str_binary(mrb_value s) {
+  struct RString *r = mrb_str_ptr(s);
+  r->flags = (r->flags & ~MRB_STR_ENCODING_MASK) | (MRB_STR_ENCODING_BINARY << MRB_STR_ENCODING_SHIFT);
+  return s;
+}
+static mrb_value str_utf8(mrb_value s) {
+  struct RString *r = mrb_str_ptr(s);
+  r->flags &= ~MRB_STR_ENCODING_MASK;
+  return s;
+}
 static mrb_value str_new(const char *p, long n) {
   if (n < 0) rb_raise(rb_eArgError, "negative string size (or size too big)");
-  if (p) return mrb_str_new(M, p, (size_t)n);
-  mrb_value s = mrb_str_new_capa(M, (size_t)n);
+  if (p) return str_binary(mrb_str_new(M, p, (size_t)n));
+  mrb_value s = str_binary(mrb_str_new_capa(M, (size_t)n));
   memset(RSTRING_PTR(s), 0, (size_t)n);
   RSTR_SET_LEN(mrb_str_ptr(s), n);
   return s;
 }
 VALUE rb_str_new(const char *p, long n) { return V(str_new(p, n)); }
-VALUE rb_str_new_cstr(const char *p) { return V(mrb_str_new_cstr(M, p)); }
+VALUE rb_str_new_cstr(const char *p) { return V(str_binary(mrb_str_new_cstr(M, p))); }
 VALUE rb_str_new_shared(VALUE s) { return V(mrb_str_dup(M, MV(s))); }
 VALUE rb_str_new_frozen(VALUE s) { mrb_value d = mrb_str_dup(M, MV(s)); mrb_obj_freeze(M, d); return V(d); }
 VALUE rb_str_new_static(const char *p, long n) { return rb_str_new(p, n); }
@@ -1276,15 +1373,15 @@ VALUE rb_str_new_with_class(VALUE obj, const char *p, long n) {
 static VALUE force_enc(VALUE s, const char *name) { call1(MV(s), "force_encoding", mrb_str_new_cstr(M, name)); return s; }
 VALUE rb_usascii_str_new(const char *p, long n) { return force_enc(rb_str_new(p, n), "US-ASCII"); }
 VALUE rb_usascii_str_new_cstr(const char *p) { return force_enc(rb_str_new_cstr(p), "US-ASCII"); }
-VALUE rb_utf8_str_new(const char *p, long n) { return rb_str_new(p, n); }
-VALUE rb_utf8_str_new_cstr(const char *p) { return rb_str_new_cstr(p); }
-VALUE rb_external_str_new(const char *p, long n) { return rb_str_new(p, n); }
-VALUE rb_locale_str_new(const char *p, long n) { return rb_str_new(p, n); }
-VALUE rb_str_buf_new(long capa) { return V(mrb_str_new_capa(M, (size_t)(capa > 0 ? capa : 0))); }
+VALUE rb_utf8_str_new(const char *p, long n) { return V(str_utf8(str_new(p, n))); }
+VALUE rb_utf8_str_new_cstr(const char *p) { return V(mrb_str_new_cstr(M, p)); }
+VALUE rb_external_str_new(const char *p, long n) { return rb_enc_associate(rb_str_new(p, n), rb_default_external_encoding()); }
+VALUE rb_locale_str_new(const char *p, long n) { return rb_enc_associate(rb_str_new(p, n), rb_locale_encoding()); }
+VALUE rb_str_buf_new(long capa) { return V(str_binary(mrb_str_new_capa(M, (size_t)(capa > 0 ? capa : 0)))); }
 VALUE rb_str_buf_new_cstr(const char *p) { return rb_str_new_cstr(p); }
 VALUE rb_str_tmp_new(long n) { return rb_str_new(NULL, n); }
-VALUE rb_interned_str(const char *p, long n) { VALUE s = rb_str_new(p, n); rb_obj_freeze(s); return s; }
-VALUE rb_interned_str_cstr(const char *p) { VALUE s = rb_str_new_cstr(p); rb_obj_freeze(s); return s; }
+VALUE rb_interned_str(const char *p, long n) { VALUE s = rb_usascii_str_new(p, n); rb_obj_freeze(s); return s; }
+VALUE rb_interned_str_cstr(const char *p) { VALUE s = rb_usascii_str_new_cstr(p); rb_obj_freeze(s); return s; }
 VALUE rb_fstring_cstr(const char *p) { return rb_interned_str_cstr(p); }
 VALUE rb_str_cat(VALUE s, const char *p, long n) { mrb_str_cat(M, need_str(s), p, (size_t)n); return s; }
 VALUE rb_str_cat_cstr(VALUE s, const char *p) { mrb_str_cat_cstr(M, need_str(s), p); return s; }
@@ -1339,9 +1436,79 @@ long rb_str_offset(VALUE s, long pos) {
 static mrb_value need_ary(VALUE v) {
   mrb_value m = SPECIAL_CONST_P(v) ? mrb_nil_value() : MV(v);
   if (!mrb_array_p(m)) rb_raise(rb_eTypeError, "wrong argument type %s (expected Array)", display_class(v));
+  ptr_flush(); /* what was written through RARRAY_PTR, before the API reads it */
   return m;
 }
-long rb_array_len(VALUE a) { return (long)RARRAY_LEN(need_ary(a)); }
+
+/* RARRAY_PTR & co.: an Array's elements as VALUEs, in a buffer that is a
+   mruby String, so the GC frees it after the C method that made it returns
+   (the elements stay alive in the array). A snapshot is reused while
+   ptr_gen is the same, the array has the same length and buffer, and no
+   rb_ary_store came in between; ptr_gen moves on at the method's entry and
+   return and at every call into Ruby. Writable snapshots (RARRAY_PTR) are
+   written back at those points first. */
+#define PTR_SLOTS 8
+struct ptr_snap { struct RArray *ary; const mrb_value *aptr; mrb_int len; mrb_value buf; unsigned gen; int writable; };
+static struct ptr_snap ptr_snaps[PTR_SLOTS];
+static unsigned ptr_gen = 1;
+static int ptr_next, ptr_dirty;
+
+/* writable snapshots stay pending until their generation ends: the C code
+   may write through the pointer again after any flush */
+static void ptr_flush(void) {
+  if (!ptr_dirty) return;
+  for (int i = 0; i < PTR_SLOTS; i++) {
+    struct ptr_snap *p = &ptr_snaps[i];
+    if (!p->writable || p->gen != ptr_gen) continue;
+    if (ARY_LEN(p->ary) != p->len) { p->writable = 0; continue; } /* changed meanwhile: the array wins */
+    const VALUE *vals = (const VALUE *)RSTRING_PTR(p->buf);
+    mrb_value a = mrb_obj_value(p->ary);
+    for (mrb_int k = 0; k < p->len; k++) {
+      mrb_value v = MV(vals[k]);
+      const mrb_value *cur = ARY_PTR(p->ary) + k;
+      if (!mrb_obj_eq(M, *cur, v) || mrb_type(*cur) != mrb_type(v)) mrb_ary_set(M, a, k, v);
+    }
+    p->aptr = ARY_PTR(p->ary);
+  }
+}
+/* write back, then start a new generation of snapshots */
+static void ptr_next_gen(void) {
+  ptr_flush();
+  ptr_dirty = 0;
+  ptr_gen++;
+}
+void rb_capi_array_ptr_sync(void) { ptr_flush(); }
+
+static VALUE *array_snapshot(VALUE v, int writable) {
+  mrb_value m = need_ary(v);
+  struct RArray *a = mrb_ary_ptr(m);
+  mrb_int len = ARY_LEN(a);
+  for (int i = 0; i < PTR_SLOTS; i++) {
+    struct ptr_snap *p = &ptr_snaps[i];
+    if (p->ary == a && p->gen == ptr_gen && p->len == len && p->aptr == ARY_PTR(a)) {
+      if (writable) { p->writable = 1; ptr_dirty = 1; }
+      return (VALUE *)RSTRING_PTR(p->buf);
+    }
+  }
+  mrb_value buf = mrb_str_new_capa(M, (size_t)(len > 0 ? len : 1) * sizeof(VALUE));
+  VALUE *vals = (VALUE *)RSTRING_PTR(buf);
+  const mrb_value *src = ARY_PTR(a);
+  for (mrb_int k = 0; k < len; k++) vals[k] = V(src[k]);
+  struct ptr_snap *p = &ptr_snaps[ptr_next];
+  ptr_next = (ptr_next + 1) % PTR_SLOTS;
+  if (p->writable && p->gen == ptr_gen) ptr_flush(); /* the slot's pending writes first */
+  *p = (struct ptr_snap){a, ARY_PTR(a), len, buf, ptr_gen, writable};
+  if (writable) ptr_dirty = 1;
+  return vals;
+}
+const VALUE *rb_array_const_ptr(VALUE v) { return array_snapshot(v, 0); }
+VALUE *rb_capi_array_ptr(VALUE v) { return array_snapshot(v, 1); }
+/* the length needs no flush: writes through RARRAY_PTR do not change it */
+long rb_array_len(VALUE a) {
+  mrb_value m = SPECIAL_CONST_P(a) ? mrb_nil_value() : MV(a);
+  if (!mrb_array_p(m)) rb_raise(rb_eTypeError, "wrong argument type %s (expected Array)", display_class(a));
+  return (long)RARRAY_LEN(m);
+}
 VALUE rb_ary_new(void) { return V(mrb_ary_new(M)); }
 VALUE rb_ary_new_capa(long n) { return V(mrb_ary_new_capa(M, n)); }
 VALUE rb_ary_new_from_values(long n, const VALUE *v) {
@@ -1364,7 +1531,7 @@ VALUE rb_ary_pop(VALUE a) { return V(mrb_ary_pop(M, need_ary(a))); }
 VALUE rb_ary_shift(VALUE a) { return V(mrb_ary_shift(M, need_ary(a))); }
 VALUE rb_ary_unshift(VALUE a, VALUE v) { mrb_ary_unshift(M, need_ary(a), MV(v)); return a; }
 VALUE rb_ary_entry(VALUE a, long i) { return V(mrb_ary_entry(need_ary(a), i)); }
-void rb_ary_store(VALUE a, long i, VALUE v) { mrb_ary_set(M, need_ary(a), i, MV(v)); }
+void rb_ary_store(VALUE a, long i, VALUE v) { mrb_ary_set(M, need_ary(a), i, MV(v)); ptr_gen++; }
 VALUE rb_ary_dup(VALUE a) { return V(call0(need_ary(a), "dup")); }
 VALUE rb_ary_clear(VALUE a) { mrb_ary_clear(M, need_ary(a)); return a; }
 VALUE rb_ary_concat(VALUE a, VALUE b) { mrb_ary_concat(M, need_ary(a), need_ary(b)); return a; }
@@ -1432,14 +1599,24 @@ VALUE rb_hash_update_by(VALUE h, VALUE other, VALUE (*fn)(VALUE, VALUE, VALUE)) 
   }
   return h;
 }
+/* mruby's own walk of the table (no key array, no lookups); keys fn asks
+   to delete are deleted after it, the walk not being safe for that */
+struct hash_each { int (*fn)(VALUE, VALUE, VALUE); VALUE arg; mrb_value del; };
+static int hash_each_i(mrb_state *mrb, mrb_value k, mrb_value v, void *p) {
+  struct hash_each *e = (struct hash_each *)p;
+  int r = e->fn(V(k), V(v), e->arg);
+  if (r == ST_DELETE) {
+    if (mrb_nil_p(e->del)) e->del = mrb_ary_new(mrb);
+    mrb_ary_push(mrb, e->del, k);
+  }
+  return r == ST_STOP ? 1 : 0;
+}
 void rb_hash_foreach(VALUE h, int (*fn)(VALUE, VALUE, VALUE), VALUE arg) {
-  mrb_value m = need_hash(h), keys = mrb_hash_keys(M, m);
-  for (mrb_int i = 0; i < RARRAY_LEN(keys); i++) {
-    mrb_value k = RARRAY_PTR(keys)[i];
-    if (!mrb_hash_key_p(M, m, k)) continue;
-    int r = fn(V(k), V(mrb_hash_get(M, m, k)), arg);
-    if (r == ST_STOP) break;
-    if (r == ST_DELETE) mrb_hash_delete_key(M, m, k);
+  mrb_value m = need_hash(h);
+  struct hash_each e = {fn, arg, mrb_nil_value()};
+  mrb_hash_foreach(M, mrb_hash_ptr(m), hash_each_i, &e);
+  if (!mrb_nil_p(e.del)) {
+    for (mrb_int i = 0; i < RARRAY_LEN(e.del); i++) mrb_hash_delete_key(M, m, RARRAY_PTR(e.del)[i]);
   }
 }
 void rb_hash_bulk_insert(long n, const VALUE *argv, VALUE h) {
@@ -1502,6 +1679,118 @@ VALUE rb_marshal_dump(VALUE v, VALUE port) {
 }
 VALUE rb_marshal_load(VALUE v) { return V(call1(MV(named("Marshal")), "load", MV(v))); }
 VALUE rb_io_write(VALUE io, VALUE s) { return V(call1(MV(io), "write", MV(s))); }
+VALUE rb_io_flush(VALUE io) { call0(MV(io), "flush"); return io; }
+
+VALUE rb_capi_basic_class(VALUE v) {
+  mrb_value m = MV(v);
+  if (mrb_immediate_p(m)) return rb_obj_class(v);
+  return (VALUE)mrb_obj_ptr(m)->c;
+}
+/* MRI hides an object by clearing its class; here it stays an object */
+VALUE rb_obj_hide(VALUE v) { return v; }
+VALUE rb_obj_reveal(VALUE v, VALUE klass) { (void)klass; return v; }
+
+/* Bignums, through Integer's methods */
+VALUE rb_big2str(VALUE v, int base) { return V(call1(MV(v), "to_s", mrb_int_value(M, base))); }
+long long rb_big2ll(VALUE v) { return (long long)mrb_as_int64(M, MV(v)); }
+long rb_big2long(VALUE v) { return (long)rb_big2ll(v); }
+unsigned long long rb_big2ull(VALUE v) {
+  mrb_value m = MV(v);
+  if (mrb_integer_p(m)) return (unsigned long long)mrb_integer(m);
+  mrb_value hex = call1(m, "to_s", mrb_int_value(M, 16));
+  const char *p = RSTRING_PTR(hex);
+  int neg = *p == '-';
+  if (neg) p++;
+  if (strlen(p) > 16) rb_raise(rb_eRangeError, "bignum too big to convert into 'unsigned long long'");
+  unsigned long long u = strtoull(p, NULL, 16);
+  if (neg) {
+    if (u > (unsigned long long)LLONG_MAX + 1) rb_raise(rb_eRangeError, "bignum out of range of unsigned long long");
+    u = (unsigned long long)(-(long long)u);
+  }
+  return u;
+}
+unsigned long rb_big2ulong(VALUE v) { return (unsigned long)rb_big2ull(v); }
+double rb_big2dbl(VALUE v) { return mrb_float(call0(MV(v), "to_f")); }
+int rb_big_sign(VALUE v) { return mrb_test(call1(MV(v), ">=", mrb_int_value(M, 0))) ? 1 : 0; }
+/* bytes |v| takes; *nlz the zero bits above its highest one in them */
+size_t rb_absint_size(VALUE v, int *nlz) {
+  mrb_int bits = mrb_integer(call0(call0(MV(v), "abs"), "bit_length"));
+  size_t n = (size_t)(bits + 7) / 8;
+  if (nlz) *nlz = (int)(n * 8 - (size_t)bits);
+  return n;
+}
+
+VALUE rb_struct_size(VALUE s) { return V(call0(MV(s), "size")); }
+VALUE rb_struct_members(VALUE s) { return V(call0(MV(s), "members")); }
+VALUE rb_struct_s_members(VALUE k) { return V(call0(MV(k), "members")); }
+
+int rb_obj_method_arity(VALUE obj, ID mid) {
+  return (int)mrb_integer(call0(call1(MV(obj), "method", mrb_symbol_value((mrb_sym)mid)), "arity"));
+}
+int rb_mod_method_arity(VALUE mod, ID mid) {
+  return (int)mrb_integer(call0(call1(MV(mod), "instance_method", mrb_symbol_value((mrb_sym)mid)), "arity"));
+}
+int rb_proc_arity(VALUE p) { return (int)mrb_integer(call0(MV(p), "arity")); }
+
+struct ivar_each { int (*fn)(ID, VALUE, st_data_t); st_data_t arg; };
+static int ivar_each_i(mrb_state *mrb, mrb_sym sym, mrb_value val, void *p) {
+  (void)mrb;
+  struct ivar_each *e = (struct ivar_each *)p;
+  return e->fn((ID)sym, V(val), e->arg) == ST_STOP ? 1 : 0;
+}
+void rb_ivar_foreach(VALUE obj, int (*fn)(ID, VALUE, st_data_t), st_data_t arg) {
+  if (SPECIAL_CONST_P(obj)) return;
+  struct ivar_each e = {fn, arg};
+  mrb_iv_foreach(M, MV(obj), ivar_each_i, &e);
+}
+st_index_t rb_ivar_count(VALUE obj) {
+  if (SPECIAL_CONST_P(obj)) return 0;
+  return (st_index_t)RARRAY_LEN(call0(MV(obj), "instance_variables"));
+}
+st_index_t rb_memhash(const void *p, long n) { return st_hash(p, (size_t)n, 0); }
+
+/* a Time, or seconds as an Integer or Float */
+struct timespec rb_time_timespec(VALUE t) {
+  struct timespec ts;
+  mrb_value m = MV(t);
+  if (mrb_integer_p(m)) {
+    ts.tv_sec = (time_t)mrb_integer(m);
+    ts.tv_nsec = 0;
+  } else if (mrb_float_p(m)) {
+    double d = mrb_float(m), sec = floor(d);
+    ts.tv_sec = (time_t)sec;
+    ts.tv_nsec = (long)((d - sec) * 1e9);
+  } else {
+    ts.tv_sec = (time_t)mrb_integer(call0(m, "to_i"));
+    ts.tv_nsec = (long)mrb_integer(call0(m, "nsec"));
+  }
+  return ts;
+}
+struct timeval rb_time_timeval(VALUE t) {
+  struct timespec ts = rb_time_timespec(t);
+  struct timeval tv = {ts.tv_sec, (int)(ts.tv_nsec / 1000)};
+  return tv;
+}
+/* offset: seconds east of UTC, INT_MAX local time, INT_MAX-1 UTC */
+VALUE rb_time_timespec_new(const struct timespec *ts, int offset) {
+  VALUE t = rb_time_nano_new(ts->tv_sec, ts->tv_nsec);
+  if (offset == INT_MAX) return t;
+  if (offset == INT_MAX - 1) return V(call0(MV(t), "utc"));
+  return V(call1(MV(t), "localtime", mrb_int_value(M, offset)));
+}
+VALUE rb_rational_new(VALUE n, VALUE d) {
+  mrb_value a[2] = {MV(n), MV(d)};
+  return V(mrb_funcall_argv(M, kernel(), SYM("Rational"), 2, a));
+}
+VALUE rb_complex_new(VALUE r, VALUE i) {
+  mrb_value a[2] = {MV(r), MV(i)};
+  return V(mrb_funcall_argv(M, kernel(), SYM("Complex"), 2, a));
+}
+VALUE rb_str_replace(VALUE s, VALUE src) { call1(MV(s), "replace", MV(src)); return s; }
+void rb_str_update(VALUE s, long beg, long len, VALUE v) {
+  mrb_value a[3] = {mrb_int_value(M, beg), mrb_int_value(M, len), MV(v)};
+  mrb_funcall_argv(M, MV(s), SYM("[]="), 3, a);
+}
 VALUE rb_io_puts(int argc, const VALUE *argv, VALUE out) { return rb_funcallv(out, SYM("puts"), argc, argv); }
 VALUE rb_p(VALUE v) { return V(call1(kernel(), "p", MV(v))); }
 void rb_ext_ractor_safe(bool safe) { (void)safe; }
@@ -1693,6 +1982,48 @@ static mrb_value encoding_class(void) {
 static rb_encoding encodings[MAX_ENCODINGS];
 static int nencodings;
 
+/* rb_enc_mbmaxlen / rb_enc_mbminlen: MRI's values, 1 for the rest */
+static const struct { const char *name; int max, min; } enc_len_table[] = {
+  {"UTF-8", 4, 1}, {"UTF8-MAC", 4, 1}, {"UTF8-DoCoMo", 4, 1}, {"UTF8-KDDI", 4, 1},
+  {"UTF8-SoftBank", 4, 1}, {"CESU-8", 6, 1}, {"UTF-16BE", 4, 2}, {"UTF-16LE", 4, 2},
+  {"UTF-32BE", 4, 4}, {"UTF-32LE", 4, 4}, {"EUC-JP", 3, 1}, {"eucJP-ms", 3, 1},
+  {"CP51932", 3, 1}, {"EUC-JIS-2004", 3, 1}, {"EUC-TW", 4, 1}, {"Emacs-Mule", 4, 1},
+  {"GB18030", 4, 1}, {"stateless-ISO-2022-JP", 4, 1}, {"stateless-ISO-2022-JP-KDDI", 4, 1},
+  {"Big5", 2, 1}, {"Big5-HKSCS", 2, 1}, {"Big5-UAO", 2, 1}, {"CP949", 2, 1},
+  {"CP950", 2, 1}, {"CP951", 2, 1}, {"EUC-KR", 2, 1}, {"GB12345", 2, 1},
+  {"GB2312", 2, 1}, {"GBK", 2, 1}, {"MacJapanese", 2, 1}, {"SJIS-DoCoMo", 2, 1},
+  {"SJIS-KDDI", 2, 1}, {"SJIS-SoftBank", 2, 1}, {"Shift_JIS", 2, 1}, {"Windows-31J", 2, 1},
+};
+static void enc_lengths(rb_encoding *e) {
+  e->max_enc_len = e->min_enc_len = 1;
+  for (size_t i = 0; i < sizeof(enc_len_table) / sizeof(enc_len_table[0]); i++) {
+    if (strcmp(enc_len_table[i].name, e->name) == 0) {
+      e->max_enc_len = enc_len_table[i].max;
+      e->min_enc_len = enc_len_table[i].min;
+      return;
+    }
+  }
+}
+
+/* st_hash: FNV-1a over the bytes, mixed (murmur3's finalizer) */
+st_index_t st_hash_start(st_index_t h) { return h ^ (st_index_t)0xcbf29ce484222325ULL; }
+st_index_t st_hash_uint(st_index_t h, st_index_t i) {
+  for (int k = 0; k < (int)sizeof(i); k++) { h ^= (i >> (k * 8)) & 0xff; h *= (st_index_t)0x100000001b3ULL; }
+  return h;
+}
+st_index_t st_hash_uint32(st_index_t h, uint32_t i) { return st_hash_uint(h, i); }
+st_index_t st_hash_end(st_index_t h) {
+  uint64_t x = h;
+  x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; x ^= x >> 33;
+  return (st_index_t)x;
+}
+st_index_t st_hash(const void *ptr, size_t len, st_index_t h) {
+  const unsigned char *p = (const unsigned char *)ptr;
+  h = st_hash_start(h);
+  for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= (st_index_t)0x100000001b3ULL; }
+  return st_hash_end(h ^ (st_index_t)len);
+}
+
 static rb_encoding *enc_named(const char *name) {
   for (int i = 0; i < nencodings; i++) {
     if (strcmp(encodings[i].name, name) == 0) return &encodings[i];
@@ -1709,6 +2040,7 @@ static rb_encoding *enc_named(const char *name) {
   e->index = nencodings++;
   e->ascii_compatible = mrb_test(call0(enc, "ascii_compatible?"));
   e->dummy = mrb_test(call0(enc, "dummy?"));
+  enc_lengths(e);
   return e;
 }
 static rb_encoding *enc_of_encoding(mrb_value enc) { return enc_named(mrb_string_cstr(M, call0(enc, "name"))); }
@@ -1762,9 +2094,10 @@ VALUE rb_enc_associate(VALUE s, rb_encoding *e) { return e ? force_enc(s, e->nam
 VALUE rb_enc_associate_index(VALUE s, int i) { return rb_enc_associate(s, rb_enc_from_index(i)); }
 void rb_enc_copy(VALUE dst, VALUE src) { rb_enc_associate(dst, rb_enc_get(src)); }
 VALUE rb_enc_str_new(const char *p, long n, rb_encoding *e) {
-  VALUE s = rb_str_new(p, n);
-  if (e && e != rb_utf8_encoding()) force_enc(s, e->name);
-  return s;
+  mrb_value s = str_new(p, n);
+  if (!e || e == rb_ascii8bit_encoding()) return V(s);
+  if (e == rb_utf8_encoding()) return V(str_utf8(s));
+  return force_enc(V(s), e->name);
 }
 VALUE rb_enc_str_new_cstr(const char *p, rb_encoding *e) { return rb_enc_str_new(p, (long)strlen(p), e); }
 VALUE rb_enc_str_new_static(const char *p, long n, rb_encoding *e) { return rb_enc_str_new(p, n, e); }
@@ -1824,6 +2157,9 @@ rb_encoding *rb_enc_check(VALUE a, VALUE b) {
   return e;
 }
 static int utf8_len(unsigned char c) { return c < 0x80 ? 1 : c < 0xc2 ? 1 : c < 0xe0 ? 2 : c < 0xf0 ? 3 : c < 0xf5 ? 4 : 1; }
+long rb_enc_strlen(const char *p, const char *e, rb_encoding *enc) {
+  return (long)mrb_integer(call0(MV(rb_enc_str_new(p, (long)(e - p), enc)), "length"));
+}
 int rb_enc_mbclen(const char *p, const char *e, rb_encoding *enc) {
   if (p >= e) return 1;
   if (!enc || enc == rb_utf8_encoding()) { int n = utf8_len((unsigned char)*p); return n <= e - p ? n : (int)(e - p); }
@@ -1839,6 +2175,26 @@ int rb_enc_codelen(int code, rb_encoding *e) {
 }
 unsigned int rb_enc_codepoint_len(const char *p, const char *e, int *len, rb_encoding *enc) {
   if (p >= e) rb_raise(rb_eArgError, "empty string");
+  /* UTF-8 and single-byte encodings decoded here: extensions walk strings
+     a character at a time with this (fast_blank, json) */
+  if (enc && enc->max_enc_len == 1) {
+    if (len) *len = 1;
+    return (unsigned char)*p;
+  }
+  if (!enc || enc == rb_utf8_encoding()) {
+    const unsigned char *u = (const unsigned char *)p;
+    int n = utf8_len(u[0]);
+    unsigned int c = n == 1 ? u[0] : n == 2 ? (u[0] & 0x1f) : n == 3 ? (u[0] & 0x0f) : (u[0] & 0x07);
+    int ok = n <= e - p && (u[0] < 0x80 || n > 1);
+    for (int i = 1; ok && i < n; i++) {
+      if ((u[i] & 0xc0) != 0x80) ok = 0;
+      c = (c << 6) | (u[i] & 0x3f);
+    }
+    if (ok && n > 1 && (c < (n == 2 ? 0x80u : n == 3 ? 0x800u : 0x10000u) || (c >= 0xd800 && c <= 0xdfff) || c > 0x10ffff)) ok = 0;
+    if (!ok) rb_raise(rb_eArgError, "invalid byte sequence in %s", enc ? enc->name : "UTF-8");
+    if (len) *len = n;
+    return c;
+  }
   int n = rb_enc_mbclen(p, e, enc);
   mrb_value s = MV(rb_enc_str_new(p, n, enc));
   if (len) *len = n;

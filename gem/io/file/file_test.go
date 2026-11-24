@@ -93,9 +93,11 @@ func Test_fileChown(t *testing.T) {
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Int(), 1)
 
-	ret = file.Call("chown", 0, 0, tmp.Name())
-	assert.Equal(t, ret.Type(), oruby.MrbTTException)
-	assert.Expect(t, mrb.Err() != nil, "not permited")
+	if os.Geteuid() != 0 { // root may chown to root
+		ret = file.Call("chown", 0, 0, tmp.Name())
+		assert.Equal(t, ret.Type(), oruby.MrbTTException)
+		assert.Expect(t, mrb.Err() != nil, "not permited")
+	}
 }
 
 func Test_fileLchown(t *testing.T) {
@@ -115,9 +117,11 @@ func Test_fileLchown(t *testing.T) {
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Int(), 1)
 
-	ret = file.Call("lchown", 0, 0, name+"2")
-	assert.Equal(t, ret.Type(), oruby.MrbTTException)
-	assert.Expect(t, mrb.Err() != nil, "not permited")
+	if os.Geteuid() != 0 { // root may chown to root
+		ret = file.Call("lchown", 0, 0, name+"2")
+		assert.Equal(t, ret.Type(), oruby.MrbTTException)
+		assert.Expect(t, mrb.Err() != nil, "not permited")
+	}
 
 	_ = os.Remove(name)
 	_ = os.Remove(name + "2")
@@ -681,9 +685,11 @@ func Test_fileFChown(t *testing.T) {
 	assert.NilError(t, mrb.Err())
 	assert.Equal(t, ret.Int(), 0)
 
-	ret = mrb.Call(f, "chown", 0, 0, tmp.Name())
-	assert.Equal(t, ret.Type(), oruby.MrbTTException)
-	assert.Expect(t, mrb.Err() != nil, "not permited")
+	if os.Geteuid() != 0 { // root may chown to root
+		ret = mrb.Call(f, "chown", 0, 0, tmp.Name())
+		assert.Equal(t, ret.Type(), oruby.MrbTTException)
+		assert.Expect(t, mrb.Err() != nil, "not permited")
+	}
 }
 
 func Test_fileFlock(t *testing.T) {

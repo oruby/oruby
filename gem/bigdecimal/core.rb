@@ -1,5 +1,8 @@
+# The core of bigdecimal 4.1.3 (its C extension, bigdecimal.so, in MRI) over
+# Go's math/big: what ext/bigdecimal/bigdecimal.c defines. The library's
+# Ruby (lib/, upstream's unchanged) adds power, sqrt, BigMath and to_d.
 class BigDecimal
-  VERSION = "3.1.9"
+  VERSION = "4.1.3"
   BASE = 1_000_000_000
 
   EXCEPTION_ALL = 0xff
@@ -91,7 +94,17 @@ class BigDecimal
 
     def _load(str) = BigDecimal(str.sub(/\A\d+:/, ""))
 
-    def interpret_loosely(str) = __new(str.to_s, 0, false)
+    # the number a string starts with (String#to_d); a NUL ends it
+    def interpret_loosely(str)
+      str = str.to_str
+      __ascii_compatible!(str)
+      __new(str.split("\0", 2).first || "", 0, false)
+    end
+
+    def __ascii_compatible!(str)
+      return if str.encoding.ascii_compatible?
+      raise Encoding::CompatibilityError, "ASCII incompatible encoding: #{str.encoding}"
+    end
 
     # convert other operands to BigDecimal
     def __coerce(v, prec = 0)
@@ -109,7 +122,10 @@ class BigDecimal
     end
   end
 
+  # prec nil: omitted (a Rational needs one; 0 means 32 digits for it)
   def self.__make(v, prec, exception)
+    omitted = prec.nil?
+    prec ||= 0
     case v
     when BigDecimal
       prec > 0 ? v.round_sig(prec) : v
@@ -123,16 +139,24 @@ class BigDecimal
         __from_float(v, prec)
       end
     when Rational
-      raise ArgumentError, "can't omit precision for a Rational." if prec == 0
-      __new(v.numerator.to_s, 0, true).div(__new(v.denominator.to_s, 0, true), prec)
+      raise ArgumentError, "can't omit precision for a Rational." if omitted
+      __new(v.numerator.to_s, 0, true).div(__new(v.denominator.to_s, 0, true), prec > 0 ? prec : 2 * double_fig)
     when Complex
-      raise ArgumentError, "Unable to make a BigDecimal from non-zero imaginary number" unless v.imaginary.zero?
-      __make(v.real, prec, exception)
+      unless v.imaginary.zero?
+        return nil unless exception
+        raise ArgumentError, "Unable to make a BigDecimal from non-zero imaginary number"
+      end
+      __make(v.real, omitted ? nil : prec, exception)
     when nil
       raise TypeError, "can't convert nil into BigDecimal"
     else
       if v.respond_to?(:to_str)
         s = v.to_str
+        __ascii_compatible!(s)
+        if s.include?("\0")
+          return nil unless exception
+          raise ArgumentError, "string contains null byte"
+        end
         begin
           r = __new(s, prec, true)
           if r.infinite? && !(s.strip == "Infinity" || s.strip == "+Infinity" || s.strip == "-Infinity") && BigDecimal.__exc?(EXCEPTION_OVERFLOW)
@@ -175,8 +199,6 @@ class BigDecimal
       end
     end
   end
-
-  def precs = [n_significant_digits, n_significant_digits + 9]
 
   # -- arithmetic --------------------------------------------------------------
 
@@ -244,17 +266,16 @@ class BigDecimal
   end
   private :__check_prec
 
-  def add(v, digits)
-    digits = __check_prec(digits)
-    r = self + v
-    digits > 0 ? r.round_sig(digits) : r
-  end
+  def add(v, digits) = __add_sub(v, digits, false)
+  def sub(v, digits) = __add_sub(v, digits, true)
 
-  def sub(v, digits)
+  def __add_sub(v, digits, subtract)
     digits = __check_prec(digits)
-    r = self - v
-    digits > 0 ? r.round_sig(digits) : r
+    o = digits > 0 && __other(v)
+    return (subtract ? self - v : self + v).then { |r| digits > 0 ? r.round_sig(digits) : r } unless o
+    __check(__add_prec(o, digits, subtract)).round_sig(digits)
   end
+  private :__add_sub
 
   def mult(v, digits)
     digits = __check_prec(digits)
@@ -277,8 +298,15 @@ class BigDecimal
     __check(__div(o, digits, BigDecimal.mode(ROUND_MODE)))
   end
 
+  # [Integer, BigDecimal] since 4.0: a NaN or infinite quotient is a
+  # FloatDomainError, as its to_i is
   def divmod(v)
     o = __other(v) or return __coerced(:divmod, v)
+    q, r = __divmod(o)
+    [q.to_i, r]
+  end
+
+  def __divmod(o)
     if nan? || o.nan? || (infinite? && o.infinite?)
       return [BigDecimal("NaN"), BigDecimal("NaN")]
     end
@@ -295,7 +323,8 @@ class BigDecimal
   end
 
   def %(v)
-    divmod(v)[1]
+    o = __other(v) or return __coerced(:%, v)
+    __divmod(o)[1]
   end
   alias modulo %
 
@@ -305,46 +334,6 @@ class BigDecimal
     return self if o.infinite?
     q = __div(o, n_significant_digits + o.n_significant_digits + exponent.abs + o.exponent.abs + 20, ROUND_DOWN).truncate
     self - o * BigDecimal(q.to_s)
-  end
-
-  def **(n)
-    power(n)
-  end
-
-  def power(n, prec = nil)
-    if n.is_a?(Integer)
-      return BigDecimal("NaN") if nan?
-      if infinite?
-        return BigDecimal("1") if n == 0
-        return n > 0 ? (n.odd? || !__neg ? self : -self) : BigDecimal(n.odd? && __neg ? "-0" : "0")
-      end
-      if zero?
-        return BigDecimal("1") if n == 0
-        return n > 0 ? self : BigDecimal((n.odd? && __neg ? "-" : "") + "Infinity")
-      end
-      result = BigDecimal("1")
-      base = self
-      e = n.abs
-      while e > 0
-        result *= base if e.odd?
-        base *= base
-        e >>= 1
-      end
-      result = BigDecimal("1").div(result, prec || [n_significant_digits * n.abs + 32, 64].max) if n < 0
-      return prec ? result.round_sig(prec) : result
-    end
-    if n.is_a?(BigDecimal) && n.frac.zero? && n.finite?
-      return power(n.to_i, prec)
-    end
-    raise TypeError, "wrong argument type #{n.class} (expected scalar Numeric)" unless n.is_a?(Numeric)
-    BigDecimal(to_f**n.to_f, prec || 16)
-  end
-
-  def sqrt(n)
-    n = __check_prec(n)
-    raise FloatDomainError, "sqrt of negative value" if negative?
-    raise FloatDomainError, "sqrt of 'NaN'(Not a Number)" if nan?
-    __sqrt(n)
   end
 
   def abs = __neg && !nan? ? negate : self
@@ -477,9 +466,6 @@ class BigDecimal
     Rational(n.to_i, d.to_i)
   end
 
-  def to_d = self
-  def to_digits = to_s("F")
-
   def split
     s = __neg ? -1 : 1
     case __kind
@@ -498,94 +484,17 @@ end
 
 
 module Kernel
-  def BigDecimal(v, prec = 0, exception: true)
-    unless prec.is_a?(Integer)
+  def BigDecimal(v, prec = nil, exception: true)
+    unless prec.nil? || prec.is_a?(Integer)
       raise TypeError, "can't convert #{prec.class} into Integer" unless prec.respond_to?(:to_int)
       prec = prec.to_int
     end
-    raise ArgumentError, "negative precision" if prec < 0
+    raise ArgumentError, "negative precision" if prec && prec < 0
     BigDecimal.__make(v, prec, exception)
   end
   module_function :BigDecimal
 end
 
-module BigMath
-  module_function
-
-  def sqrt(x, prec) = BigDecimal(x).sqrt(prec)
-
-  def log(x, prec)
-    raise ArgumentError, "Zero or negative precision for log" if prec <= 0
-    x = case x
-        when BigDecimal then x
-        when Rational then BigDecimal(x, prec + 16)
-        when Integer then BigDecimal(x)
-        when Float then BigDecimal(x, 0)
-        else raise TypeError, "can't convert #{x.class} into BigDecimal"
-        end
-    BigDecimal.__log(x, prec)
-  end
-
-  def PI(prec)
-    raise ArgumentError, "Zero or negative precision for PI" if prec <= 0
-    n = prec + 16
-    one = BigDecimal("1")
-    # Machin: pi = 16 atan(1/5) - 4 atan(1/239)
-    atan_inv = lambda do |k|
-      x = one.div(k, n)
-      x2 = BigDecimal(k * k)
-      sum = x
-      term = x
-      i = 1
-      loop do
-        term = term.div(x2, n)
-        t = term.div(2 * i + 1, n)
-        break if t.zero? || t.exponent < -n
-        sum = i.odd? ? sum - t : sum + t
-        i += 1
-      end
-      sum
-    end
-    (atan_inv.call(5) * 16 - atan_inv.call(239) * 4).round_sig(prec)
-  end
-
-  def E(prec)
-    raise ArgumentError, "Zero or negative precision for E" if prec <= 0
-    n = prec + 16
-    sum = BigDecimal("1")
-    term = BigDecimal("1")
-    i = 1
-    loop do
-      term = term.div(i, n)
-      break if term.zero? || term.exponent < -n
-      sum += term
-      i += 1
-    end
-    sum.round_sig(prec)
-  end
-end
-
-class Integer
-  def to_d = BigDecimal(self)
-end
-
-class Float
-  def to_d(prec = 0) = BigDecimal(self, prec > 0 ? prec : 0)
-end
-
-class String
-  def to_d
-    BigDecimal.interpret_loosely(self)
-  end
-end
-
-class Rational
-  def to_d(prec) = BigDecimal(self, prec)
-end
-
-class NilClass
-  def to_d = BigDecimal("0")
-end
 class BigDecimal
   INFINITY = BigDecimal("Infinity")
   NAN = BigDecimal("NaN")

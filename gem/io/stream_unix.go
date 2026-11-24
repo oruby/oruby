@@ -3,6 +3,7 @@
 package io
 
 /*
+#define _GNU_SOURCE // SEEK_DATA, SEEK_HOLE in glibc
 #include <unistd.h>
 #include <fcntl.h>
 

@@ -90,6 +90,7 @@ func GemExtension(gem, name string, init unsafe.Pointer) {
 func Extension(name string, init unsafe.Pointer) {
 	// named as its library: a Ruby file of the name on the load path comes
 	// first, as in MRI (gem/load)
+	oruby.RegisterCExtension(name + ".so")
 	oruby.LazyGem(name+".so", func(mrb *oruby.MrbState) interface{} {
 		if err := Bind(mrb); err != nil {
 			return &oruby.InitError{Err: err}

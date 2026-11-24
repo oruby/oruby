@@ -255,11 +255,8 @@ func (ctx *osslSSLContext) buildTLSConfig(serverName string, isServer bool) (*tl
 			pool = x509.NewCertPool()
 		}
 	}
-	if ctx.certStore != nil && len(ctx.certStore.certs) > 0 {
-		ensurePool()
-		for _, c := range ctx.certStore.certs {
-			pool.AddCert(c)
-		}
+	if ctx.certStore != nil && (len(ctx.certStore.certs) > 0 || ctx.certStore.systemRoots) {
+		pool = ctx.certStore.rootPool()
 	}
 	if ctx.caFile != "" {
 		pemBytes, err := os.ReadFile(ctx.caFile)

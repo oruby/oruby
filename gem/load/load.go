@@ -726,8 +726,10 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 			feature = strings.TrimSuffix(feature, e) + ".so"
 		}
 	}
-	// a Go gem: initialized once; MRI's built-in features stay "loaded"
-	if !isExplicit(feature) && mrb.GemAvailable(feature) {
+	// a Go gem: initialized once; MRI's built-in features stay "loaded".
+	// An embedded gem's (oruby.GemSpec) gives way to a newer version of the
+	// gem that is activated: its files on the load path are what loads
+	if !isExplicit(feature) && mrb.GemAvailable(feature) && (mrb.GemInitialized(feature) || !bundleNewer(mrb, feature)) {
 		provided := featureP(mrb, feature, 0, lp) != 0
 		loaded, err := mrb.Resolve(feature)
 		if err != nil {
@@ -805,6 +807,24 @@ func doRequire(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 	return requireFile(mrb, path)
 }
 
+// bundleNewer reports whether a newer version of the embedded gem that has
+// the Go gem feature is what require finds: a C extension compiled in under
+// the feature's name (oruby build compiles one in only for a version newer
+// than the embedded one), or the feature's file on the load path in such a
+// version's gem directory (installed, or packed into a bundle)
+func bundleNewer(mrb *oruby.MrbState, feature string) bool {
+	if oruby.IsCExtension(feature + ".so") {
+		return true
+	}
+	path, _ := findFileInState(mrb, feature, append([]string{".rb"}, dlexts...), expandedLoadPath(mrb))
+	name, version, ok := oruby.GemDirVersion(path)
+	if !ok {
+		return false
+	}
+	ev, ok := oruby.EmbeddedGemVersion(name)
+	return ok && oruby.CompareGemVersions(version, ev) > 0
+}
+
 // requireFile loads the Ruby file at (expanded) path unless it is loaded or
 // being loaded, and records it in $LOADED_FEATURES
 func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
@@ -862,6 +882,17 @@ func requireFile(mrb *oruby.MrbState, path string) oruby.MrbValue {
 	}
 	mrb.AryPush(mrb.GVGet(oruby.GvSym_LOADED_FEATURES), mrb.StrNew(path))
 	lk.finishAutoloads(mrb, true)
+	if lib, srcs := oruby.AfterLoadSources(real); len(srcs) > 0 {
+		for _, src := range srcs {
+			c := mrb.MrbCcontextNew()
+			c.Filename("<internal:oruby/" + lib + ">")
+			_, err := mrb.LoadStringCxt(src, c)
+			c.Free()
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+		}
+	}
 	return mrb.TrueValue()
 }
 

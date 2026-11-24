@@ -11,8 +11,8 @@ func statIsExecutableReal(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue 
 	ext := getExtendedStat(stat)
 	uid := os.Getuid()
 
-	if uid == 0 {
-		return oruby.True
+	if uid == 0 { // root: any execute bit (MRI's rb_stat_x)
+		return oruby.Bool(stat.Mode().Perm()&0111 != 0)
 	}
 
 	perm := stat.Mode().Perm()
@@ -32,8 +32,8 @@ func statIsExecutable(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	ext := getExtendedStat(stat)
 	euid := os.Geteuid()
 
-	if euid == 0 {
-		return oruby.True
+	if euid == 0 { // root: any execute bit (MRI's rb_stat_x)
+		return oruby.Bool(stat.Mode().Perm()&0111 != 0)
 	}
 
 	perm := stat.Mode().Perm()

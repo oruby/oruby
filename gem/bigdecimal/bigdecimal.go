@@ -4,7 +4,7 @@
 package bigdecimal
 
 import (
-	_ "embed"
+	"embed"
 	"math"
 	"math/big"
 	"regexp"
@@ -15,8 +15,14 @@ import (
 	"github.com/oruby/oruby/gem/internal/rb"
 )
 
-//go:embed bigdecimal.rb
-var bigdecimalRb []byte
+// core.rb is the Ruby half of bigdecimal.so (the C extension in MRI); lib/
+// is bigdecimal 4.1.3's Ruby library, unchanged (ruby/bigdecimal v4.1.3)
+//
+//go:embed core.rb
+var coreRb []byte
+
+//go:embed lib
+var libFS embed.FS
 
 const (
 	kFinite = iota
@@ -101,10 +107,16 @@ func align(a, b *decimal) (*big.Int, *big.Int, int64) {
 	if b.exp < e {
 		e = b.exp
 	}
-	if a.exp > e {
+	// a zero is zero at any exponent: never 10**(a huge difference) for it
+	if a.coef.Sign() == 0 {
+		e = b.exp
+	} else if b.coef.Sign() == 0 {
+		e = a.exp
+	}
+	if a.exp > e && a.coef.Sign() != 0 {
 		ca.Mul(ca, pow10(a.exp-e))
 	}
-	if b.exp > e {
+	if b.exp > e && b.coef.Sign() != 0 {
 		cb.Mul(cb, pow10(b.exp-e))
 	}
 	if a.neg {
@@ -153,6 +165,39 @@ func add(a, b *decimal) *decimal {
 	ca, cb, e := align(a, b)
 	sum := new(big.Int).Add(ca, cb)
 	return fromSigned(sum, e, a.neg && b.neg)
+}
+
+// sticky is b where a+b is rounded to digits significant digits: b itself,
+// or, when |b| lies below every digit that rounding reads (bigdecimal 4.1's
+// huge exponent differences), a same-signed stand-in just below them, which
+// rounds the sum the same way without aligning to b's exponent
+func sticky(a, b *decimal, digits int64) *decimal {
+	if digits <= 0 || a.kind != kFinite || b.kind != kFinite || a.isZero() || b.isZero() {
+		return b
+	}
+	// a is a multiple of 10**(t+1) and every rounding boundary of the sum a
+	// multiple of 10**t: the open interval (a, a+-10**t) rounds as one
+	t := a.exp + a.digits() - 1 - digits - 2
+	if a.exp < t {
+		t = a.exp
+	}
+	t--
+	if b.exp+b.digits() <= t { // |b| < 10**t
+		return &decimal{kind: kFinite, neg: b.neg, coef: big.NewInt(5), exp: t - 1}
+	}
+	return b
+}
+
+// addPrec is a+b for rounding to digits significant digits
+func addPrec(a, b *decimal, digits int64) *decimal {
+	if a.kind == kFinite && b.kind == kFinite && !a.isZero() && !b.isZero() {
+		if a.exp+a.digits() >= b.exp+b.digits() {
+			b = sticky(a, b, digits)
+		} else {
+			a = sticky(b, a, digits)
+		}
+	}
+	return add(a, b)
 }
 
 func negate(a *decimal) *decimal {
@@ -279,12 +324,20 @@ func roundAt(d *decimal, e int64, mode int) *decimal {
 		return d
 	}
 	drop := e - d.exp
-	div := pow10(drop)
-	q, r := new(big.Int).QuoRem(d.coef, div, new(big.Int))
+	var q, r, div *big.Int
+	cmp := -1 // the remainder against half of what is dropped
+	if drop > d.digits()+1 {
+		// all of coef dropped, and it is below half of 10**drop
+		q, r = new(big.Int), new(big.Int).Set(d.coef)
+	} else {
+		div = pow10(drop)
+		q, r = new(big.Int).QuoRem(d.coef, div, new(big.Int))
+		if r.Sign() != 0 {
+			cmp = new(big.Int).Mul(r, big.NewInt(2)).Cmp(div)
+		}
+	}
 	inc := false
 	if r.Sign() != 0 {
-		half := new(big.Int).Mul(r, big.NewInt(2))
-		cmp := half.Cmp(div)
 		switch mode {
 		case roundUp:
 			inc = true
@@ -334,6 +387,31 @@ func cmp(a, b *decimal) (int, bool) {
 		if av > bv {
 			return 1, true
 		}
+	}
+	// different signs, or leading digits at different positions, decide
+	// without aligning (10**(a huge exponent difference) otherwise)
+	sa, sb := a.sign(), b.sign()
+	if a.isZero() {
+		sa = 0
+	}
+	if b.isZero() {
+		sb = 0
+	}
+	if sa != sb {
+		if sa < sb {
+			return -1, true
+		}
+		return 1, true
+	}
+	if sa == 0 {
+		return 0, true
+	}
+	if ta, tb := a.exp+a.digits(), b.exp+b.digits(); ta != tb {
+		r := 1
+		if ta < tb {
+			r = -1
+		}
+		return r * sa, true
 	}
 	ca, cb, _ := align(a, b)
 	return ca.Cmp(cb), true
@@ -531,6 +609,9 @@ func (d *decimal) truncInt() *big.Int {
 		}
 		return v
 	}
+	if -d.exp >= d.digits() {
+		return new(big.Int) // |d| < 1
+	}
 	v := new(big.Int).Quo(d.coef, pow10(-d.exp))
 	if d.neg {
 		v.Neg(v)
@@ -543,11 +624,20 @@ func (d *decimal) truncInt() *big.Int {
 var limitDigits int64
 
 func init() {
-	oruby.LazyGem("bigdecimal", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("bigdecimal.so", func(mrb *oruby.MrbState) interface{} {
 		cls := rb.DataClass(mrb.DefineClass("BigDecimal", mrb.ClassGet("Numeric")))
 		cls.DefineClassMethod("__new", bdNew, mrb.ArgsReq(3))
 		m := func(name string, n uint32, f oruby.MrbFuncT) { cls.DefineMethod(name, f, mrb.ArgsReq(n)) }
 		m("__add", 1, binop(add))
+		// __add_prec(other, digits, subtract)
+		m("__add_prec", 3, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			a := mrb.GetArgs().Slice()
+			b := get(mrb, a[0])
+			if a[2].Bool() {
+				b = negate(b)
+			}
+			return wrap(mrb, addPrec(get(mrb, self), b, a[1].Int64()))
+		})
 		m("__sub", 1, binop(func(a, b *decimal) *decimal { return add(a, negate(b)) }))
 		m("__mul", 1, binop(mul))
 		m("__div", 3, bdDiv)
@@ -569,6 +659,18 @@ func init() {
 		})
 		m("negate", 0, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return wrap(mrb, negate(get(mrb, self)))
+		})
+		// x * 10**n, exactly (the library's Ruby scales with it)
+		m("_decimal_shift", 1, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			d := get(mrb, self)
+			if d.kind != kFinite || d.isZero() {
+				return self
+			}
+			n, err := rb.Int(mrb, mrb.GetArgsFirst())
+			if err != nil {
+				return rb.TypeError(mrb, err)
+			}
+			return wrap(mrb, newFinite(d.neg, d.coef, d.exp+n))
 		})
 		m("exponent", 0, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return mrb.FixnumValue(int(get(mrb, self).exponent()))
@@ -656,11 +758,27 @@ func init() {
 		}, mrb.ArgsOpt(1))
 		cls.DefineClassMethod("__from_float", bdFromFloat, mrb.ArgsReq(2))
 		cls.DefineClassMethod("__log", bdLog, mrb.ArgsReq(2))
-		rb.LoadRuby(mrb, "bigdecimal.rb", bigdecimalRb)
+		rb.LoadRuby(mrb, "<internal:bigdecimal.so>", coreRb)
 		return nil
 	})
-	oruby.GemAlias("bigdecimal/util", "bigdecimal")
-	oruby.GemAlias("bigdecimal/math", "bigdecimal")
+	// the library: each file a feature of its own, as on the load path
+	for _, f := range []string{"bigdecimal", "bigdecimal/util", "bigdecimal/math", "bigdecimal/math/erf",
+		"bigdecimal/math/gamma", "bigdecimal/jacobian", "bigdecimal/ludcmp", "bigdecimal/newton"} {
+		src, err := libFS.ReadFile("lib/" + f + ".rb")
+		if err != nil {
+			panic(err)
+		}
+		name := f
+		oruby.LazyGem(name, func(mrb *oruby.MrbState) interface{} {
+			c := mrb.MrbCcontextNew()
+			defer c.Free()
+			c.Filename("<internal:" + name + ".rb>")
+			if _, err := mrb.LoadBytesCxt(src, c); err != nil {
+				return &oruby.InitError{Err: err} // require raises it
+			}
+			return nil
+		})
+	}
 }
 
 func get(mrb *oruby.MrbState, v oruby.Value) *decimal {
@@ -681,7 +799,7 @@ func wrap(mrb *oruby.MrbState, d *decimal) oruby.Value {
 		return mrb.NilValue()
 	}
 	rb.Set(mrb, obj.Value(), d)
-	return obj.Value()
+	return mrb.ObjFreeze(obj.Value()) // every BigDecimal is frozen, as MRI's
 }
 
 func binop(f func(a, b *decimal) *decimal) oruby.MrbFuncT {

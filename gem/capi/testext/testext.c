@@ -109,6 +109,78 @@ static VALUE t_types(VALUE self, VALUE ary) {
   return out;
 }
 
+/* [mbmaxlen, mbminlen, 7-bit?] of a String's encoding, as jaro_winkler's
+   single_byte_optimizable asks */
+static VALUE t_enc_info(VALUE self, VALUE str) {
+  rb_encoding *enc = rb_enc_get(str);
+  return rb_ary_new_from_args(3, INT2FIX(rb_enc_mbmaxlen(enc)), INT2FIX(rb_enc_mbminlen(enc)),
+                              ENC_CODERANGE(str) == ENC_CODERANGE_7BIT ? Qtrue : Qfalse);
+}
+
+/* st_hash is a function of the bytes and the seed */
+static VALUE t_st_hash(VALUE self, VALUE str) {
+  st_index_t a = st_hash(RSTRING_PTR(str), RSTRING_LEN(str), 7);
+  st_index_t b = st_hash(RSTRING_PTR(str), RSTRING_LEN(str), 7);
+  st_index_t c = st_hash(RSTRING_PTR(str), RSTRING_LEN(str), 8);
+  return rb_ary_new_from_args(2, a == b ? Qtrue : Qfalse, a != c ? Qtrue : Qfalse);
+}
+
+/* the encodings of the strings the rb_str_new family makes, as MRI's */
+static VALUE t_str_encs(VALUE self) {
+  VALUE a[] = { rb_str_new("a", 1), rb_str_new_cstr("a"), rb_str_buf_new(4), rb_str_new_static("a", 1),
+    rb_utf8_str_new("a", 1), rb_utf8_str_new_cstr("a"), rb_usascii_str_new("a", 1), rb_usascii_str_new_cstr("a"),
+    rb_external_str_new("a", 1), rb_locale_str_new("a", 1), rb_interned_str("a", 1), rb_str_tmp_new(1),
+    rb_enc_str_new("a", 1, rb_utf8_encoding()), rb_enc_str_new("a", 1, rb_ascii8bit_encoding()),
+    rb_enc_str_new("a", 1, rb_enc_find("EUC-JP")), rb_sprintf("%d", 1) };
+  VALUE out = rb_ary_new();
+  for (int i = 0; i < (int)(sizeof(a) / sizeof(a[0])); i++) rb_ary_push(out, rb_str_new_cstr(rb_enc_name(rb_enc_get(a[i]))));
+  return out;
+}
+
+/* the codepoints of a String as rb_enc_codepoint_len reads them, or the
+   error it raises */
+static VALUE t_codepoints(VALUE self, VALUE str) {
+  rb_encoding *enc = rb_enc_get(str);
+  const char *p = RSTRING_PTR(str), *e = RSTRING_END(str);
+  VALUE out = rb_ary_new();
+  while (p < e) {
+    int n;
+    rb_ary_push(out, UINT2NUM(rb_enc_codepoint_len(p, e, &n, enc)));
+    p += n;
+  }
+  return out;
+}
+
+/* RARRAY_CONST_PTR / RARRAY_PTR / RARRAY_PTR_USE over a mruby Array */
+static VALUE t_ary_sum(VALUE self, VALUE ary) {
+  const VALUE *p = RARRAY_CONST_PTR(ary);
+  long sum = 0;
+  for (long i = 0; i < RARRAY_LEN(ary); i++) sum += NUM2LONG(p[i]);
+  return LONG2NUM(sum);
+}
+/* doubles each element in place; a block sees the array mid-way */
+static VALUE t_ary_double(VALUE self, VALUE ary) {
+  VALUE *p = RARRAY_PTR(ary);
+  long n = RARRAY_LEN(ary);
+  for (long i = 0; i < n; i++) p[i] = LONG2NUM(NUM2LONG(p[i]) * 2);
+  VALUE seen = rb_block_given_p() ? rb_yield(rb_ary_dup(ary)) : Qnil;
+  return seen;
+}
+static VALUE t_ary_use(VALUE self, VALUE ary) {
+  RARRAY_PTR_USE(ary, ptr, { ptr[0] = ID2SYM(rb_intern("first")); });
+  return rb_ary_entry(ary, 0);
+}
+/* a snapshot is not stale after the array changes through the API */
+static VALUE t_ary_fresh(VALUE self, VALUE ary) {
+  long before = RARRAY_LEN(ary);
+  const VALUE *p = RARRAY_CONST_PTR(ary);
+  VALUE first = p[0];
+  rb_ary_push(ary, INT2FIX(99));
+  rb_ary_store(ary, 0, INT2FIX(7));
+  p = RARRAY_CONST_PTR(ary);
+  return rb_ary_new_from_args(4, first, p[0], p[before], LONG2NUM(RARRAY_LEN(ary)));
+}
+
 void Init_capi_testext(void) {
   mTest = rb_define_module("CAPITest");
   rb_define_module_function(mTest, "scan", t_scan, -1);
@@ -124,6 +196,14 @@ void Init_capi_testext(void) {
   rb_define_module_function(mTest, "block_call", t_block_call, 1);
   rb_define_module_function(mTest, "cached", t_cached, 0);
   rb_define_module_function(mTest, "types", t_types, 1);
+  rb_define_module_function(mTest, "enc_info", t_enc_info, 1);
+  rb_define_module_function(mTest, "st_hash", t_st_hash, 1);
+  rb_define_module_function(mTest, "str_encs", t_str_encs, 0);
+  rb_define_module_function(mTest, "codepoints", t_codepoints, 1);
+  rb_define_module_function(mTest, "ary_sum", t_ary_sum, 1);
+  rb_define_module_function(mTest, "ary_double", t_ary_double, 1);
+  rb_define_module_function(mTest, "ary_use", t_ary_use, 1);
+  rb_define_module_function(mTest, "ary_fresh", t_ary_fresh, 1);
   cBox = rb_define_class_under(mTest, "Box", rb_cObject);
   rb_define_alloc_func(cBox, box_alloc);
   rb_define_method(cBox, "initialize", box_init, 1);
