@@ -478,11 +478,25 @@ type unpackExt struct {
 	recursive bool
 }
 
-func validateExtType(t int) (int8, error) {
-	if t < -128 || t > 127 {
-		return 0, fmt.Errorf("ext type out of range (-128..127): %d", t)
+func validateExtTypeVal(mrb *oruby.MrbState, v oruby.Value) (int8, error) {
+	if v.Type() == oruby.MrbTTInteger {
+		t := v.Int64()
+		if t < -128 || t > 127 {
+			return 0, oruby.ERangeError("ext type out of range (-128..127): %d", t)
+		}
+		return int8(t), nil
 	}
-	return int8(t), nil
+	if v.Type() == oruby.MrbTTBigInt {
+		z, err := mrb.BigInt(v)
+		if err == nil && z.IsInt64() {
+			t := z.Int64()
+			if t >= -128 && t <= 127 {
+				return int8(t), nil
+			}
+		}
+		return 0, oruby.ERangeError("ext type out of range (-128..127)")
+	}
+	return 0, oruby.ETypeError("no implicit conversion of %s into Integer", mrb.ClassOf(v).Name())
 }
 
 // ---------------------------------------------------------------------------
@@ -758,13 +772,48 @@ func (p *mpPacker) writeInteger(mrb *oruby.MrbState, v oruby.Value) error {
 	return oruby.ERangeError("bignum too big to convert into 'unsigned long long'")
 }
 
-func (p *mpPacker) writeStringVal(v oruby.Value) {
+func (p *mpPacker) writeStringVal(mrb *oruby.MrbState, v oruby.Value) error {
+	if mrb.RespondTo(v, mrb.Intern("encoding")) {
+		if enc, err := rbCall(mrb, v, "encoding"); err == nil && !enc.IsNil() {
+			if nameVal, err2 := rbCall(mrb, enc, "name"); err2 == nil && nameVal.IsString() {
+				switch nameVal.String() {
+				case "ASCII-8BIT", "BINARY":
+					if !p.compat {
+						p.writeBinBytes(v.Bytes())
+					} else {
+						p.writeStrBytes(v.Bytes())
+					}
+					return nil
+				case "UTF-8", "US-ASCII":
+					p.writeStrBytes(v.Bytes())
+					return nil
+				default:
+					u8, err3 := rbCall(mrb, v, "encode", mrb.StrNew("UTF-8"))
+					if err3 != nil {
+						return err3
+					}
+					p.writeStrBytes(u8.Bytes())
+					return nil
+				}
+			}
+		}
+	}
 	bs := v.Bytes()
 	if oruby.StrBinary(v) && !p.compat {
 		p.writeBinBytes(bs)
 	} else {
 		p.writeStrBytes(bs)
 	}
+	return nil
+}
+
+func (p *mpPacker) writeSymbolVal(mrb *oruby.MrbState, v oruby.Value) error {
+	sv, err := rbCall(mrb, v, "to_s")
+	if err == nil && sv.IsString() {
+		return p.writeStringVal(mrb, sv)
+	}
+	p.writeStrBytes([]byte(mrb.SymName(v.Symbol())))
+	return nil
 }
 
 func (p *mpPacker) writeValue(mrb *oruby.MrbState, self oruby.Value, v oruby.Value, depth int) error {
@@ -792,15 +841,23 @@ func (p *mpPacker) writeValue(mrb *oruby.MrbState, self oruby.Value, v oruby.Val
 		p.writeFloat64(v.Float64())
 		return nil
 	case oruby.MrbTTString:
-		p.writeStringVal(v)
-		return nil
+		if len(p.exts) > 0 {
+			if ext := p.findPackExt(mrb, v); ext != nil {
+				return p.writeWithExt(mrb, ext, v)
+			}
+		}
+		return p.writeStringVal(mrb, v)
 	case oruby.MrbTTSymbol:
 		if ext := p.findPackExt(mrb, v); ext != nil {
 			return p.writeWithExt(mrb, ext, v)
 		}
-		p.writeStrBytes([]byte(mrb.SymName(v.Symbol())))
-		return nil
+		return p.writeSymbolVal(mrb, v)
 	case oruby.MrbTTArray:
+		if len(p.exts) > 0 {
+			if ext := p.findPackExt(mrb, v); ext != nil {
+				return p.writeWithExt(mrb, ext, v)
+			}
+		}
 		n := oruby.RArrayLen(v)
 		p.writeArrayHeader(n)
 		for i := 0; i < n; i++ {
@@ -810,6 +867,11 @@ func (p *mpPacker) writeValue(mrb *oruby.MrbState, self oruby.Value, v oruby.Val
 		}
 		return nil
 	case oruby.MrbTTHash:
+		if len(p.exts) > 0 {
+			if ext := p.findPackExt(mrb, v); ext != nil {
+				return p.writeWithExt(mrb, ext, v)
+			}
+		}
 		keys := mrb.HashKeys(v)
 		n := oruby.RArrayLen(keys)
 		p.writeMapHeader(n)
@@ -829,11 +891,18 @@ func (p *mpPacker) writeValue(mrb *oruby.MrbState, self oruby.Value, v oruby.Val
 	// ExtensionValue?
 	extValCls := rb.ClassPath(mrb, "MessagePack::ExtensionValue")
 	if !extValCls.IsNil() && mrb.ObjIsKindOf(v, extValCls) {
-		tid, err := validateExtType(mrb.Call(v, "type").Int())
+		typeVal, err := rbCall(mrb, v, "type")
 		if err != nil {
 			return err
 		}
-		payload := mrb.Call(v, "payload")
+		tid, err := validateExtTypeVal(mrb, typeVal)
+		if err != nil {
+			return err
+		}
+		payload, err := rbCall(mrb, v, "payload")
+		if err != nil {
+			return err
+		}
 		p.writeExt(tid, payload.Bytes())
 		return nil
 	}
@@ -946,7 +1015,9 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 	}, mrb.ArgsReq(1))
 
 	cls.DefineMethod("write_string", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		getPacker(mrb, self).writeStringVal(mrb.GetArgsFirst())
+		if err := getPacker(mrb, self).writeStringVal(mrb, mrb.GetArgsFirst()); err != nil {
+			return mrb.RaiseError(err)
+		}
 		return self
 	}, mrb.ArgsReq(1))
 
@@ -969,7 +1040,9 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 			}
 			return self
 		}
-		p.writeStrBytes([]byte(mrb.SymName(v.Symbol())))
+		if err := p.writeSymbolVal(mrb, v); err != nil {
+			return mrb.RaiseError(err)
+		}
 		return self
 	}, mrb.ArgsReq(1))
 
@@ -1016,9 +1089,9 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	cls.DefineMethod("write_ext", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		args := mrb.GetArgs()
-		tid, err := validateExtType(args.Item(0).Int())
+		tid, err := validateExtTypeVal(mrb, args.Item(0))
 		if err != nil {
-			return mrb.Raise(mrb.ERangeError(), err.Error())
+			return mrb.RaiseError(err)
 		}
 		getPacker(mrb, self).writeExt(tid, args.Item(1).Bytes())
 		return self
@@ -1026,11 +1099,19 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	cls.DefineMethod("write_extension", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := mrb.GetArgsFirst()
-		tid, err := validateExtType(mrb.Call(ev, "type").Int())
+		typeVal, err := rbCall(mrb, ev, "type")
 		if err != nil {
-			return mrb.Raise(mrb.ERangeError(), err.Error())
+			return mrb.RaiseError(err)
 		}
-		getPacker(mrb, self).writeExt(tid, mrb.Call(ev, "payload").Bytes())
+		tid, err := validateExtTypeVal(mrb, typeVal)
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		payload, err := rbCall(mrb, ev, "payload")
+		if err != nil {
+			return mrb.RaiseError(err)
+		}
+		getPacker(mrb, self).writeExt(tid, payload.Bytes())
 		return self
 	}, mrb.ArgsReq(1))
 
@@ -1100,9 +1181,9 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls.DefineMethod("register_type_internal", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		p := getPacker(mrb, self)
 		args := mrb.GetArgs()
-		tid, err := validateExtType(args.Item(0).Int())
+		tid, err := validateExtTypeVal(mrb, args.Item(0))
 		if err != nil {
-			return mrb.Raise(mrb.ERangeError(), err.Error())
+			return mrb.RaiseError(err)
 		}
 		p.registerType(mrb, self, tid, args.Item(1), args.Item(2), false)
 		return mrb.NilValue()
@@ -1877,9 +1958,9 @@ func defineUnpacker(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls.DefineMethod("register_type_internal", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		u := getUnpacker(mrb, self)
 		args := mrb.GetArgs()
-		tid, err := validateExtType(args.Item(0).Int())
+		tid, err := validateExtTypeVal(mrb, args.Item(0))
 		if err != nil {
-			return mrb.Raise(mrb.ERangeError(), err.Error())
+			return mrb.RaiseError(err)
 		}
 		u.registerType(mrb, self, tid, args.Item(1), args.Item(2), false)
 		return mrb.NilValue()
@@ -1942,9 +2023,9 @@ func defineFactory(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls.DefineMethod("register_type_internal", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		f := getFactory(mrb, self)
 		args := mrb.GetArgs()
-		tid, err := validateExtType(args.Item(0).Int())
+		tid, err := validateExtTypeVal(mrb, args.Item(0))
 		if err != nil {
-			return mrb.Raise(mrb.ERangeError(), err.Error())
+			return mrb.RaiseError(err)
 		}
 		klass := args.Item(1)
 		opts := args.Item(2)

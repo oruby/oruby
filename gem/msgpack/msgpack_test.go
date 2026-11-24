@@ -8,6 +8,7 @@ import (
 	_ "github.com/oruby/oruby/gem/load"
 	_ "github.com/oruby/oruby/gem/msgpack"
 	_ "github.com/oruby/oruby/gem/time"
+	_ "github.com/oruby/oruby/gem/transcode"
 )
 
 func TestMessagePackVectors(t *testing.T) {
@@ -293,6 +294,43 @@ func TestMessagePackTruncatedHugeHeadersDoNotCrash(t *testing.T) {
 			end
 			raise "expected EOFError for #{raw.unpack1('H*')}" unless raised
 		end
+
+		# ExtensionValue out-of-range type raises RangeError
+		[-129, -65540, -(2**40), 128, 65540, 2**40].each do |bad_type|
+			got_range = false
+			begin
+				MessagePack::ExtensionValue.new(bad_type, "a").to_msgpack
+			rescue RangeError
+				got_range = true
+			end
+			raise "expected RangeError for ext type #{bad_type}" unless got_range
+		end
+
+		# String/Symbol encoding transcoding
+		raise "us-ascii" unless MessagePack.unpack(MessagePack.pack("hi".force_encoding(Encoding::US_ASCII))).encoding == Encoding::UTF_8
+		u16 = MessagePack.unpack(MessagePack.pack("string".encode(Encoding::UTF_16)))
+		raise "utf-16" unless u16 == "string" && u16.encoding == Encoding::UTF_8
+		euc = MessagePack.unpack(MessagePack.pack([0xa4, 0xa2].pack("C*").force_encoding(Encoding::EUC_JP)))
+		raise "euc-jp" unless euc == "\xE3\x81\x82".force_encoding("UTF-8") && euc.encoding == Encoding::UTF_8
+		sjis_sym = MessagePack.unpack(MessagePack.pack("\xE3\x81\x82".encode("Shift_JIS").to_sym))
+		raise "sjis sym" unless sjis_sym == "\xE3\x81\x82".force_encoding("UTF-8") && sjis_sym.encoding == Encoding::UTF_8
+		bin_sym = MessagePack.unpack(MessagePack.pack("\xE3\x81\x82".b.to_sym))
+		raise "bin sym" unless bin_sym == "\xE3\x81\x82".b && bin_sym.encoding == Encoding::ASCII_8BIT
+
+		# Core type subclass extension registration
+		class CustomHash < Hash; end
+		class CustomArray < Array; end
+		class CustomString < String; end
+		f2 = MessagePack::Factory.new
+		f2.register_type(0x10, CustomHash, packer: ->(h) { h.size.to_s }, unpacker: ->(s) { [:h, s.to_i] })
+		f2.register_type(0x11, CustomArray, packer: ->(a) { a.size.to_s }, unpacker: ->(s) { [:a, s.to_i] })
+		f2.register_type(0x12, CustomString, packer: ->(s) { s.upcase }, unpacker: ->(s) { [:s, s] })
+		ch = CustomHash.new; ch["x"] = 1
+		ca = CustomArray.new([1, 2, 3])
+		cs = CustomString.new("ab")
+		raise "custom hash" unless f2.unpack(f2.pack(ch)) == [:h, 1]
+		raise "custom array" unless f2.unpack(f2.pack(ca)) == [:a, 3]
+		raise "custom string" unless f2.unpack(f2.pack(cs)) == [:s, "AB"]
 	`)
 	if err != nil {
 		t.Fatalf("MessagePack huge-header safety test failed: %v", err)

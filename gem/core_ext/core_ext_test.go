@@ -538,3 +538,27 @@ func TestCoreExtRailsEcosystemRegressions(t *testing.T) {
 		t.Fatalf("Rails ecosystem regressions failed: %v", err)
 	}
 }
+
+func TestEnumerableDoesNotDefineHash(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+		raise "Enumerable should not define #hash" if Enumerable.instance_methods(false).include?(:hash)
+		called = false
+		cls = Class.new do
+			include Enumerable
+			define_method(:each) { |&b| called = true; b.call(self) }
+		end
+		obj = cls.new
+		h = obj.hash
+		raise "hash should be Integer" unless h.is_a?(Integer)
+		raise "Object#hash must not iterate #each" if called
+		raise "Array#hash" unless [1, 2].hash == [1, 2].hash
+		raise "Hash#hash" unless {a: 1}.hash == {a: 1}.hash
+		raise "Range#hash" unless (1..5).hash == (1..5).hash
+	`)
+	if err != nil {
+		t.Fatalf("Enumerable#hash check failed: %v", err)
+	}
+}

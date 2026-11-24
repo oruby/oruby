@@ -72,6 +72,14 @@ func TestBCryptPasswordAndVectors(t *testing.T) {
 		end
 		raise "expected InvalidSalt" unless bad_salt
 
+		nul_err = false
+		begin
+			BCrypt::Password.create("foo\0bar", cost: 4)
+		rescue ArgumentError
+			nul_err = true
+		end
+		raise "expected ArgumentError for NUL byte" unless nul_err
+
 		pw.to_s
 	`)
 	if err != nil {

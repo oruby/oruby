@@ -3,6 +3,7 @@
 package bcrypt
 
 import (
+	"bytes"
 	"crypto/rand"
 	_ "embed"
 	"encoding/base64"
@@ -93,9 +94,15 @@ func bcCrypt(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if err != nil {
 		return rb.TypeError(mrb, err)
 	}
+	if bytes.IndexByte(secret, 0) >= 0 {
+		return mrb.Raise(mrb.EArgumentError(), "string contains null byte")
+	}
 	saltStr, err := rb.Str(mrb, args.Item(1))
 	if err != nil {
 		return rb.TypeError(mrb, err)
+	}
+	if strings.IndexByte(saltStr, 0) >= 0 {
+		return mrb.Raise(mrb.EArgumentError(), "string contains null byte")
 	}
 	out, err := hashSecret(secret, saltStr)
 	if err != nil {

@@ -2,6 +2,13 @@
 $VERBOSE = false if $VERBOSE.nil?
 
 module Enumerable
+  # MRI's Enumerable does not define #hash (Array, Hash, Range, Struct, Set,
+  # Data each define their own; other Enumerables inherit Kernel#hash).
+  # mruby's mrblib/enum.rb defines Enumerable#hash by iterating #each, which
+  # drains IO/Enumerator and blows up exponentially on tree-walking Enumerables
+  # such as RSpec::Support::Source::Node.
+  remove_method :hash if method_defined?(:hash, false)
+
   alias __orig_all? all?
   def all?(*args, &block)
     warn "given block not used", uplevel: 1 if !args.empty? && block
