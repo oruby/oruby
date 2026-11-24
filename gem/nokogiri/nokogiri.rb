@@ -98,8 +98,12 @@ module Nokogiri
   def self.make(input = nil, opts = {}, &blk)
     if input
       HTML4::DocumentFragment.parse(input.to_s)
+    elsif blk
+      frag = HTML4::DocumentFragment.parse("")
+      HTML4::Builder.with(frag, &blk)
+      frag.children.length == 1 ? frag.children.first : frag
     else
-      yield HTML4::DocumentFragment.parse("") if blk
+      HTML4::DocumentFragment.parse("")
     end
   end
 
@@ -227,6 +231,26 @@ module Nokogiri
 
       def strict?
         (@options & RECOVER) == 0
+      end
+
+      def default_xml
+        @options |= DEFAULT_XML
+        self
+      end
+
+      def default_html
+        @options |= DEFAULT_HTML
+        self
+      end
+
+      def default_xslt
+        @options |= DEFAULT_XSLT
+        self
+      end
+
+      def default_schema
+        @options |= DEFAULT_SCHEMA
+        self
       end
 
       {
@@ -752,10 +776,19 @@ module Nokogiri
         io << to_xhtml(options)
       end
 
-      def to_s
-        html? ? to_html : to_xml
+      def serialize(*args, &block)
+        opts = args.last.is_a?(Hash) ? args.last : {}
+        if args.first.is_a?(String) && !opts.key?(:encoding)
+          opts = opts.merge(encoding: args.first)
+        end
+        out = html? ? to_html(opts) : to_xml(opts)
+        yield out if block
+        out
       end
-      alias serialize to_s
+
+      def to_s(*args)
+        args.empty? ? (html? ? to_html : to_xml) : serialize(*args)
+      end
 
       def inspect
         "#<#{self.class}:0x#{pointer_id.to_s(16)} name=#{name.inspect}>"
@@ -1537,8 +1570,8 @@ module Nokogiri
         :html4
       end
 
-      def to_s
-        to_html
+      def to_s(*args)
+        args.empty? ? to_html : serialize(*args)
       end
     end
 
@@ -1656,6 +1689,17 @@ module Nokogiri
       def xpath_doctype
         :html5
       end
+
+      def quirks_mode
+        dtd = internal_subset
+        if dtd.nil?
+          QuirksMode::QUIRKS
+        elsif dtd.name.to_s.downcase == "html" && (dtd.external_id.nil? || dtd.external_id.empty?) && (dtd.system_id.nil? || dtd.system_id.empty?)
+          QuirksMode::NO_QUIRKS
+        else
+          QuirksMode::LIMITED_QUIRKS
+        end
+      end
     end
 
     class DocumentFragment
@@ -1681,6 +1725,28 @@ module Nokogiri
   end
 
   module CSS
+    class SelectorCache
+      def initialize
+        @cache = {}
+      end
+
+      def [](key)
+        @cache[key]
+      end
+
+      def []=(key, value)
+        @cache[key] = value
+      end
+
+      def clear_cache
+        @cache.clear
+      end
+
+      def key(selector:, visitor:)
+        [selector, visitor.config]
+      end
+    end
+
     class Node
       attr_reader :selector
 
@@ -1727,6 +1793,86 @@ module Nokogiri
     end
   end
 
+  class EncodingHandler
+    @handlers = {}
+
+    attr_reader :name
+
+    def initialize(name)
+      @name = name.to_s
+    end
+
+    def self.[](name)
+      key = name.to_s.upcase
+      @handlers[key] ||= begin
+        Encoding.find(name)
+        new(key)
+      rescue ArgumentError
+        nil
+      end
+    end
+
+    def self.alias(orig, alias_name)
+      h = self[orig]
+      @handlers[alias_name.to_s.upcase] = h if h
+      h
+    end
+
+    def self.delete(name)
+      @handlers.delete(name.to_s.upcase)
+    end
+
+    def self.clear_aliases!
+      @handlers.clear
+    end
+  end
+
+  module XML
+    module SAX
+      class ParserContext
+        attr_accessor :replace_entities, :recovery
+
+        def self.memory(data, encoding = "UTF-8")
+          raise TypeError, "expected String" unless data.is_a?(String)
+          new(data, encoding)
+        end
+
+        def self.io(io, encoding = 0)
+          raise TypeError, "expected IO" unless io.respond_to?(:read)
+          new(io.read, encoding)
+        end
+
+        def self.file(path, encoding = "UTF-8")
+          raise TypeError, "expected String" unless path.is_a?(String)
+          new(File.read(path), encoding)
+        end
+
+        def initialize(data, encoding = "UTF-8")
+          @data = data
+          @encoding = encoding
+          @replace_entities = false
+          @recovery = false
+        end
+
+        def parse_with(sax_handler)
+          raise TypeError, "expected SAX Parser" unless sax_handler.is_a?(Parser)
+          sax_handler.parse_memory(@data)
+        end
+      end
+    end
+  end
+
+  module HTML4
+    module SAX
+      class ParserContext < XML::SAX::ParserContext
+        def parse_with(sax_handler)
+          raise TypeError, "expected SAX Parser" unless sax_handler.is_a?(XML::SAX::Parser)
+          XML::SAX.__emit(sax_handler.document, @data.to_s, true)
+        end
+      end
+    end
+  end
+
   module Decorators
     module Slop
       def method_missing(name, *args, &block)
@@ -1736,5 +1882,17 @@ module Nokogiri
         list
       end
     end
+  end
+end
+
+module Kernel
+  private
+
+  def Nokogiri(*args, &block)
+    if block_given?
+      builder = Nokogiri::HTML4::Builder.new(&block)
+      return builder.doc.root
+    end
+    Nokogiri.parse(*args)
   end
 end

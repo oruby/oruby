@@ -674,6 +674,7 @@ func definePlatform(mrb *oruby.MrbState, mod oruby.RClass) {
 		arch = "i386"
 	}
 	mrb.ConstSet(plat, mrb.Intern("ARCH"), mrb.StrNew(arch))
+	mrb.ConstSet(plat, mrb.Intern("CPU"), mrb.StrNew(arch))
 
 	osName := runtime.GOOS
 	switch runtime.GOOS {
@@ -687,6 +688,7 @@ func definePlatform(mrb *oruby.MrbState, mod oruby.RClass) {
 		mrb.ConstSet(plat, mrb.Intern("IS_LINUX"), mrb.FalseValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_WINDOWS"), mrb.FalseValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_BSD"), mrb.TrueValue())
+		mrb.ConstSet(plat, mrb.Intern("IS_GNU"), mrb.FalseValue())
 	case "linux":
 		osName = "linux"
 		mrb.ConstSet(plat, mrb.Intern("OS"), mrb.StrNew(osName))
@@ -697,6 +699,7 @@ func definePlatform(mrb *oruby.MrbState, mod oruby.RClass) {
 		mrb.ConstSet(plat, mrb.Intern("IS_LINUX"), mrb.TrueValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_WINDOWS"), mrb.FalseValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_BSD"), mrb.FalseValue())
+		mrb.ConstSet(plat, mrb.Intern("IS_GNU"), mrb.TrueValue())
 	case "windows":
 		osName = "windows"
 		mrb.ConstSet(plat, mrb.Intern("OS"), mrb.StrNew(osName))
@@ -707,6 +710,7 @@ func definePlatform(mrb *oruby.MrbState, mod oruby.RClass) {
 		mrb.ConstSet(plat, mrb.Intern("IS_LINUX"), mrb.FalseValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_WINDOWS"), mrb.TrueValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_BSD"), mrb.FalseValue())
+		mrb.ConstSet(plat, mrb.Intern("IS_GNU"), mrb.FalseValue())
 	default:
 		mrb.ConstSet(plat, mrb.Intern("OS"), mrb.StrNew(osName))
 		mrb.ConstSet(plat, mrb.Intern("LIBPREFIX"), mrb.StrNew("lib"))
@@ -716,6 +720,7 @@ func definePlatform(mrb *oruby.MrbState, mod oruby.RClass) {
 		mrb.ConstSet(plat, mrb.Intern("IS_LINUX"), mrb.FalseValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_WINDOWS"), mrb.FalseValue())
 		mrb.ConstSet(plat, mrb.Intern("IS_BSD"), mrb.FalseValue())
+		mrb.ConstSet(plat, mrb.Intern("IS_GNU"), mrb.FalseValue())
 	}
 	mrb.ConstSet(plat, mrb.Intern("NAME"), mrb.StrNew(arch+"-"+osName))
 }
@@ -768,6 +773,29 @@ func defineTypes(mrb *oruby.MrbState, mod oruby.RClass) {
 		td := makePrimitiveType(b.kind)
 		v := mrb.DataWrapInterface(builtinCls, td).Value()
 		mrb.ConstSet(typeCls, mrb.Intern(b.name), v)
+		mrb.ConstSet(mod, mrb.Intern("TYPE_"+b.name), v)
+	}
+	typeAliases := []struct{ alias, target string }{
+		{"CHAR", "INT8"},
+		{"UCHAR", "UINT8"},
+		{"SHORT", "INT16"},
+		{"USHORT", "UINT16"},
+		{"INT", "INT32"},
+		{"UINT", "UINT32"},
+		{"LONG_LONG", "INT64"},
+		{"ULONG_LONG", "UINT64"},
+		{"FLOAT", "FLOAT32"},
+		{"DOUBLE", "FLOAT64"},
+		{"LONGDOUBLE", "FLOAT64"},
+		{"BUFFER_IN", "POINTER"},
+		{"BUFFER_OUT", "POINTER"},
+		{"BUFFER_INOUT", "POINTER"},
+		{"VARARGS", "VOID"},
+	}
+	for _, a := range typeAliases {
+		tv := mrb.ConstGet(typeCls, mrb.Intern(a.target))
+		mrb.ConstSet(typeCls, mrb.Intern(a.alias), tv)
+		mrb.ConstSet(mod, mrb.Intern("TYPE_"+a.alias), tv)
 	}
 
 	fnTypeCls := mrb.DefineClassUnder(mod, "FunctionType", typeCls)
@@ -981,8 +1009,54 @@ func definePointer(mrb *oruby.MrbState, mod oruby.RClass) {
 				fp.freeNow()
 			}
 		})
-		return mrb.DataWrapInterface(mpCls, p).Value()
+		return mrb.DataWrapInterface(mrb.ClassPtr(self), p).Value()
 	}, mrb.ArgsReq(3))
+
+	ptrCls.DefineMethod("initialize_copy", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		orig := mrb.GetArgsFirst()
+		op, ok := getPtr(mrb, orig)
+		if !ok || op == nil {
+			return self
+		}
+		cp := &ffiPtr{
+			addr:     op.addr,
+			size:     op.size,
+			typeSize: op.typeSize,
+			owned:    false,
+		}
+		rb.Set(mrb, self, cp)
+		return self
+	}, mrb.ArgsReq(1))
+
+	mpCls.DefineMethod("initialize_copy", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		orig := mrb.GetArgsFirst()
+		op, ok := getPtr(mrb, orig)
+		if !ok || op == nil {
+			return self
+		}
+		allocSz := maxInt(op.size, 1)
+		mem := C.malloc(C.size_t(allocSz))
+		if mem == nil {
+			return mrb.Raise(mrb.ERuntimeError(), "failed to allocate memory")
+		}
+		if op.addr != nil && op.size > 0 {
+			C.memcpy(mem, op.addr, C.size_t(op.size))
+		}
+		p := &ffiPtr{
+			addr:        mem,
+			size:        op.size,
+			typeSize:    op.typeSize,
+			owned:       true,
+			autorelease: op.autorelease,
+		}
+		runtime.SetFinalizer(p, func(fp *ffiPtr) {
+			if fp.owned && fp.autorelease && fp.addr != nil {
+				fp.freeNow()
+			}
+		})
+		rb.Set(mrb, self, p)
+		return self
+	}, mrb.ArgsReq(1))
 
 	ptrCls.DefineMethod("free", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		p, _ := getPtr(mrb, self)

@@ -105,6 +105,8 @@ func initPG(mrb *oruby.MrbState) any {
 	mod.DefineClassMethod("library_version", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.FixnumValue(160000)
 	}, mrb.ArgsNone())
+	mrb.ConstSet(mod, mrb.Intern("IS_BINARY_GEM"), mrb.FalseValue())
+	mrb.ConstSet(mod, mrb.Intern("POSTGRESQL_LIB_PATH"), mrb.StrNew(""))
 
 	defineErrors(mrb, mod)
 	defineConnection(mrb, mod, consts)
@@ -172,6 +174,10 @@ func defineErrors(mrb *oruby.MrbState, mod oruby.RClass) {
 	} {
 		parent := pgErr
 		switch name {
+		case "FeatureNotSupported", "DataException", "IntegrityConstraintViolation",
+			"InvalidAuthorizationSpecification", "InvalidCatalogName",
+			"TransactionRollback", "SyntaxErrorOrAccessRuleViolation", "OperatorIntervention":
+			parent = rb.ClassPath(mrb, "PG::ServerError")
 		case "InvalidTextRepresentation":
 			parent = rb.ClassPath(mrb, "PG::DataException")
 		case "NotNullViolation", "ForeignKeyViolation", "UniqueViolation", "CheckViolation":
@@ -860,14 +866,15 @@ func yieldAndClearResult(mrb *oruby.MrbState, resVal oruby.Value, blk oruby.RPro
 // ---------------------------------------------------------------------------
 
 type pgResult struct {
-	status  int
-	fields  []pgconn.FieldDescription
-	rows    [][][]byte
-	cmdTag  pgconn.CommandTag
-	pgErr   *pgconn.PgError
-	errMsg  string
-	cleared bool
-	typeMap oruby.Value
+	status       int
+	fields       []pgconn.FieldDescription
+	rows         [][][]byte
+	cmdTag       pgconn.CommandTag
+	pgErr        *pgconn.PgError
+	errMsg       string
+	cleared      bool
+	typeMap      oruby.Value
+	fieldNameSym bool
 }
 
 func getRes(mrb *oruby.MrbState, self oruby.Value) (*pgResult, error) {
@@ -984,13 +991,73 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 
 	cls.DefineMethod("fnumber", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		r, _ := getRes(mrb, self)
-		name := mrb.GetArgsFirst().String()
+		if err := r.checkNotCleared(); err != nil {
+			return rb.Raise(mrb, "PG::Error", "%s", err.Error())
+		}
+		v := mrb.GetArgsFirst()
+		var name string
+		if v.IsSymbol() {
+			name = mrb.SymName(v.Symbol())
+		} else if v.IsString() {
+			name = v.String()
+		} else if mrb.RespondTo(v, mrb.Intern("to_str")) {
+			sv, err := mrb.Funcall(v, mrb.Intern("to_str"))
+			if err != nil {
+				return mrb.RaiseError(err)
+			}
+			name = sv.String()
+		} else {
+			return mrb.ETypeError().Raise("expected String or Symbol")
+		}
 		for i, f := range r.fields {
 			if f.Name == name {
 				return mrb.FixnumValue(i)
 			}
 		}
 		return mrb.FixnumValue(-1)
+	}, mrb.ArgsReq(1))
+
+	cls.DefineMethod("ftable", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r, _ := getRes(mrb, self)
+		i := mrb.GetArgsFirst().Int()
+		if i < 0 || i >= len(r.fields) {
+			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+		}
+		return mrb.Int64Value(int64(r.fields[i].TableOID))
+	}, mrb.ArgsReq(1))
+
+	cls.DefineMethod("ftablecol", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r, _ := getRes(mrb, self)
+		i := mrb.GetArgsFirst().Int()
+		if i < 0 || i >= len(r.fields) {
+			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+		}
+		return mrb.FixnumValue(int(r.fields[i].TableAttributeNumber))
+	}, mrb.ArgsReq(1))
+
+	cls.DefineMethod("field_name_type", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r, _ := getRes(mrb, self)
+		if r.fieldNameSym {
+			return mrb.Intern("symbol").Value()
+		}
+		return mrb.Intern("string").Value()
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("field_name_type=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r, _ := getRes(mrb, self)
+		v := mrb.GetArgsFirst()
+		if !v.IsSymbol() {
+			return mrb.ETypeError().Raise("expected Symbol (:string or :symbol)")
+		}
+		switch mrb.SymName(v.Symbol()) {
+		case "symbol":
+			r.fieldNameSym = true
+		case "string":
+			r.fieldNameSym = false
+		default:
+			return mrb.EArgumentError().Raisef("invalid field_name_type %q", mrb.SymName(v.Symbol()))
+		}
+		return v
 	}, mrb.ArgsReq(1))
 
 	cls.DefineMethod("ftype", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -1084,7 +1151,13 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
-			mrb.HashSet(h, mrb.StrNew(f.Name), v)
+			var key oruby.Value
+			if r.fieldNameSym {
+				key = mrb.SymbolValue(mrb.Intern(f.Name))
+			} else {
+				key = mrb.StrNew(f.Name)
+			}
+			mrb.HashSet(h, key, v)
 		}
 		return h
 	}

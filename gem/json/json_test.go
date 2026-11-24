@@ -50,7 +50,7 @@ func TestParse(t *testing.T) {
 
 func TestStateAndStdlibCompat(t *testing.T) {
 	assert(t, "JSON::State and Ext alias", `
-		s = JSON::State.new(indent: "  ")
+		s = JSON::State.new(indent: "  ", object_nl: "\n")
 		s.is_a?(JSON::State) &&
 		JSON::Ext::Generator::State == JSON::State &&
 		s.generate({"a" => 1}).include?("\n") &&

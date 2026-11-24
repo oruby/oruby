@@ -169,6 +169,17 @@ func defineSelector(mrb *oruby.MrbState, mod oruby.RClass) {
 	}, mrb.ArgsNone())
 
 	cls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs()
+		if args.Len() >= 1 && !args.Item(0).IsNil() {
+			bv := args.Item(0)
+			if !bv.IsSymbol() {
+				return mrb.ETypeError().Raise("backend must be a Symbol")
+			}
+			name := mrb.SymName(bv.Symbol())
+			if name != "poll" {
+				return mrb.EArgumentError().Raisef("unsupported backend: %s", name)
+			}
+		}
 		wp, err := newWakePipe()
 		if err != nil {
 			return mrb.RaiseError(err)
@@ -203,9 +214,6 @@ func defineSelector(mrb *oruby.MrbState, mod oruby.RClass) {
 		s.mu.Lock()
 		if !s.closed {
 			s.closed = true
-			for _, m := range s.monitors {
-				m.closed = true
-			}
 			s.monitors = nil
 			if s.wp != nil {
 				s.wp.wake()
@@ -357,7 +365,12 @@ func defineSelector(mrb *oruby.MrbState, mod oruby.RClass) {
 		s.mu.Unlock()
 
 		ctx := mrb.GoContext()
-		ready, woken, err := pollEntries(ctx, mrb.SignalWake(), wp, entries, hasTimeout, timeout)
+		var ready int
+		var woken bool
+		var err error
+		mrb.Blocking(func() {
+			ready, woken, err = pollEntries(ctx, mrb.SignalWake(), wp, entries, hasTimeout, timeout)
+		})
 		if ctxErr := mrb.ContextErr(ctx); ctxErr != nil {
 			return mrb.RaiseError(ctxErr)
 		}
@@ -418,7 +431,14 @@ func defineMonitor(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	cls.DefineMethod("interests=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		mon := getMon(mrb, self)
+		if mon.closed {
+			return mrb.Raise(mrb.ExcGet("EOFError"), "monitor is closed")
+		}
 		v := mrb.GetArgsFirst()
+		if v.IsNil() {
+			mon.wantR, mon.wantW = false, false
+			return mrb.NilValue()
+		}
 		r, w, err := parseInterests(mrb, v)
 		if err != nil {
 			return mrb.EArgumentError().Raise(err.Error())
@@ -526,7 +546,22 @@ func defineByteBuffer(mrb *oruby.MrbState, mod oruby.RClass) {
 	mrb.DefineClassUnder(cls, "MarkUnsetError", stdErr)
 
 	cls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		capN := mrb.GetArgsFirst().Int()
+		capVal := mrb.GetArgsFirst()
+		if !capVal.IsInt() {
+			if mrb.RespondTo(capVal, mrb.Intern("to_int")) {
+				iv, err := mrb.Funcall(capVal, mrb.Intern("to_int"))
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+				if !iv.IsInt() {
+					return mrb.ETypeError().Raise("can't convert argument to Integer")
+				}
+				capVal = iv
+			} else {
+				return mrb.ETypeError().Raisef("no implicit conversion of %s into Integer", mrb.ClassOf(capVal).Name())
+			}
+		}
+		capN := capVal.Int()
 		if capN < 0 {
 			return mrb.EArgumentError().Raise("capacity must be non-negative")
 		}
@@ -644,11 +679,8 @@ func defineByteBuffer(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls.DefineMethod("[]", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		bb := getBB(mrb, self)
 		idx := mrb.GetArgsFirst().Int()
-		if idx < 0 {
-			idx = bb.lim + idx
-		}
 		if idx < 0 || idx >= bb.lim {
-			return mrb.EIndexError().Raisef("index %d out of range", idx)
+			return mrb.EArgumentError().Raisef("index %d out of range", idx)
 		}
 		return mrb.FixnumValue(int(bb.buf[idx]))
 	}, mrb.ArgsReq(1))
@@ -703,6 +735,6 @@ func defineByteBuffer(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	cls.DefineMethod("inspect", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		bb := getBB(mrb, self)
-		return mrb.StrNew(fmt.Sprintf("#<NIO::ByteBuffer @position=%d @limit=%d @capacity=%d>", bb.pos, bb.lim, len(bb.buf)))
+		return mrb.StrNew(fmt.Sprintf("#<NIO::ByteBuffer:%p @position=%d @limit=%d @capacity=%d>", bb, bb.pos, bb.lim, len(bb.buf)))
 	}, mrb.ArgsNone())
 }

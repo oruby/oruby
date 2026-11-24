@@ -571,6 +571,9 @@ func initOpenSSLKDFX509PKey(mrb *oruby.MrbState, mod, osslErr, kdfMod, kdfErr, p
 	}, mrb.ArgsNone())
 	pkeyBase.DefineAlias("to_s", "to_pem")
 	pkeyBase.DefineAlias("export", "to_pem")
+	pkeyBase.DefineMethod("to_text", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		return mrb.StrNew(fmt.Sprintf("%s\n", mrb.ClassOf(self).Name()))
+	}, mrb.ArgsNone())
 
 	// -------------------------------------------------------------------------
 	// OpenSSL::X509::Request (CSR)
@@ -705,6 +708,13 @@ func initOpenSSLKDFX509PKey(mrb *oruby.MrbState, mod, osslErr, kdfMod, kdfErr, p
 		return mrb.StrNew(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: r.rawDER})))
 	}, mrb.ArgsNone())
 	reqCls.DefineAlias("to_s", "to_pem")
+	reqCls.DefineMethod("to_text", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		r, _ := rb.Get[*x509ReqData](mrb, self)
+		if r == nil || r.parsed == nil {
+			return mrb.StrNew("Certificate Request:\n")
+		}
+		return mrb.StrNew(fmt.Sprintf("Certificate Request:\n    Data:\n        Version: %d\n        Subject: %s\n", r.parsed.Version, r.parsed.Subject.String()))
+	}, mrb.ArgsNone())
 
 	reqCls.DefineMethod("signature_algorithm", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		r, _ := rb.Get[*x509ReqData](mrb, self)

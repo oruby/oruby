@@ -1,6 +1,14 @@
 module FFI
   VERSION = "1.17.4"
 
+  def self.make_shareable(obj)
+    if defined?(Ractor) && Ractor.respond_to?(:make_shareable)
+      Ractor.make_shareable(obj)
+    else
+      obj.freeze
+    end
+  end
+
   class NotFoundError < LoadError
     def initialize(function, *libraries)
       super("Function '#{function}' not found in [#{libraries.compact.join(', ')}]")
@@ -8,6 +16,64 @@ module FFI
   end
 
   class NullPointerError < RuntimeError; end
+
+  module DataConverter
+    def native_type(type = nil)
+      if type
+        @native_type = FFI.find_type(type)
+      elsif @native_type
+        @native_type
+      else
+        raise NotImplementedError, "native_type method not overridden and no native_type set"
+      end
+    end
+
+    def to_native(value, ctx = nil)
+      value
+    end
+
+    def from_native(value, ctx = nil)
+      value
+    end
+
+    def size
+      native_type.size
+    end
+
+    def alignment
+      native_type.alignment
+    end
+  end
+
+  class LibraryPath
+    attr_reader :name, :abi_number, :root
+
+    def initialize(name, abi_number: nil, root: nil)
+      @name = name
+      @abi_number = abi_number
+      @root = root
+    end
+
+    def full_name
+      base = FFI.map_library_name(@name)
+      if @abi_number
+        if Platform.mac?
+          base = base.sub(/\.dylib\z/, ".#{@abi_number}.dylib")
+        elsif Platform.windows?
+          base = base.sub(/\.dll\z/i, "-#{@abi_number}.dll")
+        else
+          base = "#{base}.#{@abi_number}"
+        end
+      end
+      @root ? File.join(@root.to_s, base) : base
+    end
+    alias to_s full_name
+
+    def self.wrap(value)
+      return value if value.is_a?(self)
+      new(value)
+    end
+  end
 
   module Platform
     def self.mac?
@@ -28,6 +94,27 @@ module FFI
 
     def self.unix?
       !IS_WINDOWS
+    end
+
+    def self.arch_for_cpu(cpu)
+      case cpu.to_s.downcase
+      when /\Ai[3456]86\z/, "i86pc"
+        "i386"
+      when "amd64", "x86_64", "x64"
+        "x86_64"
+      when "ppc64le", "powerpc64le"
+        "powerpc64le"
+      when "ppc64", "powerpc64"
+        "powerpc64"
+      when "ppc", "powerpc"
+        "powerpc"
+      when "sparc64", "sparcv9"
+        "sparcv9"
+      when "arm64", "aarch64"
+        "aarch64"
+      else
+        cpu.to_s.downcase
+      end
     end
   end
 
@@ -65,6 +152,7 @@ module FFI
     float32: Type::FLOAT32,
     double: Type::FLOAT64,
     float64: Type::FLOAT64,
+    long_double: Type::LONGDOUBLE,
     pointer: Type::POINTER,
     buffer_in: Type::POINTER,
     buffer_out: Type::POINTER,
@@ -86,11 +174,30 @@ module FFI
     TypeDefs[add.to_sym] = find_type(old)
   end
 
+  class AutoPointerConverter
+    include DataConverter
+    def initialize(cls)
+      @cls = cls
+    end
+    def native_type
+      Type::POINTER
+    end
+    def to_native(val, _ctx = nil)
+      return Pointer::NULL if val.nil?
+      val
+    end
+    def from_native(val, _ctx = nil)
+      @cls.new(val)
+    end
+  end
+
   def self.find_type(name, type_map = nil)
     return name if name.is_a?(Type)
     return name if name.is_a?(Enum)
     return name if name.is_a?(StructByReference)
+    return name if name.is_a?(DataConverter)
     return name.by_ref if name.is_a?(Class) && name < Struct
+    return AutoPointerConverter.new(name) if name.is_a?(Class) && name <= AutoPointer
 
     if type_map && type_map.key?(name)
       return type_map[name]
@@ -236,6 +343,34 @@ module FFI
       end
     end
 
+    def [](idx)
+      self + (idx * type_size)
+    end
+
+    def get_array_of_string(offset, count = nil)
+      psz = Platform::ADDRESS_SIZE / 8
+      res = []
+      if count
+        count.times do |i|
+          p = get_pointer(offset + i * psz)
+          res << (p.null? ? nil : p.read_string)
+        end
+      else
+        i = 0
+        loop do
+          p = get_pointer(offset + i * psz)
+          break if p.null?
+          res << p.read_string
+          i += 1
+        end
+      end
+      res
+    end
+
+    def read_array_of_string(count = nil)
+      get_array_of_string(0, count)
+    end
+
     def to_ptr
       self
     end
@@ -288,6 +423,26 @@ module FFI
   end
 
   class Buffer < MemoryPointer
+    class << self
+      def alloc_in(size, count = 1, clear = true, &block)
+        new(size, count, clear, &block)
+      end
+      alias new_in alloc_in
+
+      def alloc_out(size, count = 1, clear = true, &block)
+        new(size, count, clear, &block)
+      end
+      alias new_out alloc_out
+
+      def alloc_inout(size, count = 1, clear = true, &block)
+        new(size, count, clear, &block)
+      end
+      alias new_inout alloc_inout
+    end
+
+    def length
+      size / type_size
+    end
   end
 
   class AutoPointer < Pointer
@@ -645,6 +800,7 @@ module FFI
           end
 
           falign = 1 if falign <= 0
+          falign = @pack if @pack && falign > @pack
           max_align = falign if falign > max_align
 
           field_off =
@@ -688,10 +844,18 @@ module FFI
         @layout.offset_of(name)
       end
 
+      def packed(align = 1)
+        @pack = align
+      end
+      alias pack packed
+
       def by_ref
         StructByReference.new(self)
       end
       alias ptr by_ref
+      alias in by_ref
+      alias out by_ref
+      alias inout by_ref
 
       def by_value
         @by_value ||= StructByValue.__build(self, @layout.ffi_field_types, size, alignment)
@@ -757,6 +921,11 @@ module FFI
 
     def initialize(pointer = nil)
       @pointer = pointer ? pointer : MemoryPointer.new(1, self.class.size, true)
+    end
+
+    def initialize_copy(orig)
+      @pointer = orig.pointer.dup
+      self
     end
 
     def pointer
@@ -873,6 +1042,13 @@ module FFI
       end
       conv = options.is_a?(Hash) && options[:convention] ? options[:convention].to_s : nil
       __create(r_native, a_natives, target, conv)
+    end
+
+    def attach(mod, name)
+      fn = self
+      mod.define_singleton_method(name) { |*args| fn.call(*args) }
+      mod.send(:define_method, name) { |*args| fn.call(*args) }
+      self
     end
   end
 
@@ -991,15 +1167,29 @@ module FFI
     def enum(*args)
       @ffi_typedefs ||= {}
       @ffi_enums ||= {}
+      @ffi_enum_list ||= []
       native_type = Type::INT32
       tag = nil
-      if args.first.is_a?(Symbol) && args[1].is_a?(Array)
-        tag = args.shift
-      elsif args.first.is_a?(Type) || (args.first.is_a?(Symbol) && FFI::TypeDefs.key?(args.first) && args[1].is_a?(Array))
-        native_type = find_type(args.shift)
+      if args.length == 3
+        if args[0].is_a?(Type) || (args[0].is_a?(Symbol) && (FFI::TypeDefs.key?(args[0]) || @ffi_typedefs.key?(args[0])))
+          native_type = find_type(args.shift)
+          tag = args.shift
+        else
+          tag = args.shift
+          native_type = find_type(args.shift)
+        end
+      elsif args.length == 2 && args[1].is_a?(Array)
+        if args[0].is_a?(Type)
+          native_type = args.shift
+        elsif args[0].is_a?(Symbol) && (FFI::TypeDefs.key?(args[0]) || @ffi_typedefs.key?(args[0]))
+          native_type = find_type(args.shift)
+        else
+          tag = args.shift
+        end
       end
       values = args.first.is_a?(Array) ? args.first : args
       e = Enum.new(values, tag, native_type)
+      @ffi_enum_list << e
       @ffi_typedefs[tag] = e if tag
       @ffi_enums[tag] = e if tag
       e
@@ -1007,11 +1197,46 @@ module FFI
 
     def bitmask(*args)
       @ffi_typedefs ||= {}
-      tag = args.first.is_a?(Symbol) && args[1].is_a?(Array) ? args.shift : nil
+      @ffi_enums ||= {}
+      @ffi_enum_list ||= []
+      native_type = Type::INT32
+      tag = nil
+      if args.length == 3
+        if args[0].is_a?(Type) || (args[0].is_a?(Symbol) && (FFI::TypeDefs.key?(args[0]) || @ffi_typedefs.key?(args[0])))
+          native_type = find_type(args.shift)
+          tag = args.shift
+        else
+          tag = args.shift
+          native_type = find_type(args.shift)
+        end
+      elsif args.length == 2 && args[1].is_a?(Array)
+        if args[0].is_a?(Type)
+          native_type = args.shift
+        elsif args[0].is_a?(Symbol) && (FFI::TypeDefs.key?(args[0]) || @ffi_typedefs.key?(args[0]))
+          native_type = find_type(args.shift)
+        else
+          tag = args.shift
+        end
+      end
       values = args.first.is_a?(Array) ? args.first : args
-      b = Bitmask.new(values, tag)
+      b = Bitmask.new(values, tag, native_type)
+      @ffi_enum_list << b
       @ffi_typedefs[tag] = b if tag
+      @ffi_enums[tag] = b if tag
       b
+    end
+
+    def enum_type(name)
+      @ffi_enums && @ffi_enums[name]
+    end
+
+    def enum_value(symbol)
+      return nil unless @ffi_enum_list
+      @ffi_enum_list.each do |e|
+        v = e[symbol]
+        return v unless v.nil?
+      end
+      nil
     end
 
     def callback(*args)

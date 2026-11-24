@@ -1049,6 +1049,17 @@ func initOpenSSLGo(mrb *oruby.MrbState, mod oruby.RClass) {
 		return mrb.StrNew(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.rawDER})))
 	}, mrb.ArgsNone())
 
+	certCls.DefineMethod("to_text", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, ok := rb.Get[*x509Cert](mrb, self)
+		if !ok || c.parsed == nil {
+			return mrb.StrNew("Certificate:\n")
+		}
+		return mrb.StrNew(fmt.Sprintf(
+			"Certificate:\n    Data:\n        Version: %d\n        Serial Number: %s\n        Issuer: %s\n        Subject: %s\n",
+			c.parsed.Version, c.parsed.SerialNumber.String(), c.parsed.Issuer.String(), c.parsed.Subject.String(),
+		))
+	}, mrb.ArgsNone())
+
 	// OpenSSL::X509::Store
 	storeCls := rb.DataClass(mrb.DefineClassUnder(x509Mod, "Store", mrb.ObjectClass()))
 	storeCls.DefineMethod("initialize", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

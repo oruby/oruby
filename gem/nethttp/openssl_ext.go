@@ -341,7 +341,7 @@ func (s *osslSSLSocket) ensureRawConn(mrb *oruby.MrbState) error {
 	return nil
 }
 
-func rubyTLSVersionToGo(v oruby.Value) uint16 {
+func rubyTLSVersionToGo(mrb *oruby.MrbState, v oruby.Value) uint16 {
 	if v.IsNil() {
 		return 0
 	}
@@ -357,15 +357,24 @@ func rubyTLSVersionToGo(v oruby.Value) uint16 {
 			return tls.VersionTLS13
 		}
 	}
-	s := strings.ToUpper(strings.ReplaceAll(v.String(), "_", ""))
+	var raw string
+	switch {
+	case v.IsSymbol():
+		raw = mrb.SymName(v.Symbol())
+	case v.IsString():
+		raw = v.String()
+	default:
+		return 0
+	}
+	s := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(raw, "_", ""), ".", ""))
 	switch s {
-	case "TLS1", "TLS10":
+	case "TLS1", "TLS10", "TLSV1", "TLSV10":
 		return tls.VersionTLS10
-	case "TLS11":
+	case "TLS11", "TLSV11":
 		return tls.VersionTLS11
-	case "TLS12":
+	case "TLS12", "TLSV12":
 		return tls.VersionTLS12
-	case "TLS13":
+	case "TLS13", "TLSV13":
 		return tls.VersionTLS13
 	}
 	return 0
@@ -827,6 +836,17 @@ func initOpenSSLPKeyExt(mrb *oruby.MrbState, pkeyMod, pkeyErr, pkeyBase, rsaCls 
 	}, mrb.ArgsNone())
 	rsaCls.DefineAlias("to_s", "to_pem")
 	rsaCls.DefineAlias("export", "to_pem")
+	rsaCls.DefineMethod("to_text", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		k, ok := rb.Get[*rsaKey](mrb, self)
+		if !ok || k.pub == nil {
+			return mrb.Raise(pkeyErr, "RSA key not initialized")
+		}
+		bits := k.pub.N.BitLen()
+		if k.priv != nil {
+			return mrb.StrNew(fmt.Sprintf("RSA Private-Key: (%d bit, 2 primes)\nmodulus: %x\npublicExponent: %d\n", bits, k.pub.N, k.pub.E))
+		}
+		return mrb.StrNew(fmt.Sprintf("RSA Public-Key: (%d bit)\nModulus: %x\nExponent: %d\n", bits, k.pub.N, k.pub.E))
+	}, mrb.ArgsNone())
 
 	// -- OpenSSL::PKey::EC, EC::Group, EC::Point -------------------------------
 	ecCls := rb.DataClass(mrb.DefineClassUnder(pkeyMod, "EC", pkeyBase))
@@ -1517,13 +1537,13 @@ func initOpenSSLSSL(mrb *oruby.MrbState, mod, osslErr, certCls oruby.RClass) {
 
 	ctxCls.DefineMethod("min_version=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
-		getCtx(mrb, self).minVersion = rubyTLSVersionToGo(v)
+		getCtx(mrb, self).minVersion = rubyTLSVersionToGo(mrb, v)
 		return v
 	}, mrb.ArgsReq(1))
 
 	ctxCls.DefineMethod("max_version=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
-		getCtx(mrb, self).maxVersion = rubyTLSVersionToGo(v)
+		getCtx(mrb, self).maxVersion = rubyTLSVersionToGo(mrb, v)
 		return v
 	}, mrb.ArgsReq(1))
 
@@ -1734,13 +1754,31 @@ func initOpenSSLSSL(mrb *oruby.MrbState, mod, osslErr, certCls oruby.RClass) {
 		if s.closed || s.tlsConn == nil {
 			return mrb.Raise(mrb.ClassGet("IOError"), "closed stream")
 		}
+		raiseOnWait := true
+		if kw := mrb.KeywordArgs().Value(); !kw.IsNil() && kw.IsHash() {
+			if ev, err := mrb.Funcall(kw, mrb.Intern("[]"), mrb.Intern("exception").Value()); err == nil && !ev.IsNil() {
+				raiseOnWait = ev.Bool()
+			}
+		}
 		data := mrb.String(mrb.GetArgs().Item(0))
 		var n int
 		var err error
+		_ = s.tlsConn.SetWriteDeadline(time.Now().Add(time.Millisecond))
 		mrb.Blocking(func() {
 			n, err = s.tlsConn.Write([]byte(data))
 		})
+		_ = s.tlsConn.SetWriteDeadline(time.Time{})
+		if n > 0 {
+			return mrb.FixnumValue(n)
+		}
 		if err != nil {
+			var ne net.Error
+			if (errors.As(err, &ne) && ne.Timeout()) || errors.Is(err, os.ErrDeadlineExceeded) {
+				if !raiseOnWait {
+					return mrb.Intern("wait_writable").Value()
+				}
+				return mrb.Raise(rb.ClassPath(mrb, "OpenSSL::SSL::SSLErrorWaitWritable"), "write would block")
+			}
 			return mrb.Raise(sslErrCls, err.Error())
 		}
 		return mrb.FixnumValue(n)
