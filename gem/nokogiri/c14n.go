@@ -337,9 +337,17 @@ func cssComplexToXPath(sel, prefix string) (string, error) {
 				b.WriteByte('/')
 			}
 		case '+':
-			b.WriteString("/following-sibling::*[1]/self::")
+			if i == 0 {
+				b.WriteString("./following-sibling::*[1]/self::")
+			} else {
+				b.WriteString("/following-sibling::*[1]/self::")
+			}
 		case '~':
-			b.WriteString("/following-sibling::")
+			if i == 0 {
+				b.WriteString("./following-sibling::")
+			} else {
+				b.WriteString("/following-sibling::")
+			}
 		}
 		b.WriteString(tag)
 		for _, p := range preds {
@@ -372,6 +380,20 @@ func tokenizeCSSSteps(sel string) ([]cssStep, error) {
 			if i >= n {
 				return nil, fmt.Errorf("dangling combinator %q in %q", comb, sel)
 			}
+		} else if sel[i] == '/' {
+			if i+1 < n && sel[i+1] == '/' {
+				comb = ' '
+				i += 2
+			} else {
+				comb = '>'
+				i++
+			}
+			for i < n && (sel[i] == ' ' || sel[i] == '\t' || sel[i] == '\n' || sel[i] == '\r') {
+				i++
+			}
+			if i >= n {
+				return nil, fmt.Errorf("dangling combinator '/' in %q", sel)
+			}
 		}
 		start := i
 		depthP, depthB := 0, 0
@@ -389,6 +411,10 @@ func tokenizeCSSSteps(sel string) ([]cssStep, error) {
 				i++
 				continue
 			}
+			if c == '\\' && i+1 < n {
+				i += 2
+				continue
+			}
 			if c == '\'' || c == '"' {
 				quote = c
 				i++
@@ -402,7 +428,7 @@ func tokenizeCSSSteps(sel string) ([]cssStep, error) {
 				depthB++
 			} else if c == ']' {
 				depthB--
-			} else if depthP == 0 && depthB == 0 && (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '>' || c == '+' || c == '~') {
+			} else if depthP == 0 && depthB == 0 && (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '>' || c == '+' || c == '~' || c == '/') {
 				break
 			}
 			i++
@@ -419,47 +445,140 @@ func tokenizeCSSSteps(sel string) ([]cssStep, error) {
 	return steps, nil
 }
 
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func scanCSSIdent(s string, i int, allowPipe bool) (string, int) {
+	var sb strings.Builder
+	n := len(s)
+	for i < n {
+		c := s[i]
+		if c == '\\' && i+1 < n {
+			i++
+			if isHexDigit(s[i]) {
+				hexStart := i
+				for i < n && i-hexStart < 6 && isHexDigit(s[i]) {
+					i++
+				}
+				if cp, err := strconv.ParseInt(s[hexStart:i], 16, 32); err == nil && cp > 0 {
+					sb.WriteRune(rune(cp))
+				}
+				// CSS allows a single optional trailing space after hex escape
+				if i < n && (s[i] == ' ' || s[i] == '\t') {
+					i++
+				}
+			} else {
+				sb.WriteByte(s[i])
+				i++
+			}
+		} else if isCSSIdentChar(c) || (allowPipe && c == '|') {
+			sb.WriteByte(c)
+			i++
+		} else {
+			break
+		}
+	}
+	return sb.String(), i
+}
+
+func unescapeCSSString(s string) string {
+	var sb strings.Builder
+	n := len(s)
+	for i := 0; i < n; {
+		if s[i] == '\\' && i+1 < n {
+			i++
+			if isHexDigit(s[i]) {
+				hexStart := i
+				for i < n && i-hexStart < 6 && isHexDigit(s[i]) {
+					i++
+				}
+				if cp, err := strconv.ParseInt(s[hexStart:i], 16, 32); err == nil && cp > 0 {
+					sb.WriteRune(rune(cp))
+				}
+				if i < n && (s[i] == ' ' || s[i] == '\t') {
+					i++
+				}
+			} else {
+				sb.WriteByte(s[i])
+				i++
+			}
+		} else {
+			sb.WriteByte(s[i])
+			i++
+		}
+	}
+	return sb.String()
+}
+
 func parseCSSCompound(comp string) (string, []string, error) {
 	tag := "*"
 	var preds []string
 	i := 0
 	n := len(comp)
 
-	// Optional leading tag name or *
-	if i < n && (comp[i] == '*' || isCSSIdentStart(comp[i])) {
-		start := i
+	// XPath-in-CSS node tests: text(), comment(), node(), @attr
+	if comp == "text()" || comp == "comment()" || comp == "node()" {
+		return comp, nil, nil
+	}
+	if i < n && comp[i] == '@' {
+		attr, nextI := scanCSSIdent(comp, i+1, true)
+		if attr == "" {
+			return "", nil, fmt.Errorf("empty attribute step in %q", comp)
+		}
+		tag = "@" + strings.ReplaceAll(attr, "|", ":")
+		i = nextI
+	} else if i < n && (comp[i] == '*' || isCSSIdentStart(comp[i]) || comp[i] == '\\') {
 		if comp[i] == '*' {
 			i++
-		} else {
-			for i < n && (isCSSIdentChar(comp[i]) || comp[i] == '|') {
+			if i < n && comp[i] == '|' {
 				i++
+				if i < n && comp[i] == '*' {
+					i++
+					tag = "*"
+				} else {
+					local, nextI := scanCSSIdent(comp, i, false)
+					i = nextI
+					tag = "*"
+					if local != "" {
+						preds = append(preds, fmt.Sprintf("local-name() = %s", xpathLiteral(local)))
+					}
+				}
+			}
+		} else {
+			ident, nextI := scanCSSIdent(comp, i, true)
+			i = nextI
+			if i < n && comp[i] == '(' && (ident == "text" || ident == "comment" || ident == "node") {
+				end := findMatching(comp, i, '(', ')')
+				if end >= 0 {
+					tag = ident + comp[i:end+1]
+					i = end + 1
+				}
+			} else {
+				tag = strings.ReplaceAll(ident, "|", ":")
 			}
 		}
-		tag = strings.ReplaceAll(comp[start:i], "|", ":")
 	}
 
+	var posPreds []string
 	for i < n {
 		switch comp[i] {
 		case '#':
 			i++
-			start := i
-			for i < n && isCSSIdentChar(comp[i]) {
-				i++
-			}
-			if i == start {
+			idVal, nextI := scanCSSIdent(comp, i, false)
+			if nextI == i || idVal == "" {
 				return "", nil, fmt.Errorf("empty id selector in %q", comp)
 			}
-			preds = append(preds, fmt.Sprintf("@id = %s", xpathLiteral(comp[start:i])))
+			i = nextI
+			preds = append(preds, fmt.Sprintf("@id = %s", xpathLiteral(idVal)))
 		case '.':
 			i++
-			start := i
-			for i < n && isCSSIdentChar(comp[i]) {
-				i++
-			}
-			if i == start {
+			clsVal, nextI := scanCSSIdent(comp, i, false)
+			if nextI == i || clsVal == "" {
 				return "", nil, fmt.Errorf("empty class selector in %q", comp)
 			}
-			preds = append(preds, fmt.Sprintf("contains(concat(' ', normalize-space(@class), ' '), %s)", xpathLiteral(" "+comp[start:i]+" ")))
+			i = nextI
+			preds = append(preds, fmt.Sprintf("contains(concat(' ', translate(string(@class), '\t\n\r', '   '), ' '), %s)", xpathLiteral(" "+clsVal+" ")))
 		case '[':
 			end := findMatching(comp, i, '[', ']')
 			if end < 0 {
@@ -492,17 +611,22 @@ func parseCSSCompound(comp string) (string, []string, error) {
 				hasArg = true
 				i = end + 1
 			}
-			p, err := cssPseudoToXPath(pseudo, arg, hasArg)
+			p, isPos, err := cssPseudoToXPath(pseudo, arg, hasArg, tag, preds)
 			if err != nil {
 				return "", nil, err
 			}
 			if p != "" {
-				preds = append(preds, p)
+				if isPos {
+					posPreds = append(posPreds, p)
+				} else {
+					preds = append(preds, p)
+				}
 			}
 		default:
 			return "", nil, fmt.Errorf("unexpected %q in CSS selector %q", comp[i], comp)
 		}
 	}
+	preds = append(preds, posPreds...)
 	return tag, preds, nil
 }
 
@@ -512,10 +636,19 @@ func parseCSSAttrPred(body string) (string, error) {
 		return "", fmt.Errorf("empty attribute selector")
 	}
 	i := 0
-	for i < len(body) && (isCSSIdentChar(body[i]) || body[i] == ':' || body[i] == '|') {
+	if body[i] == '@' {
 		i++
 	}
-	attr := strings.ReplaceAll(body[:i], "|", ":")
+	attrRaw, nextI := scanCSSIdent(body, i, true)
+	i = nextI
+	// Allow colon inside attribute names like xml:lang
+	for i < len(body) && body[i] == ':' {
+		i++
+		part, ni := scanCSSIdent(body, i, false)
+		attrRaw += ":" + part
+		i = ni
+	}
+	attr := strings.ReplaceAll(attrRaw, "|", ":")
 	rest := strings.TrimSpace(body[i:])
 	if rest == "" {
 		return "@" + attr, nil
@@ -538,7 +671,7 @@ func parseCSSAttrPred(body string) (string, error) {
 	case "!=":
 		return fmt.Sprintf("@%s != %s", attr, lit), nil
 	case "~=":
-		return fmt.Sprintf("contains(concat(' ', normalize-space(@%s), ' '), %s)", attr, xpathLiteral(" "+val+" ")), nil
+		return fmt.Sprintf("contains(concat(' ', translate(string(@%s), '\t\n\r', '   '), ' '), %s)", attr, xpathLiteral(" "+val+" ")), nil
 	case "|=":
 		return fmt.Sprintf("@%s = %s or starts-with(@%s, %s)", attr, lit, attr, xpathLiteral(val+"-")), nil
 	case "^=":
@@ -552,73 +685,210 @@ func parseCSSAttrPred(body string) (string, error) {
 	}
 }
 
-func cssPseudoToXPath(pseudo, arg string, hasArg bool) (string, error) {
+func parseAnPlusB(expr string) (a, b int, ok bool) {
+	s := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(expr), " ", ""))
+	if s == "" {
+		return 0, 0, false
+	}
+	switch s {
+	case "odd":
+		return 2, 1, true
+	case "even":
+		return 2, 0, true
+	}
+	nIdx := strings.IndexByte(s, 'n')
+	if nIdx < 0 {
+		v, err := strconv.Atoi(s)
+		if err != nil {
+			return 0, 0, false
+		}
+		return 0, v, true
+	}
+	aStr := s[:nIdx]
+	switch aStr {
+	case "", "+":
+		a = 1
+	case "-":
+		a = -1
+	default:
+		v, err := strconv.Atoi(aStr)
+		if err != nil {
+			return 0, 0, false
+		}
+		a = v
+	}
+	bStr := s[nIdx+1:]
+	if bStr == "" {
+		return a, 0, true
+	}
+	v, err := strconv.Atoi(bStr)
+	if err != nil {
+		return 0, 0, false
+	}
+	return a, v, true
+}
+
+func anPlusBXPath(posExpr string, a, b int) string {
+	if a == 0 {
+		if b <= 0 {
+			return "false()"
+		}
+		return fmt.Sprintf("%s = %d", posExpr, b)
+	}
+	if a > 0 {
+		if b <= 0 {
+			// Shift b to smallest positive integer >= 1 with same residue mod a
+			rem := ((b % a) + a) % a
+			if rem == 0 {
+				rem = a
+			}
+			b = rem
+		}
+		if a == 1 {
+			if b <= 1 {
+				return "true()"
+			}
+			return fmt.Sprintf("%s >= %d", posExpr, b)
+		}
+		return fmt.Sprintf("(%s >= %d and ((%s - %d) mod %d) = 0)", posExpr, b, posExpr, b, a)
+	}
+	// a < 0
+	if b <= 0 {
+		return "false()"
+	}
+	step := -a
+	if step == 1 {
+		return fmt.Sprintf("%s <= %d", posExpr, b)
+	}
+	return fmt.Sprintf("(%s <= %d and ((%d - %s) mod %d) = 0)", posExpr, b, b, posExpr, step)
+}
+
+func siblingOfTypeTest(axis, tag string, preds []string) string {
+	var b strings.Builder
+	b.WriteString(axis)
+	b.WriteString("::")
+	b.WriteString(tag)
+	for _, p := range preds {
+		b.WriteByte('[')
+		b.WriteString(p)
+		b.WriteByte(']')
+	}
+	return b.String()
+}
+
+func cssPseudoToXPath(pseudo, arg string, hasArg bool, tag string, priorPreds []string) (string, bool, error) {
 	switch pseudo {
 	case "first-child":
-		return "count(preceding-sibling::*) = 0", nil
+		return "count(preceding-sibling::*) = 0", false, nil
 	case "last-child":
-		return "count(following-sibling::*) = 0", nil
+		return "count(following-sibling::*) = 0", false, nil
 	case "only-child":
-		return "count(preceding-sibling::*) = 0 and count(following-sibling::*) = 0", nil
+		return "count(preceding-sibling::*) = 0 and count(following-sibling::*) = 0", false, nil
+	case "first-of-type":
+		return fmt.Sprintf("count(%s) = 0", siblingOfTypeTest("preceding-sibling", tag, priorPreds)), false, nil
+	case "last-of-type":
+		return fmt.Sprintf("count(%s) = 0", siblingOfTypeTest("following-sibling", tag, priorPreds)), false, nil
+	case "only-of-type":
+		return fmt.Sprintf("count(%s) = 0 and count(%s) = 0", siblingOfTypeTest("preceding-sibling", tag, priorPreds), siblingOfTypeTest("following-sibling", tag, priorPreds)), false, nil
 	case "empty":
-		return "not(node())", nil
+		return "not(node())", false, nil
 	case "parent":
-		return "node()", nil
+		return "node()", false, nil
 	case "contains":
-		return fmt.Sprintf("contains(., %s)", xpathLiteral(unquoteCSS(arg))), nil
+		return fmt.Sprintf("contains(., %s)", xpathLiteral(unquoteCSS(arg))), false, nil
 	case "checked":
-		return "@checked", nil
+		return "@checked", false, nil
 	case "disabled":
-		return "@disabled", nil
+		return "@disabled", false, nil
 	case "enabled":
-		return "not(@disabled)", nil
+		return "not(@disabled)", false, nil
 	case "selected":
-		return "@selected", nil
+		return "@selected", false, nil
 	case "first":
-		return "position() = 1", nil
+		return "position() = 1", true, nil
 	case "last":
-		return "position() = last()", nil
+		return "position() = last()", true, nil
 	case "even":
-		return "(position() mod 2) = 1", nil
+		return "(position() mod 2) = 0", true, nil
 	case "odd":
-		return "(position() mod 2) = 0", nil
+		return "(position() mod 2) = 1", true, nil
 	case "eq":
 		n, err := strconv.Atoi(strings.TrimSpace(arg))
 		if err != nil {
-			return "", fmt.Errorf("invalid :eq(%s)", arg)
+			return "", false, fmt.Errorf("invalid :eq(%s)", arg)
 		}
-		return fmt.Sprintf("position() = %d", n+1), nil
+		return fmt.Sprintf("position() = %d", n+1), true, nil
 	case "gt":
 		n, err := strconv.Atoi(strings.TrimSpace(arg))
 		if err != nil {
-			return "", fmt.Errorf("invalid :gt(%s)", arg)
+			return "", false, fmt.Errorf("invalid :gt(%s)", arg)
 		}
-		return fmt.Sprintf("position() > %d", n+1), nil
+		return fmt.Sprintf("position() > %d", n+1), true, nil
 	case "lt":
 		n, err := strconv.Atoi(strings.TrimSpace(arg))
 		if err != nil {
-			return "", fmt.Errorf("invalid :lt(%s)", arg)
+			return "", false, fmt.Errorf("invalid :lt(%s)", arg)
 		}
-		return fmt.Sprintf("position() < %d", n+1), nil
+		return fmt.Sprintf("position() < %d", n+1), true, nil
+	case "nth":
+		a, b, ok := parseAnPlusB(arg)
+		if !ok {
+			return "", false, fmt.Errorf("invalid :nth(%s)", arg)
+		}
+		return anPlusBXPath("position()", a, b), true, nil
+	case "nth-of-type":
+		a, b, ok := parseAnPlusB(arg)
+		if !ok {
+			return "", false, fmt.Errorf("invalid :nth-of-type(%s)", arg)
+		}
+		posExpr := fmt.Sprintf("(count(%s) + 1)", siblingOfTypeTest("preceding-sibling", tag, priorPreds))
+		return anPlusBXPath(posExpr, a, b), false, nil
+	case "nth-last-of-type":
+		a, b, ok := parseAnPlusB(arg)
+		if !ok {
+			return "", false, fmt.Errorf("invalid :nth-last-of-type(%s)", arg)
+		}
+		posExpr := fmt.Sprintf("(count(%s) + 1)", siblingOfTypeTest("following-sibling", tag, priorPreds))
+		return anPlusBXPath(posExpr, a, b), false, nil
 	case "nth-child":
-		a := strings.ToLower(strings.TrimSpace(arg))
-		if a == "odd" {
-			return "((count(preceding-sibling::*) + 1) mod 2) = 1", nil
+		a, b, ok := parseAnPlusB(arg)
+		if !ok {
+			return "", false, fmt.Errorf("invalid :nth-child(%s)", arg)
 		}
-		if a == "even" {
-			return "((count(preceding-sibling::*) + 1) mod 2) = 0", nil
+		return anPlusBXPath("(count(preceding-sibling::*) + 1)", a, b), false, nil
+	case "nth-last-child":
+		a, b, ok := parseAnPlusB(arg)
+		if !ok {
+			return "", false, fmt.Errorf("invalid :nth-last-child(%s)", arg)
 		}
-		if n, err := strconv.Atoi(a); err == nil {
-			return fmt.Sprintf("count(preceding-sibling::*) = %d", n-1), nil
+		return anPlusBXPath("(count(following-sibling::*) + 1)", a, b), false, nil
+	case "has":
+		if !hasArg || strings.TrimSpace(arg) == "" {
+			return "", false, fmt.Errorf(":has requires an argument")
 		}
-		return "", nil
+		sub := strings.TrimSpace(arg)
+		subGroups := splitTopLevel(sub, ',')
+		var xpParts []string
+		for _, sg := range subGroups {
+			sg = strings.TrimSpace(sg)
+			prefix := ".//"
+			if strings.HasPrefix(sg, ">") || strings.HasPrefix(sg, "+") || strings.HasPrefix(sg, "~") {
+				prefix = ""
+			}
+			xp, err := cssComplexToXPath(sg, prefix)
+			if err != nil {
+				return "", false, err
+			}
+			xpParts = append(xpParts, xp)
+		}
+		return strings.Join(xpParts, " | "), false, nil
 	case "not":
 		if !hasArg {
-			return "", fmt.Errorf(":not requires an argument")
+			return "", false, fmt.Errorf(":not requires an argument")
 		}
 		tag, preds, err := parseCSSCompound(arg)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		var parts []string
 		if tag != "*" {
@@ -626,11 +896,18 @@ func cssPseudoToXPath(pseudo, arg string, hasArg bool) (string, error) {
 		}
 		parts = append(parts, preds...)
 		if len(parts) == 0 {
-			return "false()", nil
+			return "false()", false, nil
 		}
-		return "not(" + strings.Join(parts, " and ") + ")", nil
+		return "not(" + strings.Join(parts, " and ") + ")", false, nil
 	default:
-		return "", nil
+		// Nokogiri custom CSS pseudo-class handler -> nokogiri:pseudo(., args...)
+		if hasArg {
+			if arg == "" {
+				return fmt.Sprintf("nokogiri:%s(.)", pseudo), false, nil
+			}
+			return fmt.Sprintf("nokogiri:%s(., %s)", pseudo, arg), false, nil
+		}
+		return fmt.Sprintf("nokogiri:%s(.)", pseudo), false, nil
 	}
 }
 
@@ -674,9 +951,9 @@ func isCSSIdentChar(c byte) bool {
 func unquoteCSS(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
-		return s[1 : len(s)-1]
+		return unescapeCSSString(s[1 : len(s)-1])
 	}
-	return s
+	return unescapeCSSString(s)
 }
 
 func xpathLiteral(s string) string {
@@ -693,7 +970,7 @@ func xpathLiteral(s string) string {
 			out = append(out, "'"+p+"'")
 		}
 		if i < len(parts)-1 {
-			out = append(out, `'"'`)
+			out = append(out, `"'"`)
 		}
 	}
 	return "concat(" + strings.Join(out, ", ") + ")"

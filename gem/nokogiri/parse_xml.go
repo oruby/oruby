@@ -16,6 +16,7 @@ type xmlParser struct {
 	pos      int
 	line     int
 	doc      *domNode
+	ctxNode  *domNode
 	strict   bool
 	noblanks bool
 	nocdata  bool
@@ -46,6 +47,10 @@ func parseXMLDocument(src, url, encoding string, strict, noblanks, nocdata bool)
 }
 
 func parseXMLFragment(doc *domNode, src string, noblanks, nocdata bool) *domNode {
+	return parseXMLFragmentCtx(doc, nil, src, false, noblanks, nocdata)
+}
+
+func parseXMLFragmentCtx(doc *domNode, ctxNode *domNode, src string, strict, noblanks, nocdata bool) *domNode {
 	if doc == nil {
 		doc = newDocument(false, false)
 	}
@@ -53,16 +58,23 @@ func parseXMLFragment(doc *domNode, src string, noblanks, nocdata bool) *domNode
 	if src == "" {
 		return frag
 	}
+	errStart := len(doc.errors)
 	p := &xmlParser{
 		src:      src,
 		line:     1,
 		doc:      doc,
-		strict:   false,
+		ctxNode:  ctxNode,
+		strict:   strict,
 		noblanks: noblanks,
 		nocdata:  nocdata,
 	}
 	p.parseInto(frag)
-	frag.errors = append(frag.errors, doc.errors...)
+	if len(doc.errors) > errStart {
+		frag.errors = append(frag.errors, doc.errors[errStart:]...)
+		if strict {
+			doc.errors = doc.errors[:errStart]
+		}
+	}
 	return frag
 }
 
@@ -438,9 +450,27 @@ func (p *xmlParser) parseInto(root *domNode) {
 		cur().appendChild(elem)
 		// Resolve element & attribute namespaces against newly-attached parent chain
 		elem.nsURI = elem.lookupNS(elem.prefix)
+		if elem.nsURI == "" {
+			if p.ctxNode != nil {
+				elem.nsURI = p.ctxNode.lookupNS(elem.prefix)
+			} else if p.doc != nil && elem.prefix != "" {
+				if root := p.doc.rootElement(); root != nil {
+					elem.nsURI = root.lookupNS(elem.prefix)
+				}
+			}
+		}
 		for _, a := range elem.attrs {
 			if a.prefix != "" {
 				a.nsURI = elem.lookupNS(a.prefix)
+				if a.nsURI == "" {
+					if p.ctxNode != nil {
+						a.nsURI = p.ctxNode.lookupNS(a.prefix)
+					} else if p.doc != nil {
+						if root := p.doc.rootElement(); root != nil {
+							a.nsURI = root.lookupNS(a.prefix)
+						}
+					}
+				}
 			}
 		}
 

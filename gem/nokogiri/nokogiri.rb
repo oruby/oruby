@@ -70,6 +70,10 @@ module Nokogiri
     false
   end
 
+  def self.libxml2_patches
+    []
+  end
+
   def self.XML(thing, url = nil, encoding = nil, options = XML::ParseOptions::DEFAULT_XML, &block)
     XML::Document.parse(thing, url, encoding, options, &block)
   end
@@ -122,10 +126,8 @@ module Nokogiri
       Document.parse(thing, url, encoding, options, &block)
     end
 
-    def self.fragment(string, encoding = nil, &block)
-      frag = DocumentFragment.parse(string, encoding)
-      yield frag if block
-      frag
+    def self.fragment(string, options = ParseOptions::DEFAULT_XML, **kw, &block)
+      DocumentFragment.parse(string, options, **kw, &block)
     end
 
     class XPathContext
@@ -165,7 +167,7 @@ module Nokogiri
     end
 
     class SyntaxError
-      attr_reader :line, :column, :level
+      attr_reader :line, :column, :level, :path, :file
 
       def none?
         (@level || 0) == 0
@@ -320,17 +322,18 @@ module Nokogiri
 
       def css(*rules)
         return NodeSet.new(document) if rules.empty?
-        # Separate trailing namespaces hash / custom handler objects from CSS rule strings
-        while !rules.empty? && !rules.last.is_a?(String)
-          rules.pop
+        extra = []
+        while rules.length > 1 && !rules.last.is_a?(String)
+          extra.unshift(rules.pop)
         end
-        return NodeSet.new(document) if rules.empty?
+        return NodeSet.new(document) if rules.empty? || !rules.first.is_a?(String)
+        ns, handler, _binds = __split_xpath_extras(extra)
         if rules.length == 1
-          return __css(rules[0])
+          return __css(rules[0], ns, handler)
         end
         out = NodeSet.new(document)
         rules.each do |r|
-          out = out | __css(r)
+          out = out | __css(r, ns, handler)
         end
         out
       end
@@ -353,7 +356,7 @@ module Nokogiri
             r = __xpath(p, ns, handler, binds)
             out = out | r if r.is_a?(NodeSet)
           else
-            out = out | __css(p)
+            out = out | __css(p, ns, handler)
           end
         end
         out
@@ -471,6 +474,46 @@ module Nokogiri
         add_child(node_or_tags)
       end
 
+      def add_child(node_or_tags)
+        node_or_tags = coerce(node_or_tags)
+        __add_child(node_or_tags)
+      end
+
+      def prepend_child(node_or_tags)
+        node_or_tags = coerce(node_or_tags)
+        __prepend_child(node_or_tags)
+      end
+
+      def add_next_sibling(node_or_tags)
+        if node_or_tags.is_a?(String)
+          raise RuntimeError, "Cannot call add_next_sibling on a node with no parent" unless parent
+          node_or_tags = parent.coerce(node_or_tags)
+        else
+          node_or_tags = coerce(node_or_tags)
+        end
+        __add_next_sibling(node_or_tags)
+      end
+
+      def add_previous_sibling(node_or_tags)
+        if node_or_tags.is_a?(String)
+          raise RuntimeError, "Cannot call add_previous_sibling on a node with no parent" unless parent
+          node_or_tags = parent.coerce(node_or_tags)
+        else
+          node_or_tags = coerce(node_or_tags)
+        end
+        __add_previous_sibling(node_or_tags)
+      end
+
+      def replace(node_or_tags)
+        if node_or_tags.is_a?(String)
+          raise RuntimeError, "Cannot call replace on a node with no parent" unless parent
+          node_or_tags = parent.coerce(node_or_tags)
+        else
+          node_or_tags = coerce(node_or_tags)
+        end
+        __replace(node_or_tags)
+      end
+
       def next=(node_or_tags)
         add_next_sibling(node_or_tags)
       end
@@ -500,14 +543,22 @@ module Nokogiri
       end
 
       def wrap(html_str)
-        frag =
-          if document && document.html?
-            HTML4::DocumentFragment.parse(html_str)
+        unless html_str.is_a?(String) || html_str.is_a?(XML::Node)
+          raise ArgumentError, "Requires a Node or String argument, and cannot accept a #{html_str.class}."
+        end
+        wrapper =
+          if html_str.is_a?(XML::Node)
+            html_str
           else
-            XML::DocumentFragment.parse(html_str)
+            frag =
+              if document && document.html?
+                HTML4::DocumentFragment.parse(html_str)
+              else
+                XML::DocumentFragment.parse(html_str)
+              end
+            frag.first_element_child || frag.children.first
           end
-        wrapper = frag.first_element_child || frag.children.first
-        return self unless wrapper
+        raise RuntimeError, "Could not parse the tag's to build the node" unless wrapper
         leaf = wrapper
         while leaf.first_element_child
           leaf = leaf.first_element_child
@@ -560,12 +611,12 @@ module Nokogiri
 
       def ancestors(selector = nil)
         list = []
-        cur = parent
+        cur = respond_to?(:parent) ? parent : nil
         while cur
           if selector.nil? || cur.matches?(selector)
             list << cur
           end
-          cur = cur.parent
+          cur = cur.respond_to?(:parent) ? cur.parent : nil
         end
         NodeSet.new(document, list)
       end
@@ -643,9 +694,11 @@ module Nokogiri
       def lang
         cur = self
         while cur
-          v = cur["xml:lang"] || cur["lang"]
-          return v if v
-          cur = cur.parent
+          if cur.respond_to?(:[])
+            v = cur["xml:lang"] || cur["lang"]
+            return v if v
+          end
+          cur = cur.respond_to?(:parent) ? cur.parent : nil
         end
         nil
       end
@@ -655,7 +708,7 @@ module Nokogiri
       end
 
       def read_only?
-        false
+        node_type == ENTITY_DECL || node_type == ENTITY_REF_NODE || node_type == DTD_NODE || node_type == DOCUMENT_TYPE_NODE
       end
 
       def data_ptr?
@@ -675,14 +728,34 @@ module Nokogiri
         visitor.visit(self)
       end
 
-      def fragment(tags = nil)
-        return document.fragment(tags) if document
-        XML::DocumentFragment.parse(tags.to_s)
+      def fragment(tags = nil, **options, &block)
+        if document
+          klass = document.related_class("DocumentFragment") || XML::DocumentFragment
+          ctx = element? ? self : nil
+          if options.empty?
+            klass.new(document, tags, ctx, &block)
+          else
+            klass.new(document, tags, ctx, **options, &block)
+          end
+        else
+          XML::DocumentFragment.parse(tags.to_s, &block)
+        end
       end
 
-      def parse(string_or_io, _options = nil)
+      def parse(string_or_io, options = nil, &block)
         src = string_or_io.respond_to?(:read) ? string_or_io.read : string_or_io.to_s
-        fragment(src).children
+        if document
+          klass = document.related_class("DocumentFragment") || XML::DocumentFragment
+          ctx = element? ? self : nil
+          frag = if options.nil?
+            klass.new(document, src, ctx, &block)
+          else
+            klass.new(document, src, ctx, options, &block)
+          end
+          frag.children
+        else
+          XML::DocumentFragment.parse(src, options || ParseOptions::DEFAULT_XML, &block).children
+        end
       end
 
       def coerce(data)
@@ -714,7 +787,9 @@ module Nokogiri
           name: name,
           attributes: attribute_nodes,
           children: children,
+          elements: element_children,
           content: content,
+          inner_html: inner_html,
           namespace: namespace,
         }
       end
@@ -744,31 +819,52 @@ module Nokogiri
         [as_html, indent || 0, xml_decl, no_empty]
       end
 
+      def inner_html=(node_or_tags)
+        self.children = node_or_tags
+        node_or_tags
+      end
+
       def __encode_output(str, options)
         enc = options.is_a?(Hash) ? options[:encoding] : nil
         return str if enc.nil? || enc.to_s.empty?
         target = enc.is_a?(Encoding) ? enc : Encoding.find(enc.to_s)
         return str if target == Encoding::UTF_8
-        str.encode(target, fallback: ->(c) { "&##{c.ord};" })
+        begin
+          str.encode(target)
+        rescue Encoding::UndefinedConversionError
+          out = "".b
+          str.each_char do |ch|
+            begin
+              out << ch.encode(target).b
+            rescue Encoding::UndefinedConversionError
+              out << "&#x#{ch.ord.to_s(16)};".encode(target).b
+            end
+          end
+          out.force_encoding(target)
+        end
       end
 
       def inner_html(options = {})
-        __encode_output(__inner_html, options)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__inner_html(preserve_nl), options)
       end
 
       def to_xml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
-        __encode_output(__serialize(as_html, indent, xml_decl, no_empty), options)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty, preserve_nl), options)
       end
 
       def to_html(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, true, false)
-        __encode_output(__serialize(as_html, indent, xml_decl, no_empty), options)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty, preserve_nl), options)
       end
 
       def to_xhtml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
-        __encode_output(__serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with)), options)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with), preserve_nl), options)
       end
 
       def write_to(io, *options)
@@ -807,7 +903,26 @@ module Nokogiri
       end
     end
 
+    class Attr
+      def deconstruct_keys(_keys)
+        {
+          name: name,
+          value: value,
+          namespace: namespace,
+        }
+      end
+    end
+
     class Document
+      undef_method :parent, :line, :line=, :attributes
+
+      def deconstruct_keys(_keys)
+        {
+          root: root,
+          children: children,
+        }
+      end
+
       def self.parse(thing, url = nil, encoding = nil, options = ParseOptions::DEFAULT_XML, &block)
         opts = options.is_a?(ParseOptions) ? options : ParseOptions.new(options || ParseOptions::DEFAULT_XML)
         yield opts if block
@@ -857,17 +972,20 @@ module Nokogiri
 
       def to_xml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, true)
-        __serialize(as_html, indent, xml_decl, no_empty)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty, preserve_nl), options)
       end
 
       def to_html(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, true, false)
-        __serialize(as_html, indent, xml_decl, no_empty)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty, preserve_nl), options)
       end
 
       def to_xhtml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
-        __serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with))
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with), preserve_nl), options)
       end
 
       def validate
@@ -906,10 +1024,17 @@ module Nokogiri
     end
 
     class DocumentFragment
-      def self.parse(tags, encoding = nil)
+      def self.parse(tags, options = ParseOptions::DEFAULT_XML, **kw, &block)
         doc = Document.new
-        doc.encoding = encoding if encoding
-        new(doc, tags)
+        if options.is_a?(String) || options.is_a?(Encoding)
+          doc.encoding = options.to_s
+          options = ParseOptions::DEFAULT_XML
+        end
+        if kw.empty?
+          new(doc, tags, nil, options, &block)
+        else
+          new(doc, tags, nil, options, **kw, &block)
+        end
       end
 
       def deconstruct
@@ -922,17 +1047,20 @@ module Nokogiri
 
       def to_html(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, true, false)
-        __serialize(as_html, indent, xml_decl, no_empty)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty, preserve_nl), options)
       end
 
       def to_xml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
-        __serialize(as_html, indent, xml_decl, no_empty)
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty, preserve_nl), options)
       end
 
       def to_xhtml(options = {})
         as_html, indent, xml_decl, no_empty = __resolve_save_options(options, false, false)
-        __serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with))
+        preserve_nl = !!(options.is_a?(Hash) && options[:preserve_newline])
+        __encode_output(__serialize(as_html, indent, xml_decl, no_empty || !options.key?(:save_with), preserve_nl), options)
       end
 
       def to_s
@@ -941,6 +1069,17 @@ module Nokogiri
     end
 
     class NodeSet
+      def each
+        return to_enum(:each) unless block_given?
+        i = 0
+        n = length
+        while i < n
+          yield self[i]
+          i += 1
+        end
+        self
+      end
+
       def to_a
         out = []
         each { |n| out << n }
@@ -1028,7 +1167,7 @@ module Nokogiri
       end
 
       def remove
-        each(&:unlink)
+        each { |n| n.unlink if n.respond_to?(:unlink) }
         self
       end
       alias unlink remove
@@ -1089,6 +1228,7 @@ module Nokogiri
       alias / search
 
       def at(*paths)
+        return self[paths[0]] if paths.length == 1 && (paths[0].is_a?(Integer) || paths[0].is_a?(Range))
         search(*paths).first
       end
       alias % at
@@ -1427,10 +1567,8 @@ module Nokogiri
       Document.parse(thing, url, encoding, options, &block)
     end
 
-    def self.fragment(string, encoding = nil, &block)
-      frag = DocumentFragment.parse(string, encoding)
-      yield frag if block
-      frag
+    def self.fragment(string, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
+      DocumentFragment.parse(string, encoding, options, **kw, &block)
     end
 
     class ElementDescription
@@ -1588,10 +1726,14 @@ module Nokogiri
     end
 
     class DocumentFragment
-      def self.parse(tags, encoding = nil)
+      def self.parse(tags, encoding = nil, options = XML::ParseOptions::DEFAULT_HTML, **kw, &block)
         doc = HTML4::Document.new
-        doc.encoding = encoding if encoding
-        new(doc, tags)
+        doc.encoding = encoding.to_s if encoding
+        if kw.empty?
+          new(doc, tags, nil, options, &block)
+        else
+          new(doc, tags, nil, options, **kw, &block)
+        end
       end
     end
 
@@ -1683,19 +1825,40 @@ module Nokogiri
 
     class Document
       def self.parse(thing, url = nil, encoding = nil, **options, &block)
+        if !thing.nil? && !thing.is_a?(String) && !thing.respond_to?(:to_str) && !thing.respond_to?(:read)
+          raise ArgumentError, "string_or_io must be a String or respond to :read"
+        end
+        url = options[:url] if url.nil? && options.key?(:url)
+        encoding = options[:encoding] if encoding.nil? && options.key?(:encoding)
         src = HTML5.read_and_encode(thing, encoding)
         max_errors = options[:max_errors]
         max_tree_depth = options[:max_tree_depth]
-        doc = __parse_html(src, url, nil, XML::ParseOptions::DEFAULT_HTML, true, max_errors, max_tree_depth)
-        if options.key?(:parse_noscript_content_as_text)
-          doc.parse_noscript_content_as_text = options[:parse_noscript_content_as_text]
-        end
+        parse_noscript = !!options[:parse_noscript_content_as_text]
+        doc = __parse_html(src, url, nil, XML::ParseOptions::DEFAULT_HTML, true, max_errors, max_tree_depth, parse_noscript)
         yield doc if block
         doc
       end
 
-      def self.fragment(tags, encoding = nil, context: nil, **options)
-        DocumentFragment.parse(tags, encoding, context: context, **options)
+      def self.read_memory(string, url = nil, encoding = nil, **options, &block)
+        unless string.is_a?(String) || string.respond_to?(:to_str)
+          raise ArgumentError, "string must be a String"
+        end
+        parse(string, url, encoding, **options, &block)
+      end
+
+      def self.read_io(io, url = nil, encoding = nil, **options, &block)
+        unless io.respond_to?(:read)
+          raise ArgumentError, "io must respond to :read"
+        end
+        parse(io, url, encoding, **options, &block)
+      end
+
+      def self.fragment(tags, encoding = nil, **options)
+        DocumentFragment.parse(tags, encoding, **options)
+      end
+
+      def fragment(tags = nil, **options)
+        (related_class("DocumentFragment") || HTML5::DocumentFragment).new(self, tags, **options)
       end
 
       def xpath_doctype
@@ -1715,14 +1878,32 @@ module Nokogiri
     end
 
     class DocumentFragment
-      def self.parse(tags, encoding = nil, context: nil, **_options)
+      def self.parse(tags, encoding = nil, context_or_opts = nil, **options)
+        if context_or_opts.is_a?(Hash)
+          options = context_or_opts.merge(options)
+          context = options.delete(:context)
+        else
+          context = context_or_opts
+          context = options.delete(:context) if context.nil? && options.key?(:context)
+        end
+        encoding = options.delete(:encoding) if encoding.nil? && options.key?(:encoding)
         doc = HTML5::Document.new
         src = HTML5.read_and_encode(tags, encoding)
-        new(doc, src, context)
+        if options.empty?
+          new(doc, src, context)
+        else
+          new(doc, src, context, **options)
+        end
       end
 
       def quirks_mode
         document ? document.quirks_mode : QuirksMode::NO_QUIRKS
+      end
+
+      private
+
+      def prepend_newline?
+        false
       end
     end
 
@@ -1730,8 +1911,8 @@ module Nokogiri
       Document.parse(thing, url, encoding, **options, &block)
     end
 
-    def self.fragment(tags, encoding = nil, context: nil, **options)
-      DocumentFragment.parse(tags, encoding, context: context, **options)
+    def self.fragment(tags, encoding = nil, **options)
+      DocumentFragment.parse(tags, encoding, **options)
     end
 
     def self.read_and_encode(string, encoding)
@@ -1751,6 +1932,14 @@ module Nokogiri
   end
 
   module CSS
+    class XPathVisitor
+      module DoctypeConfig
+        XML   = :xml
+        HTML4 = :html4
+        HTML5 = :html5
+      end
+    end
+
     class SelectorCache
       @default = nil
 
@@ -1881,12 +2070,6 @@ module Nokogiri
   end
 
   module XML
-    class EntityReference < Node
-      def initialize(document, name)
-        super(name.to_s, document)
-      end
-    end
-
     module SAX
       class ParserContext
         attr_accessor :replace_entities, :recovery

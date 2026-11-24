@@ -4,7 +4,6 @@ package nokogiri
 
 import (
 	"fmt"
-	"html"
 	"strings"
 
 	"github.com/oruby/oruby"
@@ -54,6 +53,7 @@ type domError struct {
 	line    int
 	column  int
 	level   int // 1=warning, 2=error, 3=fatal
+	file    string
 }
 
 type domNode struct {
@@ -81,6 +81,8 @@ type domNode struct {
 	isHTML5             bool
 	rbClass             oruby.RClass
 	hasClass            bool
+	hasSelfVal          bool
+	selfVal             oruby.Value
 	hasDecorators       bool
 	decoratorsVal       oruby.Value
 	encoding            string
@@ -88,6 +90,7 @@ type domNode struct {
 	version             string
 	quirksMode          string
 	parseNoScriptAsText bool
+	parseNoScriptSet    bool
 	errors              []domError
 }
 
@@ -112,9 +115,10 @@ func newFragment(doc *domNode) *domNode {
 		doc = newDocument(false, false)
 	}
 	return &domNode{
-		kind:   DocumentFragNode,
-		doc:    doc,
-		isHTML: doc.isHTML,
+		kind:    DocumentFragNode,
+		doc:     doc,
+		isHTML:  doc.isHTML,
+		isHTML5: doc.isHTML5,
 	}
 }
 
@@ -418,16 +422,28 @@ func (n *domNode) isHTMLDoc() bool {
 
 func (n *domNode) getAttr(name string) (*domAttr, bool) {
 	isHTML := n.isHTMLDoc()
-	// Check exact match first, then local name (and case-insensitive for HTML)
 	for _, a := range n.attrs {
 		full := a.name
 		if a.prefix != "" {
 			full = a.prefix + ":" + a.name
 		}
-		if full == name || a.name == name {
+		if full == name {
 			return a, true
 		}
-		if isHTML && (strings.EqualFold(full, name) || strings.EqualFold(a.name, name)) {
+		if isHTML && strings.EqualFold(full, name) {
+			return a, true
+		}
+	}
+	return nil, false
+}
+
+func (n *domNode) getAttrByLocalName(name string) (*domAttr, bool) {
+	isHTML := n.isHTMLDoc()
+	for _, a := range n.attrs {
+		if a.name == name {
+			return a, true
+		}
+		if isHTML && strings.EqualFold(a.name, name) {
 			return a, true
 		}
 	}
@@ -435,19 +451,21 @@ func (n *domNode) getAttr(name string) (*domAttr, bool) {
 }
 
 func (n *domNode) setAttr(name, val string) *domAttr {
-	prefix := ""
-	local := name
-	if idx := strings.IndexByte(name, ':'); idx > 0 {
-		prefix = name[:idx]
-		local = name[idx+1:]
-	}
 	if a, ok := n.getAttr(name); ok {
 		a.value = val
 		return a
 	}
+	prefix := ""
+	local := name
 	nsURI := ""
-	if prefix != "" {
-		nsURI = n.lookupNS(prefix)
+	if idx := strings.IndexByte(name, ':'); idx > 0 {
+		p := name[:idx]
+		l := name[idx+1:]
+		if uri := n.lookupNS(p); uri != "" {
+			prefix = p
+			local = l
+			nsURI = uri
+		}
 	}
 	a := &domAttr{
 		name:   local,
@@ -467,7 +485,7 @@ func (n *domNode) removeAttr(name string) (string, bool) {
 		if a.prefix != "" {
 			full = a.prefix + ":" + a.name
 		}
-		if full == name || a.name == name || (isHTML && strings.EqualFold(a.name, name)) {
+		if full == name || (isHTML && strings.EqualFold(full, name)) {
 			val := a.value
 			n.attrs = append(n.attrs[:i], n.attrs[i+1:]...)
 			return val, true
@@ -659,6 +677,9 @@ func (n *domNode) lastElementChild() *domNode {
 }
 
 func (n *domNode) path() string {
+	if n.kind == DocumentFragNode {
+		return "?"
+	}
 	if n.kind == DocumentNode || n.kind == HTMLDocumentNode {
 		return "/"
 	}
@@ -704,9 +725,10 @@ func (n *domNode) path() string {
 // ---------------------------------------------------------------------------
 
 var htmlVoidElements = map[string]bool{
-	"area": true, "base": true, "br": true, "col": true, "embed": true,
-	"hr": true, "img": true, "input": true, "keygen": true, "link": true,
-	"meta": true, "param": true, "source": true, "track": true, "wbr": true,
+	"area": true, "base": true, "basefont": true, "bgsound": true, "br": true,
+	"col": true, "embed": true, "frame": true, "hr": true, "img": true,
+	"input": true, "keygen": true, "link": true, "meta": true, "param": true,
+	"source": true, "track": true, "wbr": true,
 }
 
 var htmlRawTextElements = map[string]bool{
@@ -732,11 +754,42 @@ func escapeXMLText(s string) string {
 	return sb.String()
 }
 
-func escapeAttrVal(s string) string {
+func escapeHTMLText(s string, isHTML5 bool) string {
 	var sb strings.Builder
 	sb.Grow(len(s))
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
+		b := s[i]
+		switch b {
+		case '&':
+			sb.WriteString("&amp;")
+		case '<':
+			sb.WriteString("&lt;")
+		case '>':
+			sb.WriteString("&gt;")
+		case 0xC2:
+			if isHTML5 && i+1 < len(s) && s[i+1] == 0xA0 {
+				sb.WriteString("&nbsp;")
+				i++
+			} else {
+				sb.WriteByte(b)
+			}
+		default:
+			sb.WriteByte(b)
+		}
+	}
+	return sb.String()
+}
+
+func escapeAttrVal(s string) string {
+	return escapeHTMLAttrVal(s, false)
+}
+
+func escapeHTMLAttrVal(s string, isHTML5 bool) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		switch b {
 		case '&':
 			sb.WriteString("&amp;")
 		case '<':
@@ -745,27 +798,52 @@ func escapeAttrVal(s string) string {
 			sb.WriteString("&gt;")
 		case '"':
 			sb.WriteString("&quot;")
+		case 0xC2:
+			if isHTML5 && i+1 < len(s) && s[i+1] == 0xA0 {
+				sb.WriteString("&nbsp;")
+				i++
+			} else {
+				sb.WriteByte(b)
+			}
 		default:
-			sb.WriteByte(s[i])
+			sb.WriteByte(b)
 		}
 	}
 	return sb.String()
 }
 
 func (n *domNode) serialize(asHTML bool, indent int, includeXMLDecl bool) string {
-	return n.serializeWithOpts(asHTML, indent, includeXMLDecl, false)
+	return n.serializeWithOpts(asHTML, indent, includeXMLDecl, false, false)
 }
 
-func (n *domNode) serializeWithOpts(asHTML bool, indent int, includeXMLDecl, noEmptyTags bool) string {
+func (n *domNode) serializeWithOpts(asHTML bool, indent int, includeXMLDecl, noEmptyTags, preserveNewline bool) string {
 	var sb strings.Builder
-	n.writeTo(&sb, asHTML, indent, 0, includeXMLDecl, noEmptyTags)
+	n.writeTo(&sb, asHTML, indent, 0, includeXMLDecl, noEmptyTags, preserveNewline)
 	return sb.String()
 }
 
+func (n *domNode) needsPreservedLeadingNewline(asHTML, preserveNewline bool) bool {
+	if !preserveNewline || !asHTML || n.kind != ElementNode || n.nsURI != "" {
+		return false
+	}
+	switch strings.ToLower(n.name) {
+	case "pre", "listing", "textarea":
+		return n.first != nil && n.first.kind == TextNode && strings.HasPrefix(n.first.data, "\n")
+	}
+	return false
+}
+
 func (n *domNode) innerHTML(asHTML bool) string {
+	return n.innerHTMLWithOpts(asHTML, false)
+}
+
+func (n *domNode) innerHTMLWithOpts(asHTML, preserveNewline bool) string {
 	var sb strings.Builder
+	if n.needsPreservedLeadingNewline(asHTML, preserveNewline) {
+		sb.WriteByte('\n')
+	}
 	for c := n.first; c != nil; c = c.next {
-		c.writeTo(&sb, asHTML, 0, 0, false, false)
+		c.writeTo(&sb, asHTML, 0, 0, false, false, preserveNewline)
 	}
 	return sb.String()
 }
@@ -804,7 +882,8 @@ func (n *domNode) cssPath() string {
 	return strings.Join(parts, " > ")
 }
 
-func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, includeXMLDecl, noEmptyTags bool) {
+func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, includeXMLDecl, noEmptyTags, preserveNewline bool) {
+	isHTML5 := n.isHTML5 || (n.doc != nil && n.doc.isHTML5)
 	switch n.kind {
 	case DocumentNode, HTMLDocumentNode:
 		if !asHTML && includeXMLDecl {
@@ -820,11 +899,11 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 			}
 		}
 		for c := n.first; c != nil; c = c.next {
-			c.writeTo(sb, asHTML, indent, 0, false, noEmptyTags)
+			c.writeTo(sb, asHTML, indent, 0, false, noEmptyTags, preserveNewline)
 		}
 	case DocumentFragNode:
 		for c := n.first; c != nil; c = c.next {
-			c.writeTo(sb, asHTML, indent, depth, false, noEmptyTags)
+			c.writeTo(sb, asHTML, indent, depth, false, noEmptyTags, preserveNewline)
 		}
 	case DocumentTypeNode, DTDNode:
 		sb.WriteString("<!DOCTYPE ")
@@ -833,20 +912,37 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 		} else {
 			sb.WriteString("html")
 		}
-		if n.pubID != "" {
-			fmt.Fprintf(sb, " PUBLIC %q", n.pubID)
-			if n.sysID != "" {
-				fmt.Fprintf(sb, " %q", n.sysID)
+		if !(asHTML && isHTML5) {
+			if n.pubID != "" {
+				fmt.Fprintf(sb, " PUBLIC %q", n.pubID)
+				if n.sysID != "" {
+					fmt.Fprintf(sb, " %q", n.sysID)
+				}
+			} else if n.sysID != "" {
+				fmt.Fprintf(sb, " SYSTEM %q", n.sysID)
 			}
-		} else if n.sysID != "" {
-			fmt.Fprintf(sb, " SYSTEM %q", n.sysID)
+			sb.WriteString(">\n")
+		} else {
+			sb.WriteByte('>')
 		}
-		sb.WriteString(">\n")
+	case EntityRefNode:
+		sb.WriteByte('&')
+		sb.WriteString(n.name)
+		sb.WriteByte(';')
 	case TextNode:
-		if asHTML && n.parent != nil && htmlRawTextElements[strings.ToLower(n.parent.name)] {
+		rawParent := false
+		if asHTML && n.parent != nil && n.parent.kind == ElementNode && n.parent.nsURI == "" {
+			pn := strings.ToLower(n.parent.name)
+			if htmlRawTextElements[pn] {
+				rawParent = true
+			} else if pn == "noscript" && n.doc != nil && n.doc.parseNoScriptAsText {
+				rawParent = true
+			}
+		}
+		if rawParent {
 			sb.WriteString(n.data)
 		} else if asHTML {
-			sb.WriteString(html.EscapeString(n.data))
+			sb.WriteString(escapeHTMLText(n.data, isHTML5))
 		} else {
 			sb.WriteString(escapeXMLText(n.data))
 		}
@@ -876,36 +972,66 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 		}
 		sb.WriteByte('<')
 		sb.WriteString(tag)
-		for _, ns := range n.nsDefs {
-			if ns.prefix == "" {
-				sb.WriteString(` xmlns="`)
-			} else {
-				sb.WriteString(` xmlns:`)
-				sb.WriteString(ns.prefix)
-				sb.WriteString(`="`)
+		if !(asHTML && isHTML5) {
+			for _, ns := range n.nsDefs {
+				if ns.prefix == "" {
+					sb.WriteString(` xmlns="`)
+				} else {
+					sb.WriteString(` xmlns:`)
+					sb.WriteString(ns.prefix)
+					sb.WriteString(`="`)
+				}
+				sb.WriteString(escapeAttrVal(ns.href))
+				sb.WriteByte('"')
 			}
-			sb.WriteString(escapeAttrVal(ns.href))
-			sb.WriteByte('"')
 		}
 		for _, a := range n.attrs {
 			sb.WriteByte(' ')
-			if a.prefix != "" {
-				sb.WriteString(a.prefix)
-				sb.WriteByte(':')
+			if asHTML && isHTML5 {
+				switch a.nsURI {
+				case "http://www.w3.org/XML/1998/namespace":
+					sb.WriteString("xml:")
+					sb.WriteString(a.name)
+				case "http://www.w3.org/2000/xmlns/":
+					if a.name == "xmlns" {
+						sb.WriteString("xmlns")
+					} else {
+						sb.WriteString("xmlns:")
+						sb.WriteString(a.name)
+					}
+				case "http://www.w3.org/1999/xlink":
+					sb.WriteString("xlink:")
+					sb.WriteString(a.name)
+				default:
+					if a.prefix != "" {
+						sb.WriteString(a.prefix)
+						sb.WriteByte(':')
+					}
+					sb.WriteString(a.name)
+				}
+			} else {
+				if a.prefix != "" {
+					sb.WriteString(a.prefix)
+					sb.WriteByte(':')
+				}
+				sb.WriteString(a.name)
 			}
-			sb.WriteString(a.name)
 			sb.WriteString(`="`)
-			sb.WriteString(escapeAttrVal(a.value))
+			sb.WriteString(escapeHTMLAttrVal(a.value, asHTML && isHTML5))
 			sb.WriteByte('"')
+		}
+		if asHTML && n.nsURI == "" && htmlVoidElements[strings.ToLower(n.name)] {
+			sb.WriteByte('>')
+			if indent > 0 {
+				sb.WriteByte('\n')
+			}
+			return
 		}
 		if n.first == nil {
 			if asHTML {
+				sb.WriteString("></")
+				sb.WriteString(tag)
 				sb.WriteByte('>')
-				if !htmlVoidElements[strings.ToLower(n.name)] {
-					sb.WriteString("</")
-					sb.WriteString(tag)
-					sb.WriteByte('>')
-				}
 			} else if noEmptyTags {
 				sb.WriteString("></")
 				sb.WriteString(tag)
@@ -919,6 +1045,9 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 			return
 		}
 		sb.WriteByte('>')
+		if n.needsPreservedLeadingNewline(asHTML, preserveNewline) {
+			sb.WriteByte('\n')
+		}
 		hasElemChild := false
 		if indent > 0 {
 			for c := n.first; c != nil; c = c.next {
@@ -932,7 +1061,7 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 			}
 		}
 		for c := n.first; c != nil; c = c.next {
-			c.writeTo(sb, asHTML, indent, depth+1, false, noEmptyTags)
+			c.writeTo(sb, asHTML, indent, depth+1, false, noEmptyTags, preserveNewline)
 		}
 		if indent > 0 && hasElemChild {
 			sb.WriteString(strings.Repeat(" ", indent*depth))

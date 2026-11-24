@@ -304,11 +304,138 @@ type xpathResult struct {
 	isSet bool
 }
 
+func rewriteNokogiriXPath(expr string) (string, error) {
+	// Rewrite nokogiri-builtin:css-class(a, b) to standard XPath 1.0
+	for {
+		idx := strings.Index(expr, "nokogiri-builtin:css-class(")
+		prefixLen := len("nokogiri-builtin:css-class(")
+		if idx < 0 {
+			break
+		}
+		openIdx := idx + prefixLen - 1
+		closeIdx := findMatching(expr, openIdx, '(', ')')
+		if closeIdx < 0 {
+			return "", fmt.Errorf("unterminated nokogiri-builtin:css-class() call")
+		}
+		argStr := strings.TrimSpace(expr[openIdx+1 : closeIdx])
+		var args []string
+		if argStr != "" {
+			args = splitTopLevel(argStr, ',')
+		}
+		if len(args) != 2 {
+			return "", fmt.Errorf("nokogiri-builtin:css-class requires 2 arguments, got %d", len(args))
+		}
+		a := strings.TrimSpace(args[0])
+		b := strings.TrimSpace(args[1])
+		// Match complete ASCII-whitespace-delimited words (0x20, 0x09, 0x0A, 0x0D) or empty second arg
+		replacement := fmt.Sprintf("((string-length(%s) = 0) or contains(concat(' ', translate(string(%s), '\t\n\r', '   '), ' '), concat(' ', string(%s), ' ')))", b, a, b)
+		expr = expr[:idx] + replacement + expr[closeIdx+1:]
+	}
+	// Rewrite leading id("foo") -> //*[@id="foo"]
+	if strings.HasPrefix(expr, "id(") {
+		if closeIdx := findMatching(expr, 2, '(', ')'); closeIdx > 2 {
+			arg := strings.TrimSpace(expr[3:closeIdx])
+			expr = fmt.Sprintf("//*[@id=%s]%s", arg, expr[closeIdx+1:])
+		}
+	}
+	return expr, nil
+}
+
+func evalNamespaceAxis(start *domNode, expr string, nsMap map[string]string, vars map[string]any) (xpathResult, bool, error) {
+	idx := strings.Index(expr, "namespace::")
+	if idx < 0 {
+		return xpathResult{}, false, nil
+	}
+	baseExpr := strings.TrimSpace(expr[:idx])
+	nsTarget := strings.TrimSpace(expr[idx+len("namespace::"):])
+	// Only handle simple trailing namespace::* or namespace::prefix
+	if strings.ContainsAny(nsTarget, "/[]()") {
+		return xpathResult{}, false, nil
+	}
+	var targets []*domNode
+	if baseExpr == "" {
+		if start.kind == ElementNode {
+			targets = []*domNode{start}
+		}
+	} else if baseExpr == "//" {
+		res, err := evalXPath(start, "//*", nsMap, vars)
+		if err != nil {
+			return xpathResult{}, true, err
+		}
+		targets = res.nodes
+	} else if baseExpr == ".//" {
+		res, err := evalXPath(start, ".//*", nsMap, vars)
+		if err != nil {
+			return xpathResult{}, true, err
+		}
+		targets = res.nodes
+	} else {
+		baseExpr = strings.TrimSuffix(baseExpr, "/")
+		res, err := evalXPath(start, baseExpr, nsMap, vars)
+		if err != nil {
+			return xpathResult{}, true, err
+		}
+		targets = res.nodes
+	}
+	var out []*domNode
+	for _, el := range targets {
+		if el.kind != ElementNode {
+			continue
+		}
+		scopes := el.namespaceScopes()
+		// Add implicit xml namespace
+		hasXML := false
+		for _, ns := range scopes {
+			if ns.prefix == "xml" {
+				hasXML = true
+				break
+			}
+		}
+		if !hasXML {
+			scopes = append([]*domNS{{prefix: "xml", href: "http://www.w3.org/XML/1998/namespace", doc: el.doc}}, scopes...)
+		}
+		for _, ns := range scopes {
+			if nsTarget != "*" && ns.prefix != nsTarget {
+				continue
+			}
+			out = append(out, &domNode{
+				kind:   NamespaceDecl,
+				doc:    el.doc,
+				parent: el,
+				prefix: ns.prefix,
+				nsURI:  ns.href,
+			})
+		}
+	}
+	return xpathResult{nodes: out, isSet: true}, true, nil
+}
+
+func normalizeXPathError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	const pfx = "not yet support this function "
+	if strings.Contains(msg, pfx) {
+		rest := msg[strings.Index(msg, pfx)+len(pfx):]
+		fn := strings.TrimSuffix(strings.TrimSpace(rest), "()")
+		return fmt.Errorf("xmlXPathCompOpEval: function %s not found", fn)
+	}
+	return err
+}
+
 func evalXPath(start *domNode, exprStr string, nsMap map[string]string, vars map[string]any) (xpathResult, error) {
 	resolved := substituteXPathVars(exprStr, vars)
-	compiled, err := xpath.Compile(resolved)
+	if nsRes, handled, err := evalNamespaceAxis(start, resolved, nsMap, vars); handled {
+		return nsRes, normalizeXPathError(err)
+	}
+	rewritten, rerr := rewriteNokogiriXPath(resolved)
+	if rerr != nil {
+		return xpathResult{}, rerr
+	}
+	compiled, err := xpath.Compile(rewritten)
 	if err != nil {
-		return xpathResult{}, err
+		return xpathResult{}, normalizeXPathError(err)
 	}
 	nav := newDOMNavigator(start, nsMap)
 	res := compiled.Evaluate(nav)
@@ -391,10 +518,44 @@ func mirrorForCSS(n *domNode, back map[*html.Node]*domNode, caseFold bool) *html
 	return hn
 }
 
-func queryCSS(scope *domNode, selector string) ([]*domNode, error) {
+func shouldUseXPathForCSS(sel string) bool {
+	if strings.ContainsAny(sel, "/@|\\") {
+		return true
+	}
+	lower := strings.ToLower(sel)
+	for _, pat := range []string{
+		":has(", ":nth(", ":nth-of-type(", ":nth-last-of-type(",
+		":first-of-type", ":last-of-type", ":only-of-type",
+		":first", ":last", ":eq(", ":gt(", ":lt(",
+		":even", ":odd", ":parent", ":contains(",
+		"text()", "comment()", "node()",
+	} {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryCSS(scope *domNode, selector string, nsMap map[string]string) ([]*domNode, error) {
 	selStr := strings.TrimSpace(selector)
 	if selStr == "" {
 		return nil, nil
+	}
+
+	// Route Nokogiri CSS extensions & namespaced selectors through CSS->XPath
+	if len(nsMap) > 0 || shouldUseXPathForCSS(selStr) {
+		prefix := ".//"
+		if scope.kind == DocumentNode || scope.kind == HTMLDocumentNode {
+			prefix = "//"
+		}
+		xp, xerr := cssToXPath(selStr, prefix)
+		if xerr == nil {
+			res, eerr := evalXPath(scope, xp, nsMap, nil)
+			if eerr == nil && res.isSet {
+				return res.nodes, nil
+			}
+		}
 	}
 
 	caseFold := scope.isHTMLDoc()
@@ -435,7 +596,7 @@ func queryCSS(scope *domNode, selector string) ([]*domNode, error) {
 			prefix = "//"
 		}
 		if xp, xerr := cssToXPath(selStr, prefix); xerr == nil {
-			if res, eerr := evalXPath(scope, xp, nil, nil); eerr == nil && res.isSet {
+			if res, eerr := evalXPath(scope, xp, nsMap, nil); eerr == nil && res.isSet {
 				return res.nodes, nil
 			}
 		}
@@ -463,13 +624,36 @@ func matchesCSS(node *domNode, selector string) (bool, error) {
 	if node.kind != ElementNode {
 		return false, nil
 	}
-	compiled, err := cascadia.Compile(strings.TrimSpace(selector))
-	if err != nil {
-		return false, err
-	}
+	selStr := strings.TrimSpace(selector)
 	root := node
 	for root.parent != nil {
 		root = root.parent
+	}
+	if shouldUseXPathForCSS(selStr) {
+		if xp, xerr := cssToXPath(selStr, "//"); xerr == nil {
+			if res, eerr := evalXPath(root, xp, nil, nil); eerr == nil && res.isSet {
+				for _, cand := range res.nodes {
+					if cand == node {
+						return true, nil
+					}
+				}
+				return false, nil
+			}
+		}
+	}
+	compiled, err := cascadia.Compile(selStr)
+	if err != nil {
+		if xp, xerr := cssToXPath(selStr, "//"); xerr == nil {
+			if res, eerr := evalXPath(root, xp, nil, nil); eerr == nil && res.isSet {
+				for _, cand := range res.nodes {
+					if cand == node {
+						return true, nil
+					}
+				}
+				return false, nil
+			}
+		}
+		return false, err
 	}
 	back := map[*html.Node]*domNode{}
 	rootMirror := mirrorForCSS(root, back, node.isHTMLDoc())

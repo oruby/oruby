@@ -1,6 +1,7 @@
 package nokogiri
 
 import (
+	"fmt"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -8,30 +9,60 @@ import (
 )
 
 func parseHTMLDocument(src, url, encoding string, isHTML5 bool, noblanks bool) *domNode {
-	return parseHTMLDocumentOpts(src, url, encoding, isHTML5, noblanks, -1, -1)
+	return parseHTMLDocumentOpts(src, url, encoding, isHTML5, noblanks, -1, -1, false)
 }
 
-func parseHTMLDocumentOpts(src, url, encoding string, isHTML5 bool, noblanks bool, maxErrors int, maxTreeDepth int) *domNode {
+func parseHTMLDocumentOpts(src, url, encoding string, isHTML5 bool, noblanks bool, maxErrors int, maxTreeDepth int, parseNoScriptAsText bool) *domNode {
 	doc := newDocument(true, isHTML5)
 	doc.url = url
+	doc.parseNoScriptAsText = parseNoScriptAsText
+	doc.parseNoScriptSet = true
 	decoded, detectedEnc := decodeToUTF8(src, encoding, true)
 	if encoding != "" {
 		doc.encoding = encoding
 	} else if detectedEnc != "" {
 		doc.encoding = detectedEnc
 	}
+	if isHTML5 && maxErrors != 0 {
+		doc.errors = append(doc.errors, scanHTML5ParseErrors(decoded)...)
+	}
 	if strings.TrimSpace(decoded) == "" {
 		doc.quirksMode = "quirks"
+		if maxErrors >= 0 && len(doc.errors) > maxErrors {
+			doc.errors = doc.errors[:maxErrors]
+		}
 		return doc
 	}
 
-	root, err := html.Parse(strings.NewReader(decoded))
+	var root *html.Node
+	var err error
+	if isHTML5 {
+		root, err = html.ParseWithOptions(strings.NewReader(decoded), html.ParseOptionEnableScripting(parseNoScriptAsText))
+	} else {
+		root, err = html.Parse(strings.NewReader(decoded))
+	}
 	if err != nil {
 		doc.errors = append(doc.errors, domError{message: err.Error(), level: 2})
 		return doc
 	}
 	convertHTMLChildrenDepth(doc, doc, root, noblanks, 0, maxTreeDepth)
 	doc.quirksMode = detectHTMLQuirksMode(doc)
+	if isHTML5 && maxErrors != 0 && doc.quirksMode == "quirks" && !strings.Contains(strings.ToLower(decoded), "<!doctype") {
+		doc.errors = append(doc.errors, domError{
+			message: "1:1: ERROR: Expected a doctype token",
+			line:    1,
+			column:  1,
+			level:   2,
+			file:    url,
+		})
+	}
+	if url != "" {
+		for i := range doc.errors {
+			if doc.errors[i].file == "" {
+				doc.errors[i].file = url
+			}
+		}
+	}
 	if maxErrors >= 0 && len(doc.errors) > maxErrors {
 		doc.errors = doc.errors[:maxErrors]
 	}
@@ -66,10 +97,20 @@ func detectHTMLQuirksMode(doc *domNode) string {
 }
 
 func parseHTMLFragment(doc *domNode, src string, ctxTag string, noblanks bool) *domNode {
+	return parseHTMLFragmentOpts(doc, src, ctxTag, noblanks, 0, -1, doc != nil && doc.parseNoScriptAsText)
+}
+
+func parseHTMLFragmentOpts(doc *domNode, src string, ctxTag string, noblanks bool, maxErrors int, maxTreeDepth int, parseNoScriptAsText bool) *domNode {
 	if doc == nil {
 		doc = newDocument(true, true)
 	}
 	frag := newFragment(doc)
+	if doc.isHTML5 && maxErrors != 0 {
+		frag.errors = append(frag.errors, scanHTML5ParseErrors(src)...)
+		if maxErrors > 0 && len(frag.errors) > maxErrors {
+			frag.errors = frag.errors[:maxErrors]
+		}
+	}
 	if src == "" {
 		return frag
 	}
@@ -83,17 +124,212 @@ func parseHTMLFragment(doc *domNode, src string, ctxTag string, noblanks bool) *
 		DataAtom: ctxAtom,
 		Data:     strings.ToLower(ctxTag),
 	}
-	nodes, err := html.ParseFragment(strings.NewReader(src), ctxNode)
+	var nodes []*html.Node
+	var err error
+	if doc.isHTML5 {
+		nodes, err = html.ParseFragmentWithOptions(strings.NewReader(src), ctxNode, html.ParseOptionEnableScripting(parseNoScriptAsText))
+	} else {
+		nodes, err = html.ParseFragment(strings.NewReader(src), ctxNode)
+	}
 	if err != nil {
 		frag.errors = append(frag.errors, domError{message: err.Error(), level: 2})
 		return frag
 	}
 	for _, hn := range nodes {
-		if dn := convertHTMLNode(doc, hn, noblanks); dn != nil {
+		if dn := convertHTMLNodeDepth(doc, hn, noblanks, 0, maxTreeDepth); dn != nil {
 			frag.appendChild(dn)
 		}
 	}
+	if maxErrors >= 0 && len(frag.errors) > maxErrors {
+		frag.errors = frag.errors[:maxErrors]
+	}
 	return frag
+}
+
+func scanHTML5ParseErrors(src string) []domError {
+	if !strings.ContainsRune(src, 0) && !strings.Contains(src, "&#0;") && !strings.Contains(src, "&#x0;") && !strings.Contains(src, "&#X0;") {
+		return nil
+	}
+	var errs []domError
+	addErr := func(line, col int, msg string) {
+		errs = append(errs, domError{
+			message: fmt.Sprintf("%d:%d: ERROR: %s\n%s", line, col, msg, src),
+			line:    line,
+			column:  col,
+			level:   2,
+		})
+	}
+	// Check null character references &#0; / &#x0;
+	for i := 0; i < len(src); i++ {
+		if src[i] == '&' && i+3 < len(src) && src[i+1] == '#' {
+			j := i + 2
+			isHex := false
+			if j < len(src) && (src[j] == 'x' || src[j] == 'X') {
+				isHex = true
+				j++
+			}
+			k := j
+			allZero := true
+			for k < len(src) {
+				c := src[k]
+				if (c >= '0' && c <= '9') || (isHex && ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+					if c != '0' {
+						allZero = false
+					}
+					k++
+				} else {
+					break
+				}
+			}
+			if k > j && allZero {
+				addErr(1, i+1, "Null character reference.")
+			}
+		}
+	}
+	// Scan states for NUL characters
+	inTag := false
+	inComment := false
+	inBogusComment := false
+	inDoctype := false
+	inRawTag := ""
+	quote := byte(0)
+	doctypeAfterSys := false
+	doctypeQuotes := 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inRawTag != "" {
+			if inRawTag != "plaintext" && c == '<' && i+2+len(inRawTag) <= len(src) && src[i+1] == '/' && strings.EqualFold(src[i+2:i+2+len(inRawTag)], inRawTag) {
+				inRawTag = ""
+				inTag = true
+				i += 1 + len(inRawTag)
+				continue
+			}
+			if c == 0 {
+				addErr(1, i+1, "Unexpected null character.")
+			}
+			continue
+		}
+		if inComment {
+			if c == '-' && i+2 < len(src) && src[i+1] == '-' && src[i+2] == '>' {
+				inComment = false
+				i += 2
+				continue
+			}
+			if c == 0 {
+				addErr(1, i+1, "Unexpected null character.")
+			}
+			continue
+		}
+		if inBogusComment {
+			if c == '>' {
+				inBogusComment = false
+				continue
+			}
+			if c == 0 {
+				addErr(1, i+1, "Unexpected null character.")
+			}
+			continue
+		}
+		if inDoctype {
+			if c == '>' {
+				inDoctype = false
+				addErr(1, i+1, "Invalid doctype.")
+				continue
+			}
+			if quote != 0 {
+				if c == quote {
+					quote = 0
+					doctypeQuotes++
+					if doctypeQuotes == 2 {
+						doctypeAfterSys = true
+					}
+				} else if c == 0 {
+					addErr(1, i+1, "Unexpected null character.")
+				}
+				continue
+			}
+			if c == '\'' || c == '"' {
+				quote = c
+				continue
+			}
+			if doctypeAfterSys && c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+				addErr(1, i+1, "Unexpected character after doctype system identifier.")
+				doctypeAfterSys = false
+				if c == 0 {
+					addErr(1, i+1, "Unexpected null character.")
+				}
+				continue
+			}
+			if c == 0 {
+				addErr(1, i+1, "Unexpected null character.")
+			}
+			continue
+		}
+		if inTag {
+			if quote != 0 {
+				if c == quote {
+					quote = 0
+				} else if c == 0 {
+					addErr(1, i+1, "Unexpected null character.")
+				}
+				continue
+			}
+			if c == '\'' || c == '"' {
+				quote = c
+				continue
+			}
+			if c == '>' {
+				inTag = false
+				continue
+			}
+			if c == 0 {
+				addErr(1, i+1, "Unexpected null character.")
+			}
+			continue
+		}
+		// Data state
+		if c == '<' {
+			if i+3 < len(src) && src[i+1] == '!' && src[i+2] == '-' && src[i+3] == '-' {
+				inComment = true
+				i += 3
+				continue
+			}
+			if i+9 <= len(src) && strings.EqualFold(src[i:i+9], "<!doctype") {
+				inDoctype = true
+				doctypeQuotes = 0
+				doctypeAfterSys = false
+				i += 8
+				continue
+			}
+			if i+1 < len(src) && src[i+1] == '!' {
+				inBogusComment = true
+				addErr(1, i+1, "Incorrectly opened comment.")
+				i++
+				continue
+			}
+			// Check for raw/rcdata/plaintext tags
+			j := i + 1
+			for j < len(src) && ((src[j] >= 'a' && src[j] <= 'z') || (src[j] >= 'A' && src[j] <= 'Z')) {
+				j++
+			}
+			tag := strings.ToLower(src[i+1 : j])
+			if (tag == "textarea" || tag == "title" || tag == "script" || tag == "style" || tag == "plaintext") && j < len(src) && src[j] == '>' {
+				inRawTag = tag
+				i = j
+				continue
+			}
+			inTag = true
+			continue
+		}
+		if c == 0 {
+			addErr(1, i+1, "Unexpected null character.")
+			addErr(1, i+1, "Unexpected null character in body.")
+		}
+	}
+	if inRawTag == "plaintext" {
+		addErr(1, len(src), "Unexpected EOF in plaintext.")
+	}
+	return errs
 }
 
 func convertHTMLChildren(doc, parent *domNode, hn *html.Node, noblanks bool) {
@@ -143,19 +379,31 @@ func convertHTMLNodeDepth(doc *domNode, hn *html.Node, noblanks bool, depth, max
 		dn := newNode(doc, ElementNode, hn.Data, "")
 		dn.nsURI = hn.Namespace
 		for _, a := range hn.Attr {
-			if a.Key == "xmlns" && a.Namespace == "" {
-				dn.addNamespaceDef("", a.Val)
-				continue
-			}
-			if strings.HasPrefix(a.Key, "xmlns:") && a.Namespace == "" {
-				dn.addNamespaceDef(a.Key[6:], a.Val)
-				continue
+			if !doc.isHTML5 {
+				if a.Key == "xmlns" && a.Namespace == "" {
+					dn.addNamespaceDef("", a.Val)
+					continue
+				}
+				if strings.HasPrefix(a.Key, "xmlns:") && a.Namespace == "" {
+					dn.addNamespaceDef(a.Key[6:], a.Val)
+					continue
+				}
 			}
 			attr := &domAttr{
 				name:   a.Key,
 				prefix: a.Namespace,
 				value:  a.Val,
 				owner:  dn,
+			}
+			if doc.isHTML5 && a.Namespace != "" {
+				switch a.Namespace {
+				case "xml":
+					attr.nsURI = "http://www.w3.org/XML/1998/namespace"
+				case "xmlns":
+					attr.nsURI = "http://www.w3.org/2000/xmlns/"
+				case "xlink":
+					attr.nsURI = "http://www.w3.org/1999/xlink"
+				}
 			}
 			dn.attrs = append(dn.attrs, attr)
 		}

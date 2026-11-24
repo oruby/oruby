@@ -263,9 +263,17 @@ func parseTopLevelCall(s string) (name, args string, ok bool) {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ':') {
 			return "", "", false
 		}
+	}
+	if idx := strings.IndexByte(name, ':'); idx >= 0 {
+		prefix := name[:idx]
+		local := name[idx+1:]
+		if prefix == "" || local == "" || prefix == "nokogiri-builtin" {
+			return "", "", false
+		}
+		name = local
 	}
 	return name, s[open+1 : len(s)-1], true
 }
