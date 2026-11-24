@@ -1348,8 +1348,20 @@ func (u *mpUnpacker) decodeStr(mrb *oruby.MrbState, off, n int, binaryEnc bool) 
 	return s, off + n, nil
 }
 
+const maxPreallocCapa = 1024
+
+func cappedCapa(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > maxPreallocCapa {
+		return maxPreallocCapa
+	}
+	return n
+}
+
 func (u *mpUnpacker) decodeArray(mrb *oruby.MrbState, off, n, depth int) (oruby.Value, int, error) {
-	ary := mrb.AryNewCapa(n)
+	ary := mrb.AryNewCapa(cappedCapa(n))
 	for i := 0; i < n; i++ {
 		elem, nextOff, err := u.decode(mrb, off, depth)
 		if err != nil {
@@ -1366,7 +1378,7 @@ func (u *mpUnpacker) decodeArray(mrb *oruby.MrbState, off, n, depth int) (oruby.
 }
 
 func (u *mpUnpacker) decodeMap(mrb *oruby.MrbState, off, n, depth int) (oruby.Value, int, error) {
-	h := mrb.HashNewCapa(n)
+	h := mrb.HashNewCapa(cappedCapa(n))
 	for i := 0; i < n; i++ {
 		k, nextOff, err := u.decode(mrb, off, depth)
 		if err != nil {

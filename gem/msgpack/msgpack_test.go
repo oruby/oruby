@@ -270,3 +270,31 @@ func TestMessagePackFactoryAndExtensions(t *testing.T) {
 		t.Fatalf("MessagePack factory/extensions test failed: %v", err)
 	}
 }
+
+func TestMessagePackTruncatedHugeHeadersDoNotCrash(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+		require "msgpack"
+
+		# Truncated array32 / map32 / str32 / bin32 claiming 4 billion elements must raise EOFError, not OOM/longjmp
+		[
+			"\xdd\xff\xff\xff\xff".b,
+			"\xdf\xff\xff\xff\xff".b,
+			"\xdb\xff\xff\xff\xff".b,
+			"\xc6\xff\xff\xff\xff".b,
+		].each do |raw|
+			raised = false
+			begin
+				MessagePack.unpack(raw)
+			rescue EOFError, MessagePack::UnpackError
+				raised = true
+			end
+			raise "expected EOFError for #{raw.unpack1('H*')}" unless raised
+		end
+	`)
+	if err != nil {
+		t.Fatalf("MessagePack huge-header safety test failed: %v", err)
+	}
+}

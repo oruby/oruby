@@ -490,3 +490,30 @@ func ExampleMrbState_RunCode() {
 	//"bar"
 	//"baz"
 }
+
+func TestDefineMethodNestedBlockSuper(t *testing.T) {
+	mrb := MrbOpen()
+	defer mrb.Close()
+
+	v, err := mrb.Eval(`
+module M
+  def foo
+    :from_M
+  end
+end
+
+class C
+  include M
+
+  def self.make(name)
+    define_method(name) { [1].map { super() }.first }
+  end
+
+  make(:foo)
+end
+
+C.new.foo
+`)
+	ExpectNilError(t, err)
+	ExpectEql(t, mrb.String(v), "from_M")
+}
