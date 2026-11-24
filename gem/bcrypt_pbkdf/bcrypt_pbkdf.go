@@ -25,7 +25,26 @@ func initExt(mrb *oruby.MrbState) any {
 	mod := mrb.DefineModule("BCryptPbkdf")
 	eng := mrb.DefineClassUnder(mod, "Engine", mrb.ObjectClass())
 	eng.DefineClassMethod("__bc_crypt_pbkdf", pbkdfMethod, mrb.ArgsReq(4))
+	eng.DefineClassMethod("__bc_crypt_hash", hashMethod, mrb.ArgsReq(2))
 	return nil
+}
+
+func hashMethod(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	args := mrb.GetArgs()
+	sha2pass, err := rb.Bytes(mrb, args.Item(0))
+	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	sha2salt, err := rb.Bytes(mrb, args.Item(1))
+	if err != nil {
+		return rb.TypeError(mrb, err)
+	}
+	if len(sha2pass) == 0 || len(sha2salt) == 0 {
+		return mrb.Raise(mrb.EArgumentError(), "bcrypt_pbkdf: sha2pass and sha2salt must be non-empty")
+	}
+	out := make([]byte, blockSize)
+	bcryptHash(out, sha2pass, sha2salt)
+	return mrb.Call(mrb.BytesValue(out), "b")
 }
 
 func initGem(mrb *oruby.MrbState) any {

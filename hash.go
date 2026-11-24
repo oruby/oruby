@@ -118,9 +118,36 @@ func (mrb *MrbState) HashGet(hash, key MrbValue) Value {
 						}
 					}
 					return nilValue
-				} else if ktt == MrbTTSymbol || ktt == MrbTTInteger || ktt == MrbTTTrue || ktt == MrbTTFalse {
+				} else if ktt == MrbTTSymbol {
+					ksym := kv.Symbol()
 					for i := 0; i < len(entries); i++ {
-						if entries[i][0] == kv {
+						ek := entries[i][0]
+						if ek.Type() == MrbTTSymbol && ek.Symbol() == ksym {
+							return entries[i][1]
+						}
+					}
+					return nilValue
+				} else if ktt == MrbTTInteger {
+					ki := kv.Int64()
+					for i := 0; i < len(entries); i++ {
+						ek := entries[i][0]
+						if ek.Type() == MrbTTInteger && ek.Int64() == ki {
+							return entries[i][1]
+						}
+					}
+					return nilValue
+				} else if ktt == MrbTTTrue {
+					for i := 0; i < len(entries); i++ {
+						if entries[i][0].Type() == MrbTTTrue {
+							return entries[i][1]
+						}
+					}
+					return nilValue
+				} else if ktt == MrbTTFalse {
+					knil := kv.IsNil()
+					for i := 0; i < len(entries); i++ {
+						ek := entries[i][0]
+						if ek.Type() == MrbTTFalse && ek.IsNil() == knil {
 							return entries[i][1]
 						}
 					}

@@ -32,6 +32,19 @@ func TestBCryptPbkdfVectors(t *testing.T) {
 		# Low-level Engine method matches too
 		k4 = BCryptPbkdf::Engine.__bc_crypt_pbkdf("password", "salt", 32, 4)
 		raise "engine mismatch" unless k4 == k2
+
+		# Upstream bcrypt_pbkdf-1.1.2 test_ext.rb vectors
+		table = [
+			["pass2", "salt2", 12, 2, [214, 14, 48, 162, 131, 206, 121, 176, 50, 104, 231, 252]],
+			["\u0000\u0001foo", "\u0001\u0002fooo3", 14, 5, [46, 189, 32, 185, 94, 85, 232, 10, 84, 26, 44, 161, 49, 126]],
+			["doozoasd", "fooo$AS!", 14, 22, [57, 62, 50, 107, 70, 155, 65, 5, 129, 211, 189, 169, 188, 65]],
+		]
+		table.each do |p, s, l, r, want|
+			raise "upstream key mismatch" unless BCryptPbkdf.key(p, s, l, r).bytes == want
+			raise "upstream pbkdf mismatch" unless BCryptPbkdf::Engine.__bc_crypt_pbkdf(p, s, l, r).bytes == want
+		end
+		h = BCryptPbkdf::Engine.__bc_crypt_hash("a" * 64, "b" * 64)
+		raise "hash len" unless h.bytesize == 32 && h.encoding == Encoding::BINARY
 	`)
 	if err != nil {
 		t.Fatalf("eval failed: %v", err)

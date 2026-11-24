@@ -4,33 +4,49 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"errors"
 	"io"
+	"math"
 	"strconv"
 	"unsafe"
 
 	"github.com/oruby/oruby"
 )
 
+var (
+	errNesting = errors.New("nesting too deep")
+	errNaNInf  = errors.New("NaN/Infinity not allowed in JSON")
+)
+
+const (
+	defaultMaxNesting = 100
+	hardMaxNesting    = 10000
+)
+
 func init() {
 	oruby.Gem("json", func(mrb *oruby.MrbState) interface{} {
 		jsonModule := mrb.DefineModule("JSON")
 		mrb.ConstSet(jsonModule, mrb.Intern("VERSION"), mrb.StrNew("2.10.2"))
+		mrb.ConstSet(jsonModule, mrb.Intern("NaN"), mrb.FloatValue(math.NaN()))
+		mrb.ConstSet(jsonModule, mrb.Intern("Infinity"), mrb.FloatValue(math.Inf(1)))
+		mrb.ConstSet(jsonModule, mrb.Intern("MinusInfinity"), mrb.FloatValue(math.Inf(-1)))
 
 		jsonErr := mrb.DefineClassUnder(jsonModule, "JSONError", mrb.ExcGet("StandardError"))
 		mrb.DefineClassUnder(jsonModule, "ParserError", jsonErr)
 		genErr := mrb.DefineClassUnder(jsonModule, "GeneratorError", jsonErr)
 		mrb.DefineClassUnder(jsonModule, "NestingError", genErr)
 
-		jsonModule.DefineClassMethod("stringify", mrbJSONStringify, mrb.ArgsArg(1, 1))
-		jsonModule.DefineClassMethod("generate", mrbJSONGenerate, mrb.ArgsArg(1, 1))              // generate(obj, opts = nil)
-		jsonModule.DefineClassMethod("unparse", mrbJSONGenerate, mrb.ArgsArg(1, 1))               // unparse(obj, opts = nil)
-		jsonModule.DefineClassMethod("pretty_generate", mrbJSONPrettyGenerate, mrb.ArgsArg(1, 1)) // pretty_generate(obj, opts = nil)
-		jsonModule.DefineClassMethod("pretty_unparse", mrbJSONPrettyGenerate, mrb.ArgsArg(1, 1))  // pretty_unparse(obj, opts = nil)
-		jsonModule.DefineClassMethod("fast_generate", mrbJSONGenerate, mrb.ArgsArg(1, 1))         // fast_generate(obj, opts = nil)
-		jsonModule.DefineClassMethod("fast_unparse", mrbJSONGenerate, mrb.ArgsArg(1, 1))          // fast_unparse(obj, opts = nil)
+		jsonOptArgs := mrb.ArgsArg(1, 1) + mrb.ArgsKey(0, 1)
+		jsonModule.DefineClassMethod("stringify", mrbJSONStringify, jsonOptArgs)
+		jsonModule.DefineClassMethod("generate", mrbJSONGenerate, jsonOptArgs)              // generate(obj, opts = nil)
+		jsonModule.DefineClassMethod("unparse", mrbJSONGenerate, jsonOptArgs)               // unparse(obj, opts = nil)
+		jsonModule.DefineClassMethod("pretty_generate", mrbJSONPrettyGenerate, jsonOptArgs) // pretty_generate(obj, opts = nil)
+		jsonModule.DefineClassMethod("pretty_unparse", mrbJSONPrettyGenerate, jsonOptArgs)  // pretty_unparse(obj, opts = nil)
+		jsonModule.DefineClassMethod("fast_generate", mrbJSONGenerate, jsonOptArgs)         // fast_generate(obj, opts = nil)
+		jsonModule.DefineClassMethod("fast_unparse", mrbJSONGenerate, jsonOptArgs)          // fast_unparse(obj, opts = nil)
 
-		jsonModule.DefineClassMethod("parse", mrbJSONParse, mrb.ArgsArg(1, 1))  // parse(source, opts = {})
-		jsonModule.DefineClassMethod("parse!", mrbJSONParse, mrb.ArgsArg(1, 1)) // parse!(source, opts = {})
+		jsonModule.DefineClassMethod("parse", mrbJSONParse, jsonOptArgs)  // parse(source, opts = {})
+		jsonModule.DefineClassMethod("parse!", mrbJSONParse, jsonOptArgs) // parse!(source, opts = {})
 
 		_, _ = mrb.Eval(`
 module JSON
@@ -167,7 +183,58 @@ type kvPair struct {
 	v oruby.Value
 }
 
-func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value) ([]byte, error) {
+type jsonGenOpts struct {
+	maxNesting int
+	allowNaN   bool
+}
+
+func extractJSONGenOpts(mrb *oruby.MrbState, args oruby.RArgs) jsonGenOpts {
+	res := jsonGenOpts{maxNesting: defaultMaxNesting}
+	apply := func(opts oruby.Value) {
+		if opts.IsNil() {
+			return
+		}
+		if !opts.IsHash() && mrb.RespondTo(opts, mrb.Intern("to_h")) {
+			opts = mrb.Call(opts, "to_h")
+		}
+		if !opts.IsHash() {
+			return
+		}
+		getOpt := func(name string) (oruby.Value, bool) {
+			if mrb.HashKeyP(opts, mrb.SymbolValue(mrb.Intern(name))) {
+				return mrb.HashGet(opts, mrb.SymbolValue(mrb.Intern(name))), true
+			}
+			if mrb.HashKeyP(opts, mrb.StrNew(name)) {
+				return mrb.HashGet(opts, mrb.StrNew(name)), true
+			}
+			return mrb.NilValue(), false
+		}
+		if v, ok := getOpt("max_nesting"); ok {
+			if v.IsNil() || v.Type() == oruby.MrbTTFalse {
+				res.maxNesting = hardMaxNesting
+			} else if v.IsInt() {
+				n := int(v.Int64())
+				if n <= 0 || n > hardMaxNesting {
+					res.maxNesting = hardMaxNesting
+				} else {
+					res.maxNesting = n
+				}
+			}
+		}
+		if v, ok := getOpt("allow_nan"); ok {
+			res.allowNaN = oruby.MrbBoolean(v)
+		}
+	}
+	if args.Len() > 1 {
+		apply(args.Item(1))
+	}
+	if kw := mrb.KeywordArgs().Value(); !kw.IsNil() {
+		apply(kw)
+	}
+	return res
+}
+
+func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value, depth int, opts jsonGenOpts) ([]byte, error) {
 	if val.IsNil() {
 		return append(buf, "null"...), nil
 	}
@@ -179,7 +246,26 @@ func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value) ([]byte, 
 	case oruby.MrbTTInteger:
 		return strconv.AppendInt(buf, val.Int64(), 10), nil
 	case oruby.MrbTTFloat:
-		return strconv.AppendFloat(buf, val.Float64(), 'g', -1, 64), nil
+		f := val.Float64()
+		if math.IsNaN(f) {
+			if !opts.allowNaN {
+				return nil, errNaNInf
+			}
+			return append(buf, "NaN"...), nil
+		}
+		if math.IsInf(f, 1) {
+			if !opts.allowNaN {
+				return nil, errNaNInf
+			}
+			return append(buf, "Infinity"...), nil
+		}
+		if math.IsInf(f, -1) {
+			if !opts.allowNaN {
+				return nil, errNaNInf
+			}
+			return append(buf, "-Infinity"...), nil
+		}
+		return strconv.AppendFloat(buf, f, 'g', -1, 64), nil
 	case oruby.MrbTTString:
 		ptr, n := oruby.RStringMem(val)
 		if n <= 0 || ptr == nil {
@@ -189,6 +275,9 @@ func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value) ([]byte, 
 	case oruby.MrbTTSymbol:
 		return appendJSONString(buf, mrb.SymName(val.Symbol())), nil
 	case oruby.MrbTTArray:
+		if depth >= opts.maxNesting {
+			return nil, errNesting
+		}
 		elems := oruby.RArraySlice(val)
 		buf = append(buf, '[')
 		for i, elem := range elems {
@@ -196,7 +285,7 @@ func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value) ([]byte, 
 				buf = append(buf, ',')
 			}
 			var err error
-			buf, err = appendJSONValue(mrb, buf, elem)
+			buf, err = appendJSONValue(mrb, buf, elem, depth+1, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -204,6 +293,9 @@ func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value) ([]byte, 
 		buf = append(buf, ']')
 		return buf, nil
 	case oruby.MrbTTHash:
+		if depth >= opts.maxNesting {
+			return nil, errNesting
+		}
 		entries := oruby.RHashEntries(val)
 		var stackKVs [16]kvPair
 		var kvs []kvPair
@@ -227,7 +319,14 @@ func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value) ([]byte, 
 			case oruby.MrbTTSymbol:
 				keyStr = mrb.SymName(key.Symbol())
 			default:
-				keyStr = mrb.ObjAsString(key).String()
+				sv, err := mrb.Funcall(key, oruby.Sym_to_s)
+				if err != nil {
+					return nil, err
+				}
+				if sv.Type() != oruby.MrbTTString {
+					return nil, errors.New("key#to_s did not return String")
+				}
+				keyStr = mrb.String(sv)
 			}
 			kvs = append(kvs, kvPair{k: keyStr, v: entries[i][1]})
 		}
@@ -249,7 +348,7 @@ func appendJSONValue(mrb *oruby.MrbState, buf []byte, val oruby.Value) ([]byte, 
 			buf = appendJSONString(buf, kv.k)
 			buf = append(buf, ':')
 			var err error
-			buf, err = appendJSONValue(mrb, buf, kv.v)
+			buf, err = appendJSONValue(mrb, buf, kv.v, depth+1, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -282,20 +381,34 @@ func jsonErrorClass(mrb *oruby.MrbState, name string) oruby.RClass {
 
 var genBuf [512]byte
 
+func raiseJSONGenErr(mrb *oruby.MrbState, err error) oruby.MrbValue {
+	if errors.Is(err, errNesting) {
+		return mrb.Raisef(jsonErrorClass(mrb, "NestingError"), "nesting of %v is too deep", err)
+	}
+	if _, ok := err.(oruby.MrbValue); ok {
+		return mrb.RaiseError(err)
+	}
+	return mrb.Raisef(jsonErrorClass(mrb, "GeneratorError"), "JSON::generate - %v", err)
+}
+
 func mrbJSONGenerate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	v := mrb.GetArgsFirst()
-	buf, err := appendJSONValue(mrb, genBuf[:0], v)
+	args := mrb.GetArgs()
+	v := args.Item(0)
+	opts := extractJSONGenOpts(mrb, args)
+	buf, err := appendJSONValue(mrb, genBuf[:0], v, 0, opts)
 	if err != nil {
-		return mrb.Raisef(jsonErrorClass(mrb, "GeneratorError"), "JSON::generate - %v", err)
+		return raiseJSONGenErr(mrb, err)
 	}
 	return mrb.BytesValue(buf)
 }
 
 func mrbJSONPrettyGenerate(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	v := mrb.GetArgsFirst()
-	raw, err := appendJSONValue(mrb, nil, v)
+	args := mrb.GetArgs()
+	v := args.Item(0)
+	opts := extractJSONGenOpts(mrb, args)
+	raw, err := appendJSONValue(mrb, nil, v, 0, opts)
 	if err != nil {
-		return mrb.Raisef(jsonErrorClass(mrb, "GeneratorError"), "JSON::generate - %v", err)
+		return raiseJSONGenErr(mrb, err)
 	}
 	val := jsontext.Value(raw)
 	if err := val.Format(jsontext.WithIndent("  ")); err != nil {
@@ -311,7 +424,7 @@ var (
 	parseStrBuf = make([]byte, 0, 256)
 )
 
-func decodeJSONToBatch(dec *jsontext.Decoder, ops *[]oruby.BatchOp, strBuf *[]byte) error {
+func decodeJSONToBatch(dec *jsontext.Decoder, ops *[]oruby.BatchOp, strBuf *[]byte, depth, maxNesting int) error {
 	tok, err := dec.ReadToken()
 	if err != nil {
 		return err
@@ -339,9 +452,12 @@ func decodeJSONToBatch(dec *jsontext.Decoder, ops *[]oruby.BatchOp, strBuf *[]by
 		*strBuf = append(*strBuf, s...)
 		*ops = append(*ops, oruby.BatchOp{Op: 5, Off: off, I: int64(len(s))})
 	case '[':
+		if depth >= maxNesting {
+			return errNesting
+		}
 		var cnt int64
 		for dec.PeekKind() != ']' {
-			if err := decodeJSONToBatch(dec, ops, strBuf); err != nil {
+			if err := decodeJSONToBatch(dec, ops, strBuf, depth+1, maxNesting); err != nil {
 				return err
 			}
 			cnt++
@@ -351,6 +467,9 @@ func decodeJSONToBatch(dec *jsontext.Decoder, ops *[]oruby.BatchOp, strBuf *[]by
 		}
 		*ops = append(*ops, oruby.BatchOp{Op: 6, I: cnt})
 	case '{':
+		if depth >= maxNesting {
+			return errNesting
+		}
 		var pairs int64
 		for dec.PeekKind() != '}' {
 			ktok, err := dec.ReadToken()
@@ -361,7 +480,7 @@ func decodeJSONToBatch(dec *jsontext.Decoder, ops *[]oruby.BatchOp, strBuf *[]by
 			off := uint32(len(*strBuf))
 			*strBuf = append(*strBuf, ks...)
 			*ops = append(*ops, oruby.BatchOp{Op: 5, Off: off, I: int64(len(ks))})
-			if err := decodeJSONToBatch(dec, ops, strBuf); err != nil {
+			if err := decodeJSONToBatch(dec, ops, strBuf, depth+1, maxNesting); err != nil {
 				return err
 			}
 			pairs++
@@ -441,7 +560,11 @@ func mrbJSONParse(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	parseOps = parseOps[:0]
 	parseStrBuf = parseStrBuf[:0]
 
-	if err := decodeJSONToBatch(parseDec, &parseOps, &parseStrBuf); err != nil {
+	opts := extractJSONGenOpts(mrb, args)
+	if err := decodeJSONToBatch(parseDec, &parseOps, &parseStrBuf, 0, opts.maxNesting); err != nil {
+		if errors.Is(err, errNesting) {
+			return mrb.Raisef(jsonErrorClass(mrb, "NestingError"), "JSON::parse - %v", err)
+		}
 		return mrb.Raisef(jsonErrorClass(mrb, "ParserError"), "JSON::parse - %v", err)
 	}
 	if _, err := parseDec.ReadToken(); err != io.EOF {
