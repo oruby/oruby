@@ -25,9 +25,22 @@ module MessagePack
     undef_method :dup
     undef_method :clone
 
-    def register_type(type, klass, method_name = nil, &block)
+    def register_type(type, klass, method_name_or_proc = nil, &block)
+      raise FrozenError, "can't modify frozen MessagePack::Packer" if frozen?
       raise ArgumentError, "expected Module/Class got: #{klass.inspect}" unless klass.is_a?(Module)
-      proc_obj = block || (method_name ? method_name.to_sym.to_proc : nil)
+      proc_obj = if block
+        block
+      elsif method_name_or_proc.is_a?(Proc)
+        method_name_or_proc
+      elsif method_name_or_proc.is_a?(Symbol) || method_name_or_proc.is_a?(String)
+        method_name_or_proc.to_sym.to_proc
+      elsif method_name_or_proc.is_a?(Method)
+        method_name_or_proc.to_proc
+      elsif method_name_or_proc.nil?
+        nil
+      else
+        raise ::TypeError, "expected Proc, got: #{method_name_or_proc.inspect}"
+      end
       register_type_internal(type, klass, proc_obj)
     end
 
@@ -56,6 +69,7 @@ module MessagePack
     undef_method :clone
 
     def register_type(type, klass = nil, method_name = nil, &block)
+      raise FrozenError, "can't modify frozen MessagePack::Unpacker" if frozen?
       if klass && method_name
         block = klass.method(method_name).to_proc
       elsif !block_given?
@@ -96,6 +110,9 @@ module MessagePack
 
       if options
         options = options.dup
+        if options[:oversized_integer_extension] && klass != Integer
+          raise ArgumentError, "oversized_integer_extension is only allowed for Integer"
+        end
         case packer = options[:packer]
         when nil, Proc
           # ok
@@ -186,8 +203,7 @@ module MessagePack
     end
     alias unpack load
 
-    def dump(v, *rest, **kw)
-      rest << kw unless kw.empty?
+    def dump(v, *rest)
       p = packer(*rest)
       p.write(v)
       p.full_pack
@@ -377,11 +393,8 @@ module MessagePack
   alias unpack load
   module_function :load, :unpack
 
-  def pack(v, io = nil, options = nil, **kw)
-    if !kw.empty?
-      options = options ? options.merge(kw) : kw
-    end
-    p = DefaultFactory.packer(io, options)
+  def pack(v, *rest)
+    p = DefaultFactory.packer(*rest)
     p.write(v)
     p.full_pack
   end

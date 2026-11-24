@@ -203,6 +203,14 @@ func (b *mpBuffer) remaining() int {
 	return len(b.data) - b.pos
 }
 
+// Memsize implements the optional ObjectSpace.memsize_of interface for Go-backed data objects.
+func (b *mpBuffer) Memsize() int {
+	if b == nil || b.remaining() == 0 {
+		return 0
+	}
+	return cap(b.data)
+}
+
 func (b *mpBuffer) bytes() []byte {
 	return b.data[b.pos:]
 }
@@ -224,7 +232,11 @@ func (b *mpBuffer) appendByte(c byte) {
 }
 
 func (b *mpBuffer) clear() {
-	b.data = b.data[:0]
+	if cap(b.data) > 4096 {
+		b.data = nil
+	} else {
+		b.data = b.data[:0]
+	}
 	b.pos = 0
 }
 
@@ -233,7 +245,11 @@ func (b *mpBuffer) compact() {
 		return
 	}
 	if b.pos >= len(b.data) {
-		b.data = b.data[:0]
+		if cap(b.data) > 4096 {
+			b.data = nil
+		} else {
+			b.data = b.data[:0]
+		}
 		b.pos = 0
 		return
 	}
@@ -465,17 +481,19 @@ func defineBuffer(mrb *oruby.MrbState, mod oruby.RClass) {
 // ---------------------------------------------------------------------------
 
 type packExt struct {
-	typeID    int8
-	klass     oruby.Value
-	proc      oruby.Value
-	recursive bool
+	typeID           int8
+	klass            oruby.Value
+	proc             oruby.Value
+	recursive        bool
+	oversizedInteger bool
 }
 
 type unpackExt struct {
-	typeID    int8
-	klass     oruby.Value
-	proc      oruby.Value
-	recursive bool
+	typeID           int8
+	klass            oruby.Value
+	proc             oruby.Value
+	recursive        bool
+	optimizedSymbols bool
 }
 
 func validateExtTypeVal(mrb *oruby.MrbState, v oruby.Value) (int8, error) {
@@ -766,7 +784,7 @@ func (p *mpPacker) writeInteger(mrb *oruby.MrbState, v oruby.Value) error {
 		p.writeUint64(z.Uint64())
 		return nil
 	}
-	if ext := p.findPackExt(mrb, v); ext != nil {
+	if ext := p.findPackExt(mrb, v); ext != nil && ext.oversizedInteger {
 		return p.writeWithExt(mrb, ext, v)
 	}
 	return oruby.ERangeError("bignum too big to convert into 'unsigned long long'")
@@ -988,7 +1006,11 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	cls.DefineMethod("write_int", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		p := getPacker(mrb, self)
-		if err := p.writeInteger(mrb, mrb.GetArgsFirst()); err != nil {
+		v := mrb.GetArgsFirst()
+		if v.Type() != oruby.MrbTTInteger && v.Type() != oruby.MrbTTBigInt {
+			return mrb.Raise(mrb.ETypeError(), fmt.Sprintf("wrong argument type %s (expected Integer)", mrb.ClassOf(v).Name()))
+		}
+		if err := p.writeInteger(mrb, v); err != nil {
 			return mrb.RaiseError(err)
 		}
 		return self
@@ -1006,23 +1028,42 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	cls.DefineMethod("write_float32", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
-		f := v.Float64()
-		if v.IsInt() {
+		var f float64
+		switch v.Type() {
+		case oruby.MrbTTFloat:
+			f = v.Float64()
+		case oruby.MrbTTInteger:
 			f = float64(v.Int64())
+		case oruby.MrbTTBigInt:
+			z, err := mrb.BigInt(v)
+			if err != nil {
+				return mrb.Raise(mrb.EArgumentError(), err.Error())
+			}
+			f, _ = z.Float64()
+		default:
+			return mrb.Raise(mrb.EArgumentError(), fmt.Sprintf("expected Numeric, got %s", mrb.ClassOf(v).Name()))
 		}
 		getPacker(mrb, self).writeFloat32(float32(f))
 		return self
 	}, mrb.ArgsReq(1))
 
 	cls.DefineMethod("write_string", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		if err := getPacker(mrb, self).writeStringVal(mrb, mrb.GetArgsFirst()); err != nil {
+		v := mrb.GetArgsFirst()
+		if !v.IsString() {
+			return mrb.Raise(mrb.ETypeError(), fmt.Sprintf("wrong argument type %s (expected String)", mrb.ClassOf(v).Name()))
+		}
+		if err := getPacker(mrb, self).writeStringVal(mrb, v); err != nil {
 			return mrb.RaiseError(err)
 		}
 		return self
 	}, mrb.ArgsReq(1))
 
 	cls.DefineMethod("write_bin", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		getPacker(mrb, self).writeBinBytes(mrb.GetArgsFirst().Bytes())
+		v := mrb.GetArgsFirst()
+		if !v.IsString() {
+			return mrb.Raise(mrb.ETypeError(), fmt.Sprintf("wrong argument type %s (expected String)", mrb.ClassOf(v).Name()))
+		}
+		getPacker(mrb, self).writeBinBytes(v.Bytes())
 		return self
 	}, mrb.ArgsReq(1))
 
@@ -1034,6 +1075,9 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls.DefineMethod("write_symbol", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		p := getPacker(mrb, self)
 		v := mrb.GetArgsFirst()
+		if !v.IsSymbol() {
+			return mrb.Raise(mrb.ETypeError(), fmt.Sprintf("wrong argument type %s (expected Symbol)", mrb.ClassOf(v).Name()))
+		}
 		if ext := p.findPackExt(mrb, v); ext != nil {
 			if err := p.writeWithExt(mrb, ext, v); err != nil {
 				return mrb.RaiseError(err)
@@ -1054,6 +1098,9 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls.DefineMethod("write_array", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		p := getPacker(mrb, self)
 		v := mrb.GetArgsFirst()
+		if !v.IsArray() {
+			return mrb.Raise(mrb.ETypeError(), fmt.Sprintf("wrong argument type %s (expected Array)", mrb.ClassOf(v).Name()))
+		}
 		n := oruby.RArrayLen(v)
 		p.writeArrayHeader(n)
 		for i := 0; i < n; i++ {
@@ -1072,6 +1119,9 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls.DefineMethod("write_hash", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		p := getPacker(mrb, self)
 		v := mrb.GetArgsFirst()
+		if !v.IsHash() {
+			return mrb.Raise(mrb.ETypeError(), fmt.Sprintf("wrong argument type %s (expected Hash)", mrb.ClassOf(v).Name()))
+		}
 		keys := mrb.HashKeys(v)
 		n := oruby.RArrayLen(keys)
 		p.writeMapHeader(n)
@@ -1099,6 +1149,10 @@ func definePacker(mrb *oruby.MrbState, mod oruby.RClass) {
 
 	cls.DefineMethod("write_extension", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ev := mrb.GetArgsFirst()
+		extValCls := rb.ClassPath(mrb, "MessagePack::ExtensionValue")
+		if extValCls.IsNil() || !mrb.ObjIsKindOf(ev, extValCls) {
+			return mrb.Raise(mrb.ETypeError(), fmt.Sprintf("wrong argument type %s (expected MessagePack::ExtensionValue)", mrb.ClassOf(ev).Name()))
+		}
 		typeVal, err := rbCall(mrb, ev, "type")
 		if err != nil {
 			return mrb.RaiseError(err)
@@ -1213,6 +1267,7 @@ type mpUnpacker struct {
 	symbolizeKeys   bool
 	freeze          bool
 	allowUnknownExt bool
+	extDepth        int
 	exts            map[int8]unpackExt
 }
 
@@ -1424,7 +1479,11 @@ func (u *mpUnpacker) decodeStr(mrb *oruby.MrbState, off, n int, binaryEnc bool) 
 		s = mrb.BytesValue(raw)
 	}
 	if u.freeze {
-		s = mrb.ObjFreeze(s)
+		if dedup, err := rbCall(mrb, s, "-@"); err == nil && dedup.IsString() {
+			s = dedup
+		} else {
+			s = mrb.ObjFreeze(s)
+		}
 	}
 	return s, off + n, nil
 }
@@ -1500,7 +1559,29 @@ func (u *mpUnpacker) decodeExt(mrb *oruby.MrbState, off int, tid int8, n int) (o
 	nextOff := off + n
 
 	if ext, ok := u.exts[tid]; ok {
+		if ext.optimizedSymbols {
+			isASCII := true
+			for _, b := range payloadBytes {
+				if b >= 0x80 {
+					isASCII = false
+					break
+				}
+			}
+			s := mrb.BytesValue(payloadBytes)
+			if isASCII {
+				if encCls := mrb.ClassGet("Encoding"); !encCls.IsNil() {
+					if asciiEnc := mrb.ConstGet(encCls, mrb.Intern("US_ASCII")); !asciiEnc.IsNil() {
+						_, _ = rbCall(mrb, s, "force_encoding", asciiEnc)
+					}
+				}
+			}
+			sym, err := rbCall(mrb, s, "to_sym")
+			return sym, nextOff, err
+		}
 		if ext.recursive {
+			if u.extDepth >= 128 {
+				return mrb.NilValue(), off, errStack
+			}
 			subBuf, subBufVal := newBufferVal(mrb, mrb.NilValue())
 			subBuf.appendBytes(payloadBytes)
 			subU := &mpUnpacker{
@@ -1509,6 +1590,7 @@ func (u *mpUnpacker) decodeExt(mrb *oruby.MrbState, off int, tid int8, n int) (o
 				symbolizeKeys:   u.symbolizeKeys,
 				freeze:          u.freeze,
 				allowUnknownExt: u.allowUnknownExt,
+				extDepth:        u.extDepth + 1,
 				exts:            u.exts,
 			}
 			subVal := mrb.DataWrapInterface(rb.ClassPath(mrb, "MessagePack::Unpacker"), subU).Value()
@@ -1536,7 +1618,7 @@ func (u *mpUnpacker) decodeExt(mrb *oruby.MrbState, off int, tid int8, n int) (o
 }
 
 func (u *mpUnpacker) skipOne(mrb *oruby.MrbState, off, depth int) (int, error) {
-	if depth > maxNestingDepth {
+	if depth >= maxNestingDepth {
 		return off, errStack
 	}
 	if err := u.ensure(mrb, off, 1); err != nil {
@@ -1989,6 +2071,27 @@ type mpFactory struct {
 	unpackExts map[int8]unpackExt
 }
 
+func (f *mpFactory) Memsize() int {
+	if f == nil {
+		return 0
+	}
+	return (len(f.packExts) + len(f.unpackExts)) * 64
+}
+
+func (p *mpPacker) Memsize() int {
+	if p == nil {
+		return 0
+	}
+	return p.buf.Memsize() + len(p.exts)*64
+}
+
+func (u *mpUnpacker) Memsize() int {
+	if u == nil {
+		return 0
+	}
+	return u.buf.Memsize() + len(u.exts)*64
+}
+
 func defineFactory(mrb *oruby.MrbState, mod oruby.RClass) {
 	cls := mrb.DefineClassUnder(mod, "Factory", mrb.ObjectClass())
 	rb.DataClass(cls)
@@ -2032,30 +2135,35 @@ func defineFactory(mrb *oruby.MrbState, mod oruby.RClass) {
 
 		var packProc, unpackProc = mrb.NilValue(), mrb.NilValue()
 		recursive := false
+		oversizedInt := false
+		optSym := false
 		if !opts.IsNil() && opts.IsHash() {
 			packProc = hashGetSym(mrb, opts, "packer")
 			unpackProc = hashGetSym(mrb, opts, "unpacker")
 			recursive = optBool(mrb, opts, "recursive")
+			oversizedInt = optBool(mrb, opts, "oversized_integer_extension")
+			optSym = optBool(mrb, opts, "optimized_symbols_parsing")
 		}
 		if !packProc.IsNil() {
 			appendRef(mrb, self, klass)
 			appendRef(mrb, self, packProc)
+			pe := packExt{typeID: tid, klass: klass, proc: packProc, recursive: recursive, oversizedInteger: oversizedInt}
 			updated := false
 			for i := range f.packExts {
 				if mrb.ObjEqual(f.packExts[i].klass, klass) {
-					f.packExts[i] = packExt{typeID: tid, klass: klass, proc: packProc, recursive: recursive}
+					f.packExts[i] = pe
 					updated = true
 					break
 				}
 			}
 			if !updated {
-				f.packExts = append(f.packExts, packExt{typeID: tid, klass: klass, proc: packProc, recursive: recursive})
+				f.packExts = append(f.packExts, pe)
 			}
 		}
-		if !unpackProc.IsNil() {
+		if !unpackProc.IsNil() || optSym {
 			appendRef(mrb, self, klass)
 			appendRef(mrb, self, unpackProc)
-			f.unpackExts[tid] = unpackExt{typeID: tid, klass: klass, proc: unpackProc, recursive: recursive}
+			f.unpackExts[tid] = unpackExt{typeID: tid, klass: klass, proc: unpackProc, recursive: recursive, optimizedSymbols: optSym}
 		}
 		return mrb.NilValue()
 	}, mrb.ArgsReq(3))

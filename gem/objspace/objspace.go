@@ -110,6 +110,12 @@ func calcMemsize(mrb *oruby.MrbState, v oruby.Value) int {
 		if ivs, err := mrb.Funcall(v, mrb.Intern("instance_variables")); err == nil && ivs.IsArray() {
 			sz += oruby.RArrayLen(ivs) * (mrbValueSize + 8)
 		}
+	case oruby.MrbTTCData:
+		if ms, ok := mrb.Data(v).(interface{ Memsize() int }); ok {
+			if extra := ms.Memsize(); extra > 0 {
+				sz += extra
+			}
+		}
 	}
 	return sz
 }

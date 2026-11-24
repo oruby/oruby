@@ -107,3 +107,26 @@ func TestObjSpace(t *testing.T) {
 		t.Fatalf("ObjSpace test failed: %v", err)
 	}
 }
+
+type sizedData struct{ n int }
+
+func (s *sizedData) Memsize() int { return s.n }
+
+func TestObjSpaceCDataMemsizeHook(t *testing.T) {
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	cls := mrb.DefineClass("SizedData", mrb.ObjectClass())
+	oruby.MrbSetInstanceTT(cls, oruby.MrbTTCData)
+	d := &sizedData{n: 4096}
+	mrb.GVSet(mrb.Intern("$sized"), mrb.DataWrapInterface(cls, d))
+
+	_, err := mrb.Eval(`
+		require "objspace"
+		sz = ObjectSpace.memsize_of($sized)
+		raise "expected memsize >= 4096, got #{sz}" unless sz >= 4096 + 48
+	`)
+	if err != nil {
+		t.Fatalf("CData Memsize hook test failed: %v", err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	_ "github.com/oruby/oruby/gem/core_ext"
 	_ "github.com/oruby/oruby/gem/load"
 	_ "github.com/oruby/oruby/gem/msgpack"
+	_ "github.com/oruby/oruby/gem/objspace"
 	_ "github.com/oruby/oruby/gem/time"
 	_ "github.com/oruby/oruby/gem/transcode"
 )
@@ -331,6 +332,80 @@ func TestMessagePackTruncatedHugeHeadersDoNotCrash(t *testing.T) {
 		raise "custom hash" unless f2.unpack(f2.pack(ch)) == [:h, 1]
 		raise "custom array" unless f2.unpack(f2.pack(ca)) == [:a, 3]
 		raise "custom string" unless f2.unpack(f2.pack(cs)) == [:s, "AB"]
+
+		# Keyword-hash as sole arg to pack/dump
+		raise "pack kw hash" unless MessagePack.unpack(MessagePack.pack(foo: "bar")) == {"foo" => "bar"}
+		raise "factory dump kw hash" unless f2.load(f2.dump(x: 1, y: 2)) == {"x" => 1, "y" => 2}
+
+		# freeze: true deduplicates strings
+		fstr = MessagePack.unpack(MessagePack.pack("dedup_me"), freeze: true)
+		raise "freeze dedup" unless fstr.equal?("dedup_me".freeze)
+
+		# Packer#register_type accepts Proc and rejects non-Proc with TypeError
+		p2 = MessagePack::Packer.new
+		p2.register_type(0x01, CustomString, ->(_) { "ok" })
+		p2.write(cs)
+		raise "packer proc ext" unless p2.full_pack == "\xd5\x01ok".b
+		bad_cb = false
+		begin
+			p2.register_type(0x02, CustomHash, Object.new)
+		rescue TypeError
+			bad_cb = true
+		end
+		raise "expected TypeError for non-Proc callback" unless bad_cb
+
+		# Type/argument checks on write_array, write_symbol, write_float32
+		[
+			-> { MessagePack::Packer.new.write_array("bad") },
+			-> { MessagePack::Packer.new.write_symbol("bad") },
+		].each do |fn|
+			ok = false
+			begin; fn.call; rescue TypeError; ok = true; end
+			raise "expected TypeError" unless ok
+		end
+		ok_f32 = false
+		begin; MessagePack::Packer.new.write_float32("abc"); rescue ArgumentError; ok_f32 = true; end
+		raise "expected ArgumentError for write_float32" unless ok_f32
+
+		# Unpacker#skip raises StackError at depth 512
+		deep_p = MessagePack::Packer.new
+		512.times { deep_p.write_array_header(1) }
+		deep_p.write(nil)
+		deep_u = MessagePack::Unpacker.new
+		deep_u.feed(deep_p.to_s)
+		got_stack = false
+		begin; deep_u.skip; rescue MessagePack::StackError; got_stack = true; end
+		raise "expected StackError on deep skip" unless got_stack
+
+		# oversized_integer_extension and optimized_symbols_parsing
+		f3 = MessagePack::Factory.new
+		f3.register_type(0x01, Integer, packer: :to_s, unpacker: ->(s) { Integer(s) })
+		got_range = false
+		begin; f3.dump(10**150); rescue RangeError; got_range = true; end
+		raise "expected RangeError without oversized_integer_extension" unless got_range
+		f4 = MessagePack::Factory.new
+		f4.register_type(0x01, Integer, packer: :to_s, unpacker: ->(s) { Integer(s) }, oversized_integer_extension: true)
+		raise "oversized int roundtrip" unless f4.load(f4.dump(10**150)) == 10**150
+		f4.register_type(0x02, Symbol, packer: :to_msgpack_ext, unpacker: ->(_) { raise "not optimized" }, optimized_symbols_parsing: true)
+		raise "optimized sym ascii" unless f4.load(f4.dump(:hello)) == :hello && f4.load(f4.dump(:hello)).encoding == Encoding::US_ASCII
+		raise "optimized sym utf8" unless f4.load(f4.dump(:"fée")) == :"fée" && f4.load(f4.dump(:"fée")).encoding == Encoding::UTF_8
+
+		# ObjectSpace.memsize_of reflects Buffer and Factory Go allocations
+		require "objspace"
+		mb = MessagePack::Buffer.new
+		empty_sz = ObjectSpace.memsize_of(mb)
+		10.times { mb << "a" * 500 }
+		full_sz = ObjectSpace.memsize_of(mb)
+		raise "buffer memsize grew" unless full_sz > empty_sz
+		mb.read(10)
+		raise "buffer memsize stable" unless ObjectSpace.memsize_of(mb) == full_sz
+		mb.read_all
+		raise "buffer memsize cleared" unless ObjectSpace.memsize_of(mb) == empty_sz
+
+		mf = MessagePack::Factory.new
+		fbase = ObjectSpace.memsize_of(mf)
+		mf.register_type(0x0a, Symbol)
+		raise "factory memsize grew" unless ObjectSpace.memsize_of(mf) > fbase
 	`)
 	if err != nil {
 		t.Fatalf("MessagePack huge-header safety test failed: %v", err)
