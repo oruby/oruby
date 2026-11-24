@@ -437,8 +437,19 @@ func raiseCannotLoad(mrb *oruby.MrbState, feature string) oruby.MrbValue {
 
 // raiseCExtension: a C extension was found; oruby does not load them (MRI
 // fails in dlopen here when the file is no library: path stays nil)
+// raiseCExtension loads the C extension library at path through the Ruby
+// C API (gem/capi's loader) and records it as loaded, or raises LoadError
+// where there is no loader
 func raiseCExtension(mrb *oruby.MrbState, path string) oruby.MrbValue {
-	return mrb.Raisef(mrb.ClassGet("LoadError"), "dlopen(%v): oruby does not load C extensions", path)
+	load := oruby.CExtensionLoader()
+	if load == nil {
+		return mrb.Raisef(mrb.ClassGet("LoadError"), "dlopen(%v): oruby does not load C extensions", path)
+	}
+	if err := load(mrb, path); err != nil {
+		return mrb.RaiseError(err)
+	}
+	mrb.AryPush(mrb.GVGet(oruby.GvSym_LOADED_FEATURES), mrb.StrNew(path))
+	return mrb.TrueValue()
 }
 
 // loadFailure re-raises exception raised by loaded code (SyntaxError,

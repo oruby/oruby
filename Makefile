@@ -23,7 +23,8 @@ all : libmruby.a $(DYN_LIB) bin
 	ruby scripts/check_api.rb
 	go build .
 
-# bin/ next to lib/oruby is the install layout, so bin/oruby runs in-tree.
+# bin/ next to lib/oruby is the install layout, so bin/oruby runs in-tree;
+# gem, bundle, irb, ... beside it are RubyGems stubs (scripts/gen_bin_stubs.rb).
 # scripts/gen_prism.rb writes Ruby::Prism and Ripper into lib/oruby/4.1.0
 # (generated from mruby's vendored Prism, ignored by git).
 # lib/liboruby-capi.a and lib/libmruby.a: what mkmf's link tests link with
@@ -42,6 +43,7 @@ bin : libmruby.a capi-lib
 	go build -o bin/oruby ./cmd/oruby
 	go build -o bin/orbi ./cmd/orbi
 	go build -o bin/orubyc ./cmd/orubyc
+	bin/oruby scripts/gen_bin_stubs.rb bin
 
 PREFIX ?= /usr/local
 
@@ -49,6 +51,7 @@ install : bin
 	install -d $(PREFIX)/bin $(PREFIX)/lib
 	install bin/oruby bin/orbi bin/orubyc $(PREFIX)/bin
 	cp -R lib/oruby $(PREFIX)/lib/
+	$(PREFIX)/bin/oruby scripts/gen_bin_stubs.rb $(PREFIX)/bin
 	install -m 644 lib/liboruby-capi.a lib/libmruby.a $(PREFIX)/lib
 	install -d $(PREFIX)/include/oruby-4.1.0
 	cp -R gem/capi/include/ $(PREFIX)/include/oruby-4.1.0/

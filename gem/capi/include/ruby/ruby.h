@@ -40,6 +40,11 @@ extern "C" {
 #endif
 
 #define ORUBY_CAPI 1
+/* The layout these headers give a VALUE and the API: a library built with
+   them carries the marker (a weak definition in each file), and oruby loads
+   only a library that does (an MRI-built extension reads MRI's objects). */
+#define ORUBY_CAPI_ABI 1
+__attribute__((weak, used, visibility("default"))) int oruby_capi_abi_1 = ORUBY_CAPI_ABI;
 #define RUBY_API_VERSION_MAJOR 4
 #define RUBY_API_VERSION_MINOR 1
 #define RUBY_API_VERSION_TEENY 0

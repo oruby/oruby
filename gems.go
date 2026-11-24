@@ -142,6 +142,16 @@ func BuiltinGemSpecs() []GemSpec {
 
 var nativeExtensionGems = map[string]bool{}
 
+// cExtensionLoader loads a C extension file (gem/capi registers it)
+var cExtensionLoader func(mrb *MrbState, path string) error
+
+// SetCExtensionLoader names what loads a C extension library file
+// (.so/.bundle) that `require` finds: gem/capi's dlopen of it.
+func SetCExtensionLoader(fn func(mrb *MrbState, path string) error) { cExtensionLoader = fn }
+
+// CExtensionLoader is the loader SetCExtensionLoader named, nil without one.
+func CExtensionLoader() func(mrb *MrbState, path string) error { return cExtensionLoader }
+
 // RegisterNativeExtensionGem records that the named gem's C extension is
 // compiled into the binary (gem/capi): RubyGems takes its extension as
 // built.

@@ -83,3 +83,35 @@ puts "ok:#{Gem.loaded_specs["nokogiri"].version}:#{Gem.loaded_specs["ruby-vips"]
 		t.Fatalf("builtin gemspecs = %q, want %q", got, want)
 	}
 }
+
+// The executables scripts/gen_bin_stubs.rb writes beside oruby (gem,
+// bundle, ...) run the oruby next to them, wherever the install is.
+func TestBinStubs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds oruby")
+	}
+	exe := buildInPrefix(t)
+	bin := filepath.Dir(exe)
+	gen, err := filepath.Abs("../../scripts/gen_bin_stubs.rb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runOruby(t, exe, t.TempDir(), gen, bin)
+	dir := t.TempDir()
+	for stub, want := range map[string]string{"gem": "4.1.0.beta2", "bundle": "4.1.0.beta2", "irb": "irb 1.18.0", "rbs": "rbs 4.2.0"} {
+		cmd := exec.Command(filepath.Join(bin, stub), "--version")
+		cmd.Dir = dir
+		cmd.Env = []string{"HOME=" + t.TempDir(), "PATH=/usr/bin:/bin"}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s --version: %v\n%s", stub, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); !strings.HasPrefix(got, want) {
+			t.Fatalf("%s --version = %q, want %q...", stub, got, want)
+		}
+	}
+	// executables of gems installed in the default directory go beside oruby
+	if got := runOruby(t, exe, dir, "-e", `puts Gem.default_bindir == RbConfig::CONFIG["bindir"]`); got != "true" {
+		t.Fatalf("Gem.default_bindir = RbConfig bindir: %s", got)
+	}
+}

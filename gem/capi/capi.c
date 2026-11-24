@@ -45,6 +45,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <dlfcn.h>
 #include "oruby-vm-compat.h"
 #include "capi.h"
 
@@ -1875,4 +1876,32 @@ static void capi_unbind(mrb_state *mrb) {
   oruby_gc_root_hook = NULL;
   oruby_gc_cdata_mark_hook = NULL;
   M = NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* loading an extension library (capi.go LoadLibrary)                   */
+
+/* Opens the library at path (its symbols global, as MRI's dln has them)
+   and finds init in it; NULL with the message otherwise. The C API it
+   calls is the running oruby's, which exports it. */
+void *orb_capi_dlopen(const char *path, const char *init, char *msg, size_t msglen) {
+  /* every symbol bound now: a function of the API oruby lacks is a
+     LoadError here, not a crash where it is first called */
+  void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+  if (!h) {
+    snprintf(msg, msglen, "%s", dlerror());
+    return NULL;
+  }
+  if (!dlsym(h, "oruby_capi_abi_1")) {
+    snprintf(msg, msglen, "%s: not built against oruby's C API headers (an extension built for MRI?): rebuild it with oruby", path);
+    dlclose(h);
+    return NULL;
+  }
+  void *fn = dlsym(h, init);
+  if (!fn) {
+    snprintf(msg, msglen, "%s - %s", dlerror(), path);
+    dlclose(h);
+    return NULL;
+  }
+  return fn;
 }

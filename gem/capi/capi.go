@@ -16,16 +16,51 @@ package capi
 /*
 #cgo CFLAGS: -I${SRCDIR}/include -I${SRCDIR}/../.. -I${SRCDIR}/../../mruby/include -I${SRCDIR}/../../mruby/build/host/include
 #cgo CFLAGS: -DMRB_INT64 -DMRB_HIGH_PROFILE -DMRB_NO_BOXING -DMRB_SYMBOL_MAX=0 -DMRB_USE_DEBUG_HOOK -DHAVE_MRUBY_ENCODING_GEM -DMRB_UTF8_STRING -DMRB_USE_RATIONAL -DMRB_USE_SET -DMRB_USE_COERCE -DMRB_USE_BIGINT -DMRB_USE_COMPLEX -DMRB_USE_REFINEMENTS -DMRB_USE_GC_WEAK
+#cgo linux LDFLAGS: -rdynamic -ldl
+#include <stdlib.h>
 #include "capi.h"
 */
 import "C"
 
 import (
 	"errors"
+	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"github.com/oruby/oruby"
 )
+
+func init() { oruby.SetCExtensionLoader(LoadLibrary) }
+
+// LoadLibrary loads the C extension library at path (.so/.bundle) built
+// against the C API's headers (mkmf, `gem install`): it is opened, its
+// Init_<name> found and run, as `require` of it runs in MRI. The library
+// takes the C API's functions from the running oruby, which exports them.
+// A raise in Init is the error.
+func LoadLibrary(mrb *oruby.MrbState, path string) error {
+	if err := Bind(mrb); err != nil {
+		return err
+	}
+	base := filepath.Base(path)
+	name := strings.TrimSuffix(base, filepath.Ext(base))
+	cpath, cinit := C.CString(path), C.CString("Init_"+name)
+	defer C.free(unsafe.Pointer(cpath))
+	defer C.free(unsafe.Pointer(cinit))
+	var msg [512]C.char
+	fn := C.orb_capi_dlopen(cpath, cinit, &msg[0], C.size_t(len(msg)))
+	if fn == nil {
+		return oruby.EError("LoadError", "%s", C.GoString(&msg[0]))
+	}
+	if !mrb.ClassDefined("ORubyCAPI") {
+		return ErrOtherState
+	}
+	mod := mrb.ModuleGet("ORubyCAPI")
+	if _, err := mrb.Funcall(mod.Value(), mrb.Intern("__init_extension"), mrb.CPtrValue(uintptr(fn))); err != nil {
+		return err
+	}
+	return nil
+}
 
 // ErrOtherState is returned when an extension is required from another
 // mrb_state than the one the C API is bound to.

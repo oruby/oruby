@@ -222,12 +222,15 @@ class IO
     opened&.each { |f| f.close unless f.closed? }
   end
 
+  # as MRI's copy_stream_body: an object that is no IO, String or #to_path
+  # is read (#readpartial / #read) and written as it is, not converted with
+  # #to_io (a Zlib::GzipReader's to_io is the compressed file under it)
   def self.__oruby_copy_end(x)
     return [x, :io] if IO === x
-    io = IO.try_convert(x)
-    return [io, :io] if io
     return [x, :path] if String === x
     if ::Kernel.__responds?(x, :to_path)
+      io = IO.try_convert(x)
+      return [io, :io] if io
       path = x.to_path
       unless String === path
         raise TypeError, "can't convert #{::Kernel.__cname(x)} into String (#{::Kernel.__cname(x)}#to_path gives #{::Kernel.__cname(path)})"
