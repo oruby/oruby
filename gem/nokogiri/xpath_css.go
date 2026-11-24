@@ -2,6 +2,7 @@ package nokogiri
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -463,10 +464,21 @@ func evalXPath(start *domNode, exprStr string, nsMap map[string]string, vars map
 				out.nodes = append(out.nodes, cn.cur)
 			}
 		}
+		sortNodesDocOrder(out.nodes)
 		return out, nil
 	default:
 		return xpathResult{val: v, isSet: false}, nil
 	}
+}
+
+func sortNodesDocOrder(nodes []*domNode) {
+	if len(nodes) <= 1 {
+		return
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		cmp, ok := compareDocOrder(nodes[i], nodes[j])
+		return ok && cmp < 0
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -537,14 +549,23 @@ func shouldUseXPathForCSS(sel string) bool {
 	return false
 }
 
+func hasASCIIUpper(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			return true
+		}
+	}
+	return false
+}
+
 func queryCSS(scope *domNode, selector string, nsMap map[string]string) ([]*domNode, error) {
 	selStr := strings.TrimSpace(selector)
 	if selStr == "" {
 		return nil, nil
 	}
 
-	// Route Nokogiri CSS extensions & namespaced selectors through CSS->XPath
-	if len(nsMap) > 0 || shouldUseXPathForCSS(selStr) {
+	// Route Nokogiri CSS extensions, namespaced selectors, and case-sensitive XML selectors through CSS->XPath
+	if len(nsMap) > 0 || shouldUseXPathForCSS(selStr) || (!scope.isHTMLDoc() && hasASCIIUpper(selStr)) {
 		prefix := ".//"
 		if scope.kind == DocumentNode || scope.kind == HTMLDocumentNode {
 			prefix = "//"
@@ -629,7 +650,7 @@ func matchesCSS(node *domNode, selector string) (bool, error) {
 	for root.parent != nil {
 		root = root.parent
 	}
-	if shouldUseXPathForCSS(selStr) {
+	if shouldUseXPathForCSS(selStr) || (!node.isHTMLDoc() && hasASCIIUpper(selStr)) {
 		if xp, xerr := cssToXPath(selStr, "//"); xerr == nil {
 			if res, eerr := evalXPath(root, xp, nil, nil); eerr == nil && res.isSet {
 				for _, cand := range res.nodes {

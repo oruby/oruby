@@ -77,6 +77,7 @@ test:
 	(cd gem/digest && go test)
 	(cd gem/ed25519 && go test)
 	(cd gem/env && go test)
+	(cd gem/erubi && go test)
 	(cd gem/etc && go test)
 	(cd gem/ffi && go test)
 	(cd gem/fiddle && go test)

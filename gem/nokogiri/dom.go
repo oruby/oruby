@@ -72,6 +72,9 @@ type domNode struct {
 	pubID      string // doctype public id / entity external_id
 	sysID      string // doctype system id / entity system_id
 	entityType int    // EntityDecl type (1..6)
+	attrType   string // AttributeDecl type (CDATA, ID, ENUMERATION, ...)
+	attrElem   string // AttributeDecl owning element name
+	enumVals   []string
 	line       int
 
 	attrs  []*domAttr
@@ -284,11 +287,6 @@ func (n *domNode) insertBefore(sibling *domNode) *domNode {
 	if sibling == nil || sibling == n {
 		return sibling
 	}
-	if n.kind == TextNode && sibling.kind == TextNode {
-		sibling.unlink()
-		n.data = sibling.data + n.data
-		return n
-	}
 	if n.parent == nil || sibling.isAncestorOrSelf(n.parent) {
 		return sibling
 	}
@@ -308,6 +306,7 @@ func (n *domNode) insertBefore(sibling *domNode) *domNode {
 	if n.doc != nil {
 		sibling.setDocRecursive(n.doc)
 	}
+	sibling.inheritDefaultNS()
 	sibling.prev = n.prev
 	sibling.next = n
 	if n.prev != nil {
@@ -322,11 +321,6 @@ func (n *domNode) insertBefore(sibling *domNode) *domNode {
 func (n *domNode) insertAfter(sibling *domNode) *domNode {
 	if sibling == nil || sibling == n {
 		return sibling
-	}
-	if n.kind == TextNode && sibling.kind == TextNode {
-		sibling.unlink()
-		n.data = n.data + sibling.data
-		return n
 	}
 	if n.parent == nil || sibling.isAncestorOrSelf(n.parent) {
 		return sibling
@@ -347,6 +341,7 @@ func (n *domNode) insertAfter(sibling *domNode) *domNode {
 	if n.doc != nil {
 		sibling.setDocRecursive(n.doc)
 	}
+	sibling.inheritDefaultNS()
 	sibling.next = n.next
 	sibling.prev = n
 	if n.next != nil {
@@ -783,6 +778,9 @@ func compareDocOrder(a, b *domNode) (int, bool) {
 	}
 	// Siblings under common parent
 	childA, childB := pathA[ia], pathB[ib]
+	if childA.kind == AttributeNode || childB.kind == AttributeNode {
+		return 0, false
+	}
 	for cur := childA.next; cur != nil; cur = cur.next {
 		if cur == childB {
 			return -1, true
@@ -973,6 +971,13 @@ func (n *domNode) writeTo(sb *strings.Builder, asHTML bool, indent, depth int, i
 			c.writeTo(sb, asHTML, indent, depth, false, noEmptyTags, preserveNewline)
 		}
 	case DocumentTypeNode, DTDNode:
+		if n.kind == DTDNode && n.parent != nil && (n.parent.kind == DocumentNode || n.parent.kind == HTMLDocumentNode) {
+			for s := n.parent.first; s != nil; s = s.next {
+				if s.kind == DocumentTypeNode {
+					return
+				}
+			}
+		}
 		sb.WriteString("<!DOCTYPE ")
 		if n.name != "" {
 			sb.WriteString(n.name)

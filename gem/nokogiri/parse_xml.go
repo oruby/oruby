@@ -727,28 +727,40 @@ func parseDTDInternalSubset(doc *domNode, dn *domNode, meta string) {
 			if name == "" {
 				continue
 			}
-			el := newNode(doc, ElementDecl, name, strings.TrimSpace(spec))
+			prefix, local := splitQName(name)
+			el := newNode(doc, ElementDecl, local, strings.TrimSpace(spec))
+			el.prefix = prefix
 			dn.appendChild(el)
 
 		case strings.HasPrefix(upper, "ATTLIST"):
 			rest := strings.TrimSpace(decl[7:])
-			_, rest = splitFirstToken(rest) // element name
+			elemName, r0 := splitFirstToken(rest)
+			rest = r0
 			// Parse one or more (attrName attrType defaultDecl) tuples
 			for len(rest) > 0 {
 				attrName, r1 := splitFirstToken(rest)
 				if attrName == "" {
 					break
 				}
-				// Skip attrType (could be "(a|b|c)" or a token like CDATA/ID/NMTOKEN)
 				r1 = strings.TrimSpace(r1)
+				attrType := ""
+				var enumVals []string
 				if strings.HasPrefix(r1, "(") {
 					if cp := strings.IndexByte(r1, ')'); cp >= 0 {
+						attrType = "ENUMERATION"
+						for _, part := range strings.Split(r1[1:cp], "|") {
+							if v := strings.TrimSpace(part); v != "" {
+								enumVals = append(enumVals, v)
+							}
+						}
 						r1 = strings.TrimSpace(r1[cp+1:])
 					} else {
 						break
 					}
 				} else {
-					_, r1 = splitFirstToken(r1)
+					var tok string
+					tok, r1 = splitFirstToken(r1)
+					attrType = tok
 				}
 				r1 = strings.TrimSpace(r1)
 				defVal := ""
@@ -766,6 +778,9 @@ func parseDTDInternalSubset(doc *domNode, dn *domNode, meta string) {
 					_, r1 = splitFirstToken(r1)
 				}
 				ad := newNode(doc, AttributeDecl, attrName, defVal)
+				ad.attrElem = elemName
+				ad.attrType = attrType
+				ad.enumVals = enumVals
 				dn.appendChild(ad)
 				rest = strings.TrimSpace(r1)
 			}

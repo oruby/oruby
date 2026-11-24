@@ -629,6 +629,21 @@ func parseCSSCompound(comp string) (string, []string, error) {
 		}
 		tag = "@" + strings.ReplaceAll(attr, "|", ":")
 		i = nextI
+	} else if i < n && comp[i] == '|' {
+		i++
+		if i < n && comp[i] == '*' {
+			i++
+			tag = "*"
+			preds = append(preds, "namespace-uri() = ''")
+		} else {
+			local, nextI := scanCSSIdent(comp, i, false)
+			if local == "" {
+				return "", nil, fmt.Errorf("empty element after | in %q", comp)
+			}
+			i = nextI
+			tag = "*"
+			preds = append(preds, fmt.Sprintf("local-name() = %s and namespace-uri() = ''", xpathLiteral(local)))
+		}
 	} else if i < n && (comp[i] == '*' || isCSSIdentStart(comp[i]) || comp[i] == '\\') {
 		if comp[i] == '*' {
 			i++
@@ -740,6 +755,12 @@ func parseCSSAttrPred(body string) (string, error) {
 	if body[i] == '@' {
 		i++
 	}
+	noNS := false
+	if i < len(body) && body[i] == '|' {
+		noNS = true
+		i++
+	}
+	nameStart := i
 	attrRaw, nextI := scanCSSIdent(body, i, true)
 	i = nextI
 	// Allow colon inside attribute names like xml:lang
@@ -749,10 +770,18 @@ func parseCSSAttrPred(body string) (string, error) {
 		attrRaw += ":" + part
 		i = ni
 	}
-	attr := strings.ReplaceAll(attrRaw, "|", ":")
+	rawSlice := body[nameStart:i]
+	hasPipe := strings.ContainsRune(rawSlice, '|')
+	hasBackslash := strings.ContainsRune(rawSlice, '\\')
+	var attrExpr string
+	if noNS || (hasBackslash && !hasPipe && strings.ContainsRune(attrRaw, ':')) {
+		attrExpr = fmt.Sprintf("@*[local-name() = %s and namespace-uri() = '']", xpathLiteral(attrRaw))
+	} else {
+		attrExpr = "@" + strings.ReplaceAll(attrRaw, "|", ":")
+	}
 	rest := strings.TrimSpace(body[i:])
 	if rest == "" {
-		return "@" + attr, nil
+		return attrExpr, nil
 	}
 	op := ""
 	if len(rest) >= 2 && rest[1] == '=' && strings.ContainsRune("~|^$*!", rune(rest[0])) {
@@ -768,19 +797,19 @@ func parseCSSAttrPred(body string) (string, error) {
 	lit := xpathLiteral(val)
 	switch op {
 	case "=":
-		return fmt.Sprintf("@%s = %s", attr, lit), nil
+		return fmt.Sprintf("%s = %s", attrExpr, lit), nil
 	case "!=":
-		return fmt.Sprintf("@%s != %s", attr, lit), nil
+		return fmt.Sprintf("%s != %s", attrExpr, lit), nil
 	case "~=":
-		return fmt.Sprintf("contains(concat(' ', translate(string(@%s), '\t\n\r', '   '), ' '), %s)", attr, xpathLiteral(" "+val+" ")), nil
+		return fmt.Sprintf("contains(concat(' ', translate(string(%s), '\t\n\r', '   '), ' '), %s)", attrExpr, xpathLiteral(" "+val+" ")), nil
 	case "|=":
-		return fmt.Sprintf("@%s = %s or starts-with(@%s, %s)", attr, lit, attr, xpathLiteral(val+"-")), nil
+		return fmt.Sprintf("%s = %s or starts-with(%s, %s)", attrExpr, lit, attrExpr, xpathLiteral(val+"-")), nil
 	case "^=":
-		return fmt.Sprintf("starts-with(@%s, %s)", attr, lit), nil
+		return fmt.Sprintf("starts-with(%s, %s)", attrExpr, lit), nil
 	case "$=":
-		return fmt.Sprintf("substring(@%s, string-length(@%s) - %d) = %s", attr, attr, len(val)-1, lit), nil
+		return fmt.Sprintf("substring(%s, string-length(%s) - %d) = %s", attrExpr, attrExpr, len(val)-1, lit), nil
 	case "*=":
-		return fmt.Sprintf("contains(@%s, %s)", attr, lit), nil
+		return fmt.Sprintf("contains(%s, %s)", attrExpr, lit), nil
 	default:
 		return "", fmt.Errorf("unsupported operator %q", op)
 	}

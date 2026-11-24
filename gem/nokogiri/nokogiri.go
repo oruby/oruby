@@ -152,6 +152,43 @@ func initNokogiri(mrb *oruby.MrbState) any {
 		n, _ := getDOMNode(mrb, self)
 		return mrb.StrNew(n.data)
 	}, mrb.ArgsNone())
+	elemDeclCls.DefineMethod("prefix", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		if n.prefix == "" {
+			return mrb.NilValue()
+		}
+		return mrb.StrNew(n.prefix)
+	}, mrb.ArgsNone())
+	elemDeclCls.DefineMethod("element_type", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		spec := strings.TrimSpace(n.data)
+		switch {
+		case spec == "EMPTY":
+			return mrb.FixnumValue(1)
+		case spec == "ANY":
+			return mrb.FixnumValue(2)
+		case strings.Contains(spec, "#PCDATA"):
+			return mrb.FixnumValue(3)
+		default:
+			return mrb.FixnumValue(4)
+		}
+	}, mrb.ArgsNone())
+	elemDeclCls.DefineMethod("attribute_nodes", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		ary := mrb.AryNew()
+		if n.parent != nil {
+			full := n.name
+			if n.prefix != "" {
+				full = n.prefix + ":" + n.name
+			}
+			for c := n.parent.first; c != nil; c = c.next {
+				if c.kind == AttributeDecl && (c.attrElem == full || c.attrElem == n.name) {
+					mrb.AryPush(ary, wrapNode(mrb, c))
+				}
+			}
+		}
+		return ary
+	}, mrb.ArgsNone())
 
 	attrDeclCls := mrb.DefineClassUnder(xmlMod, "AttributeDecl", nodeCls)
 	rb.DataClass(attrDeclCls)
@@ -161,6 +198,21 @@ func initNokogiri(mrb *oruby.MrbState) any {
 			return mrb.NilValue()
 		}
 		return mrb.StrNew(n.data)
+	}, mrb.ArgsNone())
+	attrDeclCls.DefineMethod("attribute_type", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		if n.attrType == "" {
+			return mrb.NilValue()
+		}
+		return mrb.StrNew(n.attrType)
+	}, mrb.ArgsNone())
+	attrDeclCls.DefineMethod("enumeration", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		n, _ := getDOMNode(mrb, self)
+		ary := mrb.AryNewCapa(len(n.enumVals))
+		for _, v := range n.enumVals {
+			mrb.AryPush(ary, mrb.StrNew(v))
+		}
+		return ary
 	}, mrb.ArgsNone())
 
 	dtdCls := mrb.DefineClassUnder(xmlMod, "DTD", nodeCls)
@@ -503,6 +555,8 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 			if d.kind == DocumentNode || d.kind == HTMLDocumentNode {
 				doc = d
 			} else if d.doc != nil {
+				_, _ = mrb.Funcall(mrb.TopSelf(), mrb.Intern("warn"),
+					mrb.StrNew("Passing a Node as the second parameter to Node.new is deprecated. Please pass a Document instead."))
 				doc = d.doc
 			} else {
 				return mrb.EArgumentError().Raise("Document must be a Nokogiri::XML::Document")
@@ -1075,6 +1129,20 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 		if n.parent != nil && rep.isAncestorOrSelf(n.parent) {
 			return mrb.ERuntimeError().Raise("cannot reparent a node into its own descendant")
 		}
+		if rep.kind == DocumentFragNode {
+			var added []*domNode
+			for c := rep.first; c != nil; {
+				nxt := c.next
+				if n.parent != nil && c.isAncestorOrSelf(n.parent) {
+					return mrb.ERuntimeError().Raise("cannot reparent a node into its own descendant")
+				}
+				n.insertBefore(c)
+				added = append(added, c)
+				c = nxt
+			}
+			n.unlink()
+			return wrapNodeSet(mrb, n.doc, added)
+		}
 		return wrapNode(mrb, n.replaceWith(rep))
 	}, mrb.ArgsReq(1))
 
@@ -1104,8 +1172,10 @@ func defineNodeMethods(mrb *oruby.MrbState, nodeCls, elemCls, textCls, cdataCls,
 			}
 		}
 		cp := n.clone(deep, targetDoc)
-		cp.rbClass = mrb.ClassOf(self)
-		cp.hasClass = true
+		if clsVal, err := mrb.Funcall(self, mrb.Intern("class")); err == nil && !clsVal.IsNil() {
+			cp.rbClass = mrb.ClassPtr(clsVal)
+			cp.hasClass = true
+		}
 		return wrapNode(mrb, cp)
 	}
 	nodeCls.DefineMethod("dup", dupFn, mrb.ArgsOpt(2))
@@ -1746,6 +1816,23 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 		if strict && len(doc.errors) > 0 {
 			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", doc.errors[0].message)
 		}
+		if (opts & poDTDLoad) != 0 {
+			var dt *domNode
+			hasExt := false
+			for c := doc.first; c != nil; c = c.next {
+				if c.kind == DocumentTypeNode {
+					dt = c
+				} else if c.kind == DTDNode {
+					hasExt = true
+				}
+			}
+			if dt != nil && !hasExt && (dt.pubID != "" || dt.sysID != "") {
+				ext := newNode(doc, DTDNode, dt.name, "")
+				ext.pubID = dt.pubID
+				ext.sysID = dt.sysID
+				dt.insertAfter(ext)
+			}
+		}
 		cls := mrb.ClassPtr(self)
 		doc.rbClass = cls
 		doc.hasClass = true
@@ -1791,7 +1878,7 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 
 		doc := parseHTMLDocumentOpts(src, url, enc, isHTML5, noblanks, maxErrors, maxTreeDepth, parseNoScriptAsText)
 		if !isHTML5 && (opts&poRecover) == 0 && len(doc.errors) > 0 {
-			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "%s", doc.errors[0].message)
+			return rb.Raise(mrb, "Nokogiri::XML::SyntaxError", "Parser without recover option encountered error or warning: %s", doc.errors[0].message)
 		}
 		cls := mrb.ClassPtr(self)
 		doc.rbClass = cls
@@ -2044,16 +2131,19 @@ func defineDocumentMethods(mrb *oruby.MrbState, docCls, fragCls, html4DocCls, ht
 	}, mrb.ArgsReq(1))
 
 	docCls.DefineMethod("encoding", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		d, _ := getDOMNode(mrb, self)
-		if d.encoding == "" {
+		d, ok := getDOMNode(mrb, self)
+		if !ok || d == nil || d.encoding == "" {
 			return mrb.NilValue()
 		}
 		return mrb.StrNew(d.encoding)
 	}, mrb.ArgsNone())
 
 	docCls.DefineMethod("encoding=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		d, _ := getDOMNode(mrb, self)
+		d, ok := getDOMNode(mrb, self)
 		v := mrb.GetArgsFirst()
+		if !ok || d == nil {
+			return v
+		}
 		if v.IsNil() {
 			d.encoding = ""
 		} else {
@@ -2331,6 +2421,7 @@ func defineNodeSetMethods(mrb *oruby.MrbState, cls oruby.RClass) {
 				cp := append([]*domNode(nil), ns.nodes[beg:end]...)
 				return wrapNodeSet(mrb, ns.doc, cp)
 			}
+			return mrb.ETypeError().Raise(fmt.Sprintf("no implicit conversion of %s into Integer", mrb.ClassOf(a0).Name()))
 		}
 		if args.Len() >= 2 {
 			start := args.Item(0).Int()
@@ -2361,12 +2452,21 @@ func defineNodeSetMethods(mrb *oruby.MrbState, cls oruby.RClass) {
 
 	pushFn := func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ns, _ := getNodeSet(mrb, self)
-		n, ok := getDOMNode(mrb, mrb.GetArgsFirst())
-		if !ok {
-			return mrb.EArgumentError().Raise("expected Nokogiri::XML::Node")
+		arg := mrb.GetArgsFirst()
+		if n, ok := getDOMNode(mrb, arg); ok {
+			ns.nodes = append(ns.nodes, n)
+			return self
 		}
-		ns.nodes = append(ns.nodes, n)
-		return self
+		if nsObj, ok := rb.Get[*domNS](mrb, arg); ok {
+			ns.nodes = append(ns.nodes, &domNode{
+				kind:   NamespaceDecl,
+				doc:    nsObj.doc,
+				prefix: nsObj.prefix,
+				nsURI:  nsObj.href,
+			})
+			return self
+		}
+		return mrb.EArgumentError().Raise("expected Nokogiri::XML::Node")
 	}
 	cls.DefineMethod("push", pushFn, mrb.ArgsReq(1))
 	cls.DefineMethod("<<", pushFn, mrb.ArgsReq(1))
@@ -2417,13 +2517,20 @@ func defineNodeSetMethods(mrb *oruby.MrbState, cls oruby.RClass) {
 
 	cls.DefineMethod("include?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ns, _ := getNodeSet(mrb, self)
-		target, ok := getDOMNode(mrb, mrb.GetArgsFirst())
-		if !ok {
+		arg := mrb.GetArgsFirst()
+		if target, ok := getDOMNode(mrb, arg); ok {
+			for _, n := range ns.nodes {
+				if n == target {
+					return mrb.TrueValue()
+				}
+			}
 			return mrb.FalseValue()
 		}
-		for _, n := range ns.nodes {
-			if n == target {
-				return mrb.TrueValue()
+		if nsObj, ok := rb.Get[*domNS](mrb, arg); ok {
+			for _, n := range ns.nodes {
+				if n.kind == NamespaceDecl && n.prefix == nsObj.prefix && n.nsURI == nsObj.href {
+					return mrb.TrueValue()
+				}
 			}
 		}
 		return mrb.FalseValue()
@@ -2431,17 +2538,41 @@ func defineNodeSetMethods(mrb *oruby.MrbState, cls oruby.RClass) {
 
 	cls.DefineMethod("index", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ns, _ := getNodeSet(mrb, self)
-		target, ok := getDOMNode(mrb, mrb.GetArgsFirst())
-		if !ok {
+		args := mrb.GetArgs()
+		blk := mrb.GetArgsBlock()
+		if args.Len() == 0 {
+			if blk.IsNil() {
+				return mrb.NilValue()
+			}
+			for i, n := range ns.nodes {
+				res, err := mrb.Funcall(blk, mrb.Intern("call"), wrapNode(mrb, n))
+				if err != nil {
+					return mrb.RaiseError(err)
+				}
+				if res.Bool() {
+					return mrb.FixnumValue(i)
+				}
+			}
 			return mrb.NilValue()
 		}
-		for i, n := range ns.nodes {
-			if n == target {
-				return mrb.FixnumValue(i)
+		arg := args.Item(0)
+		if target, ok := getDOMNode(mrb, arg); ok {
+			for i, n := range ns.nodes {
+				if n == target {
+					return mrb.FixnumValue(i)
+				}
+			}
+			return mrb.NilValue()
+		}
+		if nsObj, ok := rb.Get[*domNS](mrb, arg); ok {
+			for i, n := range ns.nodes {
+				if n.kind == NamespaceDecl && n.prefix == nsObj.prefix && n.nsURI == nsObj.href {
+					return mrb.FixnumValue(i)
+				}
 			}
 		}
 		return mrb.NilValue()
-	}, mrb.ArgsReq(1))
+	}, mrb.ArgsOpt(1)|mrb.ArgsBlock())
 
 	cls.DefineMethod("|", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		ns1, _ := getNodeSet(mrb, self)

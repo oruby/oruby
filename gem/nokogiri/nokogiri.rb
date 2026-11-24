@@ -301,6 +301,7 @@ module Nokogiri
         while paths.length > 1 && !paths.last.is_a?(String)
           extra.unshift(paths.pop)
         end
+        return NodeSet.new(document) if paths.empty? || !paths.first.is_a?(String)
         ns, handler, binds = __split_xpath_extras(extra)
         if paths.length == 1
           return __xpath(paths[0], ns, handler, binds)
@@ -350,6 +351,7 @@ module Nokogiri
         while paths.length > 1 && !paths.last.is_a?(String)
           extra.unshift(paths.pop)
         end
+        return NodeSet.new(document) if paths.empty? || paths.first.nil?
         ns, handler, binds = __split_xpath_extras(extra)
         out = NodeSet.new(document)
         paths.each do |path|
@@ -412,7 +414,14 @@ module Nokogiri
 
       def self.new(*args, **kw, &block)
         if self == Nokogiri::XML::Node
-          return kw.empty? ? Element.new(*args, &block) : Element.new(*args, **kw, &block)
+          node = kw.empty? ? Element.new(*args) : Element.new(*args, **kw)
+          yield node if block
+          return node
+        end
+        if self == Nokogiri::XML::Element
+          node = kw.empty? ? super(*args) : super(*args, **kw)
+          yield node if block
+          return node
         end
         kw.empty? ? super(*args, &block) : super(*args, **kw, &block)
       end
@@ -559,7 +568,7 @@ module Nokogiri
         ctx_name = ctx_node ? ctx_node.name : (element? ? name : "body")
         wrapper =
           if html_str.is_a?(XML::Node)
-            html_str
+            html_str.dup
           else
             frag =
               if document && document.is_a?(HTML5::Document)
@@ -631,7 +640,7 @@ module Nokogiri
       end
 
       def blank?
-        content.strip.empty?
+        !document? && content.strip.empty?
       end
 
       def ancestors(selector = nil)
@@ -843,7 +852,7 @@ module Nokogiri
           as_html = false if (sw & SaveOptions::AS_XML) != 0 || (sw & SaveOptions::AS_XHTML) != 0
           xml_decl = false if (sw & SaveOptions::NO_DECLARATION) != 0
           no_empty = true if (sw & SaveOptions::NO_EMPTY_TAGS) != 0
-          indent = 2 if indent.nil? && (sw & SaveOptions::FORMAT) != 0
+          indent = 2 if indent.nil? && !as_html && (sw & SaveOptions::FORMAT) != 0
         end
         [as_html, indent || 0, xml_decl, no_empty]
       end
@@ -1028,7 +1037,8 @@ module Nokogiri
               if ks == "xmlns"
                 el.add_namespace_definition(nil, v.to_s)
               elsif ks.start_with?("xmlns:")
-                el.add_namespace_definition(ks[6..-1], v.to_s)
+                pref = ks[6..-1]
+                el.add_namespace_definition(pref, v.to_s) if pref =~ /\A[A-Za-z_][A-Za-z0-9._-]*\z/
               else
                 el[ks] = v.to_s
               end
@@ -1097,6 +1107,10 @@ module Nokogiri
 
       def xpath_doctype
         :xml
+      end
+
+      def namespaces
+        root ? root.namespaces : {}
       end
 
       def slop!
@@ -1237,8 +1251,22 @@ module Nokogiri
     end
 
     class ElementDecl
+      undef_method :line, :line=, :namespace, :namespace_definitions
+
       def content
         ElementContent.parse(document, __raw_content_spec)
+      end
+
+      def inspect
+        "#<#{self.class.name}:#{format('0x%x', object_id)} #{to_s.inspect}>"
+      end
+    end
+
+    class AttributeDecl
+      undef_method :content, :attributes, :namespace, :namespace_definitions, :line, :line=
+
+      def inspect
+        "#<#{self.class.name}:#{format('0x%x', object_id)} #{to_s.inspect}>"
       end
     end
 
@@ -1348,7 +1376,11 @@ module Nokogiri
         "[#{map(&:inspect).join(', ')}]"
       end
 
-      def attr(key, value = nil)
+      def attr(key, value = nil, &block)
+        if block
+          each { |n| n[key.to_s] = yield(n).to_s }
+          return self
+        end
         if value.nil? && !key.is_a?(Hash)
           return first ? first.attribute(key) : nil
         end
@@ -1431,7 +1463,16 @@ module Nokogiri
 
       def css(*rules)
         out = NodeSet.new(document)
-        each { |n| out = out | n.css(*rules) }
+        rule_strs = rules.select { |r| r.is_a?(String) }
+        has_extras = rule_strs.length < rules.length
+        each do |n|
+          if !has_extras && n.element?
+            rule_strs.each do |r|
+              out << n if (n.matches?(r) rescue false) && !out.include?(n)
+            end
+          end
+          out = out | n.css(*rules)
+        end
         out
       end
 
@@ -1441,7 +1482,17 @@ module Nokogiri
 
       def search(*paths)
         out = NodeSet.new(document)
-        each { |n| out = out | n.search(*paths) }
+        rule_strs = paths.select { |r| r.is_a?(String) }
+        has_extras = rule_strs.length < paths.length
+        each do |n|
+          if !has_extras && n.element?
+            rule_strs.each do |p|
+              next if p == "." || p.start_with?("/", "./", "(", "..")
+              out << n if (n.matches?(p) rescue false) && !out.include?(n)
+            end
+          end
+          out = out | n.search(*paths)
+        end
         out
       end
       alias / search
@@ -2152,9 +2203,20 @@ module Nokogiri
       def title=(text)
         t = at_css("title")
         unless t
-          head = at_css("head") || root
+          head = at_css("head")
+          unless head
+            if root.nil?
+              self.root = create_element("html")
+            end
+            head = create_element("head")
+            if (body = at_css("body"))
+              body.add_previous_sibling(head)
+            else
+              root.prepend_child(head)
+            end
+          end
           t = create_element("title")
-          head&.add_child(t)
+          head.add_child(t)
         end
         t.content = text.to_s
         text
@@ -2184,11 +2246,24 @@ module Nokogiri
             return encoding
           end
         end
-        head = at_css("head") || root
-        if head
-          m = create_element("meta", "charset" => encoding.to_s)
-          head.prepend_child(m)
+        head = at_css("head")
+        unless head
+          if root.nil?
+            self.root = create_element("html")
+          end
+          head = create_element("head")
+          if (body = at_css("body"))
+            body.add_previous_sibling(head)
+          else
+            root.prepend_child(head)
+          end
         end
+        if internal_subset&.html5_dtd?
+          m = create_element("meta", "charset" => encoding.to_s)
+        else
+          m = create_element("meta", "http-equiv" => "Content-Type", "content" => "text/html; charset=#{encoding}")
+        end
+        head.prepend_child(m)
         encoding
       end
 

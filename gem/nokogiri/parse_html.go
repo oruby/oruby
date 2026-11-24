@@ -510,7 +510,10 @@ func convertHTMLNodeDepth(doc *domNode, hn *html.Node, noblanks bool, depth, max
 				value:  a.Val,
 				owner:  dn,
 			}
-			if doc.isHTML5 && a.Namespace != "" {
+			if !doc.isHTML5 && a.Namespace != "" {
+				attr.name = a.Namespace + ":" + a.Key
+				attr.prefix = ""
+			} else if doc.isHTML5 && a.Namespace != "" {
 				switch a.Namespace {
 				case "xml":
 					attr.nsURI = "http://www.w3.org/XML/1998/namespace"
