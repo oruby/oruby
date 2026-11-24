@@ -76,3 +76,13 @@ Gem::Specification.each do |spec|
   File.write(spec.gem_build_complete_path, "")
   puts "gen_bin_stubs: #{spec.full_name}'s extension is compiled in"
 end
+
+# MRI's archdir holds the standard libraries' C extensions (etc.bundle, ...).
+# ORuby's are Go gems compiled in, so the directory has only an empty
+# placeholder for etc (which `require "etc"` never loads: the Go gem is found
+# first), for tools and specs that look there. Generated, not shipped in lib/oruby.
+archdir = RbConfig::CONFIG["archdir"]
+FileUtils.mkdir_p(archdir)
+placeholder = File.join(archdir, "etc.#{RbConfig::CONFIG["DLEXT"]}")
+File.write(placeholder, "") unless File.exist?(placeholder)
+puts "gen_bin_stubs: #{placeholder}"
