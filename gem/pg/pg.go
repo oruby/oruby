@@ -4,6 +4,7 @@ package pg
 
 import (
 	"context"
+	"crypto/md5"
 	_ "embed"
 	"encoding/hex"
 	"errors"
@@ -288,6 +289,25 @@ func defineErrors(mrb *oruby.MrbState, mod oruby.RClass) {
 		}
 		mrb.DefineClassUnder(mod, name, parent)
 	}
+	errClasses := mrb.HashNewCapa(len(sqlstateToClass) + 12)
+	for code, clsName := range sqlstateToClass {
+		mrb.HashSet(errClasses, mrb.StrNew(code), rb.ClassPath(mrb, "PG::"+clsName).Value())
+	}
+	for code, clsName := range map[string]string{
+		"0A": "FeatureNotSupported",
+		"22": "DataException",
+		"23": "IntegrityConstraintViolation",
+		"28": "InvalidAuthorizationSpecification",
+		"3D": "InvalidCatalogName",
+		"3F": "InvalidSchemaName",
+		"40": "TransactionRollback",
+		"42": "SyntaxErrorOrAccessRuleViolation",
+		"54": "ProgramLimitExceeded",
+		"57": "OperatorIntervention",
+	} {
+		mrb.HashSet(errClasses, mrb.StrNew(code), rb.ClassPath(mrb, "PG::"+clsName).Value())
+	}
+	mrb.ConstSet(mod, mrb.Intern("ERROR_CLASSES"), errClasses)
 }
 
 func raisePGError(mrb *oruby.MrbState, connVal oruby.Value, err error) oruby.MrbValue {
@@ -533,21 +553,50 @@ func (c *pgConn) Memsize() int {
 	return 256
 }
 
-func sqlToUTF8(mrb *oruby.MrbState, v oruby.Value) string {
-	if !v.IsString() {
-		return mrb.String(v)
+func readResultWithFields(rr *pgconn.ResultReader) *pgconn.Result {
+	res := rr.Read()
+	if len(res.FieldDescriptions) == 0 {
+		if fds := rr.FieldDescriptions(); len(fds) > 0 {
+			res.FieldDescriptions = append([]pgconn.FieldDescription(nil), fds...)
+		}
 	}
-	if encVal, err := mrb.Funcall(v, mrb.Intern("encoding")); err == nil && !encVal.IsNil() {
-		if nameVal, nerr := mrb.Funcall(encVal, mrb.Intern("name")); nerr == nil {
-			name := nameVal.String()
-			if name != "UTF-8" && name != "US-ASCII" && name != "ASCII-8BIT" {
-				if conv, cerr := mrb.Funcall(v, mrb.Intern("encode"), mrb.StrNew("UTF-8")); cerr == nil {
-					return conv.String()
+	return res
+}
+
+func readAllWithFields(mrr *pgconn.MultiResultReader) ([]*pgconn.Result, error) {
+	var out []*pgconn.Result
+	for mrr.NextResult() {
+		out = append(out, readResultWithFields(mrr.ResultReader()))
+	}
+	return out, mrr.Close()
+}
+
+func checkNoNullByte(s string) error {
+	if strings.IndexByte(s, 0) >= 0 {
+		return oruby.EArgumentError("string contains null byte")
+	}
+	return nil
+}
+
+func sqlToUTF8(mrb *oruby.MrbState, v oruby.Value) (string, error) {
+	var s string
+	if !v.IsString() {
+		s = mrb.String(v)
+	} else {
+		if encVal, err := mrb.Funcall(v, mrb.Intern("encoding")); err == nil && !encVal.IsNil() {
+			if nameVal, nerr := mrb.Funcall(encVal, mrb.Intern("name")); nerr == nil {
+				name := nameVal.String()
+				if name != "UTF-8" && name != "US-ASCII" && name != "ASCII-8BIT" {
+					if conv, cerr := mrb.Funcall(v, mrb.Intern("encode"), mrb.StrNew("UTF-8")); cerr == nil {
+						s = conv.String()
+						return s, checkNoNullByte(s)
+					}
 				}
 			}
 		}
+		s = v.String()
 	}
-	return v.String()
+	return s, checkNoNullByte(s)
 }
 
 func (c *pgConn) flushNotices(mrb *oruby.MrbState, self oruby.Value) {
@@ -902,13 +951,25 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 
 	// Class-level escape helpers
 	cls.DefineClassMethod("escape_string", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGString(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGString(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineClassMethod("escape", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGString(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGString(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineClassMethod("quote_ident", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGIdent(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGIdent(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineClassMethod("escape_bytea", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.StrNew(escapeBytea(mrb.GetArgsFirst().Bytes()))
@@ -1141,6 +1202,9 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 	}, mrb.ArgsNone())
 
 	cls.DefineMethod("field_name_type=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		if self.Frozen() {
+			return mrb.EFrozenError().Raise("can't modify frozen PG::Connection")
+		}
 		c, _ := getConn(mrb, self)
 		v := mrb.GetArgsFirst()
 		if !v.IsSymbol() {
@@ -1258,20 +1322,59 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		}
 	}, mrb.ArgsNone())
 
+	cls.DefineMethod("ssl_in_use?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		c, err := getConn(mrb, self)
+		if err != nil || c.checkOpen() != nil {
+			return rb.Raise(mrb, "PG::ConnectionBad", "connection is closed")
+		}
+		return mrb.BoolValue(c.cfg != nil && c.cfg.TLSConfig != nil)
+	}, mrb.ArgsNone())
+
+	cls.DefineMethod("encrypt_password", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		args := mrb.GetArgs()
+		pw := args.Item(0)
+		usr := args.Item(1)
+		if !pw.IsString() || !usr.IsString() {
+			return mrb.ETypeError().Raise("expected String arguments")
+		}
+		sum := md5.Sum([]byte(pw.String() + usr.String()))
+		return mrb.StrNew("md5" + hex.EncodeToString(sum[:]))
+	}, mrb.ArgsReq(2)|mrb.ArgsOpt(1))
+
 	cls.DefineMethod("escape_string", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGString(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGString(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineMethod("escape", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGString(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGString(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineMethod("escape_literal", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGLiteral(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGLiteral(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineMethod("escape_identifier", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGIdent(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGIdent(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineMethod("quote_ident", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-		return mrb.StrNew(escapePGIdent(mrb.GetArgsFirst().String()))
+		s := mrb.GetArgsFirst().String()
+		if err := checkNoNullByte(s); err != nil {
+			return mrb.RaiseError(err)
+		}
+		return mrb.StrNew(escapePGIdent(s))
 	}, mrb.ArgsReq(1))
 	cls.DefineMethod("escape_bytea", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return mrb.StrNew(escapeBytea(mrb.GetArgsFirst().Bytes()))
@@ -1295,6 +1398,9 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		return c.typeMapResults
 	}, mrb.ArgsNone())
 	cls.DefineMethod("type_map_for_results=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		if self.Frozen() {
+			return mrb.EFrozenError().Raise("can't modify frozen PG::Connection")
+		}
 		c, _ := getConn(mrb, self)
 		v := mrb.GetArgsFirst()
 		tmCls := rb.ClassPath(mrb, "PG::TypeMap")
@@ -1316,6 +1422,9 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		return c.typeMapQueries
 	}, mrb.ArgsNone())
 	cls.DefineMethod("type_map_for_queries=", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		if self.Frozen() {
+			return mrb.EFrozenError().Raise("can't modify frozen PG::Connection")
+		}
 		c, _ := getConn(mrb, self)
 		v := mrb.GetArgsFirst()
 		tmCls := rb.ClassPath(mrb, "PG::TypeMap")
@@ -1352,7 +1461,10 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		c.pendingRaw = nil
 		args := mrb.GetArgs()
 		blk := mrb.GetArgsBlock()
-		sql := sqlToUTF8(mrb, args.Item(0))
+		sql, serr := sqlToUTF8(mrb, args.Item(0))
+		if serr != nil {
+			return mrb.RaiseError(serr)
+		}
 
 		// If params passed to exec/query(sql, params, result_format = 0, type_map = nil) -> delegate to ExecParams
 		if args.Len() >= 2 && !args.Item(1).IsNil() {
@@ -1375,7 +1487,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		ctx := mrb.GoContext()
 		var results []*pgconn.Result
 		mrb.Blocking(func() {
-			results, err = c.conn.Exec(ctx, sql).ReadAll()
+			results, err = readAllWithFields(c.conn.Exec(ctx, sql))
 		})
 		c.flushNotices(mrb, self)
 		if err != nil {
@@ -1405,7 +1517,10 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		c.pendingRaw = nil
 		args := mrb.GetArgs()
 		blk := mrb.GetArgsBlock()
-		sql := sqlToUTF8(mrb, args.Item(0))
+		sql, serr := sqlToUTF8(mrb, args.Item(0))
+		if serr != nil {
+			return mrb.RaiseError(serr)
+		}
 		params := mrb.NilValue()
 		if args.Len() >= 2 {
 			params = args.Item(1)
@@ -1504,7 +1619,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		ctx := mrb.GoContext()
 		var res *pgconn.Result
 		mrb.Blocking(func() {
-			res = c.conn.ExecPrepared(ctx, name, vals, fmts, resFmts).Read()
+			res = readResultWithFields(c.conn.ExecPrepared(ctx, name, vals, fmts, resFmts))
 		})
 		c.flushNotices(mrb, self)
 		if res.Err != nil {
@@ -1550,7 +1665,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			ch := make(chan []asyncRes, 1)
 			c.asyncDone = ch
 			go func() {
-				res := c.conn.ExecParams(ctx, sql, vals, oids, fmts, resFmts).Read()
+				res := readResultWithFields(c.conn.ExecParams(ctx, sql, vals, oids, fmts, resFmts))
 				ch <- []asyncRes{{res: res}}
 				close(ch)
 			}()
@@ -1563,8 +1678,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			var out []asyncRes
 			mrr := c.conn.Exec(ctx, sql)
 			for mrr.NextResult() {
-				rr := mrr.ResultReader()
-				r := rr.Read()
+				r := readResultWithFields(mrr.ResultReader())
 				out = append(out, asyncRes{res: r})
 			}
 			qerr := mrr.Close()
@@ -1616,7 +1730,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		ch := make(chan []asyncRes, 1)
 		c.asyncDone = ch
 		go func() {
-			res := c.conn.ExecParams(ctx, sql, vals, oids, fmts, resFmts).Read()
+			res := readResultWithFields(c.conn.ExecParams(ctx, sql, vals, oids, fmts, resFmts))
 			ch <- []asyncRes{{res: res}}
 			close(ch)
 		}()
@@ -1698,7 +1812,7 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		ch := make(chan []asyncRes, 1)
 		c.asyncDone = ch
 		go func() {
-			res := c.conn.ExecPrepared(ctx, name, vals, fmts, resFmts).Read()
+			res := readResultWithFields(c.conn.ExecPrepared(ctx, name, vals, fmts, resFmts))
 			ch <- []asyncRes{{res: res}}
 			close(ch)
 		}()
@@ -2197,7 +2311,11 @@ func defineConnection(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 
 		chanVal := mrb.StrNew(notif.Channel)
 		if !blk.IsNil() {
-			if _, yErr := mrb.YieldArgvE(blk, chanVal, mrb.FixnumValue(int(notif.PID)), mrb.StrNew(notif.Payload)); yErr != nil {
+			var payloadVal oruby.Value = mrb.NilValue()
+			if notif.Payload != "" {
+				payloadVal = mrb.StrNew(notif.Payload)
+			}
+			if _, yErr := mrb.YieldArgvE(blk, chanVal, mrb.FixnumValue(int(notif.PID)), payloadVal); yErr != nil {
 				return mrb.RaiseError(yErr)
 			}
 		}
@@ -2322,7 +2440,7 @@ func execParamsImpl(mrb *oruby.MrbState, self oruby.Value, c *pgConn, sql string
 	ctx := mrb.GoContext()
 	var res *pgconn.Result
 	mrb.Blocking(func() {
-		res = c.conn.ExecParams(ctx, sql, vals, oids, fmts, resFmts).Read()
+		res = readResultWithFields(c.conn.ExecParams(ctx, sql, vals, oids, fmts, resFmts))
 	})
 	c.flushNotices(mrb, self)
 	if res.Err != nil {
@@ -2365,7 +2483,26 @@ type pgResult struct {
 }
 
 func (r *pgResult) Memsize() int {
-	return 128 + len(r.fields)*32 + len(r.rows)*64
+	return 1024 + len(r.fields)*64 + len(r.rows)*128
+}
+
+func internFieldName(mrb *oruby.MrbState, name string, asSym bool) oruby.Value {
+	if asSym {
+		return mrb.SymbolValue(mrb.Intern(name))
+	}
+	resCls := rb.ClassPath(mrb, "PG::Result")
+	cache := mrb.IVGet(resCls, mrb.Intern("@__fname_cache"))
+	if !cache.IsHash() {
+		cache = mrb.HashNew().Value()
+		mrb.IVSet(resCls, mrb.Intern("@__fname_cache"), cache)
+	}
+	key := mrb.StrNew(name)
+	if existing, err := mrb.Funcall(cache, mrb.Intern("[]"), key); err == nil && !existing.IsNil() {
+		return existing
+	}
+	frozen := mrb.StrNewFrozen(name).Value()
+	mrb.HashSet(cache, frozen, frozen)
+	return frozen
 }
 
 func getRes(mrb *oruby.MrbState, self oruby.Value) (*pgResult, error) {
@@ -2481,7 +2618,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r.fieldsCalled = true
 		ary := mrb.AryNewCapa(len(r.fields))
 		for _, f := range r.fields {
-			mrb.AryPush(ary, mrb.StrNew(f.Name))
+			mrb.AryPush(ary, internFieldName(mrb, f.Name, r.fieldNameSym))
 		}
 		return ary
 	}, mrb.ArgsNone())
@@ -2490,9 +2627,9 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r, _ := getRes(mrb, self)
 		i := mrb.GetArgsFirst().Int()
 		if i < 0 || i >= len(r.fields) {
-			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+			return mrb.EArgumentError().Raisef("invalid column number %d", i)
 		}
-		return mrb.StrNew(r.fields[i].Name)
+		return internFieldName(mrb, r.fields[i].Name, r.fieldNameSym)
 	}, mrb.ArgsReq(1))
 
 	cls.DefineMethod("fnumber", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -2527,7 +2664,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r, _ := getRes(mrb, self)
 		i := mrb.GetArgsFirst().Int()
 		if i < 0 || i >= len(r.fields) {
-			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+			return mrb.EArgumentError().Raisef("invalid column number %d", i)
 		}
 		return mrb.Int64Value(int64(r.fields[i].TableOID))
 	}, mrb.ArgsReq(1))
@@ -2536,7 +2673,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r, _ := getRes(mrb, self)
 		i := mrb.GetArgsFirst().Int()
 		if i < 0 || i >= len(r.fields) {
-			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+			return mrb.EArgumentError().Raisef("invalid column number %d", i)
 		}
 		return mrb.FixnumValue(int(r.fields[i].TableAttributeNumber))
 	}, mrb.ArgsReq(1))
@@ -2576,7 +2713,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r, _ := getRes(mrb, self)
 		i := mrb.GetArgsFirst().Int()
 		if i < 0 || i >= len(r.fields) {
-			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+			return mrb.EArgumentError().Raisef("invalid column number %d", i)
 		}
 		return mrb.Int64Value(int64(r.fields[i].DataTypeOID))
 	}, mrb.ArgsReq(1))
@@ -2585,7 +2722,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r, _ := getRes(mrb, self)
 		i := mrb.GetArgsFirst().Int()
 		if i < 0 || i >= len(r.fields) {
-			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+			return mrb.EArgumentError().Raisef("invalid column number %d", i)
 		}
 		return mrb.FixnumValue(int(r.fields[i].DataTypeSize))
 	}, mrb.ArgsReq(1))
@@ -2594,7 +2731,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r, _ := getRes(mrb, self)
 		i := mrb.GetArgsFirst().Int()
 		if i < 0 || i >= len(r.fields) {
-			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+			return mrb.EArgumentError().Raisef("invalid column number %d", i)
 		}
 		return mrb.FixnumValue(int(r.fields[i].TypeModifier))
 	}, mrb.ArgsReq(1))
@@ -2603,7 +2740,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 		r, _ := getRes(mrb, self)
 		i := mrb.GetArgsFirst().Int()
 		if i < 0 || i >= len(r.fields) {
-			return mrb.EArgumentError().Raisef("column index %d out of range", i)
+			return mrb.EArgumentError().Raisef("invalid column number %d", i)
 		}
 		return mrb.FixnumValue(int(r.fields[i].Format))
 	}, mrb.ArgsReq(1))
@@ -2664,11 +2801,8 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			return rb.Raise(mrb, "PG::Error", "%s", err.Error())
 		}
 		row := mrb.GetArgsFirst().Int()
-		if row < 0 {
-			row += len(r.rows)
-		}
 		if row < 0 || row >= len(r.rows) {
-			return mrb.NilValue()
+			return mrb.EIndexError().Raisef("Index %d is out of range", row)
 		}
 		h := mrb.HashNewCapa(len(r.fields))
 		for col, f := range r.fields {
@@ -2676,12 +2810,7 @@ func defineResult(mrb *oruby.MrbState, mod, consts oruby.RClass) {
 			if err != nil {
 				return mrb.RaiseError(err)
 			}
-			var key oruby.Value
-			if r.fieldNameSym {
-				key = mrb.SymbolValue(mrb.Intern(f.Name))
-			} else {
-				key = mrb.StrNew(f.Name)
-			}
+			key := internFieldName(mrb, f.Name, r.fieldNameSym)
 			mrb.HashSet(h, key, v)
 		}
 		return h

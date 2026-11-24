@@ -1,3 +1,8 @@
+begin
+  require "date"
+rescue LoadError
+end
+
 module PG
   class Error
     attr_reader :connection, :result
@@ -111,6 +116,73 @@ module PG
           end
           pairs.join(" ")
         end
+      end
+
+      def conninfo_parse(str)
+        s = str.to_s.strip
+        defaults = conndefaults.map(&:dup)
+        by_key = {}
+        defaults.each { |d| by_key[d[:keyword]] = d }
+        set_kv = lambda do |k, v|
+          if by_key[k]
+            by_key[k][:val] = v
+          else
+            entry = { keyword: k, envvar: nil, compiled: nil, val: v, label: k, dispchar: "", dispsize: 20 }
+            defaults << entry
+            by_key[k] = entry
+          end
+        end
+        if s.start_with?("postgres://", "postgresql://")
+          require "uri"
+          u = URI.parse(s)
+          set_kv.call("host", u.host) if u.host && !u.host.empty?
+          set_kv.call("port", u.port.to_s) if u.port
+          set_kv.call("user", URI.decode_www_form_component(u.user)) if u.user
+          set_kv.call("password", URI.decode_www_form_component(u.password)) if u.password
+          db = u.path.to_s.sub(/\A\//, "")
+          set_kv.call("dbname", URI.decode_www_form_component(db)) unless db.empty?
+          if u.query
+            u.query.split("&").each do |pair|
+              k, v = pair.split("=", 2)
+              next unless k && !k.empty?
+              set_kv.call(URI.decode_www_form_component(k), v ? URI.decode_www_form_component(v) : "")
+            end
+          end
+        else
+          i = 0
+          n = s.length
+          while i < n
+            i += 1 while i < n && s[i] =~ /\s/
+            break if i >= n
+            eq = s.index("=", i)
+            raise ArgumentError, "missing '=' after #{s[i..].inspect} in connection info string" unless eq
+            k = s[i...eq].strip
+            i = eq + 1
+            i += 1 while i < n && s[i] =~ /\s/
+            if i < n && s[i] == "'"
+              i += 1
+              v = +""
+              while i < n && s[i] != "'"
+                if s[i] == "\\" && i + 1 < n
+                  v << s[i + 1]
+                  i += 2
+                else
+                  v << s[i]
+                  i += 1
+                end
+              end
+              raise ArgumentError, "unterminated quoted string in connection info string" unless i < n && s[i] == "'"
+              i += 1
+            else
+              j = i
+              j += 1 while j < n && s[j] !~ /\s/
+              v = s[i...j]
+              i = j
+            end
+            set_kv.call(k, v)
+          end
+        end
+        defaults
       end
     end
 
@@ -267,16 +339,25 @@ module PG
             j = j ? j + 2 : n
             out << sql[i...j]
             i = j
-          elsif (m = /\A\$([A-Za-z_][A-Za-z_0-9]*)\$/.match(sql, i))
-            tag = m[0]
-            j = sql.index(tag, i + tag.length)
-            j = j ? j + tag.length : n
-            out << sql[i...j]
-            i = j
-          elsif (m = /\A\$([1-9]\d*)/.match(sql, i))
-            idx = m[1].to_i - 1
+          elsif i + 1 < n && sql[i + 1] =~ /[A-Za-z_]/
+            j = i + 2
+            j += 1 while j < n && sql[j] =~ /[A-Za-z0-9_]/
+            if j < n && sql[j] == "$"
+              tag = sql[i..j]
+              k = sql.index(tag, j + 1)
+              k = k ? k + tag.length : n
+              out << sql[i...k]
+              i = k
+            else
+              out << ch
+              i += 1
+            end
+          elsif i + 1 < n && sql[i + 1] >= "1" && sql[i + 1] <= "9"
+            j = i + 2
+            j += 1 while j < n && sql[j] >= "0" && sql[j] <= "9"
+            idx = sql[(i + 1)...j].to_i - 1
             out << (encoded[idx] || "")
-            i += m[0].length
+            i = j
           else
             out << ch
             i += 1
@@ -428,6 +509,7 @@ module PG
     end
 
     def setnonblocking(flag)
+      raise FrozenError, "can't modify frozen PG::Connection" if frozen?
       @nonblocking = !!flag
       nil
     end
@@ -596,7 +678,7 @@ module PG
     alias include? has_key?
 
     def index(key)
-      @keys.index(key)
+      @keys.rindex(key)
     end
 
     def to_h
@@ -616,22 +698,47 @@ module PG
     end
 
     def inspect
-      pairs = @keys.each_with_index.map { |k, i| "#{k.inspect}=>#{__val(i).inspect}" }
+      pairs = @keys.each_with_index.map do |k, i|
+        ks = k.is_a?(Symbol) ? k.to_s : k.to_s
+        "#{ks}: #{__val(i).inspect}"
+      end
       "#<PG::Tuple #{pairs.join(', ')}>"
     end
 
+    INTERNAL_IVARS = [:@result, :@index, :@keys, :@values].freeze
+    private_constant :INTERNAL_IVARS
+
     def marshal_dump
-      [@keys, values]
+      extras = {}
+      instance_variables.each do |iv|
+        next if INTERNAL_IVARS.include?(iv)
+        extras[iv] = instance_variable_get(iv)
+      end
+      extras.empty? ? [@keys, values] : [@keys, values, extras]
     end
 
     def marshal_load(ary)
       @result = nil
       @index = nil
-      @keys, @values = ary
+      @keys, @values, extras = ary
+      if extras.is_a?(Hash)
+        extras.each { |iv, v| instance_variable_set(iv, v) }
+      end
     end
   end
 
   class Result
+    class << self
+      undef_method :new
+    end
+
+    def inspect
+      if cleared?
+        "#<#{self.class}:0x#{object_id.to_s(16)} cleared>"
+      else
+        "#<#{self.class}:0x#{object_id.to_s(16)} status=#{res_status} tuples=#{ntuples} fields=#{nfields}>"
+      end
+    end
     def self.res_status(status)
       case status
       when PGRES_EMPTY_QUERY     then "PGRES_EMPTY_QUERY"

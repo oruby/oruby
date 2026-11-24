@@ -11,10 +11,16 @@ module PG
     TIMESTAMP_APP_UTC = 0
     TIMESTAMP_APP_LOCAL = 2
 
+    FORMAT_ERROR_MASK = 0xc
+    FORMAT_ERROR_TO_RAISE = 0x4
+    FORMAT_ERROR_TO_STRING = 0x8
+    FORMAT_ERROR_TO_PARTIAL = 0xc
+
     module BinaryFormatting
       def initialize(hash = nil, **kwargs)
         if hash
-          super(**hash, format: 1, **kwargs)
+          warn("PG::Coder.new(hash) is deprecated. Please use keyword arguments instead! Called from #{caller.first}", category: :deprecated) unless hash.empty?
+          super(format: 1, **hash, **kwargs)
         else
           super(format: 1, **kwargs)
         end
@@ -25,6 +31,7 @@ module PG
       if self.class == PG::Coder
         raise TypeError, "cannot instantiate PG::Coder directly"
       end
+      warn("PG::Coder.new(hash) is deprecated. Please use keyword arguments instead! Called from #{caller.first}", category: :deprecated) if hash
       @oid = 0
       @format = 0
       @flags = 0
@@ -326,11 +333,11 @@ module PG
     end
 
     def self.format_timestamp(val, mode)
+      return nil if val.nil?
       return val if val.is_a?(String)
       raise TypeError, "wrong argument type #{val.class} (expected Time)" unless val.is_a?(Time)
       t = case mode
           when :utc then val.utc
-          when :local then val.getlocal
           else val
           end
       year = t.year
@@ -352,7 +359,7 @@ module PG
         oh = off / 3600
         om = (off % 3600) / 60
         os = off % 60
-        tz = os == 0 ? format("%s%02d:%02d", sign, oh, om) : format("%s%02d:%02d:%02d", sign, oh, om, os)
+        tz = os == 0 ? format(" %s%02d:%02d", sign, oh, om) : format(" %s%02d:%02d:%02d", sign, oh, om, os)
         "#{base}#{tz}#{bc_suffix}"
       else
         "#{base}#{bc_suffix}"
@@ -367,6 +374,7 @@ module PG
   module TextEncoder
     class Boolean < SimpleEncoder
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         case value
         when true then "t"
         when false then "f"
@@ -377,6 +385,7 @@ module PG
 
     class Integer < SimpleEncoder
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         if value.is_a?(::Integer)
           value.to_s
         elsif value.is_a?(::String)
@@ -391,7 +400,8 @@ module PG
 
     class Float < SimpleEncoder
       def encode(value, _encoding = nil)
-        f = value.is_a?(::Float) ? value : Float(value)
+        return nil if value.nil?
+        f = value.is_a?(::Float) ? value : Kernel.Float(value)
         if f.nan?
           "NaN"
         elsif f.infinite?
@@ -404,6 +414,7 @@ module PG
 
     class Numeric < SimpleEncoder
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         case value
         when ::Integer then value.to_s
         when ::Float
@@ -424,30 +435,48 @@ module PG
 
     class String < SimpleEncoder
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         value.to_s
       end
     end
 
     class Bytea < SimpleEncoder
       def encode(value, _encoding = nil)
-        PG::Connection.escape_bytea(value.to_s)
+        return nil if value.nil?
+        s = value.to_s
+        raise ArgumentError, "bytea string too large" if s.bytesize >= (1 << 30)
+        PG::Connection.escape_bytea(s)
       end
     end
 
     class Identifier < SimpleEncoder
-      def encode(value, _encoding = nil)
+      def encode(value, encoding = nil)
+        return nil if value.nil?
+        enc = encoding ? Encoding.find(encoding) : nil
+        quote_one = lambda do |v|
+          raise TypeError, "wrong argument type #{v.class} (expected String)" unless v.is_a?(::String)
+          s = enc ? v.encode(enc) : v
+          q = '"'.encode(s.encoding)
+          qq = '""'.encode(s.encoding)
+          q + s.gsub(q, qq) + q
+        end
         if value.is_a?(::Array)
-          value.map { |v| PG::Connection.quote_ident(v.to_s) }.join(".")
+          sep = ".".encode(enc || Encoding::UTF_8)
+          value.map(&quote_one).join(sep)
         else
-          PG::Connection.quote_ident(value.to_s)
+          quote_one.call(value)
         end
       end
     end
 
-    class ToBase64 < SimpleEncoder
-      def encode(value, _encoding = nil)
+    class ToBase64 < CompositeEncoder
+      def encode(value, encoding = nil)
+        return nil if value.nil?
         require "base64"
-        ::Base64.strict_encode64(value.to_s)
+        raw = @elements_type ? @elements_type.encode(value, encoding) : value.to_s
+        return nil if raw.nil?
+        raw = raw.encode(Encoding.find(encoding)) if encoding && raw.encoding != Encoding::ASCII_8BIT
+        ::Base64.strict_encode64(raw.b).force_encoding(Encoding::UTF_8)
       end
     end
 
@@ -492,8 +521,9 @@ module PG
 
     class JSON < SimpleEncoder
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         require "json"
-        ::JSON.generate(value, quirks_mode: true)
+        ::JSON.generate(value)
       end
     end
 
@@ -657,6 +687,8 @@ module PG
 
     class String < SimpleDecoder
       def decode(string, _tuple = nil, _field = nil)
+        return nil if string.nil?
+        raise TypeError, "wrong argument type #{string.class} (expected String)" unless string.is_a?(::String)
         string
       end
     end
@@ -702,10 +734,16 @@ module PG
       end
     end
 
-    class FromBase64 < SimpleDecoder
-      def decode(string, _tuple = nil, _field = nil)
+    class FromBase64 < CompositeDecoder
+      def decode(string, tuple = nil, field = nil)
+        return nil if string.nil?
         require "base64"
-        ::Base64.decode64(string).b
+        raw = ::Base64.decode64(string)
+        if @elements_type
+          @elements_type.decode(raw.b, tuple, field)
+        else
+          raw.force_encoding(string.encoding)
+        end
       end
     end
 
@@ -748,8 +786,9 @@ module PG
 
     class JSON < SimpleDecoder
       def decode(string, _tuple = nil, _field = nil)
+        return nil if string.nil?
         require "json"
-        ::JSON.parse(string, quirks_mode: true)
+        ::JSON.parse(string)
       end
     end
 
@@ -929,6 +968,7 @@ module PG
     class Boolean < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         case value
         when true then "\x01".b
         when false then "\x00".b
@@ -940,6 +980,7 @@ module PG
     class Int2 < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         v = value.is_a?(::String) ? value.to_i : Kernel.Integer(value)
         [v].pack("s>")
       end
@@ -948,6 +989,7 @@ module PG
     class Int4 < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         v = value.is_a?(::String) ? value.to_i : Kernel.Integer(value)
         [v].pack("l>")
       end
@@ -956,6 +998,7 @@ module PG
     class Int8 < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         v = value.is_a?(::String) ? value.to_i : Kernel.Integer(value)
         [v].pack("q>")
       end
@@ -964,6 +1007,7 @@ module PG
     class Float4 < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         [Kernel.Float(value)].pack("g")
       end
     end
@@ -971,6 +1015,7 @@ module PG
     class Float8 < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         [Kernel.Float(value)].pack("G")
       end
     end
@@ -978,6 +1023,7 @@ module PG
     class String < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         value.to_s
       end
     end
@@ -985,15 +1031,19 @@ module PG
     class Bytea < SimpleEncoder
       include Coder::BinaryFormatting
       def encode(value, _encoding = nil)
+        return nil if value.nil?
         value.to_s.b
       end
     end
 
-    class FromBase64 < SimpleEncoder
+    class FromBase64 < CompositeEncoder
       include Coder::BinaryFormatting
-      def encode(value, _encoding = nil)
+      def encode(value, encoding = nil)
+        return nil if value.nil?
         require "base64"
-        ::Base64.decode64(value.to_s).b
+        raw = @elements_type ? @elements_type.encode(value, encoding) : value.to_s
+        return nil if raw.nil?
+        ::Base64.decode64(raw).b
       end
     end
 
@@ -1172,22 +1222,26 @@ module PG
     class String < SimpleDecoder
       include Coder::BinaryFormatting
       def decode(string, _tuple = nil, _field = nil)
-        string
+        return nil if string.nil?
+        string.dup.force_encoding(Encoding::UTF_8)
       end
     end
 
     class Bytea < SimpleDecoder
       include Coder::BinaryFormatting
       def decode(string, _tuple = nil, _field = nil)
+        return nil if string.nil?
         string.b
       end
     end
 
-    class ToBase64 < SimpleDecoder
+    class ToBase64 < CompositeDecoder
       include Coder::BinaryFormatting
-      def decode(string, _tuple = nil, _field = nil)
+      def decode(string, tuple = nil, field = nil)
+        return nil if string.nil?
         require "base64"
-        ::Base64.strict_encode64(string)
+        raw = ::Base64.strict_encode64(string).b
+        @elements_type ? @elements_type.decode(raw, tuple, field) : raw
       end
     end
 
