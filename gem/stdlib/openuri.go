@@ -1,3 +1,5 @@
+//go:build !oruby_slim
+
 package stdlib
 
 import (

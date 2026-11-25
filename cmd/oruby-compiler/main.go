@@ -33,6 +33,8 @@ var (
 	checkRBS   = flag.Bool("check-rbs", false, "Fail compilation if RBS arity/return type mismatches are found")
 	verbose    = flag.Bool("v", false, "Verbose output")
 	pkgSize    = flag.Int("pkgsize", 0, "Split the bundle into Go packages of about N modules each (built in parallel and cached by go build); 0 = one package")
+	gemsFlag   = flag.String("gems", compiler.GemsAll, "Gems to link: all, core (without the web gems: HTTP, Rack, sockets, TLS, open-uri; about 7 MB smaller) or auto (core unless the program requires them)")
+	stripFlag  = flag.Bool("strip", false, "Strip symbols and DWARF from the binary (about 8 MB smaller; Go debuggers need them)")
 	progressF  = flag.String("progress", "auto", "Progress reporting on stderr: auto (when stderr is a terminal), on, off")
 )
 
@@ -461,6 +463,20 @@ func main() {
 		}
 
 		buildArgs := []string{"build", "-o", absBin}
+		// the web gems are behind a build tag; the program decides (gems.go)
+		features, dynamic := comp.Features, comp.DynamicRequire
+		if !*bundle || inputPath == "-" {
+			dynamic = true // no files were read: nothing is known of what it requires
+		}
+		if slim, why := compiler.SlimBuild(*gemsFlag, features, dynamic); why != "" {
+			fmt.Fprintln(os.Stderr, "gems:", why)
+			if slim {
+				buildArgs = append(buildArgs, "-tags", "oruby_slim")
+			}
+		}
+		if *stripFlag {
+			buildArgs = append(buildArgs, "-ldflags=-s -w", "-trimpath")
+		}
 		if *pkgSize > 0 {
 			// the scratch directory differs on every run; without -trimpath its path is part of
 			// each package's cache key and nothing would be reused

@@ -15,6 +15,12 @@ import (
 // it and returns its standard output.
 func aotRun(t *testing.T, rubySrc string, pkgSize int) string {
 	t.Helper()
+	return aotRunFlags(t, rubySrc, pkgSize, "")
+}
+
+// aotRunFlags is aotRun with more flags for go build (GOFLAGS, e.g. -tags=oruby_slim).
+func aotRunFlags(t *testing.T, rubySrc string, pkgSize int, goflags string) string {
+	t.Helper()
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +48,7 @@ func aotRun(t *testing.T, rubySrc string, pkgSize int) string {
 	bin := filepath.Join(work, "app_bin")
 	build := exec.Command("go", "build", "-o", bin, "./main")
 	build.Dir = work
-	build.Env = append(os.Environ(), "CGO_ENABLED=1", "GOFLAGS=-mod=mod", "GOWORK=off")
+	build.Env = append(os.Environ(), "CGO_ENABLED=1", "GOFLAGS=-mod=mod "+goflags, "GOWORK=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build failed: %v\n%s", err, out)
 	}
@@ -462,6 +468,25 @@ puts "end of script"
 `
 	want := strings.Join([]string{"signal: SIGTERM", "interrupt", "end of script", "at_exit 2", "at_exit 1"}, "\n")
 	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A slim binary (oruby_slim: without the web gems) runs a program that does
+// not need them, and a require of a web gem is a LoadError, not a crash.
+func TestAOTSlimBuild(t *testing.T) {
+	src := `
+require "json"
+begin
+  require "socket"
+  puts "socket"
+rescue LoadError
+  puts "no socket"
+end
+puts JSON.generate({a: 1})
+`
+	got := strings.TrimSpace(aotRunFlags(t, src, 0, "-tags=oruby_slim"))
+	if want := "no socket\n{\"a\":1}"; got != want {
 		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
 	}
 }

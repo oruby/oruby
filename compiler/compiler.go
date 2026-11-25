@@ -35,6 +35,8 @@ type Compiler struct {
 	Skipped        []error         // extra bundle files skipped by the last CompileBundleWith
 	RBSDiagnostics []RBSDiagnostic // RBS arity/return mismatches from the last compilation
 	TypedMethods   []string        // methods specialized to unboxed pure-Go functions in the last compilation
+	Features       []string        // names the program requires (sorted), for the gem selection (gems.go)
+	DynamicRequire bool            // it requires by a name only run time knows, or came without source
 }
 
 func (c *Compiler) buildRBSEnv(mrb *oruby.MrbState, inline ...*RBSEnv) (*RBSEnv, error) {
@@ -168,6 +170,7 @@ func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extr
 	resolver.Progress = c.opts.Progress
 	modules, skipped, err := resolver.ResolveWith(entryFile, extra)
 	c.Skipped = skipped
+	c.Features, c.DynamicRequire = resolver.featureList(), resolver.Dynamic
 	if err != nil {
 		return "", fmt.Errorf("resolving dependencies for %s: %w", entryFile, err)
 	}
@@ -209,6 +212,7 @@ func (c *Compiler) CompilePackageDir(mrb *oruby.MrbState, entryFile string, extr
 	resolver.Progress = c.opts.Progress
 	modules, skipped, err := resolver.ResolveWith(entryFile, extra)
 	c.Skipped = skipped
+	c.Features, c.DynamicRequire = resolver.featureList(), resolver.Dynamic
 	if err != nil {
 		return nil, fmt.Errorf("resolving dependencies for %s: %w", entryFile, err)
 	}

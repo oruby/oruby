@@ -64,6 +64,20 @@ func Gem(name string, initFn func(*MrbState) interface{}) {
 	gems[name] = initFn
 }
 
+// GemNames lists the names of the registered Go gems, sorted: what `require`
+// can find among them.
+func GemNames() []string {
+	names := make([]string, 0, len(gems)+len(lazyGems))
+	for n := range gems {
+		names = append(names, n)
+	}
+	for n := range lazyGems {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // GemExists checks if gem was already required
 func GemExists(name string) bool {
 	_, exists := gems[name]

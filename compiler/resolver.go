@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/oruby/oruby"
@@ -31,6 +32,12 @@ type DependencyResolver struct {
 	loadPaths []string
 	visited   map[string]*ModuleUnit
 	Progress  ProgressFunc // optional; reports each extra file as it is resolved
+
+	// Features are the names the files require (require, autoload), found or
+	// not; Dynamic is set when one requires by a name only run time knows, or
+	// a file came without its source (bytecode, .orb): see gems.go.
+	Features map[string]bool
+	Dynamic  bool
 }
 
 // NewDependencyResolver creates a resolver.
@@ -39,6 +46,7 @@ func NewDependencyResolver(mrb *oruby.MrbState, loadPaths []string) *DependencyR
 		mrb:       mrb,
 		loadPaths: loadPaths,
 		visited:   make(map[string]*ModuleUnit),
+		Features:  make(map[string]bool),
 	}
 }
 
@@ -109,6 +117,7 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 	}
 
 	if oruby.IsOrbBinary(content) {
+		r.Dynamic = true
 		return r.resolveOrbBytes(absPath, rootDir, content, list, counter)
 	}
 
@@ -184,6 +193,11 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 		for _, m := range matches {
 			reqs = append(reqs, requireRef{kind: m[1], target: m[2]})
 		}
+		if dynamicRequireRe.Match(content) {
+			r.Dynamic = true
+		}
+	} else {
+		r.Dynamic = true
 	}
 	currentDir := filepath.Dir(absPath)
 	seenReqs := make(map[requireRef]bool, len(reqs))
@@ -193,6 +207,12 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 			continue
 		}
 		seenReqs[req] = true
+		if req.kind != "require_relative" {
+			r.Features[req.target] = true
+			if strings.Contains(req.target, "#{") {
+				r.Dynamic = true
+			}
+		}
 
 		resolvedFile := ""
 		if req.kind == "require_relative" {
@@ -493,4 +513,14 @@ func (m *ModuleUnit) KeyGroups() (strong, weak []string) {
 	}
 
 	return keys, aliases
+}
+
+// featureList is the names the program requires, sorted.
+func (r *DependencyResolver) featureList() []string {
+	out := make([]string, 0, len(r.Features))
+	for f := range r.Features {
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	return out
 }
