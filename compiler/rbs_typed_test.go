@@ -101,11 +101,20 @@ func TestTypedAOTExecutionAndSoundness(t *testing.T) {
 class Object
   def helper_sq: (Float x) -> Float
   def dist_sq: (Float x, Float y) -> Float
+  def dot_f: (Array[Float] a, Array[Float] b) -> Float
 end
 
 class Calc
   def self.mix: (Integer n, Float base) -> Float
   def compute: (Integer n) -> Integer
+end
+
+class Point
+  @x: Float
+  @y: Float
+  def dist: () -> Float
+  def sum_dist: (Integer n) -> Float
+  def scale!: (Float f) -> Float
 end
 `
 	rubySrc := `
@@ -134,6 +143,72 @@ end
 
 def dist_sq(x, y)
   helper_sq(x) + helper_sq(y)
+end
+
+# Math.*, bitwise, power, predicates, rounding, and explicit Class.method inside _typed
+#: (Float, Float) -> Float
+def euclid(x, y)
+  Math.sqrt(x * x + y * y)
+end
+
+#: (Integer) -> Integer
+def bit_mix(n)
+  s = 0
+  i = 0
+  while i < n
+    if i.even?
+      s = s + ((i << 2) ^ (i & 7) | 1)
+    else
+      s = s + (i >> 1)
+    end
+    i += 1
+  end
+  s
+end
+
+#: (Integer, Float) -> Float
+def call_calc_mix(n, b)
+  Calc.mix(n, b) + (b.floor + b.ceil + b.round).to_f
+end
+
+# Typed Array[Float] indexing + length inside _typed
+def dot_f(a, b)
+  n = a.length
+  acc = 0.0
+  i = 0
+  while i < n
+    acc = acc + a[i] * b[i]
+    i += 1
+  end
+  acc
+end
+
+# RBS @ivar reads and immediate writes inside _typed
+class Point
+  def initialize(x, y)
+    @x = x
+    @y = y
+  end
+
+  def dist
+    Math.sqrt(@x * @x + @y * @y)
+  end
+
+  def sum_dist(n)
+    acc = 0.0
+    i = 0
+    while i < n
+      acc = acc + dist
+      i += 1
+    end
+    acc
+  end
+
+  def scale!(f)
+    @x = @x * f
+    @y = @y * f
+    @x + @y
+  end
 end
 
 # Ruby floor-division, floor-modulo, unary minus, abs, to_f, to_i
@@ -173,7 +248,7 @@ class SubCalc < Calc
   end
 end
 
-# 1. Verify recursive fib(25) + Float arg fallback + BigInt overflow fallback
+# 1. Verify recursive fib(25) + Float arg fallback + BigInt literal & overflow fallback
 raise "fib(25)" unless fib(25) == 75025
 raise "fib(1.5)" unless fib(1.5) == 0.0
 
@@ -182,16 +257,83 @@ def mul_big(a, b)
   a * b
 end
 raise "mul_big small" unless mul_big(6, 7) == 42
-raise "mul_big overflow" unless mul_big(1_000_000_000_000, 1_000_000_000_000).to_s == "1000000000000000000000000"
+raise "mul_big overflow literal" unless mul_big(1_000_000_000_000, 1_000_000_000_000) == 1_000_000_000_000_000_000_000_000
 
 # 2. Verify mixed int/float compound loop
 c = compound(10, 0.1)
 raise "compound: #{c}" unless (c - 1.1**10).abs < 1e-9
 
-# 3. Verify external .rbs cross-method float64 calls
+# 3. Verify external .rbs cross-method float64 calls, Math.sqrt, bitwise, Calc.mix
 raise "dist_sq" unless dist_sq(3.0, 4.0) == 25.0
+raise "euclid" unless (euclid(3.0, 4.0) - 5.0).abs < 1e-9
+merr = begin; euclid(-1.0, 0.0); false; rescue Math::DomainError; true; end
+raise "Math.sqrt negative" unless euclid(0.0, 0.0) == 0.0
+raise "bit_mix" unless bit_mix(10) == ((0 << 2) ^ 0 | 1) + (1 >> 1) + ((2 << 2) ^ 2 | 1) + (3 >> 1) + ((4 << 2) ^ 4 | 1) + (5 >> 1) + ((6 << 2) ^ 6 | 1) + (7 >> 1) + ((8 << 2) ^ 0 | 1) + (9 >> 1)
+raise "call_calc_mix" unless (call_calc_mix(4, 1.4) - (11.4 + 1.0 + 2.0 + 1.0)).abs < 1e-9
 
-# 4. Verify Ruby floor-div / floor-mod semantics (differs from Go truncation on negatives!)
+# 4. Verify RBS Array[Float] dot product + mixed-type fallback
+raise "dot_f" unless (dot_f([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) - 32.0).abs < 1e-9
+raise "dot_f fallback int" unless (dot_f([1, 2], [3.0, 4.0]) - 11.0).abs < 1e-9
+
+# 5. Verify RBS @ivar Point#dist, Point#sum_dist (typed loop calling dist!), and Point#scale!
+pt = Point.new(3.0, 4.0)
+raise "Point#dist" unless (pt.dist - 5.0).abs < 1e-9
+raise "Point#sum_dist" unless (pt.sum_dist(100) - 500.0).abs < 1e-9
+raise "Point#scale!" unless (pt.scale!(2.0) - 14.0).abs < 1e-9
+raise "Point#dist after scale" unless (pt.dist - 10.0).abs < 1e-9
+
+# 5b. Verify new string & boolean intrinsics (!, length/size, <<, strip/downcase/upcase, gsub, split)
+raise "not bool" unless !false == true && !nil == true && !true == false && !0 == false
+raise "str length ascii/utf8" unless "hello".length == 5 && "Čćžšđ".length == 5 && "Čćžšđ".bytesize == 10
+buf = +""
+200.times { buf << "ab" }
+raise "str concat" unless buf.bytesize == 400 && buf.start_with?("abab")
+raise "strip/down/up" unless "  Hello World! \t\n".strip == "Hello World!" && "AbC123".downcase == "abc123" && "AbC123".upcase == "ABC123"
+raise "gsub plain" unless "the fox and the fox".gsub("fox", "wolf") == "the wolf and the wolf"
+raise "gsub backref fallback" unless "foo".gsub("o", "\\0!") == "fo!o!"
+def gsub_with_matchdata
+  r = "abc".gsub("b", "X")
+  [r, $~.to_s]
+end
+raise "gsub $~ parity" unless gsub_with_matchdata == ["aXc", "b"]
+raise "split plain" unless "a,b,c,,".split(",") == ["a", "b", "c"] && "".split(",") == [] && ",,".split(",") == []
+raise "split space fallback" unless "  a  b  ".split(" ") == ["a", "b"]
+
+# 6. Verify Integer#times, Range#each, Array#each peepholes + break
+ts = 0
+10.times { |i| ts += i }
+raise "times" unless ts == 45
+tb = 10.times { |i| break i * 10 if i == 4 }
+raise "times break" unless tb == 40
+rs = 0
+(1..5).each { |i| rs += i }
+raise "range inc" unless rs == 15
+re = 0
+(1...5).each { |i| re += i }
+raise "range exc" unless re == 10
+rb = (1..10).each { |i| break i if i == 6 }
+raise "range break" unless rb == 6
+as = 0
+[10, 20, 30].each { |x| as += x }
+raise "ary each" unless as == 60
+
+# 7. Verify core stdlib zero-cgo intrinsics
+s = "hello world"
+raise "bytesize" unless s.bytesize == 11
+raise "str empty" unless "".empty? && !s.empty?
+raise "getbyte" unless s.getbyte(0) == 104 && s.getbyte(-1) == 100 && s.getbyte(99).nil?
+raise "ord ascii" unless s.ord == 104
+raise "ord utf8" unless "č".ord == 269
+ord_err = begin; "".ord; false; rescue ArgumentError; true; end
+raise "ord empty" unless ord_err
+raise "start_with?" unless s.start_with?("hello") && !s.start_with?("world")
+raise "include?" unless s.include?("lo wo") && !s.include?("xyz")
+arr = [7, 8, 9]
+raise "ary len/size/empty/first/last" unless arr.length == 3 && arr.size == 3 && !arr.empty? && [].empty? && arr.first == 7 && arr.last == 9 && [].first.nil?
+h = { a: 1, b: 2 }
+raise "hash size/len/empty" unless h.size == 2 && h.length == 2 && !h.empty? && {}.empty?
+
+# 8. Verify Ruby floor-div / floor-mod semantics (differs from Go truncation on negatives!)
 raise "floor_div -5/2" unless floor_div(-5, 2) == -3
 raise "floor_div 5/-2" unless floor_div(5, -2) == -3
 raise "floor_mod -5%2" unless floor_mod(-5, 2) == 1
@@ -199,20 +341,23 @@ raise "floor_mod 5%-2" unless floor_mod(5, -2) == -1
 zerr = begin; floor_div(5, 0); false; rescue ZeroDivisionError; true; end
 raise "ZeroDivisionError fallback" unless zerr
 
-# 5. Verify unary minus, abs, to_f
+# 9. Verify unary minus, abs, to_f
 raise "neg_abs_f" unless neg_abs_f(-7) == 7.5
 
-# 6. Verify class singleton & subclass override safety
+# 10. Verify class singleton & subclass override safety
 raise "Calc.mix" unless Calc.mix(4, 1.5) == 11.5
 raise "Calc#compute" unless Calc.new.compute(5) == 11
 raise "SubCalc#compute" unless SubCalc.new.compute(5) == 501
 
-# 7. Verify live monkey-patch invalidates method-cache guard cleanly!
+# 11. Verify live monkey-patch invalidates method-cache guard cleanly!
 Object.define_method(:fib) { |n| n + 1000 }
 raise "monkey-patched fib" unless fib(25) == 1025
 
 Object.define_method(:helper_sq) { |x| x * 10.0 }
 raise "monkey-patched helper_sq" unless dist_sq(3.0, 4.0) == 70.0
+
+Calc.define_singleton_method(:mix) { |n, b| b + n.to_f * 100.0 }
+raise "monkey-patched Calc.mix" unless (call_calc_mix(4, 1.4) - (401.4 + 4.0)).abs < 1e-9
 
 puts "ALL_TYPED_AOT_OK"
 `
@@ -251,11 +396,19 @@ puts "ALL_TYPED_AOT_OK"
 	}
 	src := string(mod0)
 	for _, want := range []string{
-		"_typed(mrb *oruby.MrbState, _a1 int64) (int64, bool)",
+		"_typed(mrb *oruby.MrbState, _depth int, _a1 int64) (int64, bool)",
 		"_typed(mrb *oruby.MrbState, _a1 int64, _a2 float64) (float64, bool)",
-		"_typed(mrb *oruby.MrbState, _a1 float64, _a2 float64) (float64, bool)",
+		"_typed(mrb *oruby.MrbState, _depth int, _a1 float64, _a2 float64) (float64, bool)",
+		"_typed(mrb *oruby.MrbState, self oruby.Value) (float64, bool)",
+		"_typed(mrb *oruby.MrbState, _a1 oruby.Value, _a2 oruby.Value) (float64, bool)",
+		"aotMathSqrt(",
 		"AotCompiledMethodOK(",
+		"AotConstMethodOK(",
+		"AotCoreConstOK(",
+		"AotCoreOK(oruby.AotCoreIntTimes",
+		"AotCoreOK(oruby.AotCoreRangeEach",
 		"AotDefineMethodTracked(",
+		"AotBigInt(",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("aot_mod_000.go missing %q", want)

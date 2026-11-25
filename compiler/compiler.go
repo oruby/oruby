@@ -16,14 +16,17 @@ func IsRiteBinary(data []byte) bool {
 
 // Options configures the oruby-compiler transpilation process.
 type Options struct {
-	PackageName string      // Output Go package name (default: "main")
-	Standalone  bool        // Generate a standalone executable with main()
-	EmbedDirs   []string    // Optional directory paths to embed using //go:embed (empty = files on disk)
-	Debug       bool        // Emit line-stepping debug hooks for IDE / debugger integration
-	GoExts      []GoExtSpec // Opt-in Go extensions from github.com/oruby/oruby/goext to link (and optimize via intrinsics)
-	RBSPaths    []string    // Optional .rbs files or directories (e.g. "sig") for type-guided AOT specialization
-	RBS         *RBSEnv     // Optional pre-loaded RBSEnv (merged with RBSPaths and inline #: comments)
-	CheckRBS    bool        // Fail compilation if RBS arity/return type mismatches are found
+	PackageName string       // Output Go package name (default: "main")
+	Standalone  bool         // Generate a standalone executable with main()
+	EmbedDirs   []string     // Optional directory paths to embed using //go:embed (empty = files on disk)
+	Debug       bool         // Emit line-stepping debug hooks for IDE / debugger integration
+	GoExts      []GoExtSpec  // Opt-in Go extensions from github.com/oruby/oruby/goext to link (and optimize via intrinsics)
+	RBSPaths    []string     // Optional .rbs files or directories (e.g. "sig") for type-guided AOT specialization
+	RBS         *RBSEnv      // Optional pre-loaded RBSEnv (merged with RBSPaths and inline #: comments)
+	CheckRBS    bool         // Fail compilation if RBS arity/return type mismatches are found
+	Progress    ProgressFunc // Optional progress reporting for the resolve/analyze/emit/write stages
+	GroupSize   int          // CompilePackageDir: modules per Go package (0 = one package)
+	ModulePath  string       // Go module path of the output package (default "app")
 }
 
 // Compiler coordinates parsing Ruby code or mruby bytecode and producing Go code.
@@ -85,6 +88,9 @@ func (c *Compiler) compileIrepWithRBS(mrb *oruby.MrbState, irep oruby.MrbIrep, i
 		GoExts:      c.opts.GoExts,
 		RBS:         rbsEnv,
 		CheckRBS:    c.opts.CheckRBS,
+		Progress:    c.opts.Progress,
+		GroupSize:   c.opts.GroupSize,
+		ModulePath:  c.opts.ModulePath,
 	})
 
 	out, err := codegen.Generate(unit)
@@ -159,6 +165,7 @@ func (c *Compiler) CompileBundle(mrb *oruby.MrbState, entryFile string, loadPath
 // Extra files which fail to parse are skipped; see Skipped.
 func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extra []string, loadPaths []string) (string, error) {
 	resolver := NewDependencyResolver(mrb, loadPaths)
+	resolver.Progress = c.opts.Progress
 	modules, skipped, err := resolver.ResolveWith(entryFile, extra)
 	c.Skipped = skipped
 	if err != nil {
@@ -183,6 +190,9 @@ func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extr
 		GoExts:      c.opts.GoExts,
 		RBS:         rbsEnv,
 		CheckRBS:    c.opts.CheckRBS,
+		Progress:    c.opts.Progress,
+		GroupSize:   c.opts.GroupSize,
+		ModulePath:  c.opts.ModulePath,
 	})
 
 	out, err := codegen.GenerateBundle(modules)
@@ -196,6 +206,7 @@ func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extr
 // aot_mod_NNN.go) into outDir. It returns the sorted list of written file paths.
 func (c *Compiler) CompilePackageDir(mrb *oruby.MrbState, entryFile string, extra []string, loadPaths []string, outDir string) ([]string, error) {
 	resolver := NewDependencyResolver(mrb, loadPaths)
+	resolver.Progress = c.opts.Progress
 	modules, skipped, err := resolver.ResolveWith(entryFile, extra)
 	c.Skipped = skipped
 	if err != nil {
@@ -220,6 +231,9 @@ func (c *Compiler) CompilePackageDir(mrb *oruby.MrbState, entryFile string, extr
 		GoExts:      c.opts.GoExts,
 		RBS:         rbsEnv,
 		CheckRBS:    c.opts.CheckRBS,
+		Progress:    c.opts.Progress,
+		GroupSize:   c.opts.GroupSize,
+		ModulePath:  c.opts.ModulePath,
 	})
 
 	files, err := codegen.GeneratePackageFiles(modules)
@@ -240,8 +254,12 @@ func (c *Compiler) CompilePackageDir(mrb *oruby.MrbState, entryFile string, extr
 	sort.Strings(names)
 
 	written := make([]string, 0, len(names))
-	for _, name := range names {
+	for i, name := range names {
+		c.opts.Progress.report("write", i+1, len(names), name)
 		full := filepath.Join(outDir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			return nil, fmt.Errorf("creating %s: %w", filepath.Dir(full), err)
+		}
 		content := []byte(files[name])
 		// Skip rewriting unchanged module files to preserve timestamps for Go build cache
 		if existing, rerr := os.ReadFile(full); rerr == nil && string(existing) == files[name] {

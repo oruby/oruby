@@ -906,6 +906,9 @@ static uint32_t _mrb_pool_len(const mrb_irep_pool *v) { return v->tt >> 2; }
 static int32_t _mrb_pool_i32(const mrb_irep_pool *v) { return v->u.i32; }
 static int64_t _mrb_pool_i64(const mrb_irep_pool *v) { return v->u.i64; }
 static double _mrb_pool_float(const mrb_irep_pool *v) { return (double)v->u.f; }
+static uint8_t _mrb_pool_bigint_len(const mrb_irep_pool *v) { return (uint8_t)v->u.str[0]; }
+static int8_t _mrb_pool_bigint_base(const mrb_irep_pool *v) { return (int8_t)v->u.str[1]; }
+static const char* _mrb_pool_bigint_digits(const mrb_irep_pool *v) { return v->u.str + 2; }
 
 // Callbacks
 extern int  go_partial_hook_callback(struct mrb_parser_state *p);

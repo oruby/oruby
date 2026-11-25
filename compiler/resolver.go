@@ -27,6 +27,7 @@ type DependencyResolver struct {
 	mrb       *oruby.MrbState
 	loadPaths []string
 	visited   map[string]*ModuleUnit
+	Progress  ProgressFunc // optional; reports each extra file as it is resolved
 }
 
 // NewDependencyResolver creates a resolver.
@@ -70,7 +71,8 @@ func (r *DependencyResolver) ResolveWith(entryFile string, extra []string) (modu
 	}
 	absEntry, _ := filepath.Abs(entryFile)
 	rootDir := filepath.Dir(absEntry)
-	for _, f := range extra {
+	for i, f := range extra {
+		r.Progress.report("resolve", i+1, len(extra), f)
 		abs, err := filepath.Abs(f)
 		if err != nil {
 			return nil, nil, err
@@ -423,8 +425,19 @@ func addPathVariants(keys *[]string, p string) {
 	}
 }
 
-// CanonicalKeys generates lookup keys for the module in the require registry.
+// CanonicalKeys generates lookup keys for the module in the require registry:
+// the path keys first, then the bare-basename aliases (see KeyGroups).
 func (m *ModuleUnit) CanonicalKeys() []string {
+	strong, weak := m.KeyGroups()
+	return append(strong, weak...)
+}
+
+// KeyGroups splits a module's registry keys into the ones that name its path
+// (relative, absolute, load-path relative) and the bare-basename aliases
+// ("mspec.rb" for lib/mspec/runner/mspec.rb). A registry must take every
+// module's path keys before any alias: an alias that lands first would
+// otherwise hide the file a `require "mspec"` really names.
+func (m *ModuleUnit) KeyGroups() (strong, weak []string) {
 	var keys []string
 	relSlash := filepath.ToSlash(m.RelPath)
 	addPathVariants(&keys, m.RelPath)
@@ -454,10 +467,11 @@ func (m *ModuleUnit) CanonicalKeys() []string {
 	}
 
 	// Base name: "bar.rb", "bar.mrb", and "bar"
+	var aliases []string
 	base := filepath.Base(m.RelPath)
 	if base != m.RelPath {
-		addPathVariants(&keys, base)
+		addPathVariants(&aliases, base)
 	}
 
-	return keys
+	return keys, aliases
 }

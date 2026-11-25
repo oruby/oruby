@@ -168,10 +168,13 @@ type aotState struct {
 	blocks          map[int64]*aotBlockData
 	nextBlock       int64
 	trampIdx        int
-	methods         map[int]*aotMethod
+	methods         []*aotMethod
 	depth           int
 	intDisabled     int
+	envCallbackPtr  unsafe.Pointer
+	argBuf          [aotMaxDirectDepth + 2][2]Value
 	intrinsics      [aotIntrinsicCount]aotIntrinsicSlot
+	coreIntrinsics  [aotCoreCount]aotIntrinsicSlot
 	compiledMethods []C.mrb_method_t
 }
 
@@ -209,9 +212,10 @@ func (mrb *MrbState) AotInit() {
 	st.symCall = Sym_call
 	st.topCx = &AotCtx{}
 	st.blocks = make(map[int64]*aotBlockData)
-	st.methods = make(map[int]*aotMethod)
+	st.envCallbackPtr = C._aot_env_callback_ptr()
 	mrb.aot = st
 	st.trampIdx = mrb.registerMrbFuncT(mrb.aotBlockTrampoline)
+	mrb.aotInitCoreIntrinsics(st)
 }
 
 // AotRegisterInstanceIntrinsic records a Go-extension instance method on cls
@@ -471,10 +475,8 @@ func (mrb *MrbState) AotCompiledMethodOK(recv Value, mid MrbSym, slot int) bool 
 	if mc1.c == oc && mc1.mid == cmid {
 		return mc1.m == expected
 	}
-	// Cold cache: warm mruby's method cache once so subsequent calls stay 0-cgo.
-	var found C.mrb_bool
-	m := C._aot_intrinsic_method(mrb.p, oc, cmid, &found)
-	return bool(found) && m == expected
+	// Cold cache: warm mruby's method cache once so subsequent calls stay 0-cgo, 0-alloc.
+	return mrb.aotCacheMatchSlow(oc, cmid, expected)
 }
 
 // AotBytesBinary allocates an ASCII-8BIT (BINARY) Ruby String from b in a
@@ -603,12 +605,12 @@ func (mrb *MrbState) AotCall(self, recv Value, mid MrbSym, args []Value, blk Val
 	if res, err, ok := mrb.aotDirect(recv, mid, args, blk, fcall); ok {
 		return res, err
 	}
+	var v Value
 	if !fcall {
-		if C._aot_check_visibility(mrb.p, self.v, recv.v, C.mrb_sym(mid), C.mrb_int(len(args)), valuesPtr(args)) == false {
-			return nilValue, mrb.aotExc()
-		}
+		v = Value{C._aot_funcall_public(mrb.p, self.v, recv.v, C.mrb_sym(mid), C.mrb_int(len(args)), valuesPtr(args), blk.v)}
+	} else {
+		v = Value{C._aot_funcall(mrb.p, recv.v, C.mrb_sym(mid), C.mrb_int(len(args)), valuesPtr(args), blk.v)}
 	}
-	v := Value{C._aot_funcall(mrb.p, recv.v, C.mrb_sym(mid), C.mrb_int(len(args)), valuesPtr(args), blk.v)}
 	if mrb.p.exc != nil {
 		return nilValue, mrb.aotExc()
 	}
@@ -621,12 +623,26 @@ func (mrb *MrbState) AotCall0(self, recv Value, mid MrbSym, fcall bool) (Value, 
 	if res, err, ok := mrb.aotDirect(recv, mid, nil, nilValue, fcall); ok {
 		return res, err
 	}
+	var v Value
 	if !fcall {
-		if C._aot_check_visibility(mrb.p, self.v, recv.v, C.mrb_sym(mid), 0, nil) == false {
-			return nilValue, mrb.aotExc()
-		}
+		v = Value{C._aot_funcall_public(mrb.p, self.v, recv.v, C.mrb_sym(mid), 0, nil, C.mrb_nil_value())}
+	} else {
+		v = Value{C._aot_funcall(mrb.p, recv.v, C.mrb_sym(mid), 0, nil, C.mrb_nil_value())}
 	}
-	v := Value{C._aot_funcall(mrb.p, recv.v, C.mrb_sym(mid), 0, nil, C.mrb_nil_value())}
+	if mrb.p.exc != nil {
+		return nilValue, mrb.aotExc()
+	}
+	return v, nil
+}
+
+//go:noinline
+func (mrb *MrbState) aotCall1Slow(self, recv Value, mid MrbSym, a Value, fcall bool) (Value, error) {
+	var v Value
+	if !fcall {
+		v = Value{C._aot_funcall_public(mrb.p, self.v, recv.v, C.mrb_sym(mid), 1, &a.v, C.mrb_nil_value())}
+	} else {
+		v = Value{C._aot_funcall(mrb.p, recv.v, C.mrb_sym(mid), 1, &a.v, C.mrb_nil_value())}
+	}
 	if mrb.p.exc != nil {
 		return nilValue, mrb.aotExc()
 	}
@@ -636,19 +652,45 @@ func (mrb *MrbState) AotCall0(self, recv Value, mid MrbSym, fcall bool) (Value, 
 // AotCall1 calls method with one argument
 func (mrb *MrbState) AotCall1(self, recv Value, mid MrbSym, a Value, fcall bool) (Value, error) {
 	mrb.aotStress()
-	if res, err, ok := mrb.aotDirect(recv, mid, []Value{a}, nilValue, fcall); ok {
-		return res, err
-	}
-	if !fcall {
-		if C._aot_check_visibility(mrb.p, self.v, recv.v, C.mrb_sym(mid), 1, &a.v) == false {
-			return nilValue, mrb.aotExc()
+	if st := mrb.aot; st != nil && st.depth < aotMaxDirectDepth {
+		slot := &st.argBuf[st.depth]
+		slot[0] = a
+		if res, err, ok := mrb.aotDirect(recv, mid, slot[:1], nilValue, fcall); ok {
+			return res, err
 		}
 	}
-	v := Value{C._aot_funcall(mrb.p, recv.v, C.mrb_sym(mid), 1, &a.v, C.mrb_nil_value())}
+	return mrb.aotCall1Slow(self, recv, mid, a, fcall)
+}
+
+//go:noinline
+func (mrb *MrbState) aotCall2Slow(self, recv Value, mid MrbSym, a, b Value, fcall bool) (Value, error) {
+	var cbuf [2]C.mrb_value
+	cbuf[0] = a.v
+	cbuf[1] = b.v
+	var v Value
+	if !fcall {
+		v = Value{C._aot_funcall_public(mrb.p, self.v, recv.v, C.mrb_sym(mid), 2, &cbuf[0], C.mrb_nil_value())}
+	} else {
+		v = Value{C._aot_funcall(mrb.p, recv.v, C.mrb_sym(mid), 2, &cbuf[0], C.mrb_nil_value())}
+	}
 	if mrb.p.exc != nil {
 		return nilValue, mrb.aotExc()
 	}
 	return v, nil
+}
+
+// AotCall2 calls method with two arguments
+func (mrb *MrbState) AotCall2(self, recv Value, mid MrbSym, a, b Value, fcall bool) (Value, error) {
+	mrb.aotStress()
+	if st := mrb.aot; st != nil && st.depth < aotMaxDirectDepth {
+		slot := &st.argBuf[st.depth]
+		slot[0] = a
+		slot[1] = b
+		if res, err, ok := mrb.aotDirect(recv, mid, slot[:2], nilValue, fcall); ok {
+			return res, err
+		}
+	}
+	return mrb.aotCall2Slow(self, recv, mid, a, b, fcall)
 }
 
 func (mrb *MrbState) aotDispatch(mode int, recv Value, mid MrbSym, tc unsafe.Pointer, args []Value, blk Value) (Value, error) {
@@ -767,22 +809,66 @@ func (mrb *MrbState) AotClassCtx(cx *AotCtx, class Value) *AotCtx {
 	return &AotCtx{Cref: &AotCref{Class: class, Up: up}}
 }
 
-// AotConstGet looks up constant using lexical scope, then ancestors
-func (mrb *MrbState) AotConstGet(cx *AotCtx, sym MrbSym) Value {
-	var cref *AotCref
-	if cx != nil {
-		cref = cx.Cref
-	}
+//go:noinline
+func (mrb *MrbState) aotConstGetSlow(cref *AotCref, sym MrbSym, canCache bool, key *C.struct_mrb_irep, h uint32) Value {
 	for c := cref; c != nil; c = c.Up {
 		if C.mrb_const_defined_at(mrb.p, c.Class.v, C.mrb_sym(sym)) != false {
-			return mrb.AotOp(AotOpConstGet, c.Class, nilValue, nilValue, sym)
+			v := mrb.AotOp(AotOpConstGet, c.Class, nilValue, nilValue, sym)
+			if canCache && mrb.p.exc == nil && c.Class.Pointer() > 65536 {
+				clsFlags := (*(*uint32)(unsafe.Add(aotObjPtr(c.Class), 8))) >> 12
+				if (clsFlags & (1 << 9)) == 0 { // !MRB_FL_CLASS_CONST_FLAGS
+					cc := &mrb.p.const_cache[h]
+					cc.irep = key
+					cc.sym = C.mrb_sym(sym)
+					cc.value = v.v
+				}
+			}
+			return v
 		}
 	}
 	base := mrb.ObjectClass().Value()
 	if cref != nil {
 		base = cref.Class
 	}
+	if canCache {
+		var cacheable C.mrb_bool
+		v := Value{C._aot_const_get_vm_cacheable(mrb.p, base.v, C.mrb_sym(sym), &cacheable)}
+		if bool(cacheable) && mrb.p.exc == nil {
+			cc := &mrb.p.const_cache[h]
+			cc.irep = key
+			cc.sym = C.mrb_sym(sym)
+			cc.value = v.v
+		}
+		return v
+	}
 	return mrb.AotOp(C.AOT_OP_CONST_GET_VM, base, nilValue, nilValue, sym)
+}
+
+// AotConstGet looks up constant using lexical scope, then ancestors.
+// Uses mruby's const_cache in pure Go (zero cgo, zero alloc on warm cache) for
+// simple scopes, automatically invalidated by mruby on any const_set /
+// const_remove / autoload / include / prepend.
+func (mrb *MrbState) AotConstGet(cx *AotCtx, sym MrbSym) Value {
+	var cref *AotCref
+	if cx != nil {
+		cref = cx.Cref
+	}
+	canCache := cref == nil || cref.Up == nil
+	var key *C.struct_mrb_irep
+	var h uint32
+	if canCache {
+		baseCls := mrb.p.object_class
+		if cref != nil && cref.Class.Pointer() > 65536 {
+			baseCls = (*C.struct_RClass)(aotObjPtr(cref.Class))
+		}
+		key = (*C.struct_mrb_irep)(unsafe.Pointer(baseCls))
+		h = aotConstHash(uintptr(unsafe.Pointer(key)), uintptr(sym))
+		cc := &mrb.p.const_cache[h]
+		if cc.irep == key && cc.sym == C.mrb_sym(sym) {
+			return mrb.aotProtect(Value{cc.value})
+		}
+	}
+	return mrb.aotConstGetSlow(cref, sym, canCache, key, h)
 }
 
 // AotConstSet sets constant in innermost lexical class
@@ -980,12 +1066,25 @@ func (mrb *MrbState) AotDefineMethod(target Value, mid MrbSym, cx *AotCtx, needC
 	}
 	idx := mrb.registerMrbFuncT(f)
 	mrb.AotInit()
+	if idx >= len(mrb.aot.methods) {
+		grown := make([]*aotMethod, idx+16)
+		copy(grown, mrb.aot.methods)
+		mrb.aot.methods = grown
+	}
 	mrb.aot.methods[idx] = &aotMethod{fn: fn, cx: cx, needCtx: needCtx}
 	C._aot_define_method(mrb.p, cls.p, C.mrb_sym(mid), C.mrb_int(idx))
 }
 
+//go:noinline
+func (mrb *MrbState) aotLookupCompiledSlow(recv Value, mid MrbSym, fcall bool) (int, *C.struct_RClass) {
+	var owner *C.struct_RClass
+	idx := int(C._aot_lookup_compiled(mrb.p, recv.v, C.mrb_sym(mid), boolInt(fcall), &owner))
+	return idx, owner
+}
+
 // aotDirect calls compiled method of recv directly when the method lookup
-// resolves to one. ok is false when the regular call path must be used.
+// resolves to one. Uses pure-Go 2-way method cache probing (zero cgo and zero
+// Go heap allocation on warm cache), falling back to C only on cache miss.
 func (mrb *MrbState) aotDirect(recv Value, mid MrbSym, args []Value, blk Value, fcall bool) (res Value, err error, ok bool) {
 	st := mrb.aot
 	if st == nil || st.depth >= aotMaxDirectDepth || mrb.hasFastArgs {
@@ -994,12 +1093,14 @@ func (mrb *MrbState) aotDirect(recv Value, mid MrbSym, args []Value, blk Value, 
 	if blk.v.tt != C.MRB_TT_FALSE && blk.v.tt != C.MRB_TT_PROC {
 		return nilValue, nil, false // needs to_proc conversion
 	}
-	var owner *C.struct_RClass
-	idx := C._aot_lookup_compiled(mrb.p, recv.v, C.mrb_sym(mid), boolInt(fcall), &owner)
-	if idx < 0 {
+	idx, owner, hit := mrb.aotMethodIdxFromCache(recv, mid, fcall)
+	if !hit {
+		idx, owner = mrb.aotLookupCompiledSlow(recv, mid, fcall)
+	}
+	if idx < 0 || idx >= len(st.methods) {
 		return nilValue, nil, false
 	}
-	mi := st.methods[int(idx)]
+	mi := st.methods[idx]
 	if mi == nil {
 		return nilValue, nil, false
 	}
@@ -1246,13 +1347,21 @@ func (mrb *MrbState) AotAryNew(vals ...Value) Value {
 	return Value{C.mrb_ary_new_from_values(mrb.p, C.mrb_int(len(vals)), valuesPtr(vals))}
 }
 
-// AotAryRef returns array element (nil when out of range)
+// AotAryRef returns array element (nil when out of range) in pure Go without cgo.
 func (mrb *MrbState) AotAryRef(ary Value, i int) Value {
-	return Value{C._aot_ary_ref(mrb.p, ary.v, C.mrb_int(i))}
+	v, ok := mrb.AotAryRefRaw(ary, i)
+	if !ok {
+		return nilValue
+	}
+	return mrb.aotProtect(v)
 }
 
-// AotIVGet reads instance variable (value is kept in GC arena)
+// AotIVGet reads instance variable in pure Go for shaped RObjects (zero cgo),
+// falling back to C for unshaped / special objects.
 func (mrb *MrbState) AotIVGet(obj Value, sym MrbSym) Value {
+	if v, ok := mrb.AotIVGetShaped(obj, sym); ok {
+		return v
+	}
 	return Value{C._aot_iv_get(mrb.p, obj.v, C.mrb_sym(sym))}
 }
 
@@ -1261,9 +1370,10 @@ func (mrb *MrbState) AotGVGet(sym MrbSym) Value {
 	return Value{C._aot_gv_get(mrb.p, C.mrb_sym(sym))}
 }
 
-// AotAryLen returns length of array
+// AotAryLen returns length of array in pure Go without cgo.
 func (mrb *MrbState) AotAryLen(ary Value) int {
-	return int(C._aot_ary_len(ary.v))
+	_, n := aotAryMem(ary)
+	return n
 }
 
 // AotKwHash creates keyword arguments hash from key/value pairs

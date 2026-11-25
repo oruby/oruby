@@ -402,6 +402,21 @@ _aot_check_visibility(mrb_state *mrb, mrb_value self, mrb_value recv, mrb_sym mi
   return mrb->exc == NULL;
 }
 
+/* Fused visibility check + protected funcall in a single cgo crossing. */
+static mrb_value
+_aot_funcall_public(mrb_state *mrb, mrb_value self, mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value blk)
+{
+  struct RClass *c = mrb_class(mrb, recv);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, mid);
+  if (!MRB_METHOD_UNDEF_P(m) && (m.flags & (MRB_METHOD_PRIVATE_FL|MRB_METHOD_PROTECTED_FL))) {
+    struct aot_vis_args vx = { self, recv, mid, argc, argv };
+    _aot_protect(mrb, _aot_check_visibility_body, &vx);
+    if (mrb->exc != NULL) return mrb_nil_value();
+  }
+  struct aot_call_args cx = { recv, mid, argc, argv, blk };
+  return _aot_protect(mrb, _aot_funcall_body, &cx);
+}
+
 /*
 ** __aot_dispatch__(mode, mid, tc, *args, [kdict], &blk)
 **
@@ -871,5 +886,238 @@ _aot_singleton_class_ptr(mrb_state *mrb, mrb_value v)
 {
   return mrb_class_ptr(mrb_singleton_class(mrb, v));
 }
+
+/* Pointer identity of Go method callback trampoline for zero-cgo aotDirect */
+static inline void *
+_aot_env_callback_ptr(void)
+{
+  return (void*)set_mrb_env_callback;
+}
+
+/* Construct a BigInt literal from irep pool digits + base (matching OP_LOADL) */
+static inline mrb_value
+_aot_bigint_new_str(mrb_state *mrb, const char *digits, mrb_int len, int8_t base)
+{
+#ifdef MRB_USE_BIGINT
+  return _aot_protected(mrb, mrb_bint_new_str(mrb, digits, len, (mrb_int)base));
+#else
+  (void)digits; (void)len; (void)base;
+  return mrb_nil_value();
+#endif
+}
+
+/* Ancestor constant lookup that reports whether the result is safe to cache in
+   mrb->const_cache (found directly, not deprecated/private, no const_missing). */
+struct aot_const_cache_args {
+  mrb_value mod;
+  mrb_sym sym;
+  mrb_bool cacheable;
+};
+
+static mrb_value
+_aot_const_get_vm_cacheable_body(mrb_state *mrb, void *ud)
+{
+  struct aot_const_cache_args *x = (struct aot_const_cache_args*)ud;
+  struct RClass *base = mrb_class_ptr(x->mod);
+  struct RClass *c = base;
+  while (c) {
+    struct RClass *ivc = (c->tt == MRB_TT_ICLASS) ? c->c : c;
+    if (!MRB_FLAG_TEST(c, MRB_FL_CLASS_IS_PREPENDED) &&
+        mrb_const_defined_at(mrb, mrb_obj_value(ivc), x->sym)) {
+      if (!MRB_FLAG_TEST(ivc, MRB_FL_CLASS_CONST_FLAGS)) {
+        x->cacheable = TRUE;
+      }
+      return mrb_const_get(mrb, mrb_obj_value(ivc), x->sym);
+    }
+    c = c->super;
+  }
+  if (base->tt == MRB_TT_MODULE || base->tt == MRB_TT_SCLASS) {
+    mrb_value obj = mrb_obj_value(mrb->object_class);
+    if (mrb_const_defined_at(mrb, obj, x->sym)) {
+      if (!MRB_FLAG_TEST(mrb->object_class, MRB_FL_CLASS_CONST_FLAGS)) {
+        x->cacheable = TRUE;
+      }
+      return mrb_const_get(mrb, obj, x->sym);
+    }
+  }
+  return mrb_funcall_id(mrb, x->mod, MRB_SYM(const_missing), 1, mrb_symbol_value(x->sym));
+}
+
+static mrb_value
+_aot_const_get_vm_cacheable(mrb_state *mrb, mrb_value mod, mrb_sym sym, mrb_bool *cacheable)
+{
+  struct aot_const_cache_args x = { mod, sym, FALSE };
+  mrb_value v = _aot_protect(mrb, _aot_const_get_vm_cacheable_body, &x);
+  *cacheable = (mrb->exc == NULL) ? x.cacheable : FALSE;
+  return v;
+}
+
+/* Pure-C 1-cgo fast paths for common ASCII/plain String operations */
+static inline void
+_aot_str_copy_enc(struct RString *dst, const struct RString *src, mrb_bool keep_cr)
+{
+  uint32_t mask = MRB_STR_ENCODING_MASK | (keep_cr ? MRB_STR_CODERANGE_MASK : 0);
+  dst->flags = (dst->flags & ~(MRB_STR_ENCODING_MASK | MRB_STR_CODERANGE_MASK)) | (src->flags & mask);
+}
+
+static mrb_value
+_aot_str_ascii_op(mrb_state *mrb, mrb_value sv, int op)
+{
+  const struct RString *src = mrb_str_ptr(sv);
+  const char *p = RSTR_PTR(src);
+  mrb_int len = RSTR_LEN(src);
+  if (op == 0) { /* strip */
+    mrb_int beg = 0, end = len;
+    while (beg < end) {
+      unsigned char c = (unsigned char)p[beg];
+      if (c == ' ' || (c >= '\t' && c <= '\r')) beg++;
+      else break;
+    }
+    while (end > beg) {
+      unsigned char c = (unsigned char)p[end - 1];
+      if (c == ' ' || (c >= '\t' && c <= '\r') || c == '\0') end--;
+      else break;
+    }
+    mrb_value out = mrb_str_new(mrb, p + beg, end - beg);
+    _aot_str_copy_enc(mrb_str_ptr(out), src, TRUE);
+    return _aot_protected(mrb, out);
+  }
+  mrb_value out = mrb_str_new_capa(mrb, len);
+  struct RString *ds = mrb_str_ptr(out);
+  char *q = RSTR_PTR(ds);
+  if (op == 1) { /* downcase */
+    for (mrb_int i = 0; i < len; i++) {
+      unsigned char c = (unsigned char)p[i];
+      q[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+    }
+  } else { /* upcase */
+    for (mrb_int i = 0; i < len; i++) {
+      unsigned char c = (unsigned char)p[i];
+      q[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+    }
+  }
+  q[len] = '\0';
+  RSTR_SET_LEN(ds, len);
+  _aot_str_copy_enc(ds, src, TRUE);
+  return _aot_protected(mrb, out);
+}
+
+static const char *
+_aot_memfind(const char *hay, mrb_int hlen, const char *ndl, mrb_int nlen)
+{
+  if (nlen <= 0 || hlen < nlen) return NULL;
+  if (nlen == 1) return (const char*)memchr(hay, (unsigned char)ndl[0], (size_t)hlen);
+  const char *p = hay;
+  const char *lim = hay + hlen - nlen + 1;
+  unsigned char first = (unsigned char)ndl[0];
+  while (p < lim) {
+    const char *hit = (const char*)memchr(p, first, (size_t)(lim - p));
+    if (!hit) return NULL;
+    if (memcmp(hit + 1, ndl + 1, (size_t)(nlen - 1)) == 0) return hit;
+    p = hit + 1;
+  }
+  return NULL;
+}
+
+static mrb_value
+_aot_str_gsub_plain(mrb_state *mrb, mrb_value sv, mrb_value pv, mrb_value rv)
+{
+  const struct RString *src = mrb_str_ptr(sv);
+  const char *s = RSTR_PTR(src);
+  mrb_int slen = RSTR_LEN(src);
+  const char *pat = RSTRING_PTR(pv);
+  mrb_int plen = RSTRING_LEN(pv);
+  const char *rep = RSTRING_PTR(rv);
+  mrb_int rlen = RSTRING_LEN(rv);
+
+  const char *first = _aot_memfind(s, slen, pat, plen);
+  if (!first) {
+    mrb_value out = mrb_str_new(mrb, s, slen);
+    _aot_str_copy_enc(mrb_str_ptr(out), src, TRUE);
+    return _aot_protected(mrb, out);
+  }
+  /* Count occurrences to allocate exact final size once */
+  mrb_int count = 0;
+  const char *cur = first;
+  const char *end = s + slen;
+  while (cur) {
+    count++;
+    cur = _aot_memfind(cur + plen, (mrb_int)(end - (cur + plen)), pat, plen);
+  }
+  mrb_int outlen = slen + count * (rlen - plen);
+  mrb_value out = mrb_str_new_capa(mrb, outlen);
+  struct RString *ds = mrb_str_ptr(out);
+  char *q = RSTR_PTR(ds);
+  const char *pos = s;
+  cur = first;
+  while (cur) {
+    mrb_int seg = (mrb_int)(cur - pos);
+    if (seg > 0) { memcpy(q, pos, (size_t)seg); q += seg; }
+    if (rlen > 0) { memcpy(q, rep, (size_t)rlen); q += rlen; }
+    pos = cur + plen;
+    cur = _aot_memfind(pos, (mrb_int)(end - pos), pat, plen);
+  }
+  mrb_int tail = (mrb_int)(end - pos);
+  if (tail > 0) { memcpy(q, pos, (size_t)tail); q += tail; }
+  *q = '\0';
+  RSTR_SET_LEN(ds, outlen);
+  _aot_str_copy_enc(ds, src, FALSE);
+  return _aot_protected(mrb, out);
+}
+
+static mrb_value
+_aot_str_split_plain(mrb_state *mrb, mrb_value sv, mrb_value sepv)
+{
+  const struct RString *src = mrb_str_ptr(sv);
+  const char *s = RSTR_PTR(src);
+  mrb_int slen = RSTR_LEN(src);
+  const char *sep = RSTRING_PTR(sepv);
+  mrb_int seplen = RSTRING_LEN(sepv);
+  uint32_t enc_flags = src->flags & (MRB_STR_ENCODING_MASK | MRB_STR_CODERANGE_MASK);
+  uint32_t enc_mask = MRB_STR_ENCODING_MASK | MRB_STR_CODERANGE_MASK;
+
+  if (slen == 0) {
+    return _aot_protected(mrb, mrb_ary_new_capa(mrb, 0));
+  }
+  int ai = mrb_gc_arena_save(mrb);
+  mrb_value ary = mrb_ary_new_capa(mrb, 8);
+  const char *pos = s;
+  const char *end = s + slen;
+  while (1) {
+    const char *hit = _aot_memfind(pos, (mrb_int)(end - pos), sep, seplen);
+    mrb_int seg = hit ? (mrb_int)(hit - pos) : (mrb_int)(end - pos);
+    mrb_value part = mrb_str_new(mrb, pos, seg);
+    struct RString *ps = mrb_str_ptr(part);
+    ps->flags = (ps->flags & ~enc_mask) | enc_flags;
+    mrb_ary_push(mrb, ary, part);
+    if (!hit) break;
+    pos = hit + seplen;
+  }
+  /* Ruby default split (limit == 0) strips trailing empty strings */
+  struct RArray *a = mrb_ary_ptr(ary);
+  mrb_int n = ARY_LEN(a);
+  mrb_value *elems = ARY_PTR(a);
+  while (n > 0 && RSTRING_LEN(elems[n - 1]) == 0) {
+    n--;
+  }
+  ARY_SET_LEN(a, n);
+  mrb_gc_arena_restore(mrb, ai);
+  return _aot_protected(mrb, ary);
+}
+
+#if defined(MRB_NO_BOXING) && defined(MRB_64BIT)
+mrb_static_assert(offsetof(struct RString, as.heap.len) == 16, "RString.heap.len offset");
+mrb_static_assert(offsetof(struct RString, as.heap.aux.capa) == 24, "RString.heap.capa offset");
+mrb_static_assert(offsetof(struct RString, as.heap.ptr) == 32, "RString.heap.ptr offset");
+mrb_static_assert(offsetof(struct RArray, as) == 16, "RArray.as offset");
+mrb_static_assert(offsetof(struct RArray, as.heap.len) == 16, "RArray.heap.len offset");
+mrb_static_assert(offsetof(struct RArray, as.heap.ptr) == 32, "RArray.heap.ptr offset");
+mrb_static_assert(offsetof(struct RObject, iv) == 16, "RObject.iv offset");
+mrb_static_assert(offsetof(struct RRange, edges) == 16, "RRange.edges offset");
+mrb_static_assert(offsetof(struct RRange, excl) == 24, "RRange.excl offset");
+mrb_static_assert(offsetof(struct RProc, body) == 16, "RProc.body offset");
+mrb_static_assert(offsetof(struct RProc, e) == 32, "RProc.e offset");
+mrb_static_assert(offsetof(struct REnv, stack) == 16, "REnv.stack offset");
+#endif
 
 #endif /* GOAOT_H */

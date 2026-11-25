@@ -16,11 +16,13 @@ import (
 type PrimType uint8
 
 const (
-	TypeUnknown PrimType = iota
-	TypeInt64            // RBS: Integer
-	TypeFloat64          // RBS: Float
-	TypeBool             // RBS: bool
-	TypeString           // RBS: String
+	TypeUnknown      PrimType = iota
+	TypeInt64                 // RBS: Integer
+	TypeFloat64               // RBS: Float
+	TypeBool                  // RBS: bool
+	TypeString                // RBS: String
+	TypeArrayInt64            // RBS: Array[Integer]
+	TypeArrayFloat64          // RBS: Array[Float]
 )
 
 func (t PrimType) String() string {
@@ -33,6 +35,10 @@ func (t PrimType) String() string {
 		return "bool"
 	case TypeString:
 		return "String"
+	case TypeArrayInt64:
+		return "Array[Integer]"
+	case TypeArrayFloat64:
+		return "Array[Float]"
 	default:
 		return "untyped"
 	}
@@ -49,6 +55,8 @@ func (t PrimType) GoType() string {
 		return "bool"
 	case TypeString:
 		return "string"
+	case TypeArrayInt64, TypeArrayFloat64:
+		return "oruby.Value"
 	default:
 		return "oruby.Value"
 	}
@@ -59,9 +67,14 @@ func (t PrimType) IsNumeric() bool {
 	return t == TypeInt64 || t == TypeFloat64
 }
 
-// IsSpecializable reports whether t can be passed/returned unboxed in typed Go codegen.
+// IsSpecializable reports whether t can be returned unboxed in typed Go codegen.
 func (t PrimType) IsSpecializable() bool {
 	return t == TypeInt64 || t == TypeFloat64 || t == TypeBool
+}
+
+// IsSpecializableParam reports whether t can be accepted as a parameter in typed Go codegen.
+func (t PrimType) IsSpecializableParam() bool {
+	return t.IsSpecializable() || t == TypeArrayInt64 || t == TypeArrayFloat64
 }
 
 // ParseRBSPrimType maps an RBS type expression to a PrimType (TypeUnknown for
@@ -78,9 +91,17 @@ func ParseRBSPrimType(expr string) PrimType {
 		return TypeBool
 	case "String", "string":
 		return TypeString
-	default:
-		return TypeUnknown
 	}
+	if strings.HasPrefix(s, "Array[") && strings.HasSuffix(s, "]") {
+		inner := ParseRBSPrimType(s[len("Array[") : len(s)-1])
+		switch inner {
+		case TypeInt64:
+			return TypeArrayInt64
+		case TypeFloat64:
+			return TypeArrayFloat64
+		}
+	}
+	return TypeUnknown
 }
 
 type rbsMethodKey struct {
@@ -147,6 +168,30 @@ func (env *RBSEnv) LookupMethod(className, method string, singleton bool) *RBSMe
 		return sig
 	}
 	return nil
+}
+
+// AddIvar registers a declared instance variable type on className.
+func (env *RBSEnv) AddIvar(className, ivar string, pt PrimType) {
+	if env == nil || ivar == "" || pt == TypeUnknown {
+		return
+	}
+	cn := normalizeRBSClass(className)
+	if env.Ivars[cn] == nil {
+		env.Ivars[cn] = make(map[string]PrimType)
+	}
+	env.Ivars[cn][ivar] = pt
+}
+
+// LookupIvar returns the declared RBS type for ivar on className, or TypeUnknown.
+func (env *RBSEnv) LookupIvar(className, ivar string) PrimType {
+	if env == nil || ivar == "" {
+		return TypeUnknown
+	}
+	cn := normalizeRBSClass(className)
+	if m := env.Ivars[cn]; m != nil {
+		return m[ivar]
+	}
+	return TypeUnknown
 }
 
 // Merge copies all signatures from other into env (other wins on collision).
@@ -455,6 +500,9 @@ func ExtractInlineRBS(src, filename string) *RBSEnv {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "#") {
+			if addInlineIvarIfMatch(env, scopeStack, trimmed) {
+				continue
+			}
 			if m := reRBSInlineRet.FindStringSubmatch(trimmed); m != nil {
 				if pend == nil {
 					pend = &pendingSig{line: i + 1}
@@ -528,6 +576,20 @@ func ExtractInlineRBS(src, filename string) *RBSEnv {
 		}
 	}
 	return env
+}
+
+var (
+	reRBSInlineIvar = regexp.MustCompile(`^#\s*@rbs\s+(@[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)$`)
+)
+
+func addInlineIvarIfMatch(env *RBSEnv, scopeStack []string, trimmed string) bool {
+	if m := reRBSInlineIvar.FindStringSubmatch(trimmed); m != nil {
+		if pt := ParseRBSPrimType(m[2]); pt != TypeUnknown {
+			env.AddIvar(strings.Join(scopeStack, "::"), m[1], pt)
+		}
+		return true
+	}
+	return false
 }
 
 func startsBlock(trimmed string) bool {

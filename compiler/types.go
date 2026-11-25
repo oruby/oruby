@@ -14,6 +14,9 @@ const (
 	flowFloat64
 	flowBool
 	flowString
+	flowArrayInt64
+	flowArrayFloat64
+	flowConst // constant class/module tracked via constName[] (e.g. Math, Calc)
 	flowUnknown
 )
 
@@ -27,6 +30,10 @@ func primToFlow(p PrimType) regFlowType {
 		return flowBool
 	case TypeString:
 		return flowString
+	case TypeArrayInt64:
+		return flowArrayInt64
+	case TypeArrayFloat64:
+		return flowArrayFloat64
 	default:
 		return flowUnknown
 	}
@@ -42,6 +49,10 @@ func flowToPrim(f regFlowType) PrimType {
 		return TypeBool
 	case flowString:
 		return TypeString
+	case flowArrayInt64:
+		return TypeArrayInt64
+	case flowArrayFloat64:
+		return TypeArrayFloat64
 	default:
 		return TypeUnknown
 	}
@@ -62,9 +73,30 @@ func mergeFlow(a, b regFlowType) regFlowType {
 
 // typedCallRef identifies a direct compiled callee invoked by a TypedPlan.
 type typedCallRef struct {
-	sym      string
-	targetFn string
-	target   *IRepUnit
+	constClass string // empty for self-call (OpSSEND), class/module name for explicit Const.method (OpSEND)
+	sym        string
+	targetFn   string
+	target     *IRepUnit
+}
+
+// mathCoreGuard maps a Math module method name to its AotCoreID expression and arity.
+type mathOpSpec struct {
+	coreID  string
+	helper  string
+	arity   int
+	canFail bool
+}
+
+var typedMathOps = map[string]mathOpSpec{
+	"sqrt":  {coreID: "oruby.AotCoreMathSqrt", helper: "aotMathSqrt", arity: 1, canFail: true},
+	"sin":   {coreID: "oruby.AotCoreMathSin", helper: "aotMathSin", arity: 1, canFail: false},
+	"cos":   {coreID: "oruby.AotCoreMathCos", helper: "aotMathCos", arity: 1, canFail: false},
+	"tan":   {coreID: "oruby.AotCoreMathTan", helper: "aotMathTan", arity: 1, canFail: false},
+	"log":   {coreID: "oruby.AotCoreMathLog", helper: "aotMathLog", arity: 1, canFail: true},
+	"log2":  {coreID: "oruby.AotCoreMathLog2", helper: "aotMathLog2", arity: 1, canFail: true},
+	"log10": {coreID: "oruby.AotCoreMathLog10", helper: "aotMathLog10", arity: 1, canFail: true},
+	"exp":   {coreID: "oruby.AotCoreMathExp", helper: "aotMathExp", arity: 1, canFail: false},
+	"hypot": {coreID: "oruby.AotCoreMathHypot", helper: "aotMathHypot", arity: 2, canFail: false},
 }
 
 // TypedPlan holds the verified type-inference result for a compiled method
@@ -75,9 +107,14 @@ type TypedPlan struct {
 	Params          []PrimType
 	Return          PrimType
 	InTypes         [][]PrimType // InTypes[insIdx][reg] = inferred PrimType on entry to insIdx
+	InConsts        [][]string   // InConsts[insIdx][reg] = constant class/module name on entry to insIdx
 	NeedsIntGuard   bool
 	NeedsFloatGuard bool
-	DirectCalls     []typedCallRef // direct OpSSEND/OpSSEND0 callees inside this unit
+	NeedsSelf       bool           // true if unit or a self-callee reads/writes @ivars
+	HasCalls        bool           // true if unit makes direct calls (needs local _depth int)
+	CoreGuards      []string       // AotCoreID expressions checked via AotCoreClassOK
+	MathGuards      []string       // Math AotCoreID expressions checked via AotCoreOK(..., Math)
+	DirectCalls     []typedCallRef // direct callees inside this unit
 	GuardCalls      []typedCallRef // transitive deduplicated callees to guard at entry
 	FromRBS         bool
 	RBSNote         string
@@ -129,6 +166,27 @@ func (g *CodeGen) lookupCallTarget(caller *unitInfo, sym string, numArgs int) (*
 		}
 	}
 	return tryKey("", false)
+}
+
+// lookupSingletonCallTarget resolves an explicit Class.method call (e.g. Calc.mix).
+func (g *CodeGen) lookupSingletonCallTarget(className, sym string, numArgs int) (*IRepUnit, bool) {
+	k := rbsMethodKey{className: normalizeRBSClass(className), method: sym, singleton: true}
+	if g.scopedDefCount[k] != 1 {
+		return nil, false
+	}
+	u := g.scopedDefs[k]
+	if u == nil {
+		return nil, false
+	}
+	inf := g.info[u]
+	if inf == nil || inf.needCtx {
+		return nil, false
+	}
+	arity, ok := g.compiledArity[inf.fn]
+	if !ok || arity != numArgs {
+		return nil, false
+	}
+	return u, true
 }
 
 func unitHasFloatLiteral(u *IRepUnit) bool {
@@ -197,10 +255,9 @@ func (g *CodeGen) analyzeTypedUnits() {
 			sig := rbsSigs[u]
 
 			if sig != nil {
-				// RBS-guided specialization (must have specializable param types)
 				allOK := true
 				for _, p := range sig.Params {
-					if !p.IsSpecializable() {
+					if !p.IsSpecializableParam() {
 						allOK = false
 						break
 					}
@@ -249,7 +306,8 @@ func (g *CodeGen) analyzeTypedUnits() {
 		}
 	}
 
-	// 3. Collect transitive direct-call guards and assign tracked method slots.
+	// 3. Collect transitive direct-call, core, math, and NeedsSelf requirements,
+	//    and assign tracked method slots.
 	nextSlot := 0
 	for _, u := range units {
 		inf := g.info[u]
@@ -257,31 +315,71 @@ func (g *CodeGen) analyzeTypedUnits() {
 		if plan == nil {
 			continue
 		}
-		seen := make(map[*IRepUnit]bool)
-		var stack []*IRepUnit
-		for _, dc := range plan.DirectCalls {
-			if !seen[dc.target] {
-				seen[dc.target] = true
+		plan.HasCalls = len(plan.DirectCalls) > 0
+
+		seenCall := make(map[string]bool)
+		seenUnit := make(map[*IRepUnit]bool)
+		coreSet := make(map[string]bool)
+		mathSet := make(map[string]bool)
+		for _, cg := range plan.CoreGuards {
+			coreSet[cg] = true
+		}
+		for _, mg := range plan.MathGuards {
+			mathSet[mg] = true
+		}
+
+		type stackItem struct {
+			unit   *IRepUnit
+			isSelf bool
+		}
+		var stack []stackItem
+		addCall := func(dc typedCallRef, viaSelf bool) {
+			key := dc.constClass + "#" + dc.sym + ":" + dc.targetFn
+			if !seenCall[key] {
+				seenCall[key] = true
 				plan.GuardCalls = append(plan.GuardCalls, dc)
-				stack = append(stack, dc.target)
 			}
+			if !seenUnit[dc.target] {
+				seenUnit[dc.target] = true
+				stack = append(stack, stackItem{unit: dc.target, isSelf: viaSelf && dc.constClass == ""})
+			}
+		}
+		for _, dc := range plan.DirectCalls {
+			addCall(dc, true)
 		}
 		for len(stack) > 0 {
 			cur := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			cplan := g.typedPlans[g.info[cur].fn]
+			cplan := g.typedPlans[g.info[cur.unit].fn]
 			if cplan == nil {
 				continue
 			}
+			if cplan.NeedsIntGuard {
+				plan.NeedsIntGuard = true
+			}
+			if cplan.NeedsFloatGuard {
+				plan.NeedsFloatGuard = true
+			}
+			if cur.isSelf && cplan.NeedsSelf {
+				plan.NeedsSelf = true
+			}
+			for _, cg := range cplan.CoreGuards {
+				coreSet[cg] = true
+			}
+			for _, mg := range cplan.MathGuards {
+				mathSet[mg] = true
+			}
 			for _, dc := range cplan.DirectCalls {
-				if !seen[dc.target] {
-					seen[dc.target] = true
-					plan.GuardCalls = append(plan.GuardCalls, dc)
-					stack = append(stack, dc.target)
-				}
+				addCall(dc, cur.isSelf)
 			}
 		}
+
+		plan.CoreGuards = sortedKeys(coreSet)
+		plan.MathGuards = sortedKeys(mathSet)
 		sort.Slice(plan.GuardCalls, func(i, j int) bool {
+			if plan.GuardCalls[i].constClass != plan.GuardCalls[j].constClass {
+				return plan.GuardCalls[i].constClass < plan.GuardCalls[j].constClass
+			}
 			return plan.GuardCalls[i].targetFn < plan.GuardCalls[j].targetFn
 		})
 		for _, gc := range plan.GuardCalls {
@@ -291,6 +389,18 @@ func (g *CodeGen) analyzeTypedUnits() {
 			}
 		}
 	}
+}
+
+func sortedKeys(m map[string]bool) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func formatMethodDisplay(inf *unitInfo) string {
@@ -317,16 +427,10 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 	}
 	insCount := len(unit.Instructions)
 	offToIdx := make(map[int]int, insCount)
-	jumpTargets := make(map[int]bool)
 	for i, ins := range unit.Instructions {
 		offToIdx[ins.Offset] = i
-		if ins.IsJump() && ins.Target >= 0 {
-			jumpTargets[ins.Target] = true
-		}
 	}
 
-	// Two attempts for self-recursive methods when expectedReturn is unknown:
-	// try inferring return type from non-recursive return sites first.
 	selfRetGuess := primToFlow(expectedReturn)
 	if selfRetGuess == flowUnknown {
 		selfRetGuess = flowUnvisited
@@ -334,22 +438,27 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 
 	runPass := func(selfRet regFlowType) (*TypedPlan, regFlowType, string) {
 		in := make([][]regFlowType, insCount)
+		inC := make([][]string, insCount)
 		in[0] = make([]regFlowType, nregs)
+		inC[0] = make([]string, nregs)
 		for i, pt := range paramTypes {
 			in[0][i+1] = primToFlow(pt)
 		}
 
-		var needsInt, needsFloat bool
+		var needsInt, needsFloat, needsSelf bool
+		coreGuards := make(map[string]bool)
+		mathGuards := make(map[string]bool)
 		var directCalls []typedCallRef
 		directSeen := make(map[string]bool)
 		retFlow := flowUnvisited
 
-		mergeInto := func(targetIdx int, state []regFlowType) bool {
+		mergeInto := func(targetIdx int, state []regFlowType, cstate []string) bool {
 			if targetIdx < 0 || targetIdx >= insCount {
 				return false
 			}
 			if in[targetIdx] == nil {
 				in[targetIdx] = append([]regFlowType(nil), state...)
+				inC[targetIdx] = append([]string(nil), cstate...)
 				return true
 			}
 			changed := false
@@ -359,14 +468,24 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					in[targetIdx][r] = m
 					changed = true
 				}
+				if m == flowConst {
+					if inC[targetIdx][r] != cstate[r] {
+						in[targetIdx][r] = flowUnknown
+						inC[targetIdx][r] = ""
+						changed = true
+					}
+				} else if inC[targetIdx][r] != "" {
+					inC[targetIdx][r] = ""
+				}
 			}
 			return changed
 		}
 
-		// Fixed-point dataflow propagation
 		for iter := 0; iter < insCount*4+16; iter++ {
 			progress := false
-			needsInt, needsFloat = false, false
+			needsInt, needsFloat, needsSelf = false, false, false
+			clear(coreGuards)
+			clear(mathGuards)
 			retFlow = flowUnvisited
 			directCalls = nil
 			clear(directSeen)
@@ -376,12 +495,22 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					continue
 				}
 				st := append([]regFlowType(nil), in[idx]...)
+				cst := append([]string(nil), inC[idx]...)
 				ins := unit.Instructions[idx]
 				setReg := func(reg uint32, t regFlowType) bool {
 					if int(reg) >= nregs {
 						return false
 					}
 					st[reg] = t
+					cst[reg] = ""
+					return true
+				}
+				setConst := func(reg uint32, name string) bool {
+					if int(reg) >= nregs {
+						return false
+					}
+					st[reg] = flowConst
+					cst[reg] = name
 					return true
 				}
 				getReg := func(reg uint32) regFlowType {
@@ -390,12 +519,23 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					}
 					return st[reg]
 				}
+				getConst := func(reg uint32) string {
+					if int(reg) >= nregs {
+						return ""
+					}
+					return cst[reg]
+				}
 
 				fallthroughNext := true
 				switch ins.Op {
 				case OpNOP, OpENTER:
 				case OpMOVE:
-					if !setReg(ins.A, getReg(uint32(ins.B))) {
+					bt := getReg(uint32(ins.B))
+					if bt == flowConst {
+						if !setConst(ins.A, getConst(uint32(ins.B))) {
+							return nil, flowUnknown, ""
+						}
+					} else if !setReg(ins.A, bt) {
 						return nil, flowUnknown, ""
 					}
 				case OpLOADI8, OpLOADINEG, OpLOADI__1,
@@ -416,6 +556,62 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					case int32, int64:
 						setReg(ins.A, flowInt64)
 					case float64:
+						setReg(ins.A, flowFloat64)
+					default:
+						return nil, flowUnknown, ""
+					}
+				case OpGETCONST:
+					if int(ins.B) >= len(unit.Syms) {
+						return nil, flowUnknown, ""
+					}
+					cname := unit.Syms[ins.B]
+					if !setConst(ins.A, cname) {
+						return nil, flowUnknown, ""
+					}
+				case OpGETIV:
+					if g.opts.RBS == nil || inf.singleton || inf.className == "" || int(ins.B) >= len(unit.Syms) {
+						return nil, flowUnknown, ""
+					}
+					ivType := g.opts.RBS.LookupIvar(inf.className, unit.Syms[ins.B])
+					if !ivType.IsSpecializable() {
+						return nil, flowUnknown, ""
+					}
+					needsSelf = true
+					if !setReg(ins.A, primToFlow(ivType)) {
+						return nil, flowUnknown, ""
+					}
+				case OpSETIV:
+					if g.opts.RBS == nil || inf.singleton || inf.className == "" || int(ins.B) >= len(unit.Syms) {
+						return nil, flowUnknown, ""
+					}
+					ivType := g.opts.RBS.LookupIvar(inf.className, unit.Syms[ins.B])
+					if !ivType.IsSpecializable() || getReg(ins.A) != primToFlow(ivType) {
+						return nil, flowUnknown, ""
+					}
+					needsSelf = true
+				case OpGETIDX:
+					ta, tb := getReg(ins.A), getReg(ins.A+1)
+					if tb != flowInt64 {
+						return nil, flowUnknown, ""
+					}
+					switch ta {
+					case flowArrayInt64:
+						coreGuards["oruby.AotCoreAryIdx"] = true
+						setReg(ins.A, flowInt64)
+					case flowArrayFloat64:
+						coreGuards["oruby.AotCoreAryIdx"] = true
+						setReg(ins.A, flowFloat64)
+					default:
+						return nil, flowUnknown, ""
+					}
+				case OpGETIDX0:
+					tb := getReg(uint32(ins.B))
+					switch tb {
+					case flowArrayInt64:
+						coreGuards["oruby.AotCoreAryIdx"] = true
+						setReg(ins.A, flowInt64)
+					case flowArrayFloat64:
+						coreGuards["oruby.AotCoreAryIdx"] = true
 						setReg(ins.A, flowFloat64)
 					default:
 						return nil, flowUnknown, ""
@@ -461,7 +657,7 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					if !ok {
 						return nil, flowUnknown, ""
 					}
-					if mergeInto(tidx, st) {
+					if mergeInto(tidx, st, cst) {
 						progress = true
 					}
 				case OpJMPIF, OpJMPNOT:
@@ -472,7 +668,7 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					if !ok {
 						return nil, flowUnknown, ""
 					}
-					if mergeInto(tidx, st) {
+					if mergeInto(tidx, st, cst) {
 						progress = true
 					}
 				case OpSEND, OpSEND0:
@@ -490,6 +686,78 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 						return nil, flowUnknown, ""
 					}
 					ta := getReg(ins.A)
+
+					// Case A: Constant receiver (Math.<fn> or Class.singleton_method)
+					if ta == flowConst {
+						cname := getConst(ins.A)
+						if cname == "Math" {
+							spec, ok := typedMathOps[sym]
+							if !ok || spec.arity != n {
+								return nil, flowUnknown, ""
+							}
+							for i := 0; i < n; i++ {
+								at := getReg(ins.A + uint32(i+1))
+								if at != flowInt64 && at != flowFloat64 {
+									return nil, flowUnknown, ""
+								}
+							}
+							mathGuards[spec.coreID] = true
+							needsFloat = true
+							setReg(ins.A, flowFloat64)
+							break
+						}
+						target, ok := g.lookupSingletonCallTarget(cname, sym, n)
+						if !ok {
+							return nil, flowUnknown, ""
+						}
+						targetFn := g.info[target].fn
+						tp := g.typedPlans[targetFn]
+						if tp == nil || len(tp.Params) != n || tp.NeedsSelf {
+							return nil, flowUnknown, ""
+						}
+						for i := 0; i < n; i++ {
+							if getReg(ins.A+uint32(i+1)) != primToFlow(tp.Params[i]) {
+								return nil, flowUnknown, ""
+							}
+						}
+						if !tp.Return.IsSpecializable() {
+							return nil, flowUnknown, ""
+						}
+						if tp.NeedsIntGuard {
+							needsInt = true
+						}
+						if tp.NeedsFloatGuard {
+							needsFloat = true
+						}
+						setReg(ins.A, primToFlow(tp.Return))
+						dkey := cname + "." + sym + ":" + targetFn
+						if !directSeen[dkey] {
+							directSeen[dkey] = true
+							directCalls = append(directCalls, typedCallRef{
+								constClass: cname,
+								sym:        sym,
+								targetFn:   targetFn,
+								target:     target,
+							})
+						}
+						break
+					}
+
+					// Case B: Typed Array[Integer] / Array[Float] methods
+					if ta == flowArrayInt64 || ta == flowArrayFloat64 {
+						if (sym == "length" || sym == "size") && n == 0 {
+							if sym == "length" {
+								coreGuards["oruby.AotCoreAryLen"] = true
+							} else {
+								coreGuards["oruby.AotCoreArySize"] = true
+							}
+							setReg(ins.A, flowInt64)
+							break
+						}
+						return nil, flowUnknown, ""
+					}
+
+					// Case C: Built-in numeric/bool methods
 					switch {
 					case sym == "%" && n == 1:
 						tb := getReg(ins.A + 1)
@@ -502,6 +770,28 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 						} else {
 							return nil, flowUnknown, ""
 						}
+					case sym == "**" && n == 1:
+						tb := getReg(ins.A + 1)
+						if ta == flowInt64 && tb == flowInt64 {
+							needsInt = true
+							setReg(ins.A, flowInt64)
+						} else if (ta == flowFloat64 || ta == flowInt64) && (tb == flowFloat64 || tb == flowInt64) {
+							needsFloat = true
+							setReg(ins.A, flowFloat64)
+						} else {
+							return nil, flowUnknown, ""
+						}
+					case (sym == "&" || sym == "|" || sym == "^" || sym == "<<" || sym == ">>") && n == 1:
+						tb := getReg(ins.A + 1)
+						if ta == flowInt64 && tb == flowInt64 {
+							needsInt = true
+							setReg(ins.A, flowInt64)
+						} else {
+							return nil, flowUnknown, ""
+						}
+					case sym == "~" && n == 0 && ta == flowInt64:
+						needsInt = true
+						setReg(ins.A, flowInt64)
 					case sym == "!=" && n == 1:
 						tb := getReg(ins.A + 1)
 						if ta == flowInt64 && tb == flowInt64 {
@@ -523,6 +813,22 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 						} else {
 							return nil, flowUnknown, ""
 						}
+					case (sym == "zero?" || sym == "positive?" || sym == "negative?") && n == 0 && (ta == flowInt64 || ta == flowFloat64):
+						if ta == flowInt64 {
+							needsInt = true
+						} else {
+							needsFloat = true
+						}
+						setReg(ins.A, flowBool)
+					case (sym == "even?" || sym == "odd?") && n == 0 && ta == flowInt64:
+						needsInt = true
+						setReg(ins.A, flowBool)
+					case (sym == "floor" || sym == "ceil" || sym == "round") && n == 0 && (ta == flowInt64 || ta == flowFloat64):
+						if ta == flowFloat64 {
+							needsFloat = true
+						}
+						needsInt = true
+						setReg(ins.A, flowInt64)
 					case sym == "to_f" && n == 0 && (ta == flowInt64 || ta == flowFloat64):
 						if ta == flowInt64 {
 							needsInt = true
@@ -571,6 +877,9 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 						if tp.NeedsFloatGuard {
 							needsFloat = true
 						}
+						if tp.NeedsSelf {
+							needsSelf = true
+						}
 					} else {
 						return nil, flowUnknown, ""
 					}
@@ -583,8 +892,6 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 						}
 					}
 					if cRet == flowUnvisited {
-						// Self-recursion before return type is known: wait for
-						// non-recursive path to seed retFlow on the next pass.
 						return nil, retFlow, ""
 					}
 					if !flowToPrim(cRet).IsSpecializable() {
@@ -611,7 +918,7 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 				}
 
 				if fallthroughNext && idx+1 < insCount {
-					if mergeInto(idx+1, st) {
+					if mergeInto(idx+1, st, cst) {
 						progress = true
 					}
 				}
@@ -647,8 +954,12 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 			Params:          append([]PrimType(nil), paramTypes...),
 			Return:          retPrim,
 			InTypes:         inPrims,
+			InConsts:        inC,
 			NeedsIntGuard:   needsInt,
 			NeedsFloatGuard: needsFloat,
+			NeedsSelf:       needsSelf,
+			CoreGuards:      sortedKeys(coreGuards),
+			MathGuards:      sortedKeys(mathGuards),
 			DirectCalls:     directCalls,
 			FromRBS:         fromRBS,
 			RBSNote:         rbsSource,
@@ -660,8 +971,6 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 	if plan != nil || mismatch != "" {
 		return plan, mismatch
 	}
-	// If self-recursion needed a return type guess from base case (e.g. `return n if n <= 1`),
-	// re-run with that inferred return type!
 	if selfRetGuess == flowUnvisited && flowToPrim(guessedRet).IsSpecializable() {
 		plan, _, mismatch = runPass(guessedRet)
 		return plan, mismatch

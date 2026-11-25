@@ -87,6 +87,28 @@ func (pv MrbIrepPool) Float() float64 {
 	return float64(C._mrb_pool_float(pv.v))
 }
 
+// IrepBigInt represents an IREP_TT_BIGINT literal decoded from an mruby irep pool.
+type IrepBigInt struct {
+	Digits string
+	Base   int8
+}
+
+func (pv MrbIrepPool) BigInt() IrepBigInt {
+	if pv.v == nil {
+		return IrepBigInt{}
+	}
+	n := C._mrb_pool_bigint_len(pv.v)
+	base := int8(C._mrb_pool_bigint_base(pv.v))
+	ptr := C._mrb_pool_bigint_digits(pv.v)
+	if ptr == nil || n == 0 {
+		return IrepBigInt{Base: base}
+	}
+	return IrepBigInt{
+		Digits: C.GoStringN(ptr, C.int(n)),
+		Base:   base,
+	}
+}
+
 func (pv MrbIrepPool) Value() interface{} {
 	if pv.v == nil {
 		return nil
@@ -100,6 +122,8 @@ func (pv MrbIrepPool) Value() interface{} {
 		return pv.Int64()
 	case IrepTtFloat:
 		return pv.Float()
+	case IrepTtBigint:
+		return pv.BigInt()
 	default:
 		return nil
 	}

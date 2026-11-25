@@ -14,13 +14,16 @@ import (
 
 // CodeGenOptions specifies options for Go code generation.
 type CodeGenOptions struct {
-	PackageName string      // Name of the generated Go package (e.g. "main" or "compiled")
-	Standalone  bool        // Whether to include a main() entrypoint
-	EmbedDirs   []string    // Optional directory paths/patterns to embed via //go:embed (empty = disk files)
-	Debug       bool        // Emit line-stepping debug hooks for IDE / debugger integration
-	GoExts      []GoExtSpec // Opt-in Go extensions from goext/ to link and optimize
-	RBS         *RBSEnv     // Optional RBS signatures for type-guided AOT specialization & checking
-	CheckRBS    bool        // Fail codegen if any RBS arity/return type mismatch is detected
+	PackageName string       // Name of the generated Go package (e.g. "main" or "compiled")
+	Standalone  bool         // Whether to include a main() entrypoint
+	EmbedDirs   []string     // Optional directory paths/patterns to embed via //go:embed (empty = disk files)
+	Debug       bool         // Emit line-stepping debug hooks for IDE / debugger integration
+	GoExts      []GoExtSpec  // Opt-in Go extensions from goext/ to link and optimize
+	RBS         *RBSEnv      // Optional RBS signatures for type-guided AOT specialization & checking
+	CheckRBS    bool         // Fail codegen if any RBS arity/return type mismatch is detected
+	Progress    ProgressFunc // Optional progress reporting for the analyze/emit stages
+	GroupSize   int          // GeneratePackageFiles: modules per Go package (0 = one package)
+	ModulePath  string       // Go module path of the output (default "app"); group packages import as ModulePath/gNNN
 }
 
 type unitKind int
@@ -71,6 +74,8 @@ type CodeGen struct {
 	extEnabled     map[string]bool
 	usedIntrinsics map[string]bool
 	modIntrinsics  map[string]bool
+	fnPkg          map[string]string // root function name -> group package, in a grouped package build
+	groups         []groupPackage
 }
 
 // NewCodeGen creates a new code generator.
@@ -97,6 +102,8 @@ func (g *CodeGen) reset() {
 	g.symList = nil
 	g.strMap = make(map[string]string)
 	g.strList = nil
+	g.fnPkg = make(map[string]string)
+	g.groups = nil
 	g.initIntrinsics()
 }
 
@@ -171,6 +178,7 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		if file == "" {
 			file = mod.RelPath
 		}
+		g.opts.Progress.report("analyze", i+1, len(modules), file)
 		g.analyze(mod.Root, nil, kindTop, 0, prefix, file, "")
 	}
 	g.analyzeDefs(modules)
@@ -185,7 +193,8 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 
 	// 2. Emit units (collects symbols and strings)
 	var unitsBuf bytes.Buffer
-	for _, mod := range modules {
+	for i, mod := range modules {
+		g.opts.Progress.report("emit", i+1, len(modules), mod.RelPath)
 		var allUnits []*IRepUnit
 		collectUnits(mod.Root, &allUnits)
 		for _, unit := range allUnits {
@@ -318,6 +327,7 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	}
 
 	rawSrc := buf.Bytes()
+	g.opts.Progress.report("format", 0, 0, fmt.Sprintf("%d bytes of Go source", len(rawSrc)))
 	formatted, err := format.Source(rawSrc)
 	if err != nil {
 		return string(rawSrc), fmt.Errorf("formatting generated Go code: %w\nSource:\n%s", err, string(rawSrc))
@@ -352,6 +362,7 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		if file == "" {
 			file = mod.RelPath
 		}
+		g.opts.Progress.report("analyze", i+1, len(modules), file)
 		g.analyze(mod.Root, nil, kindTop, 0, prefix, file, "")
 	}
 	g.analyzeDefs(modules)
@@ -367,7 +378,10 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 	files := make(map[string]string, len(modules)+1)
 
 	// 2. Emit each module into its own .go file
+	grouped := g.opts.GroupSize > 0 && isBundle
+	var raws []rawModule
 	for i, mod := range modules {
+		g.opts.Progress.report("emit", i+1, len(modules), mod.RelPath)
 		g.modIntrinsics = make(map[string]bool)
 		var bodyBuf bytes.Buffer
 		var allUnits []*IRepUnit
@@ -387,14 +401,28 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		modBuf.WriteString(")\n\n")
 		modBuf.Write(bodyBuf.Bytes())
 
+		if grouped {
+			raws = append(raws, rawModule{index: i, text: modBuf.String()})
+			continue
+		}
 		formattedMod, err := format.Source(modBuf.Bytes())
 		if err != nil {
 			return nil, fmt.Errorf("formatting module %d (%s): %w\nSource:\n%s", i, mod.RelPath, err, modBuf.String())
 		}
-		fileName := fmt.Sprintf("aot_mod_%03d.go", i)
+		fileName := modFileName(i)
 		files[fileName] = string(formattedMod)
 	}
 	g.modIntrinsics = nil
+	if grouped {
+		modulePath := g.opts.ModulePath
+		if modulePath == "" {
+			modulePath = "app"
+		}
+		g.groups = planGroups(raws, g.opts.GroupSize, modulePath)
+		if err := g.emitGroupPackages(files, modules, raws, g.groups); err != nil {
+			return nil, err
+		}
+	}
 
 	// 3. Emit aot_runtime.go
 	var buf bytes.Buffer
@@ -414,6 +442,9 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 	buf.WriteString("\t\"math\"\n")
 	buf.WriteString("\t\"unsafe\"\n")
 	buf.WriteString("\t\"github.com/oruby/oruby\"\n")
+	for _, grp := range g.groups {
+		fmt.Fprintf(&buf, "\t%s %q\n", grp.name, grp.importPath)
+	}
 	if g.opts.Standalone {
 		buf.WriteString("\t_ \"github.com/oruby/oruby/gem/stdlib\"\n")
 		for _, ext := range g.opts.GoExts {
@@ -446,11 +477,14 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 	}
 	g.emitSymbolTable(&buf)
 
-	rootFn := g.info[modules[0].Root].fn
+	rootFn := g.qualFn(g.info[modules[0].Root].fn)
 	buf.WriteString("// Run executes the compiled Ruby script.\n")
 	buf.WriteString("func Run(mrb *oruby.MrbState) (oruby.Value, error) {\n")
 	buf.WriteString("\tmrb.AotInit()\n")
 	buf.WriteString("\tinitSymbols(mrb)\n")
+	for _, grp := range g.groups {
+		fmt.Fprintf(&buf, "\t%s.Init(mrb)\n", grp.name)
+	}
 	if isBundle {
 		buf.WriteString("\tinitCompiledRequire(mrb)\n")
 		entryKey := modules[0].FilePath
@@ -506,9 +540,22 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		buf.WriteString("}\n")
 	}
 
-	formattedRuntime, err := format.Source(buf.Bytes())
+	if len(g.groups) > 0 {
+		buf.WriteString("func init() {\n")
+		for _, grp := range g.groups {
+			fmt.Fprintf(&buf, "\t%s.RequireHook = doCompiledRequire\n", grp.name)
+		}
+		buf.WriteString("}\n\n")
+	}
+
+	runtimeSrc := buf.String()
+	if len(g.groups) > 0 {
+		runtimeSrc = g.pruneMainTable(runtimeSrc)
+	}
+	g.opts.Progress.report("format", 0, 0, "aot_runtime.go")
+	formattedRuntime, err := format.Source([]byte(runtimeSrc))
 	if err != nil {
-		return nil, fmt.Errorf("formatting aot_runtime.go: %w\nSource:\n%s", err, buf.String())
+		return nil, fmt.Errorf("formatting aot_runtime.go: %w\nSource:\n%s", err, runtimeSrc)
 	}
 	files["aot_runtime.go"] = string(formattedRuntime)
 	return files, nil
@@ -740,6 +787,10 @@ func (g *CodeGen) directTarget(name string, numArgs int) (string, bool) {
 }
 
 func (g *CodeGen) emitSymbolTable(b *bytes.Buffer) {
+	if len(g.groups) > 0 {
+		b.WriteString(symTableMarker + "\n")
+		return
+	}
 	if len(g.symList) > 0 || len(g.strList) > 0 {
 		b.WriteString("var (\n")
 		for i, s := range g.symList {
@@ -816,8 +867,6 @@ var (
 
 // recursion budget of typed specialized functions; when exhausted the
 // generic code runs (mrb.AotIntDisable) until the outermost call returns
-var aotIntDepth int
-
 const aotIntMaxDepth = 10000
 
 const aotMinInt = -1 << 63
@@ -879,6 +928,98 @@ func aotFloatMod64(x, y float64) (float64, bool) {
 
 func aotFloatNaN() float64          { return math.NaN() }
 func aotFloatInf(sign int) float64  { return math.Inf(sign) }
+func aotFloatFloor(x float64) (int64, bool) {
+	f := math.Floor(x)
+	if f != f || f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
+		return 0, false
+	}
+	return int64(f), true
+}
+func aotFloatCeil(x float64) (int64, bool) {
+	f := math.Ceil(x)
+	if f != f || f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
+		return 0, false
+	}
+	return int64(f), true
+}
+func aotFloatRound(x float64) (int64, bool) {
+	f := math.Round(x)
+	if f != f || f < -9223372036854775808.0 || f >= 9223372036854775808.0 {
+		return 0, false
+	}
+	return int64(f), true
+}
+func aotFloatPow(x, y float64) (float64, bool) {
+	if x < 0 && math.Trunc(y) != y {
+		return 0, false // Ruby returns Complex
+	}
+	return math.Pow(x, y), true
+}
+func aotIntPow64(base, exp int64) (int64, bool) {
+	if exp < 0 {
+		return 0, false // Ruby returns Rational
+	}
+	var res int64 = 1
+	b := base
+	e := exp
+	for e > 0 {
+		if e&1 != 0 {
+			var ok bool
+			res, ok = aotIntMul64(res, b)
+			if !ok {
+				return 0, false
+			}
+		}
+		e >>= 1
+		if e > 0 {
+			var ok bool
+			b, ok = aotIntMul64(b, b)
+			if !ok {
+				return 0, false
+			}
+		}
+	}
+	return res, true
+}
+func aotIntShl64(x, y int64) (int64, bool) {
+	if y < 0 || y >= 63 {
+		return 0, false
+	}
+	if x == 0 {
+		return 0, true
+	}
+	z := x << uint(y)
+	if (z >> uint(y)) != x {
+		return 0, false // overflow to BigInt
+	}
+	return z, true
+}
+func aotIntShr64(x, y int64) (int64, bool) {
+	if y < 0 {
+		return 0, false
+	}
+	if y >= 63 {
+		if x < 0 {
+			return -1, true
+		}
+		return 0, true
+	}
+	return x >> uint(y), true
+}
+func aotMathSqrt(x float64) (float64, bool) {
+	if x < 0 {
+		return 0, false
+	}
+	return math.Sqrt(x), true
+}
+func aotMathSin(x float64) float64          { return math.Sin(x) }
+func aotMathCos(x float64) float64          { return math.Cos(x) }
+func aotMathTan(x float64) float64          { return math.Tan(x) }
+func aotMathExp(x float64) float64          { return math.Exp(x) }
+func aotMathHypot(x, y float64) float64     { return math.Hypot(x, y) }
+func aotMathLog(x float64) (float64, bool)  { if x < 0 { return 0, false }; return math.Log(x), true }
+func aotMathLog2(x float64) (float64, bool) { if x < 0 { return 0, false }; return math.Log2(x), true }
+func aotMathLog10(x float64) (float64, bool) { if x < 0 { return 0, false }; return math.Log10(x), true }
 
 func aotInt(v oruby.Value) int64 { return *(*int64)(unsafe.Pointer(&v)) }
 
@@ -1031,12 +1172,8 @@ func %s(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	}
 	b.WriteString(fmt.Sprintf(`
 func fastGetIdx(mrb *oruby.MrbState, self, recv, key oruby.Value) (oruby.Value, error) {
-	if key.Type() == oruby.MrbTTInteger && mrb.AotIsPlainArray(recv) {
-		i := int(aotInt(key))
-		if i < 0 {
-			i += mrb.AotAryLen(recv)
-		}
-		return mrb.AotAryRef(recv, i), nil
+	if key.Type() == oruby.MrbTTInteger && mrb.AotCoreOK(oruby.AotCoreAryIdx, recv) {
+		return mrb.AotAryRef(recv, int(aotInt(key))), nil
 	}
 	return mrb.AotCall1(self, recv, %s, key, false)
 }
@@ -1117,6 +1254,7 @@ func (g *CodeGen) emitRequireHooks(b *bytes.Buffer, modules []*ModuleUnit) {
 }
 
 var compiledRegistry map[string]compiledModule
+var compiledRuns []func(*oruby.MrbState) (oruby.Value, error)
 var compiledOrbImage = []byte{`)
 	for i, byt := range orbBytes {
 		if i%16 == 0 {
@@ -1185,14 +1323,21 @@ func compiledFinish(mrb *oruby.MrbState, id string, success bool) {
 
 	`)
 	b.WriteString("func init() {\n")
-	b.WriteString("\tcompiledRegistry = map[string]compiledModule{\n")
+	var entries bytes.Buffer
 	seenKeys := make(map[string]bool)
+	// one run function per module, shared by all the keys that name it
+	runFns := make(map[string]string)
 	addKey := func(key, id, vpath, fnName string) {
 		if key == "" || seenKeys[key] {
 			return
 		}
 		seenKeys[key] = true
-		b.WriteString(fmt.Sprintf("\t\t%q: compiledModule{id: %q, vpath: %q, run: func(mrb *oruby.MrbState) (oruby.Value, error) { return %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil) }},\n", key, id, vpath, fnName))
+		run, ok := runFns[fnName]
+		if !ok {
+			run = fmt.Sprintf("compiledRuns[%d]", len(runFns))
+			runFns[fnName] = run
+		}
+		entries.WriteString(fmt.Sprintf("\t\t%q: compiledModule{id: %q, vpath: %q, run: %s},\n", key, id, vpath, run))
 	}
 	for _, mod := range modules {
 		id := mod.FilePath
@@ -1201,10 +1346,29 @@ func compiledFinish(mrb *oruby.MrbState, id string, success bool) {
 		}
 		vpath := oruby.NormalizeOrbPath(filepath.ToSlash(mod.RelPath))
 		addKey(id, id, vpath, g.info[mod.Root].fn)
-		for _, key := range mod.CanonicalKeys() {
+		strong, _ := mod.KeyGroups()
+		for _, key := range strong {
 			addKey(key, id, vpath, g.info[mod.Root].fn)
 		}
 	}
+	// Bare-basename aliases ("socket" for shared/file/socket.rb) are not
+	// registered: the require hook asks the registry before the runtime
+	// loader, so such an alias would answer a `require "socket"` made by the
+	// standard library (or any file not in the bundle) with an unrelated
+	// bundled file. A file is named by its path keys and its load-path keys.
+	fns := make([]string, len(runFns))
+	for fn, run := range runFns {
+		var k int
+		fmt.Sscanf(run, "compiledRuns[%d]", &k)
+		fns[k] = fn
+	}
+	b.WriteString("\tcompiledRuns = []func(*oruby.MrbState) (oruby.Value, error){\n")
+	for _, fn := range fns {
+		fmt.Fprintf(b, "\t\tfunc(mrb *oruby.MrbState) (oruby.Value, error) { return %s(mrb, mrb.TopSelf(), nil, mrb.NilValue(), mrb.AotTopCtx(), nil) },\n", g.qualFn(fn))
+	}
+	b.WriteString("\t}\n")
+	b.WriteString("\tcompiledRegistry = map[string]compiledModule{\n")
+	b.Write(entries.Bytes())
 	b.WriteString("\t}\n}\n\n")
 
 	b.WriteString(fmt.Sprintf(`// compiledFind resolves feature to a compiled module key
@@ -1453,21 +1617,22 @@ func enterLayout(u *IRepUnit) (kidx, bidx int) {
 
 // unitEmitter generates Go code of a single irep.
 type unitEmitter struct {
-	g       *CodeGen
-	u       *IRepUnit
-	inf     *unitInfo
-	b       bytes.Buffer
-	nregs   int
-	targets map[int]bool    // offsets which may get a label
-	refs    map[string]bool // referenced labels
-	stubs   map[string][]int
-	stubIDs []string
-	unwind  bool // uses pending return/jump through ensure
-	kidx    int
-	bidx    int
-	fixed   int // fixed arity (-1 if not)
-	file    string
-	jmpuw   []int // JMPUW targets
+	g                *CodeGen
+	u                *IRepUnit
+	inf              *unitInfo
+	b                bytes.Buffer
+	nregs            int
+	targets          map[int]bool    // offsets which may get a label
+	refs             map[string]bool // referenced labels
+	stubs            map[string][]int
+	stubIDs          []string
+	unwind           bool // uses pending return/jump through ensure
+	kidx             int
+	bidx             int
+	fixed            int // fixed arity (-1 if not)
+	file             string
+	mayReadMatchData bool  // true if unit or nested blocks may read $~ / $1.. / last_match
+	jmpuw            []int // JMPUW targets
 }
 
 func (e *unitEmitter) w(format string, args ...interface{}) {
@@ -1590,17 +1755,50 @@ func (e *unitEmitter) childFn(i uint16) string {
 	return ""
 }
 
+func unitMayReadMatchData(u *IRepUnit) bool {
+	if u == nil {
+		return false
+	}
+	for _, ins := range u.Instructions {
+		switch ins.Op {
+		case OpGETSV:
+			return true
+		case OpGETGV:
+			if int(ins.B) < len(u.Syms) {
+				s := u.Syms[ins.B]
+				if s == "$~" || s == "$&" || s == "$`" || s == "$'" || s == "$+" || (len(s) >= 2 && s[0] == '$' && s[1] >= '1' && s[1] <= '9') {
+					return true
+				}
+			}
+		case OpSEND, OpSEND0, OpSSEND, OpSSEND0, OpSENDB, OpSSENDB:
+			if int(ins.B) < len(u.Syms) {
+				switch u.Syms[ins.B] {
+				case "last_match", "binding", "eval", "instance_eval", "class_eval", "module_eval":
+					return true
+				}
+			}
+		}
+	}
+	for _, ch := range u.Children {
+		if unitMayReadMatchData(ch) {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *CodeGen) emitUnit(out *bytes.Buffer, unit *IRepUnit) error {
 	inf := g.info[unit]
 	e := &unitEmitter{
-		g:       g,
-		u:       unit,
-		inf:     inf,
-		targets: make(map[int]bool),
-		refs:    make(map[string]bool),
-		stubs:   make(map[string][]int),
-		fixed:   -1,
-		file:    inf.file,
+		g:                g,
+		u:                unit,
+		inf:              inf,
+		targets:          make(map[int]bool),
+		refs:             make(map[string]bool),
+		stubs:            make(map[string][]int),
+		fixed:            -1,
+		file:             inf.file,
+		mayReadMatchData: unitMayReadMatchData(unit),
 	}
 	e.kidx, e.bidx = enterLayout(unit)
 	if a, ok := g.compiledArity[inf.fn]; ok {
@@ -1844,27 +2042,62 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 			}
 		}
 
-		// Peephole: BLOCK + SENDB(:each) on plain Array runs block in a Go loop
+		// Peephole: BLOCK + SENDB(:each) on plain Array or integer Range, and
+		// BLOCK + SENDB(:times) on Integer, run the block in a zero-alloc Go loop.
 		if ins.Op == OpBLOCK && idx+1 < len(u.Instructions) && int(ins.B) < len(u.Children) {
 			nx := u.Instructions[idx+1]
 			child := e.childFn(ins.B)
-			if !e.targets[nx.Offset] && nx.Op == OpSENDB && nx.A+1 == ins.A && nx.C == 0 && e.symAt(uint32(nx.B)) == "each" && !g.opts.Debug {
-				symEach := e.sym("each")
-				e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
-				e.w("\tif mrb.AotIsPlainArray(r[%d]) {\n", nx.A)
-				e.w("\t\t_recv := r[%d]\n", nx.A)
-				e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
-				e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-				e.w("\t\t\tif _, err = %s(mrb, self, []oruby.Value{mrb.AotAryRef(_recv, _i)}, mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
-				e.w("\t\t}\n")
-				e.w("\t} else {\n")
-				e.w("\t\tr[%d] = mrb.AotBlock(%s, self, cx, env, false)\n", ins.A, child)
-				e.w("\t\tr[%d], err = mrb.AotCall(self, r[%d], %s, nil, r[%d], false, false)\n", nx.A, nx.A, symEach, ins.A)
-				e.w("\t}\n")
-				e.w("\tenv.AotBlockCallEnd(%d)\n", ins.B)
-				e.w("\tif err != nil {\n\t\tif _v, _ok := mrb.AotCatchBreak(env, %d); _ok { r[%d] = _v; err = nil } else { goto %s }\n\t}\n", ins.B, nx.A, e.exc(idx+1))
-				idx++
-				continue
+			if !e.targets[nx.Offset] && nx.Op == OpSENDB && nx.A+1 == ins.A && nx.C == 0 && !g.opts.Debug {
+				symName := e.symAt(uint32(nx.B))
+				if symName == "each" {
+					symEach := e.sym("each")
+					e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+					e.w("\tif mrb.AotCoreOK(oruby.AotCoreAryEach, r[%d]) {\n", nx.A)
+					e.w("\t\t_recv := r[%d]\n", nx.A)
+					e.w("\t\tvar _ea [1]oruby.Value\n")
+					e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
+					e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+					e.w("\t\t}\n")
+					e.w("\t} else if _beg, _end, _excl, _rok := mrb.AotRangeIntBounds(r[%d]); _rok && mrb.AotCoreOK(oruby.AotCoreRangeEach, r[%d]) {\n", nx.A, nx.A)
+					e.w("\t\tvar _ea [1]oruby.Value\n")
+					e.w("\t\tfor _i := _beg; ; _i++ {\n")
+					e.w("\t\t\tif _excl { if _i >= _end { break } } else { if _i > _end { break } }\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
+					e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+					e.w("\t\t\tif !_excl && _i == _end { break }\n")
+					e.w("\t\t}\n")
+					e.w("\t} else {\n")
+					e.w("\t\tr[%d] = mrb.AotBlock(%s, self, cx, env, false)\n", ins.A, child)
+					e.w("\t\tr[%d], err = mrb.AotCall(self, r[%d], %s, nil, r[%d], false, false)\n", nx.A, nx.A, symEach, ins.A)
+					e.w("\t}\n")
+					e.w("\tenv.AotBlockCallEnd(%d)\n", ins.B)
+					e.w("\tif err != nil {\n\t\tif _v, _ok := mrb.AotCatchBreak(env, %d); _ok { r[%d] = _v; err = nil } else { goto %s }\n\t}\n", ins.B, nx.A, e.exc(idx+1))
+					idx++
+					continue
+				}
+				if symName == "times" {
+					symTimes := e.sym("times")
+					e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+					e.w("\tif r[%d].Type() == oruby.MrbTTInteger && mrb.AotCoreOK(oruby.AotCoreIntTimes, r[%d]) {\n", nx.A, nx.A)
+					e.w("\t\t_n := aotInt(r[%d])\n", nx.A)
+					e.w("\t\tvar _ea [1]oruby.Value\n")
+					e.w("\t\tfor _i := int64(0); _i < _n; _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
+					e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+					e.w("\t\t}\n")
+					e.w("\t} else {\n")
+					e.w("\t\tr[%d] = mrb.AotBlock(%s, self, cx, env, false)\n", ins.A, child)
+					e.w("\t\tr[%d], err = mrb.AotCall(self, r[%d], %s, nil, r[%d], false, false)\n", nx.A, nx.A, symTimes, ins.A)
+					e.w("\t}\n")
+					e.w("\tenv.AotBlockCallEnd(%d)\n", ins.B)
+					e.w("\tif err != nil {\n\t\tif _v, _ok := mrb.AotCatchBreak(env, %d); _ok { r[%d] = _v; err = nil } else { goto %s }\n\t}\n", ins.B, nx.A, e.exc(idx+1))
+					idx++
+					continue
+				}
 			}
 			if !e.targets[nx.Offset] && isLambdaCall(u, idx) {
 				e.w("\tr[%d] = mrb.AotBlock(%s, self, cx, env, true)\n", nx.A, child)
@@ -1911,6 +2144,8 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 				e.w("\tr[%d] = mrb.FixnumValue(%d)\n", a, v)
 			case float64:
 				e.w("\tr[%d] = mrb.FloatValue(oruby.AotF64(0x%x)) // %v\n", a, math.Float64bits(v), v)
+			case oruby.IrepBigInt:
+				e.w("\tr[%d] = mrb.AotBigInt(%q, %d)\n", a, v.Digits, v.Base)
 			default:
 				e.w("\tr[%d] = mrb.NilValue()\n", a)
 			}
@@ -2240,7 +2475,8 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 	case OpGETIV:
 		e.w("\tr[%d] = mrb.AotIVGet(self, %s)\n", a, e.sym(e.symAt(uint32(ins.B))))
 	case OpSETIV:
-		e.w("\tmrb.AotOp(oruby.AotOpIVSet, self, r[%d], mrb.NilValue(), %s)\n\t%s\n", a, e.sym(e.symAt(uint32(ins.B))), e.chk(idx))
+		ivSym := e.sym(e.symAt(uint32(ins.B)))
+		e.w("\tif !mrb.AotIVSetImmediate(self, %s, r[%d]) {\n\t\tmrb.AotOp(oruby.AotOpIVSet, self, r[%d], mrb.NilValue(), %s)\n\t\t%s\n\t}\n", ivSym, a, a, ivSym, e.chk(idx))
 	case OpGETCV:
 		e.w("\tr[%d] = mrb.AotCVGet(cx, self, %s)\n\t%s\n", a, e.sym(e.symAt(uint32(ins.B))), e.chk(idx))
 	case OpSETCV:
@@ -2485,6 +2721,9 @@ func (e *unitEmitter) emitSend(idx int, ins Instruction) {
 		if g.emitGoExtIntrinsic(e, idx, a, recv, symName, list, n) {
 			return
 		}
+		if g.emitCoreStdlibIntrinsic(e, idx, a, recv, symName, list, n) {
+			return
+		}
 	}
 
 	symVar := e.sym(symName)
@@ -2499,6 +2738,8 @@ func (e *unitEmitter) emitSend(idx int, ins Instruction) {
 			e.w("%sr[%d], err = mrb.AotCall0(self, %s, %s, %v)\n", indent, a, recv, symVar, fcall)
 		case splat == "" && kw == "" && !hasBlock && n == 1:
 			e.w("%sr[%d], err = mrb.AotCall1(self, %s, %s, %s, %v)\n", indent, a, recv, symVar, list[0], fcall)
+		case splat == "" && kw == "" && !hasBlock && n == 2:
+			e.w("%sr[%d], err = mrb.AotCall2(self, %s, %s, %s, %s, %v)\n", indent, a, recv, symVar, list[0], list[1], fcall)
 		default:
 			e.w("%s{\n", indent)
 			if splat != "" {

@@ -206,3 +206,170 @@ func (g *CodeGen) emitGoExtIntrinsic(e *unitEmitter, idx int, a uint32, recv, sy
 
 	return false
 }
+
+// emitCoreStdlibIntrinsic emits guarded zero-cgo fast paths for hot Ruby core
+// methods (String, Array, Hash). Every fast path checks mrb.AotCoreOK (pure-Go
+// mruby 2-way method cache + exact core class + refinement check) and falls
+// back to normal Ruby dispatch on any subclass, monkey-patch, or mismatch.
+func (g *CodeGen) emitCoreStdlibIntrinsic(e *unitEmitter, idx int, a uint32, recv, symName string, list []string, n int) bool {
+	if g.opts.Debug {
+		return false
+	}
+	symVar := e.sym(symName)
+	switch symName {
+	case "!":
+		if n != 0 {
+			return false
+		}
+		e.w("\tif %s.Type() == oruby.MrbTTTrue && mrb.AotCoreClassOK(oruby.AotCoreTrueNot) {\n\t\tr[%d] = mrb.FalseValue()\n", recv, a)
+		e.w("\t} else if %s.Type() == oruby.MrbTTFalse && ((!%s.IsNil() && mrb.AotCoreClassOK(oruby.AotCoreFalseNot)) || (%s.IsNil() && mrb.AotCoreClassOK(oruby.AotCoreNilNot))) {\n\t\tr[%d] = mrb.TrueValue()\n", recv, recv, recv, a)
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "bytesize":
+		if n != 0 {
+			return false
+		}
+		e.w("\tif mrb.AotCoreOK(oruby.AotCoreStrBytesize, %s) {\n", recv)
+		e.w("\t\tif _b, _ok := mrb.AotStringBytes(%s); _ok {\n\t\t\tr[%d] = oruby.AotFixnum(int64(len(_b)))\n\t\t} else {\n", recv, a)
+		e.w("\t\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t\t%s\n\t\t}\n", a, recv, symVar, e.errChk(idx))
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "empty?":
+		if n != 0 {
+			return false
+		}
+		e.w("\tif mrb.AotCoreOK(oruby.AotCoreStrEmpty, %s) {\n", recv)
+		e.w("\t\t_b, _ := mrb.AotStringBytes(%s)\n\t\tr[%d] = mrb.BoolValue(len(_b) == 0)\n", recv, a)
+		e.w("\t} else if mrb.AotCoreOK(oruby.AotCoreAryEmpty, %s) {\n", recv)
+		e.w("\t\tr[%d] = mrb.BoolValue(mrb.AotAryLen(%s) == 0)\n", a, recv)
+		e.w("\t} else if mrb.AotCoreOK(oruby.AotCoreHashEmpty, %s) {\n", recv)
+		e.w("\t\tr[%d] = mrb.BoolValue(mrb.AotHashSize(%s) == 0)\n", a, recv)
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "length", "size":
+		if n != 0 {
+			return false
+		}
+		strSlot := "oruby.AotCoreStrLen"
+		arySlot := "oruby.AotCoreAryLen"
+		hashSlot := "oruby.AotCoreHashLength"
+		if symName == "size" {
+			strSlot = "oruby.AotCoreStrSize"
+			arySlot = "oruby.AotCoreArySize"
+			hashSlot = "oruby.AotCoreHashSize"
+		}
+		e.w("\t{\n\t\t_hit := false\n")
+		e.w("\t\tif mrb.AotCoreOK(%s, %s) {\n\t\t\tif _n, _ok := mrb.AotStrLen(%s); _ok { r[%d] = oruby.AotFixnum(_n); _hit = true }\n", strSlot, recv, recv, a)
+		e.w("\t\t} else if mrb.AotCoreOK(%s, %s) {\n\t\t\tr[%d] = oruby.AotFixnum(int64(mrb.AotAryLen(%s)))\n\t\t\t_hit = true\n", arySlot, recv, a, recv)
+		e.w("\t\t} else if mrb.AotCoreOK(%s, %s) {\n\t\t\tr[%d] = oruby.AotFixnum(int64(mrb.AotHashSize(%s)))\n\t\t\t_hit = true\n\t\t}\n", hashSlot, recv, a, recv)
+		e.w("\t\tif !_hit {\n\t\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t\t%s\n\t\t}\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "<<":
+		if n != 1 {
+			return false
+		}
+		e.w("\tif mrb.AotCoreOK(oruby.AotCoreStrConcat, %s) && mrb.AotStrConcatInPlace(%s, %s) {\n\t\tr[%d] = %s\n", recv, recv, list[0], a, recv)
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, list[0], e.errChk(idx))
+		return true
+
+	case "strip", "downcase", "upcase":
+		if n != 0 {
+			return false
+		}
+		slot := "oruby.AotCoreStrStrip"
+		op := 0
+		if symName == "downcase" {
+			slot = "oruby.AotCoreStrDowncase"
+			op = 1
+		} else if symName == "upcase" {
+			slot = "oruby.AotCoreStrUpcase"
+			op = 2
+		}
+		e.w("\t{\n\t\t_hit := false\n")
+		e.w("\t\tif mrb.AotCoreOK(%s, %s) {\n\t\t\tif _v, _ok := mrb.AotStrASCIIOp(%s, %d); _ok { r[%d] = _v; _hit = true }\n\t\t}\n", slot, recv, recv, op, a)
+		e.w("\t\tif !_hit {\n\t\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t\t%s\n\t\t}\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "gsub":
+		if n != 2 || e.mayReadMatchData {
+			return false
+		}
+		e.w("\t{\n\t\t_hit := false\n")
+		e.w("\t\tif mrb.AotCoreOK(oruby.AotCoreStrGsub, %s) {\n\t\t\tif _v, _ok := mrb.AotStrGsubPlain(%s, %s, %s); _ok { r[%d] = _v; _hit = true }\n\t\t}\n", recv, recv, list[0], list[1], a)
+		e.w("\t\tif !_hit {\n\t\t\tr[%d], err = mrb.AotCall2(self, %s, %s, %s, %s, false)\n\t\t\t%s\n\t\t}\n\t}\n", a, recv, symVar, list[0], list[1], e.errChk(idx))
+		return true
+
+	case "split":
+		if n != 1 {
+			return false
+		}
+		e.w("\t{\n\t\t_hit := false\n")
+		e.w("\t\tif mrb.AotCoreOK(oruby.AotCoreStrSplit, %s) {\n\t\t\tif _v, _ok := mrb.AotStrSplitPlain(%s, %s); _ok { r[%d] = _v; _hit = true }\n\t\t}\n", recv, recv, list[0], a)
+		e.w("\t\tif !_hit {\n\t\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t\t%s\n\t\t}\n\t}\n", a, recv, symVar, list[0], e.errChk(idx))
+		return true
+
+	case "first":
+		if n != 0 {
+			return false
+		}
+		e.w("\tif mrb.AotCoreOK(oruby.AotCoreAryFirst, %s) {\n", recv)
+		e.w("\t\tif mrb.AotAryLen(%s) > 0 {\n\t\t\tr[%d] = mrb.AotAryRef(%s, 0)\n\t\t} else {\n\t\t\tr[%d] = mrb.NilValue()\n\t\t}\n", recv, a, recv, a)
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "last":
+		if n != 0 {
+			return false
+		}
+		e.w("\tif mrb.AotCoreOK(oruby.AotCoreAryLast, %s) {\n", recv)
+		e.w("\t\tif _n := mrb.AotAryLen(%s); _n > 0 {\n\t\t\tr[%d] = mrb.AotAryRef(%s, _n-1)\n\t\t} else {\n\t\t\tr[%d] = mrb.NilValue()\n\t\t}\n", recv, a, recv, a)
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "getbyte":
+		if n != 1 {
+			return false
+		}
+		e.w("\tif %s.Type() == oruby.MrbTTInteger && mrb.AotCoreOK(oruby.AotCoreStrGetbyte, %s) {\n", list[0], recv)
+		e.w("\t\tif _bv, _isInt, _ok := mrb.AotStrGetbyte(%s, aotInt(%s)); _ok {\n", recv, list[0])
+		e.w("\t\t\tif _isInt { r[%d] = oruby.AotFixnum(_bv) } else { r[%d] = mrb.NilValue() }\n", a, a)
+		e.w("\t\t} else {\n\t\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t\t%s\n\t\t}\n", a, recv, symVar, list[0], e.errChk(idx))
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, list[0], e.errChk(idx))
+		return true
+
+	case "ord":
+		if n != 0 {
+			return false
+		}
+		e.w("\t{\n\t\t_hit := false\n")
+		e.w("\t\tif mrb.AotCoreOK(oruby.AotCoreStrOrd, %s) {\n", recv)
+		e.w("\t\t\tif _cv, _ok := mrb.AotStrOrd(%s); _ok {\n\t\t\t\tr[%d] = oruby.AotFixnum(_cv)\n\t\t\t\t_hit = true\n\t\t\t}\n\t\t}\n", recv, a)
+		e.w("\t\tif !_hit {\n\t\t\tr[%d], err = mrb.AotCall0(self, %s, %s, false)\n\t\t\t%s\n\t\t}\n\t}\n", a, recv, symVar, e.errChk(idx))
+		return true
+
+	case "start_with?":
+		if n != 1 {
+			return false
+		}
+		e.w("\t{\n\t\t_hit := false\n")
+		e.w("\t\tif mrb.AotCoreOK(oruby.AotCoreStrStartWith, %s) {\n", recv)
+		e.w("\t\t\tif _res, _ok := mrb.AotStrStartWith(%s, %s); _ok {\n\t\t\t\tr[%d] = mrb.BoolValue(_res)\n\t\t\t\t_hit = true\n\t\t\t}\n\t\t}\n", recv, list[0], a)
+		e.w("\t\tif !_hit {\n\t\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t\t%s\n\t\t}\n\t}\n", a, recv, symVar, list[0], e.errChk(idx))
+		return true
+
+	case "include?":
+		if n != 1 {
+			return false
+		}
+		e.w("\t{\n\t\t_hit := false\n")
+		e.w("\t\tif mrb.AotCoreOK(oruby.AotCoreStrInclude, %s) {\n", recv)
+		e.w("\t\t\tif _res, _ok := mrb.AotStrInclude(%s, %s); _ok {\n\t\t\t\tr[%d] = mrb.BoolValue(_res)\n\t\t\t\t_hit = true\n\t\t\t}\n\t\t}\n", recv, list[0], a)
+		e.w("\t\tif !_hit {\n\t\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t\t%s\n\t\t}\n\t}\n", a, recv, symVar, list[0], e.errChk(idx))
+		return true
+	}
+	return false
+}

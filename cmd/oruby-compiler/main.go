@@ -32,6 +32,8 @@ var (
 	rbsFlag    = flag.String("rbs", "", "Comma-separated .rbs files or directories (e.g. sig) for RBS-guided AOT type specialization")
 	checkRBS   = flag.Bool("check-rbs", false, "Fail compilation if RBS arity/return type mismatches are found")
 	verbose    = flag.Bool("v", false, "Verbose output")
+	pkgSize    = flag.Int("pkgsize", 0, "Split the bundle into Go packages of about N modules each (built in parallel and cached by go build); 0 = one package")
+	progressF  = flag.String("progress", "auto", "Progress reporting on stderr: auto (when stderr is a terminal), on, off")
 )
 
 func generateDockerfile(embed string, outPath string) error {
@@ -105,6 +107,8 @@ func copyDir(src, dst string) error {
 func main() {
 	flag.Usage = usage
 	flag.Parse()
+	prog := newProgress(*progressF)
+	defer prog.Done()
 
 	if *dockerfile != "" && len(flag.Args()) == 0 {
 		if err := generateDockerfile(*embedDirs, *dockerfile); err != nil {
@@ -248,6 +252,8 @@ func main() {
 		GoExts:      selectedGoExts,
 		RBSPaths:    rbsPaths,
 		CheckRBS:    *checkRBS,
+		Progress:    prog.Report,
+		GroupSize:   *pkgSize,
 	})
 
 	var goSrc string
@@ -290,6 +296,15 @@ func main() {
 					extra = append(extra, m)
 				}
 			}
+		}
+		if *pkgSize > 0 && *outDir == "" && *buildBin != "" {
+			// a grouped build is several packages: write them to a scratch module
+			tmp, terr := os.MkdirTemp("", "oruby_build_*")
+			if terr != nil {
+				log.Fatalf("Failed creating temp build dir: %v\n", terr)
+			}
+			defer os.RemoveAll(tmp)
+			*outDir = tmp
 		}
 		if *outDir != "" {
 			written, err := comp.CompilePackageDir(mrb, inputPath, extra, lps, *outDir)
@@ -409,9 +424,11 @@ func main() {
 		}
 		_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(modContent), 0644)
 
+		endTidy := prog.Stage("go mod tidy")
 		tidyCmd := exec.Command("go", "mod", "tidy")
 		tidyCmd.Dir = tmpDir
 		_ = tidyCmd.Run()
+		endTidy()
 
 		absBin, err := filepath.Abs(*buildBin)
 		if err != nil {
@@ -443,7 +460,13 @@ func main() {
 			}
 		}
 
-		buildCmd := exec.Command("go", "build", "-o", absBin, ".")
+		buildArgs := []string{"build", "-o", absBin}
+		if *pkgSize > 0 {
+			// the scratch directory differs on every run; without -trimpath its path is part of
+			// each package's cache key and nothing would be reused
+			buildArgs = append(buildArgs, "-trimpath")
+		}
+		buildCmd := exec.Command("go", append(buildArgs, ".")...)
 		buildCmd.Dir = tmpDir
 		if *target != "" {
 			parts := strings.Split(*target, "/")
@@ -451,7 +474,9 @@ func main() {
 				buildCmd.Env = append(os.Environ(), "GOOS="+parts[0], "GOARCH="+parts[1])
 			}
 		}
+		endBuild := prog.Stage("go build")
 		out, err := buildCmd.CombinedOutput()
+		endBuild()
 		if err != nil {
 			log.Fatalf("go build failed: %v\nOutput: %s\n", err, string(out))
 		}
