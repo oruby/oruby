@@ -125,21 +125,54 @@ func (mrb *MrbState) AotBoundaryErr() error {
 // HasExc returns true if exception is pending
 func (mrb *MrbState) HasExc() bool { return mrb.p.exc != nil }
 
+// AotIntrinsicID identifies a registered Go-extension method eligible for
+// guarded direct Go-to-Go dispatch from AOT-compiled code.
+type AotIntrinsicID int
+
+const (
+	AotIntrinsicFastBlank AotIntrinsicID = iota
+	AotIntrinsicFastBlankAs
+	AotIntrinsicEscapeHTML
+	AotIntrinsicEscapeURL
+	AotIntrinsicXXH32
+	AotIntrinsicXXH64
+	AotIntrinsicZstdCompress
+	AotIntrinsicZstdDecompress
+	AotIntrinsicBrotliDeflate
+	AotIntrinsicBrotliInflate
+	aotIntrinsicCount
+)
+
+type aotIntrinsicSlot struct {
+	cls    *C.struct_RClass // expected receiver class (exact class or module singleton class)
+	modPtr uintptr          // non-zero for module/class methods: expected receiver pointer
+	mid    C.mrb_sym        // method symbol
+	method C.mrb_method_t   // expected original method entry in mruby's method cache
+	flag   bool             // optional per-intrinsic runtime flag (e.g. EscapeUtils.html_secure)
+}
+
+var (
+	aotFixnumTemplate = Value{C.mrb_fixnum_value(0)}
+	aotFloatTemplate  = Value{C.mrb_float_value(nil, 0)}
+)
+
 type aotState struct {
-	breakClass  RClass
-	returnClass RClass
-	symVal      MrbSym
-	symTag      MrbSym
-	symIdx      MrbSym
-	symDispatch MrbSym
-	symCall     MrbSym
-	topCx       *AotCtx
-	blocks      map[int64]*aotBlockData
-	nextBlock   int64
-	trampIdx    int
-	methods     map[int]*aotMethod
-	depth       int
-	intDisabled int
+	breakClass      RClass
+	returnClass     RClass
+	symVal          MrbSym
+	symTag          MrbSym
+	symIdx          MrbSym
+	symDispatch     MrbSym
+	symCall         MrbSym
+	topCx           *AotCtx
+	blocks          map[int64]*aotBlockData
+	nextBlock       int64
+	trampIdx        int
+	methods         map[int]*aotMethod
+	depth           int
+	intDisabled     int
+	intrinsics      [aotIntrinsicCount]aotIntrinsicSlot
+	compiledMethods []C.mrb_method_t
 }
 
 type aotMethod struct {
@@ -158,11 +191,14 @@ var AotPending = Value{C.mrb_undef_value()}
 
 // AotInit prepares state for compiled code. It is safe to call many times.
 func (mrb *MrbState) AotInit() {
-	if mrb.aot != nil {
+	if mrb.aot != nil && mrb.aot.topCx != nil {
 		return
 	}
 	C._aot_init(mrb.p)
-	st := &aotState{}
+	st := mrb.aot
+	if st == nil {
+		st = &aotState{}
+	}
 	exc := mrb.EExceptionClass()
 	st.breakClass = mrb.DefineClass("ORubyAotBreak", exc)
 	st.returnClass = mrb.DefineClass("ORubyAotReturn", exc)
@@ -176,6 +212,278 @@ func (mrb *MrbState) AotInit() {
 	st.methods = make(map[int]*aotMethod)
 	mrb.aot = st
 	st.trampIdx = mrb.registerMrbFuncT(mrb.aotBlockTrampoline)
+}
+
+// AotRegisterInstanceIntrinsic records a Go-extension instance method on cls
+// (e.g. String#blank?) for guarded zero-cgo AOT dispatch.
+func (mrb *MrbState) AotRegisterInstanceIntrinsic(id AotIntrinsicID, cls RClass, mid MrbSym) {
+	if id < 0 || id >= aotIntrinsicCount {
+		return
+	}
+	if mrb.aot == nil {
+		mrb.aot = &aotState{}
+	}
+	var found C.mrb_bool
+	m := C._aot_intrinsic_method(mrb.p, cls.p, C.mrb_sym(mid), &found)
+	if !bool(found) {
+		return
+	}
+	s := &mrb.aot.intrinsics[id]
+	s.cls = cls.p
+	s.modPtr = 0
+	s.mid = C.mrb_sym(mid)
+	s.method = m
+}
+
+// AotRegisterModuleIntrinsic records a Go-extension module/class method on mod
+// (e.g. Zstd.compress, XXhash.xxh64) for guarded zero-cgo AOT dispatch.
+func (mrb *MrbState) AotRegisterModuleIntrinsic(id AotIntrinsicID, mod RClass, mid MrbSym) {
+	if id < 0 || id >= aotIntrinsicCount {
+		return
+	}
+	if mrb.aot == nil {
+		mrb.aot = &aotState{}
+	}
+	scls := C._aot_singleton_class_ptr(mrb.p, mod.Value().v)
+	var found C.mrb_bool
+	m := C._aot_intrinsic_method(mrb.p, scls, C.mrb_sym(mid), &found)
+	if !bool(found) {
+		return
+	}
+	s := &mrb.aot.intrinsics[id]
+	s.cls = scls
+	s.modPtr = mod.Value().Pointer()
+	s.mid = C.mrb_sym(mid)
+	s.method = m
+}
+
+// AotSetIntrinsicFlag updates the auxiliary runtime boolean on an intrinsic
+// slot (e.g. EscapeUtils.html_secure).
+func (mrb *MrbState) AotSetIntrinsicFlag(id AotIntrinsicID, v bool) {
+	if id < 0 || id >= aotIntrinsicCount {
+		return
+	}
+	if mrb.aot == nil {
+		mrb.aot = &aotState{}
+	}
+	mrb.aot.intrinsics[id].flag = v
+}
+
+// AotIntrinsicFlag reads the auxiliary runtime boolean on an intrinsic slot
+// without cgo.
+func (mrb *MrbState) AotIntrinsicFlag(id AotIntrinsicID) bool {
+	if mrb.aot == nil || id < 0 || id >= aotIntrinsicCount {
+		return false
+	}
+	return mrb.aot.intrinsics[id].flag
+}
+
+// aotObjPtr extracts the C heap object pointer from an mrb_value without cgo
+// or uintptr->unsafe.Pointer conversion.
+func aotObjPtr(v Value) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&v.v))
+}
+
+// AotIntrinsicOK checks in pure Go (zero cgo calls) that calling the registered
+// intrinsic slot on recv will resolve to the exact original extension method
+// with no monkey-patching, singleton override, subclass, prepend, or refinement.
+func (mrb *MrbState) AotIntrinsicOK(id AotIntrinsicID, recv Value) bool {
+	if mrb.aot == nil || id < 0 || id >= aotIntrinsicCount {
+		return false
+	}
+	s := &mrb.aot.intrinsics[id]
+	if s.cls == nil {
+		return false
+	}
+	ptr := recv.Pointer()
+	if ptr <= 65536 {
+		return false
+	}
+	up := aotObjPtr(recv)
+	if s.modPtr != 0 {
+		if ptr != s.modPtr {
+			return false
+		}
+		if (*C.struct_RBasic)(up).c != s.cls {
+			return false
+		}
+	} else {
+		if recv.Type() != MrbTTString {
+			return false
+		}
+		if (*C.struct_RBasic)(up).c != s.cls {
+			return false
+		}
+	}
+	// Any active refinement disables direct bypass so refined methods dispatch normally.
+	if (mrb.p.refined_mids[0] | mrb.p.refined_mids[1] | mrb.p.refined_mids[2] | mrb.p.refined_mids[3]) != 0 {
+		return false
+	}
+	// Verify mruby's 2-way method cache still maps (s.cls, s.mid) to s.method.
+	key := (uintptr(unsafe.Pointer(s.cls)) >> 4) ^ uintptr(s.mid)
+	h := uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)
+	mc0 := &mrb.p.cache[h*2]
+	if mc0.c == s.cls && mc0.mid == s.mid {
+		return mc0.m == s.method
+	}
+	mc1 := &mrb.p.cache[h*2+1]
+	if mc1.c == s.cls && mc1.mid == s.mid {
+		return mc1.m == s.method
+	}
+	return false
+}
+
+// AotStringBytes returns a zero-copy, read-only byte slice of a Ruby String
+// without any cgo call. The slice must not be mutated or retained past the
+// current call (mruby GC could collect or reallocate the underlying string).
+func (mrb *MrbState) AotStringBytes(v Value) ([]byte, bool) {
+	if v.Type() != MrbTTString {
+		return nil, false
+	}
+	if v.Pointer() <= 65536 {
+		return nil, false
+	}
+	up := aotObjPtr(v)
+	flags := (*(*uint32)(unsafe.Add(up, 8))) >> 12
+	if (flags & 8) != 0 { // MRB_STR_EMBED
+		n := int((flags >> 4) & 31)
+		if n == 0 {
+			return nil, true
+		}
+		return unsafe.Slice((*byte)(unsafe.Add(up, 12)), n), true
+	}
+	n := int(*(*int64)(unsafe.Add(up, 16)))
+	if n <= 0 {
+		return nil, true
+	}
+	p := *(**byte)(unsafe.Add(up, 32))
+	if p == nil {
+		return nil, true
+	}
+	return unsafe.Slice(p, n), true
+}
+
+// AotFixnum builds a Fixnum Value in pure Go without cgo.
+func AotFixnum(n int64) Value {
+	v := aotFixnumTemplate
+	*(*int64)(unsafe.Pointer(&v.v)) = n
+	return v
+}
+
+// AotFloat extracts a Float Value's float64 payload in pure Go without cgo.
+func AotFloat(v Value) float64 {
+	return *(*float64)(unsafe.Pointer(&v.v))
+}
+
+// AotFloatValue builds a Float Value in pure Go without cgo for finite/Inf
+// values; NaN delegates to mrb.FloatValue so mruby assigns its NaN serial.
+func (mrb *MrbState) AotFloatValue(f float64) Value {
+	if math.IsNaN(f) {
+		return mrb.FloatValue(f)
+	}
+	v := aotFloatTemplate
+	*(*float64)(unsafe.Pointer(&v.v)) = f
+	return v
+}
+
+// AotFloatCanRun reports whether float-specialized Go code may run (no Float
+// operator redefinition and specialization not disabled by bailout).
+func (mrb *MrbState) AotFloatCanRun() bool {
+	return (mrb.aot == nil || mrb.aot.intDisabled == 0) && !mrb.AotFloatOpsRedefined()
+}
+
+// aotReceiverClass returns the mruby RClass pointer for recv in pure Go
+// (zero cgo calls), matching mrb_class() in mruby/class.h.
+func (mrb *MrbState) aotReceiverClass(recv Value) *C.struct_RClass {
+	switch recv.Type() {
+	case MrbTTFalse:
+		if recv.IsNil() {
+			return mrb.p.nil_class
+		}
+		return mrb.p.false_class
+	case MrbTTTrue:
+		return mrb.p.true_class
+	case MrbTTInteger:
+		return mrb.p.integer_class
+	case MrbTTFloat:
+		return mrb.p.float_class
+	case MrbTTSymbol:
+		return mrb.p.symbol_class
+	case MrbTTCptr:
+		return mrb.p.object_class
+	default:
+		if recv.Pointer() <= 65536 {
+			return nil
+		}
+		return (*C.struct_RBasic)(aotObjPtr(recv)).c
+	}
+}
+
+// AotDefineMethodTracked defines a compiled method like AotDefineMethod and
+// records its installed mrb_method_t at slot so specialized Go functions can
+// verify method dispatch via AotCompiledMethodOK without cgo on the hot path.
+func (mrb *MrbState) AotDefineMethodTracked(slot int, target Value, mid MrbSym, cx *AotCtx, needCtx bool, fn AotFunc) {
+	mrb.AotDefineMethod(target, mid, cx, needCtx, fn)
+	if slot < 0 {
+		return
+	}
+	cls := mrb.ClassPtr(target)
+	var found C.mrb_bool
+	m := C._aot_intrinsic_method(mrb.p, cls.p, C.mrb_sym(mid), &found)
+	if !bool(found) {
+		return
+	}
+	if slot >= len(mrb.aot.compiledMethods) {
+		grown := make([]C.mrb_method_t, slot+1)
+		copy(grown, mrb.aot.compiledMethods)
+		mrb.aot.compiledMethods = grown
+	}
+	mrb.aot.compiledMethods[slot] = m
+}
+
+// AotCompiledMethodOK reports whether calling mid on recv resolves to the exact
+// compiled method recorded at slot (no monkey-patch, subclass override,
+// singleton override, prepend, or refinement). Zero cgo on warm mruby cache;
+// warms the cache once on a cold lookup.
+func (mrb *MrbState) AotCompiledMethodOK(recv Value, mid MrbSym, slot int) bool {
+	if mrb.aot == nil || slot < 0 || slot >= len(mrb.aot.compiledMethods) {
+		return false
+	}
+	expected := mrb.aot.compiledMethods[slot]
+	if expected == (C.mrb_method_t{}) {
+		return false
+	}
+	if (mrb.p.refined_mids[0] | mrb.p.refined_mids[1] | mrb.p.refined_mids[2] | mrb.p.refined_mids[3]) != 0 {
+		return false
+	}
+	oc := mrb.aotReceiverClass(recv)
+	if oc == nil {
+		return false
+	}
+	cmid := C.mrb_sym(mid)
+	key := (uintptr(unsafe.Pointer(oc)) >> 4) ^ uintptr(cmid)
+	h := uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)
+	mc0 := &mrb.p.cache[h*2]
+	if mc0.c == oc && mc0.mid == cmid {
+		return mc0.m == expected
+	}
+	mc1 := &mrb.p.cache[h*2+1]
+	if mc1.c == oc && mc1.mid == cmid {
+		return mc1.m == expected
+	}
+	// Cold cache: warm mruby's method cache once so subsequent calls stay 0-cgo.
+	var found C.mrb_bool
+	m := C._aot_intrinsic_method(mrb.p, oc, cmid, &found)
+	return bool(found) && m == expected
+}
+
+// AotBytesBinary allocates an ASCII-8BIT (BINARY) Ruby String from b in a
+// single cgo call and protects it in the current GC arena.
+func (mrb *MrbState) AotBytesBinary(b []byte) Value {
+	if len(b) == 0 {
+		return Value{C._aot_bytes_binary(mrb.p, nil, 0)}
+	}
+	return Value{C._aot_bytes_binary(mrb.p, (*C.char)(unsafe.Pointer(&b[0])), C.mrb_int(len(b)))}
 }
 
 // AotTopCtx returns context for top level script code

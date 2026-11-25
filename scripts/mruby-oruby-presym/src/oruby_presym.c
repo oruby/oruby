@@ -47,6 +47,8 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "$__oruby_data__");
   (void)mrb_intern_lit(mrb, "$__oruby_incs__");
   (void)mrb_intern_lit(mrb, "$__oruby_lib__");
+  (void)mrb_intern_lit(mrb, "$__oruby_rbs_file__");
+  (void)mrb_intern_lit(mrb, "$__oruby_rbs_src__");
   (void)mrb_intern_lit(mrb, "$__oruby_top_exc__");
   (void)mrb_intern_lit(mrb, "$asserts");
   (void)mrb_intern_lit(mrb, "$mrbtest_verbose");

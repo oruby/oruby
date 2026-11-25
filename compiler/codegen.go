@@ -14,10 +14,13 @@ import (
 
 // CodeGenOptions specifies options for Go code generation.
 type CodeGenOptions struct {
-	PackageName string   // Name of the generated Go package (e.g. "main" or "compiled")
-	Standalone  bool     // Whether to include a main() entrypoint
-	EmbedDirs   []string // Optional directory paths/patterns to embed via //go:embed (empty = disk files)
-	Debug       bool     // Emit line-stepping debug hooks for IDE / debugger integration
+	PackageName string      // Name of the generated Go package (e.g. "main" or "compiled")
+	Standalone  bool        // Whether to include a main() entrypoint
+	EmbedDirs   []string    // Optional directory paths/patterns to embed via //go:embed (empty = disk files)
+	Debug       bool        // Emit line-stepping debug hooks for IDE / debugger integration
+	GoExts      []GoExtSpec // Opt-in Go extensions from goext/ to link and optimize
+	RBS         *RBSEnv     // Optional RBS signatures for type-guided AOT specialization & checking
+	CheckRBS    bool        // Fail codegen if any RBS arity/return type mismatch is detected
 }
 
 type unitKind int
@@ -44,6 +47,8 @@ type unitInfo struct {
 	home      *IRepUnit // blocks: enclosing method/lambda/class/top
 	homeDepth int       // blocks: number of lexical levels up to home
 	method    string    // method name (methods), or home method name
+	className string    // enclosing Ruby class/module name ("" for top-level/Object)
+	singleton bool      // true for `def self.foo` singleton methods
 }
 
 // CodeGen translates an IRepUnit AST into Go source code.
@@ -53,12 +58,19 @@ type CodeGen struct {
 	info           map[*IRepUnit]*unitInfo
 	defCount       map[string]int
 	topDefs        map[string]*IRepUnit
+	scopedDefCount map[rbsMethodKey]int
+	scopedDefs     map[rbsMethodKey]*IRepUnit
 	compiledArity  map[string]int
-	intSpecialized map[string]bool
+	typedPlans     map[string]*TypedPlan
+	trackedSlots   map[*IRepUnit]int
+	rbsDiagnostics []RBSDiagnostic
 	symMap         map[string]string
 	symList        []string
 	strMap         map[string]string
 	strList        []string
+	extEnabled     map[string]bool
+	usedIntrinsics map[string]bool
+	modIntrinsics  map[string]bool
 }
 
 // NewCodeGen creates a new code generator.
@@ -75,12 +87,34 @@ func (g *CodeGen) reset() {
 	g.info = make(map[*IRepUnit]*unitInfo)
 	g.defCount = make(map[string]int)
 	g.topDefs = make(map[string]*IRepUnit)
+	g.scopedDefCount = make(map[rbsMethodKey]int)
+	g.scopedDefs = make(map[rbsMethodKey]*IRepUnit)
 	g.compiledArity = make(map[string]int)
-	g.intSpecialized = make(map[string]bool)
+	g.typedPlans = make(map[string]*TypedPlan)
+	g.trackedSlots = make(map[*IRepUnit]int)
+	g.rbsDiagnostics = nil
 	g.symMap = make(map[string]string)
 	g.symList = nil
 	g.strMap = make(map[string]string)
 	g.strList = nil
+	g.initIntrinsics()
+}
+
+// Diagnostics returns any RBS type/arity mismatches discovered during the last codegen.
+func (g *CodeGen) Diagnostics() []RBSDiagnostic {
+	out := make([]RBSDiagnostic, len(g.rbsDiagnostics))
+	copy(out, g.rbsDiagnostics)
+	return out
+}
+
+// TypedMethods returns the sorted names of methods compiled with pure-Go typed specialization.
+func (g *CodeGen) TypedMethods() []string {
+	out := make([]string, 0, len(g.typedPlans))
+	for _, plan := range g.typedPlans {
+		out = append(out, formatMethodDisplay(g.info[plan.Unit]))
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (g *CodeGen) internSym(name string) string {
@@ -137,28 +171,16 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		if file == "" {
 			file = mod.RelPath
 		}
-		g.analyze(mod.Root, nil, kindTop, 0, prefix, file)
+		g.analyze(mod.Root, nil, kindTop, 0, prefix, file, "")
 	}
 	g.analyzeDefs(modules)
-
-	if !g.opts.Debug {
-		changed := true
-		for changed {
-			changed = false
-			for u, inf := range g.info {
-				if g.intSpecialized[inf.fn] {
-					continue
-				}
-				arity, ok := g.compiledArity[inf.fn]
-				if !ok || arity < 1 || arity > 3 {
-					continue
-				}
-				if g.canEmitIntSpecialized(u, arity) {
-					g.intSpecialized[inf.fn] = true
-					changed = true
-				}
-			}
+	g.analyzeTypedUnits()
+	if g.opts.CheckRBS && len(g.rbsDiagnostics) > 0 {
+		var msgs []string
+		for _, d := range g.rbsDiagnostics {
+			msgs = append(msgs, d.String())
 		}
+		return "", fmt.Errorf("RBS type check failed:\n  %s", strings.Join(msgs, "\n  "))
 	}
 
 	// 2. Emit units (collects symbols and strings)
@@ -189,10 +211,21 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		buf.WriteString("\t\"path/filepath\"\n")
 		buf.WriteString("\t\"strings\"\n")
 	}
+	buf.WriteString("\t\"math\"\n")
 	buf.WriteString("\t\"unsafe\"\n")
 	buf.WriteString("\t\"github.com/oruby/oruby\"\n")
+	aliasedPaths := make(map[string]bool)
+	for _, pkg := range sortedIntrinsicPkgs(g.usedIntrinsics) {
+		fmt.Fprintf(&buf, "\t%s %q\n", pkg.alias, pkg.importPath)
+		aliasedPaths[pkg.importPath] = true
+	}
 	if g.opts.Standalone {
 		buf.WriteString("\t_ \"github.com/oruby/oruby/gem/stdlib\"\n")
+		for _, ext := range g.opts.GoExts {
+			if !aliasedPaths[ext.ImportPath] {
+				fmt.Fprintf(&buf, "\t_ %q\n", ext.ImportPath)
+			}
+		}
 	}
 	buf.WriteString(")\n\n")
 
@@ -319,45 +352,40 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		if file == "" {
 			file = mod.RelPath
 		}
-		g.analyze(mod.Root, nil, kindTop, 0, prefix, file)
+		g.analyze(mod.Root, nil, kindTop, 0, prefix, file, "")
 	}
 	g.analyzeDefs(modules)
-
-	if !g.opts.Debug {
-		changed := true
-		for changed {
-			changed = false
-			for u, inf := range g.info {
-				if g.intSpecialized[inf.fn] {
-					continue
-				}
-				arity, ok := g.compiledArity[inf.fn]
-				if !ok || arity < 1 || arity > 3 {
-					continue
-				}
-				if g.canEmitIntSpecialized(u, arity) {
-					g.intSpecialized[inf.fn] = true
-					changed = true
-				}
-			}
+	g.analyzeTypedUnits()
+	if g.opts.CheckRBS && len(g.rbsDiagnostics) > 0 {
+		var msgs []string
+		for _, d := range g.rbsDiagnostics {
+			msgs = append(msgs, d.String())
 		}
+		return nil, fmt.Errorf("RBS type check failed:\n  %s", strings.Join(msgs, "\n  "))
 	}
 
 	files := make(map[string]string, len(modules)+1)
 
 	// 2. Emit each module into its own .go file
 	for i, mod := range modules {
-		var modBuf bytes.Buffer
-		modBuf.WriteString(fmt.Sprintf("// Code generated by oruby-compiler. DO NOT EDIT.\n// oruby-module: %s\n// oruby-hash: %08x\n\npackage %s\n\nimport \"github.com/oruby/oruby\"\n\n",
-			filepath.ToSlash(mod.RelPath), mod.Hash32, g.opts.PackageName))
-
+		g.modIntrinsics = make(map[string]bool)
+		var bodyBuf bytes.Buffer
 		var allUnits []*IRepUnit
 		collectUnits(mod.Root, &allUnits)
 		for _, unit := range allUnits {
-			if err := g.emitUnit(&modBuf, unit); err != nil {
+			if err := g.emitUnit(&bodyBuf, unit); err != nil {
 				return nil, err
 			}
 		}
+
+		var modBuf bytes.Buffer
+		modBuf.WriteString(fmt.Sprintf("// Code generated by oruby-compiler. DO NOT EDIT.\n// oruby-module: %s\n// oruby-hash: %08x\n\npackage %s\n\nimport (\n\t\"github.com/oruby/oruby\"\n",
+			filepath.ToSlash(mod.RelPath), mod.Hash32, g.opts.PackageName))
+		for _, pkg := range sortedIntrinsicPkgs(g.modIntrinsics) {
+			fmt.Fprintf(&modBuf, "\t%s %q\n", pkg.alias, pkg.importPath)
+		}
+		modBuf.WriteString(")\n\n")
+		modBuf.Write(bodyBuf.Bytes())
 
 		formattedMod, err := format.Source(modBuf.Bytes())
 		if err != nil {
@@ -366,6 +394,7 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		fileName := fmt.Sprintf("aot_mod_%03d.go", i)
 		files[fileName] = string(formattedMod)
 	}
+	g.modIntrinsics = nil
 
 	// 3. Emit aot_runtime.go
 	var buf bytes.Buffer
@@ -382,10 +411,14 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		buf.WriteString("\t\"path/filepath\"\n")
 		buf.WriteString("\t\"strings\"\n")
 	}
+	buf.WriteString("\t\"math\"\n")
 	buf.WriteString("\t\"unsafe\"\n")
 	buf.WriteString("\t\"github.com/oruby/oruby\"\n")
 	if g.opts.Standalone {
 		buf.WriteString("\t_ \"github.com/oruby/oruby/gem/stdlib\"\n")
+		for _, ext := range g.opts.GoExts {
+			fmt.Fprintf(&buf, "\t_ %q\n", ext.ImportPath)
+		}
 	}
 	buf.WriteString(")\n\n")
 
@@ -488,31 +521,47 @@ func collectUnits(u *IRepUnit, list *[]*IRepUnit) {
 	}
 }
 
-// analyze assigns kinds and names to the irep tree.
-func (g *CodeGen) analyze(u *IRepUnit, parent *IRepUnit, kind unitKind, childIdx int, prefix, file string) {
+// analyze assigns kinds, names, and enclosing class/module scopes to the irep tree.
+func (g *CodeGen) analyze(u *IRepUnit, parent *IRepUnit, kind unitKind, childIdx int, prefix, file, className string) {
 	if u.File != "" && (filepath.IsAbs(u.File) || file == "") && !oruby.IsOrbVirtualPath(file) {
 		file = u.File
 	}
 	inf := &unitInfo{
-		kind:     kind,
-		parent:   parent,
-		fn:       fmt.Sprintf("%sIRep_%d", prefix, u.Index),
-		prefix:   prefix,
-		file:     file,
-		childIdx: childIdx,
+		kind:      kind,
+		parent:    parent,
+		fn:        fmt.Sprintf("%sIRep_%d", prefix, u.Index),
+		prefix:    prefix,
+		file:      file,
+		childIdx:  childIdx,
+		className: normalizeRBSClass(className),
 	}
 	g.info[u] = inf
 
 	kinds := make([]unitKind, len(u.Children))
 	names := make([]string, len(u.Children))
+	singletons := make([]bool, len(u.Children))
+	childClass := make([]string, len(u.Children))
+	regClass := make(map[uint32]string)
 	for i := range kinds {
 		kinds[i] = kindBlock
+		childClass[i] = inf.className
 	}
 	for idx, ins := range u.Instructions {
 		switch ins.Op {
+		case OpCLASS, OpMODULE:
+			if int(ins.B) < len(u.Syms) {
+				cname := u.Syms[ins.B]
+				if inf.className != "" {
+					cname = inf.className + "::" + cname
+				}
+				regClass[ins.A] = cname
+			}
 		case OpTDEF, OpSDEF:
 			if int(ins.C) < len(kinds) {
 				kinds[ins.C] = kindMethod
+				if ins.Op == OpSDEF {
+					singletons[ins.C] = true
+				}
 				if int(ins.B) < len(u.Syms) {
 					names[ins.C] = u.Syms[ins.B]
 				}
@@ -535,6 +584,9 @@ func (g *CodeGen) analyze(u *IRepUnit, parent *IRepUnit, kind unitKind, childIdx
 		case OpEXEC:
 			if int(ins.B) < len(kinds) {
 				kinds[ins.B] = kindClass
+				if cname, ok := regClass[ins.A]; ok {
+					childClass[ins.B] = cname
+				}
 			}
 		}
 		if ins.Op == OpBLOCK || ins.Op == OpLAMBDA {
@@ -542,9 +594,10 @@ func (g *CodeGen) analyze(u *IRepUnit, parent *IRepUnit, kind unitKind, childIdx
 		}
 	}
 	for i, c := range u.Children {
-		g.analyze(c, u, kinds[i], i, prefix, file)
+		g.analyze(c, u, kinds[i], i, prefix, file, childClass[i])
 		if kinds[i] == kindMethod {
 			g.info[c].method = names[i]
+			g.info[c].singleton = singletons[i]
 		}
 	}
 
@@ -620,21 +673,36 @@ func (g *CodeGen) analyzeDefs(modules []*ModuleUnit) {
 					continue
 				}
 				name := u.Syms[ins.B]
+				child := u.Children[ins.C]
 				g.defCount[name]++
 				if ins.Op == OpTDEF && inf.kind == kindTop {
-					g.topDefs[name] = u.Children[ins.C]
+					g.topDefs[name] = child
+				}
+				if inf.kind == kindTop || inf.kind == kindClass {
+					k := rbsMethodKey{className: inf.className, method: name, singleton: ins.Op == OpSDEF}
+					g.scopedDefCount[k]++
+					g.scopedDefs[k] = child
 				}
 			case OpDEF:
 				if int(ins.B) < len(u.Syms) {
-					g.defCount[u.Syms[ins.B]]++
+					name := u.Syms[ins.B]
+					g.defCount[name]++
+					k := rbsMethodKey{className: inf.className, method: name, singleton: false}
+					g.scopedDefCount[k] += 2
 				}
 			case OpALIAS:
 				if int(ins.A) < len(u.Syms) {
-					g.defCount[u.Syms[ins.A]] += 2
+					name := u.Syms[ins.A]
+					g.defCount[name] += 2
+					g.scopedDefCount[rbsMethodKey{className: inf.className, method: name, singleton: false}] += 2
+					g.scopedDefCount[rbsMethodKey{className: inf.className, method: name, singleton: true}] += 2
 				}
 			case OpUNDEF:
 				if int(ins.A) < len(u.Syms) {
-					g.defCount[u.Syms[ins.A]] += 2
+					name := u.Syms[ins.A]
+					g.defCount[name] += 2
+					g.scopedDefCount[rbsMethodKey{className: inf.className, method: name, singleton: false}] += 2
+					g.scopedDefCount[rbsMethodKey{className: inf.className, method: name, singleton: true}] += 2
 				}
 			}
 		}
@@ -741,9 +809,12 @@ func (g *CodeGen) emitHelpers(b *bytes.Buffer) {
 	symSetIdx := g.internSym("[]=")
 
 	b.WriteString(`
-var _ = unsafe.Pointer(nil)
+var (
+	_ = unsafe.Pointer(nil)
+	_ = math.Floor
+)
 
-// recursion budget of integer specialized functions; when exhausted the
+// recursion budget of typed specialized functions; when exhausted the
 // generic code runs (mrb.AotIntDisable) until the outermost call returns
 var aotIntDepth int
 
@@ -768,6 +839,46 @@ func aotIntMul64(x, y int64) (int64, bool) {
 	}
 	return z, z/y == x && !(x == -1 && y == aotMinInt) && !(y == -1 && x == aotMinInt)
 }
+
+func aotIntDiv64(x, y int64) (int64, bool) {
+	if y == 0 || (x == aotMinInt && y == -1) {
+		return 0, false
+	}
+	q := x / y
+	r := x % y
+	if r != 0 && (x^y) < 0 {
+		q--
+	}
+	return q, true
+}
+
+func aotIntMod64(x, y int64) (int64, bool) {
+	if y == 0 {
+		return 0, false
+	}
+	if x == aotMinInt && y == -1 {
+		return 0, true
+	}
+	r := x % y
+	if r != 0 && (r^y) < 0 {
+		r += y
+	}
+	return r, true
+}
+
+func aotFloatMod64(x, y float64) (float64, bool) {
+	if y == 0 {
+		return 0, false
+	}
+	r := math.Mod(x, y)
+	if r != 0 && (r < 0) != (y < 0) {
+		r += y
+	}
+	return r, true
+}
+
+func aotFloatNaN() float64          { return math.NaN() }
+func aotFloatInf(sign int) float64  { return math.Inf(sign) }
 
 func aotInt(v oruby.Value) int64 { return *(*int64)(unsafe.Pointer(&v)) }
 
@@ -1267,7 +1378,7 @@ func unitFixedArity(unit *IRepUnit) int {
 		return -1
 	}
 	req := int((first.A >> 18) & 0x1f)
-	if first.A == uint32(req)<<18 && req >= 0 && req <= 3 {
+	if first.A == uint32(req)<<18 && req >= 0 && req <= 6 {
 		return req
 	}
 	return -1
@@ -1282,161 +1393,6 @@ func unitHasDebugCall(unit *IRepUnit) bool {
 		}
 	}
 	return false
-}
-
-func (g *CodeGen) canEmitIntSpecialized(unit *IRepUnit, arity int) bool {
-	inf := g.info[unit]
-	if g.opts.Debug || arity < 1 || arity > 3 || inf == nil || inf.method == "" || len(unit.Instructions) == 0 || len(unit.Catch) > 0 {
-		return false
-	}
-	jumpTargets := make(map[int]bool)
-	for _, ins := range unit.Instructions {
-		if ins.IsJump() && ins.Target >= 0 {
-			jumpTargets[ins.Target] = true
-		}
-	}
-	for idx := 0; idx < len(unit.Instructions); idx++ {
-		ins := unit.Instructions[idx]
-		switch ins.Op {
-		case OpNOP, OpENTER, OpMOVE,
-			OpLOADI8, OpLOADINEG, OpLOADI__1,
-			OpLOADI_0, OpLOADI_1, OpLOADI_2, OpLOADI_3, OpLOADI_4, OpLOADI_5, OpLOADI_6, OpLOADI_7,
-			OpLOADI16, OpLOADI32,
-			OpADD, OpADDI, OpADDILV, OpSUB, OpSUBI, OpSUBILV, OpMUL,
-			OpJMP, OpRETURN:
-		case OpLOADL:
-			if int(ins.B) >= len(unit.Pool) {
-				return false
-			}
-			switch unit.Pool[ins.B].(type) {
-			case int32, int64:
-			default:
-				return false
-			}
-		case OpEQ, OpLT, OpLE, OpGT, OpGE:
-			if idx+1 >= len(unit.Instructions) {
-				return false
-			}
-			nextIns := unit.Instructions[idx+1]
-			if jumpTargets[nextIns.Offset] || (nextIns.Op != OpJMPNOT && nextIns.Op != OpJMPIF) || nextIns.A != ins.A {
-				return false
-			}
-			idx++
-		case OpSSEND:
-			return false
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func (g *CodeGen) emitIntSpecializedUnit(b *bytes.Buffer, unit *IRepUnit, fnName string, arity int) {
-	jumpTargets := make(map[int]bool)
-	for _, ins := range unit.Instructions {
-		if ins.IsJump() && ins.Target >= 0 {
-			jumpTargets[ins.Target] = true
-		}
-	}
-	nregs := unit.NRegs
-	if nregs < 2 {
-		nregs = 2
-	}
-	params := []string{"mrb *oruby.MrbState"}
-	for i := 0; i < arity; i++ {
-		params = append(params, fmt.Sprintf("_a%d int64", i+1))
-	}
-	// _int functions are pure integer code; when the recursion budget is
-	// exhausted they bail out (ok=false) and the generic path is used
-	b.WriteString(fmt.Sprintf("func %s_int(%s) (int64, bool) {\n", fnName, strings.Join(params, ", ")))
-	b.WriteString("\tif aotIntDepth >= aotIntMaxDepth {\n\t\treturn 0, false\n\t}\n\taotIntDepth++\n")
-	b.WriteString(fmt.Sprintf("\tvar r [%d]int64\n\t_ = r\n\tvar _ok bool\n\t_ = _ok\n", nregs))
-	hasReturn := false
-	for idx := 0; idx < len(unit.Instructions); idx++ {
-		ins := unit.Instructions[idx]
-		if jumpTargets[ins.Offset] {
-			b.WriteString(fmt.Sprintf("L_%04d:\n", ins.Offset))
-		}
-		switch ins.Op {
-		case OpENTER:
-			for i := 0; i < arity; i++ {
-				b.WriteString(fmt.Sprintf("\tr[%d] = _a%d\n", i+1, i+1))
-			}
-		case OpMOVE:
-			b.WriteString(fmt.Sprintf("\tr[%d] = r[%d]\n", ins.A, ins.B))
-		case OpLOADL:
-			switch v := unit.Pool[ins.B].(type) {
-			case int32:
-				b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, v))
-			case int64:
-				b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, v))
-			}
-		case OpLOADI8:
-			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, ins.B))
-		case OpLOADINEG:
-			b.WriteString(fmt.Sprintf("\tr[%d] = -%d\n", ins.A, ins.B))
-		case OpLOADI__1:
-			b.WriteString(fmt.Sprintf("\tr[%d] = -1\n", ins.A))
-		case OpLOADI_0, OpLOADI_1, OpLOADI_2, OpLOADI_3, OpLOADI_4, OpLOADI_5, OpLOADI_6, OpLOADI_7:
-			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, int(ins.Op-OpLOADI_0)))
-		case OpLOADI16:
-			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, int16(ins.B)))
-		case OpLOADI32:
-			val := int32(uint32(ins.B)<<16 | uint32(ins.C))
-			b.WriteString(fmt.Sprintf("\tr[%d] = %d\n", ins.A, val))
-		case OpADD:
-			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntAdd64(r[%d], r[%d]); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.A+1))
-		case OpADDI:
-			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntAdd64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.B))
-		case OpADDILV:
-			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntAdd64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.C))
-		case OpSUB:
-			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntSub64(r[%d], r[%d]); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.A+1))
-		case OpSUBI:
-			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntSub64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.B))
-		case OpSUBILV:
-			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntSub64(r[%d], %d); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.C))
-		case OpMUL:
-			b.WriteString(fmt.Sprintf("\tr[%d], _ok = aotIntMul64(r[%d], r[%d]); if !_ok { aotIntDepth--; return 0, false }\n", ins.A, ins.A, ins.A+1))
-		case OpEQ, OpLT, OpLE, OpGT, OpGE:
-			nextIns := unit.Instructions[idx+1]
-			opStr := cmpOpStr(ins.Op)
-			backPoll := ""
-			if nextIns.Target <= nextIns.Offset {
-				backPoll = "if mrb.AotHasHook() { aotIntDepth--; return 0, false }; "
-			}
-			if nextIns.Op == OpJMPNOT {
-				b.WriteString(fmt.Sprintf("\tif !(r[%d] %s r[%d]) { %sgoto L_%04d }\n", ins.A, opStr, ins.A+1, backPoll, nextIns.Target))
-			} else {
-				b.WriteString(fmt.Sprintf("\tif r[%d] %s r[%d] { %sgoto L_%04d }\n", ins.A, opStr, ins.A+1, backPoll, nextIns.Target))
-			}
-			idx++
-		case OpJMP:
-			if ins.Target <= ins.Offset {
-				b.WriteString("\tif mrb.AotHasHook() { aotIntDepth--; return 0, false }\n")
-			}
-			b.WriteString(fmt.Sprintf("\tgoto L_%04d\n", ins.Target))
-		case OpSSEND:
-			sym := unit.Syms[ins.B]
-			numArgs := int(ins.C & 0xf)
-			targetFn, ok := g.directTarget(sym, numArgs)
-			if !ok {
-				targetFn = fnName
-			}
-			args := []string{"mrb"}
-			for i := 1; i <= numArgs; i++ {
-				args = append(args, fmt.Sprintf("r[%d]", ins.A+uint32(i)))
-			}
-			b.WriteString(fmt.Sprintf("\tif r[%d], _ok = %s_int(%s); !_ok {\n\t\taotIntDepth--\n\t\treturn 0, false\n\t}\n", ins.A, targetFn, strings.Join(args, ", ")))
-		case OpRETURN:
-			b.WriteString(fmt.Sprintf("\taotIntDepth--\n\treturn r[%d], true\n", ins.A))
-			hasReturn = true
-		}
-	}
-	if !hasReturn {
-		b.WriteString("\taotIntDepth--\n\treturn r[0], true\n")
-	}
-	b.WriteString("}\n\n")
 }
 
 func cmpOpStr(op Opcode) string {
@@ -1687,8 +1643,8 @@ func (g *CodeGen) emitUnit(out *bytes.Buffer, unit *IRepUnit) error {
 
 	out.WriteString(fmt.Sprintf("// %s implements compiled irep %d (%s)\n", fn, unit.Index, kindName(inf.kind)))
 	if e.fixed >= 0 {
-		if g.intSpecialized[fn] {
-			g.emitIntSpecializedUnit(out, unit, fn, e.fixed)
+		if plan := g.typedPlans[fn]; plan != nil {
+			g.emitTypedSpecializedUnit(out, plan)
 		}
 		var callArgs []string
 		for i := 0; i < e.fixed; i++ {
@@ -1704,15 +1660,8 @@ func (g *CodeGen) emitUnit(out *bytes.Buffer, unit *IRepUnit) error {
 		}
 		out.WriteString(fmt.Sprintf("func %s_f%d(mrb *oruby.MrbState, self oruby.Value, blk oruby.Value, cx *oruby.AotCtx%s) (oruby.Value, error) {\n", fn, e.fixed, prefixComma(params)))
 		out.WriteString("\tvar args []oruby.Value\n\t_ = args\n\tvar up *oruby.AotEnv\n\t_ = up\n")
-		if g.intSpecialized[fn] {
-			var conds []string
-			intArgs := []string{"mrb"}
-			for i := 0; i < e.fixed; i++ {
-				conds = append(conds, fmt.Sprintf("_a%d.Type() == oruby.MrbTTInteger", i+1))
-				intArgs = append(intArgs, fmt.Sprintf("aotInt(_a%d)", i+1))
-			}
-			out.WriteString(fmt.Sprintf("\tif mrb.AotIntCanRun() && %s {\n\t\tif _v, _ok := %s_int(%s); _ok {\n\t\t\treturn mrb.FixnumValue(int(_v)), nil\n\t\t}\n\t\tmrb.AotIntDisable()\n\t\tdefer mrb.AotIntEnable()\n\t}\n",
-				strings.Join(conds, " && "), fn, strings.Join(intArgs, ", ")))
+		if plan := g.typedPlans[fn]; plan != nil {
+			g.emitTypedEntryGuard(out, plan)
 		}
 	} else {
 		out.WriteString(fmt.Sprintf("func %s(%s) (oruby.Value, error) {\n", fn, sig))
@@ -2164,7 +2113,11 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 		if idx > 0 && u.Instructions[idx-1].Op == OpMETHOD && u.Instructions[idx-1].A == a+1 {
 			child := u.Children[u.Instructions[idx-1].B]
 			ci := g.info[child]
-			e.w("\tmrb.AotDefineMethod(r[%d], %s, cx, %v, %s)\n\t%s\n", a, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			if slot, tracked := g.trackedSlots[child]; tracked {
+				e.w("\tmrb.AotDefineMethodTracked(%d, r[%d], %s, cx, %v, %s)\n\t%s\n", slot, a, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			} else {
+				e.w("\tmrb.AotDefineMethod(r[%d], %s, cx, %v, %s)\n\t%s\n", a, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			}
 		} else {
 			e.w("\t_, err = mrb.AotCall(self, r[%d], %s, []oruby.Value{mrb.SymbolValue(%s), r[%d]}, mrb.NilValue(), true, false)\n\t%s\n",
 				a, e.sym("define_method"), e.sym(symName), a+1, e.errChk(idx))
@@ -2181,11 +2134,20 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 		symName := e.symAt(uint32(ins.B))
 		child := u.Children[ins.C]
 		ci := g.info[child]
+		slot, tracked := g.trackedSlots[child]
 		if ins.Op == OpTDEF {
-			e.w("\tmrb.AotDefineMethod(mrb.AotDefTarget(cx), %s, cx, %v, %s)\n\t%s\n", e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			if tracked {
+				e.w("\tmrb.AotDefineMethodTracked(%d, mrb.AotDefTarget(cx), %s, cx, %v, %s)\n\t%s\n", slot, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			} else {
+				e.w("\tmrb.AotDefineMethod(mrb.AotDefTarget(cx), %s, cx, %v, %s)\n\t%s\n", e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			}
 		} else {
 			e.w("\t{\n\t\t_sc := mrb.AotOp(oruby.AotOpSingletonClass, r[%d], mrb.NilValue(), mrb.NilValue(), 0)\n\t\t%s\n", a, e.chk(idx))
-			e.w("\t\tmrb.AotDefineMethod(_sc, %s, cx, %v, %s)\n\t\t%s\n\t}\n", e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			if tracked {
+				e.w("\t\tmrb.AotDefineMethodTracked(%d, _sc, %s, cx, %v, %s)\n\t\t%s\n\t}\n", slot, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			} else {
+				e.w("\t\tmrb.AotDefineMethod(_sc, %s, cx, %v, %s)\n\t\t%s\n\t}\n", e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+			}
 		}
 		e.w("\tr[%d] = mrb.SymbolValue(%s)\n", a, e.sym(symName))
 
@@ -2514,6 +2476,13 @@ func (e *unitEmitter) emitSend(idx int, ins Instruction) {
 		case "!=":
 			e.w("\tif _x, _y, _ok := aotCmpII(mrb, r[%d], r[%d]); _ok {\n\t\tr[%d] = mrb.BoolValue(_x != _y)\n\t} else {\n\t\tr[%d] = fastNeq(mrb, r[%d], r[%d])\n\t\t%s\n\t}\n",
 				a, a+1, a, a, a, a+1, e.chk(idx))
+			return
+		}
+	}
+
+	// Guarded direct Go-to-Go intrinsics for enabled AOTDirect goext/ extensions
+	if !fcall && !hasBlock && splat == "" && kw == "" && nk == 0 {
+		if g.emitGoExtIntrinsic(e, idx, a, recv, symName, list, n) {
 			return
 		}
 	}

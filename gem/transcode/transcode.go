@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 //go:embed transcode.rb

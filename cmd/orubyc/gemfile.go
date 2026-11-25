@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/compiler"
 )
 
 // gemfileEntry represents a top-level gem statement in a Gemfile.
@@ -29,61 +30,48 @@ type lockedGemSpec struct {
 	Deps    []string
 }
 
-// orubyNativeGems lists gems that are either natively built into ORuby (in Go or C)
-// or are MRI-specific C-extension tools that should not be packed from MRI's gem directory.
+// orubyNativeGems lists gems that are either natively built into standalone ORuby
+// (core/stdlib/C-API gems) or are MRI-specific C-extension tools that should not
+// be packed from MRI's gem directory. Opt-in third-party Go extensions in goext/
+// are handled per-build via ExtensionsConfig.
 var orubyNativeGems = map[string]bool{
-	"argon2":          true,
 	"base64":          true,
-	"bcrypt":          true,
-	"bcrypt_pbkdf":    true,
 	"bigdecimal":      true,
 	"bindex":          true,
 	"bootsnap":        true,
-	"brotli":          true,
 	"bundler":         true,
-	"commonmarker":    true,
 	"coverage":        true,
 	"date":            true,
 	"debug":           true,
 	"debug_inspector": true,
 	"digest":          true,
 	"drb":             true,
-	"ed25519":         true,
 	"erubi":           true,
 	"etc":             true,
 	"fcntl":           true,
 	"ffi":             true,
 	"fiddle":          true,
 	"find":            true,
-	"hiredis":         true,
 	"io-console":      true,
 	"io-nonblock":     true,
 	"io-wait":         true,
 	"json":            true,
 	"monitor":         true,
-	"msgpack":         true,
-	"mysql2":          true,
-	"nio4r":           true,
-	"nokogiri":        true,
 	"objspace":        true,
 	"oj":              true,
-	"pg":              true,
 	"pp":              true,
 	"prettyprint":     true,
 	"prism":           true,
 	"psych":           true,
 	"pty":             true,
 	"racc":            true,
-	"rbnacl":          true,
 	"rbs":             true,
 	"ripper":          true,
 	"ruby2_keywords":  true,
-	"scrypt":          true,
 	"securerandom":    true,
 	"set":             true,
 	"shellwords":      true,
 	"socket":          true,
-	"sqlite3":         true,
 	"stringio":        true,
 	"strscan":         true,
 	"syslog":          true,
@@ -95,7 +83,6 @@ var orubyNativeGems = map[string]bool{
 	"uri":             true,
 	"yaml":            true,
 	"zlib":            true,
-	"zstd":            true,
 }
 
 // railsSubGems lists the component gems of the "rails" meta-gem.
@@ -795,15 +782,24 @@ func entryMatchesGroups(entry gemfileEntry, allowedGroups map[string]bool) bool 
 	return false
 }
 
-// packGemfileGemsWithGroups resolves gems from Gemfile / Gemfile.lock filtered by groups (if non-empty) and packs their files into builder.
 // resolveGemfileGems finds the gems of the Gemfile's groups, with their
 // dependencies (Gemfile.lock, installed gemspecs), on disk: the Gemfile's
 // entries and the gems found, sorted by name. Gems ORuby provides itself
 // (orubyNativeGems) are left out.
 func resolveGemfileGems(gemfilePath, projectRoot string, groups []string, verbose bool) ([]gemfileEntry, []*resolvedGemDir, error) {
+	entries, resolved, _, err := resolveGemfileGemsWithPolicy(gemfilePath, projectRoot, groups, nil, verbose)
+	return entries, resolved, err
+}
+
+// resolveGemfileGemsWithPolicy is resolveGemfileGems with an optional
+// extPolicy: gems resolved to a non-ExtOnly Go extension are recorded in
+// goExts and skipped from disk packing (working even when not installed in
+// GEM_HOME); ExtOnly Go extensions (puma, websocket-driver) are recorded in
+// goExts while their Ruby files are still resolved and packed.
+func resolveGemfileGemsWithPolicy(gemfilePath, projectRoot string, groups []string, pol *extPolicy, verbose bool) ([]gemfileEntry, []*resolvedGemDir, []compiler.GoExtSpec, error) {
 	allEntries, err := parseGemfile(gemfilePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parsing %s: %w", gemfilePath, err)
+		return nil, nil, nil, fmt.Errorf("parsing %s: %w", gemfilePath, err)
 	}
 
 	allowedGroups := make(map[string]bool)
@@ -848,6 +844,7 @@ func resolveGemfileGems(gemfilePath, projectRoot string, groups []string, verbos
 	}
 
 	var resolved []*resolvedGemDir
+	goMap := make(map[string]compiler.GoExtSpec)
 	for len(queue) > 0 {
 		name := queue[0]
 		queue = queue[1:]
@@ -863,6 +860,14 @@ func resolveGemfileGems(gemfilePath, projectRoot string, groups []string, verbos
 			lockedVer = spec.Version
 			for _, dep := range spec.Deps {
 				enqueue(dep)
+			}
+		}
+
+		// Opt-in Go extension selected by extensions policy
+		if sp, useGo := pol.wantsGo(name); useGo {
+			goMap[sp.Gem] = sp
+			if !sp.ExtOnly {
+				continue
 			}
 		}
 
@@ -905,7 +910,14 @@ func resolveGemfileGems(gemfilePath, projectRoot string, groups []string, verbos
 	sort.Slice(resolved, func(i, j int) bool {
 		return resolved[i].Name < resolved[j].Name
 	})
-	return entries, resolved, nil
+	goExts := make([]compiler.GoExtSpec, 0, len(goMap))
+	for _, sp := range goMap {
+		goExts = append(goExts, sp)
+	}
+	sort.Slice(goExts, func(i, j int) bool {
+		return goExts[i].Gem < goExts[j].Gem
+	})
+	return entries, resolved, goExts, nil
 }
 
 func packGemfileGemsWithGroups(
@@ -917,9 +929,23 @@ func packGemfileGemsWithGroups(
 	args *mrbcArgs,
 	packFileWithVirtual func(inPath, vpath string) error,
 ) error {
-	entries, resolved, err := resolveGemfileGems(gemfilePath, projectRoot, groups, args != nil && args.verbose)
+	_, err := packGemfileGemsWithPolicy(mrb, builder, gemfilePath, projectRoot, groups, nil, args, packFileWithVirtual)
+	return err
+}
+
+func packGemfileGemsWithPolicy(
+	mrb *oruby.MrbState,
+	builder *oruby.OrbBuilder,
+	gemfilePath string,
+	projectRoot string,
+	groups []string,
+	pol *extPolicy,
+	args *mrbcArgs,
+	packFileWithVirtual func(inPath, vpath string) error,
+) ([]*resolvedGemDir, error) {
+	entries, resolved, _, err := resolveGemfileGemsWithPolicy(gemfilePath, projectRoot, groups, pol, args != nil && args.verbose)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var binOutDir, libOutDir string
@@ -1002,7 +1028,7 @@ func packGemfileGemsWithGroups(
 			return nil
 		})
 		if err != nil {
-			return fmt.Errorf("packing gem %s-%s: %w", g.Name, g.Version, err)
+			return nil, fmt.Errorf("packing gem %s-%s: %w", g.Name, g.Version, err)
 		}
 	}
 
@@ -1025,13 +1051,13 @@ func packGemfileGemsWithGroups(
 	}
 
 	if err := packVirtualRuby("lib/bundler/setup.rb", bundlerSrc); err != nil {
-		return err
+		return nil, err
 	}
 	if err := packVirtualRuby("lib/bundler.rb", bundlerSrc); err != nil {
-		return err
+		return nil, err
 	}
 	if err := packVirtualRuby("lib/bootsnap/setup.rb", []byte("# bootsnap no-op inside .orb bundle\n")); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return resolved, nil
 }

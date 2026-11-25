@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 	rbregexp "github.com/oruby/oruby/gem/regexp"
 )
 

@@ -72,16 +72,21 @@ func TestRubyGemsAndBundlerFromInstallTree(t *testing.T) {
 		t.Fatalf("bundler/setup = %q, want %q", got, want)
 	}
 
-	// Verify compiled-in ORuby native gems are registered as default Gem::Specifications
+	// Verify compiled-in ORuby stdlib / C-API gems are registered as default Gem::Specifications,
+	// while opt-in goext/ replacements (nokogiri, pg, msgpack, ...) are NOT embedded in standalone oruby.
 	got = runOruby(t, exe, dir, "-e", `
-%w[nokogiri oruby-vips ruby-vips cbor yajl-ruby snappy lz4-ruby ox redcarpet xxhash digest-crc].each do |name|
+%w[base64 bigdecimal csv ffi oj prism racc].each do |name|
   spec = Gem::Specification.find_by_name(name)
   gem name
   raise "not default: #{name}" unless spec.default_gem?
 end
-puts "ok:#{Gem.loaded_specs["nokogiri"].version}:#{Gem.loaded_specs["ruby-vips"].version}:#{Gem.loaded_specs["cbor"].version}"
+%w[nokogiri pg msgpack zstd-ruby ruby-vips].each do |name|
+  found = begin; Gem::Specification.find_by_name(name); rescue Gem::MissingSpecError; nil; end
+  raise "unexpected default gem in standalone oruby: #{name}" if found
+end
+puts "ok:#{Gem.loaded_specs["oj"].version}:#{Gem.loaded_specs["bigdecimal"].version}:#{Gem.loaded_specs["ffi"].version}"
 `)
-	if want := "ok:1.19.7:2.3.0:0.5.9.8"; got != want {
+	if want := "ok:3.17.8:4.1.3:1.17.4"; got != want {
 		t.Fatalf("builtin gemspecs = %q, want %q", got, want)
 	}
 }
@@ -118,20 +123,20 @@ func TestBinStubs(t *testing.T) {
 	}
 }
 
-// An embedded gem (msgpack, a Go gem with an oruby.GemSpec) stands in for
+// An embedded gem (racc, a built-in gem with an oruby.GemSpec) stands in for
 // its versions up to its own: Bundler resolves to it where the Gemfile
 // allows, such a version's extension is not built, and a newer version the
 // Gemfile asks for is what Bundler picks and require loads. Offline: a fake
-// msgpack 9.9.9 installed in GEM_HOME is the newer version.
+// racc 9.9.9 installed in GEM_HOME is the newer version.
 func TestEmbeddedGemVersions(t *testing.T) {
 	exe := buildInPrefix(t)
 	gemHome := t.TempDir()
-	fake := filepath.Join(gemHome, "gems", "msgpack-9.9.9")
+	fake := filepath.Join(gemHome, "gems", "racc-9.9.9")
 	for path, body := range map[string]string{
-		filepath.Join(fake, "lib", "msgpack.rb"): "module MessagePack; FAKE = :newer; end\n",
-		filepath.Join(gemHome, "specifications", "msgpack-9.9.9.gemspec"): `Gem::Specification.new do |s|
-  s.name = "msgpack"; s.version = "9.9.9"; s.summary = "fake"; s.authors = ["t"]
-  s.files = ["lib/msgpack.rb"]; s.require_paths = ["lib"]
+		filepath.Join(fake, "lib", "racc.rb"): "module Racc; FAKE = :newer; end\n",
+		filepath.Join(gemHome, "specifications", "racc-9.9.9.gemspec"): `Gem::Specification.new do |s|
+  s.name = "racc"; s.version = "9.9.9"; s.summary = "fake"; s.authors = ["t"]
+  s.files = ["lib/racc.rb"]; s.require_paths = ["lib"]
 end
 `,
 	} {
@@ -153,10 +158,10 @@ end
 		}
 		return strings.TrimSpace(string(out))
 	}
-	check := `require "bundler/setup"; require "msgpack"; p [Gem.loaded_specs["msgpack"].version.to_s, defined?(MessagePack::FAKE) ? :file : :embedded]`
-	ev, ok := oruby.EmbeddedGemVersion("msgpack")
+	check := `require "bundler/setup"; require "racc"; p [Gem.loaded_specs["racc"].version.to_s, defined?(Racc::FAKE) ? :file : :embedded]`
+	ev, ok := oruby.EmbeddedGemVersion("racc")
 	if !ok {
-		t.Skip("no embedded msgpack")
+		t.Skip("no embedded racc")
 	}
 	for _, c := range []struct{ req, want string }{
 		{``, `["` + ev + `", :embedded]`},        // the embedded version, not the newer installed one
@@ -164,12 +169,12 @@ end
 		{`, "< 2"`, `["` + ev + `", :embedded]`}, // the embedded one satisfies it
 	} {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "Gemfile"), []byte(`source "https://rubygems.org"`+"\ngem \"msgpack\""+c.req+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "Gemfile"), []byte(`source "https://rubygems.org"`+"\ngem \"racc\""+c.req+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		run(dir, "-e", `require "bundler"; require "bundler/cli"; Bundler::CLI.start(%w[lock --local])`)
 		if got := run(dir, "-e", check); got != c.want {
-			t.Errorf("gem \"msgpack\"%s: got %s, want %s\n%s", c.req, got, c.want, run(dir, "-e", `puts File.read("Gemfile.lock")`))
+			t.Errorf("gem \"racc\"%s: got %s, want %s\n%s", c.req, got, c.want, run(dir, "-e", `puts File.read("Gemfile.lock")`))
 		}
 	}
 
@@ -177,8 +182,8 @@ end
 	got := run(t.TempDir(), "-e", `
 require "rubygems/ext"
 def spec(v)
-  Gem::Specification.new { |s| s.name = "msgpack"; s.version = v; s.extensions = ["ext/msgpack/extconf.rb"]
-    s.loaded_from = File.join(Gem.dir, "specifications", "msgpack-#{v}.gemspec") }
+  Gem::Specification.new { |s| s.name = "racc"; s.version = v; s.extensions = ["ext/racc/cparse/extconf.rb"]
+    s.loaded_from = File.join(Gem.dir, "specifications", "racc-#{v}.gemspec") }
 end
 old = spec("1.0")
 Gem::Ext::Builder.new(old).build_extensions

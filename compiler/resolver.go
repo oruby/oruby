@@ -19,6 +19,7 @@ type ModuleUnit struct {
 	LoadPaths []string       // Search paths for resolving relative require paths
 	Hash32    uint32         // FNV-1a 32-bit hash of the module bytecode/source payload
 	SourceOrb *oruby.OrbFile // Non-nil when module was resolved from an .orb archive
+	InlineRBS *RBSEnv        // Inline RBS annotations extracted from Ruby source comments (if source text was available)
 }
 
 // DependencyResolver finds and resolves all require/require_relative dependencies.
@@ -146,12 +147,17 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 	idx := *counter
 	*counter++
 
+	var inlineRBS *RBSEnv
+	if !isBytecode {
+		inlineRBS = ExtractInlineRBS(string(content), absPath)
+	}
 	mod := &ModuleUnit{
 		FilePath:  absPath,
 		RelPath:   relPath,
 		FuncName:  fmt.Sprintf("FileModule_%d", idx),
 		Root:      unit,
 		LoadPaths: r.loadPaths,
+		InlineRBS: inlineRBS,
 	}
 
 	r.visited[absPath] = mod

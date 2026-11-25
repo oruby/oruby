@@ -9,7 +9,7 @@ import (
 	"syscall"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 // pure Ruby libraries (ruby/<name>.rb), loaded on require

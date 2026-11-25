@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 // Ruby 4.1's lib/time.rb (Time.parse, strptime, rfc3339, #rfc2822, #httpdate)

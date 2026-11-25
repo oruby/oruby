@@ -12,7 +12,7 @@ import (
 	"hash"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 //go:embed digest.rb

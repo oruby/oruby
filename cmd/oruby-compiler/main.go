@@ -28,6 +28,9 @@ var (
 	embedDirs  = flag.String("embed", "", "Optional comma-separated directories to embed via //go:embed (empty = files on disk)")
 	debugMode  = flag.Bool("debug", false, "Emit line-stepping debug hooks for IDE / debugger integration")
 	extraFiles = flag.String("add", "", "Comma-separated extra Ruby files or globs compiled into the bundle (loadable by path at runtime)")
+	goExtFlag  = flag.String("go-ext", "", "Comma-separated opt-in Go extensions from goext/ to link and optimize (e.g. pg,zstd-ruby,fast_blank)")
+	rbsFlag    = flag.String("rbs", "", "Comma-separated .rbs files or directories (e.g. sig) for RBS-guided AOT type specialization")
+	checkRBS   = flag.Bool("check-rbs", false, "Fail compilation if RBS arity/return type mismatches are found")
 	verbose    = flag.Bool("v", false, "Verbose output")
 )
 
@@ -219,12 +222,32 @@ func main() {
 		}
 	}
 
+	var selectedGoExts []compiler.GoExtSpec
+	if *goExtFlag != "" {
+		selectedGoExts, err = compiler.ResolveGoExtList(strings.Split(*goExtFlag, ","))
+		if err != nil {
+			log.Fatalf("%v\n", err)
+		}
+	}
+
+	var rbsPaths []string
+	if *rbsFlag != "" {
+		for _, p := range strings.Split(*rbsFlag, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				rbsPaths = append(rbsPaths, p)
+			}
+		}
+	}
+
 	standalone := (*buildBin != "") || (*pkgName == "main")
 	comp := compiler.New(compiler.Options{
 		PackageName: *pkgName,
 		Standalone:  standalone,
 		EmbedDirs:   embeds,
 		Debug:       *debugMode,
+		GoExts:      selectedGoExts,
+		RBSPaths:    rbsPaths,
+		CheckRBS:    *checkRBS,
 	})
 
 	var goSrc string
@@ -294,13 +317,26 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed decoding bytecode: %v\n", err)
 		}
+		rbsEnv, rerr := compiler.LoadRBSPaths(mrb, rbsPaths)
+		if rerr != nil {
+			log.Fatalf("RBS error: %v\n", rerr)
+		}
+		if !isOrb && !compiler.IsRiteBinary(rubyCode) {
+			rbsEnv.Merge(compiler.ExtractInlineRBS(string(rubyCode), inputPath))
+		}
 		codegen := compiler.NewCodeGen(compiler.CodeGenOptions{
 			PackageName: *pkgName,
 			Standalone:  standalone,
 			EmbedDirs:   embeds,
 			Debug:       *debugMode,
+			GoExts:      selectedGoExts,
+			RBS:         rbsEnv,
+			CheckRBS:    *checkRBS,
 		})
 		goSrc, err = codegen.Generate(unit)
+		for _, d := range codegen.Diagnostics() {
+			fmt.Fprintf(os.Stderr, "warning: RBS: %s\n", d)
+		}
 	}
 
 	if err != nil {
@@ -347,10 +383,28 @@ func main() {
 		}
 
 		modContent := "module app\n\ngo 1.27\n\nrequire github.com/oruby/oruby v0.0.0\n"
+		if len(selectedGoExts) > 0 {
+			modContent += fmt.Sprintf("require %s v0.0.0\n", compiler.GoExtModule)
+		}
 		if orubyPath != "" {
 			modContent += fmt.Sprintf("replace github.com/oruby/oruby => %s\n", orubyPath)
+			if len(selectedGoExts) > 0 {
+				modContent += fmt.Sprintf("replace %s => %s\n", compiler.GoExtModule, filepath.Join(orubyPath, "goext"))
+			}
+			var sumData []byte
 			if sumBytes, err := os.ReadFile(filepath.Join(orubyPath, "go.sum")); err == nil {
-				_ = os.WriteFile(filepath.Join(tmpDir, "go.sum"), sumBytes, 0644)
+				sumData = append(sumData, sumBytes...)
+			}
+			if len(selectedGoExts) > 0 {
+				if goextSum, err := os.ReadFile(filepath.Join(orubyPath, "goext", "go.sum")); err == nil {
+					if len(sumData) > 0 && sumData[len(sumData)-1] != '\n' {
+						sumData = append(sumData, '\n')
+					}
+					sumData = append(sumData, goextSum...)
+				}
+			}
+			if len(sumData) > 0 {
+				_ = os.WriteFile(filepath.Join(tmpDir, "go.sum"), sumData, 0644)
 			}
 		}
 		_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(modContent), 0644)

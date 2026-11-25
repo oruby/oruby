@@ -26,7 +26,7 @@ import (
 
 	"github.com/oruby/oruby"
 	_ "github.com/oruby/oruby/gem/digest"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 //go:embed net_http.rb

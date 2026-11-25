@@ -594,8 +594,8 @@ negate(-9223372036854775807 - 1).to_s`,
 			if err != nil {
 				t.Fatalf("CompileRuby: %v", err)
 			}
-			if !strings.Contains(source, "_int(") {
-				t.Fatalf("test did not exercise integer specialization:\n%s", source)
+			if !strings.Contains(source, "_typed(") {
+				t.Fatalf("test did not exercise typed specialization:\n%s", source)
 			}
 			compiled := compiledExceptionOutcome(t, source)
 			if compiled != interpreted || compiled.Kind != "return" || compiled.Message != tt.want {
@@ -632,8 +632,8 @@ add_one(2).to_s
 	if err != nil {
 		t.Fatalf("CompileRuby: %v", err)
 	}
-	if !strings.Contains(source, "_int(") {
-		t.Fatalf("test did not exercise integer specialization:\n%s", source)
+	if !strings.Contains(source, "_typed(") {
+		t.Fatalf("test did not exercise typed specialization:\n%s", source)
 	}
 	compiled := compiledExceptionOutcome(t, source)
 	if compiled != interpreted {
@@ -768,8 +768,8 @@ caller(1).to_s
 	if err != nil {
 		t.Fatalf("CompileRuby: %v", err)
 	}
-	if !strings.Contains(source, "IRep_1_int(") || strings.Contains(source, "IRep_2_int(") {
-		t.Fatalf("rebindable nested call must use generic dispatch:\n%s", source)
+	if !strings.Contains(source, "IRep_1_typed(") || !strings.Contains(source, "IRep_2_typed(") || !strings.Contains(source, "AotCompiledMethodOK(") {
+		t.Fatalf("nested call should use method-cache-guarded typed specialization:\n%s", source)
 	}
 	compiled := compiledExceptionOutcome(t, source)
 	if interpreted.Message != "3" || compiled != interpreted {
@@ -778,17 +778,21 @@ caller(1).to_s
 }
 
 func TestCodeGenIntSpecializationRejectsUnsupportedSelf(t *testing.T) {
-	unit := &IRepUnit{Instructions: []Instruction{
-		{Op: OpENTER},
-		{Op: OpLOADSELF, A: 1},
-		{Op: OpRETURN, A: 1},
-	}}
+	unit := &IRepUnit{
+		NRegs: 2,
+		Instructions: []Instruction{
+			{Op: OpENTER},
+			{Op: OpLOADSELF, A: 1},
+			{Op: OpRETURN, A: 1},
+		},
+	}
 	codegen := NewCodeGen(CodeGenOptions{})
-	codegen.info[unit] = &unitInfo{fn: "method", method: "method"}
+	codegen.info[unit] = &unitInfo{fn: "method", method: "method", kind: kindMethod}
 	codegen.compiledArity["method"] = 1
+	codegen.analyzeTypedUnits()
 
-	if codegen.canEmitIntSpecialized(unit, 1) {
-		t.Fatal("integer specialization accepted OpLOADSELF without an emitter")
+	if codegen.typedPlans["method"] != nil {
+		t.Fatal("typed specialization accepted OpLOADSELF without an emitter")
 	}
 }
 
@@ -1320,7 +1324,7 @@ func TestCompiler_DebugAndCrossMethodInt(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
 
-	// 1. Verify cross-method sends stay dynamic when targets can be redefined
+	// 1. Verify cross-method sends use method-cache-guarded typed specialization with dynamic fallback
 	compFast := New(Options{
 		PackageName: "compiled",
 		Standalone:  false,
@@ -1343,8 +1347,8 @@ end
 	if err != nil {
 		t.Fatalf("CompileRuby error: %v", err)
 	}
-	if !strings.Contains(srcFast, "IRep_1_int") || strings.Contains(srcFast, "IRep_2_int") || !strings.Contains(srcFast, "AotCall1") {
-		t.Errorf("Expected helper to remain specialized while compute dynamically dispatches to it:\n%s", srcFast)
+	if !strings.Contains(srcFast, "IRep_1_typed") || !strings.Contains(srcFast, "IRep_2_typed") || !strings.Contains(srcFast, "AotCompiledMethodOK") || !strings.Contains(srcFast, "AotCall1") {
+		t.Errorf("Expected helper and compute to emit method-cache-guarded typed specialization with AotCall1 fallback:\n%s", srcFast)
 	}
 
 	// 2. Verify compiled debug mode (Kernel#debug + line stepping)

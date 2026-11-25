@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 // core.rb is the Ruby half of bigdecimal.so (the C extension in MRI); lib/

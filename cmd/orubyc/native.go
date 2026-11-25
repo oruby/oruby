@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/oruby/oruby/compiler"
 )
 
 // nativeExt is a gem's C extension, configured.
@@ -328,22 +330,177 @@ func cgoJoin(flags []string) string {
 	return strings.Join(out, " ")
 }
 
-// projectExtensions configures the C extensions of the resolved gems,
-// leaving out gems whose extension a Go gem of ORuby's provides. An
-// extension that does not configure is reported and left out.
-func projectExtensions(orubyBin string, gems []*resolvedGemDir, work string, verbose bool) ([]*nativeExt, []error) {
-	var exts []*nativeExt
-	var errs []error
-	sort.Slice(gems, func(i, j int) bool { return gems[i].Name < gems[j].Name })
-	for _, g := range gems {
-		for _, e := range gemExtensions(g) {
-			ext, err := configureExtension(orubyBin, g, e, work, verbose)
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			exts = append(exts, ext)
+// extPolicy resolves whether a gem uses its C extension (via gem/capi) or an
+// opt-in Go extension from github.com/oruby/oruby/goext.
+type extPolicy struct {
+	Mode       string                        // "c" (default), "go", or "auto"
+	GoSet      map[string]compiler.GoExtSpec // canonical gem name -> explicitly selected Go ext
+	CSet       map[string]bool               // lowercase/canonical gem name -> explicitly forced C ext
+	ExplicitGo []compiler.GoExtSpec          // sorted explicit extensions.go specs
+}
+
+func newExtPolicy(cfg ExtensionsConfig) (*extPolicy, error) {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if mode == "" {
+		mode = "c"
+	}
+	switch mode {
+	case "c", "go", "auto":
+	default:
+		return nil, fmt.Errorf("invalid extensions.mode %q (must be \"c\", \"go\", or \"auto\")", cfg.Mode)
+	}
+	explicitGo, err := compiler.ResolveGoExtList(cfg.Go)
+	if err != nil {
+		return nil, err
+	}
+	p := &extPolicy{
+		Mode:       mode,
+		GoSet:      make(map[string]compiler.GoExtSpec, len(explicitGo)),
+		CSet:       make(map[string]bool, len(cfg.C)*2),
+		ExplicitGo: explicitGo,
+	}
+	for _, sp := range explicitGo {
+		p.GoSet[sp.Gem] = sp
+	}
+	for _, raw := range cfg.C {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" {
+			continue
+		}
+		p.CSet[name] = true
+		if sp, ok := compiler.LookupGoExt(name); ok {
+			p.CSet[sp.Gem] = true
 		}
 	}
-	return exts, errs
+	return p, nil
+}
+
+// wantsGo reports whether gemName is resolved to a Go extension up front
+// (explicit extensions.go or mode: go without an extensions.c override).
+func (p *extPolicy) wantsGo(gemName string) (compiler.GoExtSpec, bool) {
+	if p == nil {
+		return compiler.GoExtSpec{}, false
+	}
+	sp, ok := compiler.LookupGoExt(gemName)
+	if !ok {
+		return compiler.GoExtSpec{}, false
+	}
+	if _, forced := p.GoSet[sp.Gem]; forced {
+		return sp, true
+	}
+	if p.CSet[sp.Gem] || p.CSet[strings.ToLower(gemName)] {
+		return compiler.GoExtSpec{}, false
+	}
+	if p.Mode == "go" {
+		return sp, true
+	}
+	return compiler.GoExtSpec{}, false
+}
+
+// canAutoFallback reports whether gemName can fall back to a Go extension when
+// its C extension cannot be built under mode: auto.
+func (p *extPolicy) canAutoFallback(gemName string) (compiler.GoExtSpec, bool) {
+	if p == nil || p.Mode != "auto" {
+		return compiler.GoExtSpec{}, false
+	}
+	sp, ok := compiler.LookupGoExt(gemName)
+	if !ok {
+		return compiler.GoExtSpec{}, false
+	}
+	if p.CSet[sp.Gem] || p.CSet[strings.ToLower(gemName)] {
+		return compiler.GoExtSpec{}, false
+	}
+	return sp, true
+}
+
+// hasNonExtconfExtensions reports whether g's gemspec declares native
+// extensions that extconf.rb cannot build (e.g. Rust Cargo.toml or Rakefile).
+func hasNonExtconfExtensions(g *resolvedGemDir) bool {
+	spec := filepath.Join(g.GemRoot, "specifications", g.Name+"-"+g.Version+".gemspec")
+	data, err := os.ReadFile(spec)
+	if err != nil {
+		return false
+	}
+	m := gemspecExtensionsRe.FindSubmatch(data)
+	if m == nil {
+		return false
+	}
+	for _, q := range quotedRe.FindAllSubmatch(m[1], -1) {
+		e := string(q[1])
+		if e != "" && filepath.Base(e) != "extconf.rb" {
+			return true
+		}
+	}
+	return false
+}
+
+// projectExtensions configures the C extensions of the resolved gems.
+func projectExtensions(orubyBin string, gems []*resolvedGemDir, work string, verbose bool) ([]*nativeExt, []error) {
+	cExts, _, errs := projectExtensionsWithPolicy(orubyBin, gems, work, nil, nil, verbose)
+	return cExts, errs
+}
+
+// projectExtensionsWithPolicy resolves C extensions (via mkmf/gem/capi) and
+// opt-in Go extensions (from goext/) according to pol.
+func projectExtensionsWithPolicy(
+	orubyBin string,
+	gems []*resolvedGemDir,
+	work string,
+	pol *extPolicy,
+	preselectedGo []compiler.GoExtSpec,
+	verbose bool,
+) ([]*nativeExt, []compiler.GoExtSpec, []error) {
+	var exts []*nativeExt
+	var errs []error
+	goMap := make(map[string]compiler.GoExtSpec)
+	if pol != nil {
+		for _, sp := range pol.ExplicitGo {
+			goMap[sp.Gem] = sp
+		}
+	}
+	for _, sp := range preselectedGo {
+		goMap[sp.Gem] = sp
+	}
+	sort.Slice(gems, func(i, j int) bool { return gems[i].Name < gems[j].Name })
+	for _, g := range gems {
+		if sp, ok := pol.wantsGo(g.Name); ok {
+			goMap[sp.Gem] = sp
+			continue
+		}
+		extconfs := gemExtensions(g)
+		if len(extconfs) == 0 {
+			if hasNonExtconfExtensions(g) {
+				if sp, ok := pol.canAutoFallback(g.Name); ok {
+					fmt.Fprintf(os.Stderr, "oruby build: using Go extension %s (non-extconf native build)\n", sp.Gem)
+					goMap[sp.Gem] = sp
+				}
+			}
+			continue
+		}
+		var gemExts []*nativeExt
+		var gemErrs []error
+		for _, e := range extconfs {
+			ext, err := configureExtension(orubyBin, g, e, work, verbose)
+			if err != nil {
+				gemErrs = append(gemErrs, err)
+				continue
+			}
+			gemExts = append(gemExts, ext)
+		}
+		if len(gemErrs) > 0 {
+			if sp, ok := pol.canAutoFallback(g.Name); ok {
+				fmt.Fprintf(os.Stderr, "oruby build: C extension for %s failed (%v); falling back to Go extension %s\n", g.Name, gemErrs[0], sp.ImportPath)
+				goMap[sp.Gem] = sp
+				continue
+			}
+			errs = append(errs, gemErrs...)
+		}
+		exts = append(exts, gemExts...)
+	}
+	goExts := make([]compiler.GoExtSpec, 0, len(goMap))
+	for _, sp := range goMap {
+		goExts = append(goExts, sp)
+	}
+	sort.Slice(goExts, func(i, j int) bool { return goExts[i].Gem < goExts[j].Gem })
+	return exts, goExts, errs
 }

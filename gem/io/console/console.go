@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 	goio "github.com/oruby/oruby/gem/io"
 )
 

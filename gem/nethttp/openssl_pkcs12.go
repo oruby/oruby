@@ -8,7 +8,7 @@ import (
 	"crypto/x509/pkix"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 	"software.sslmate.com/src/go-pkcs12"
 )
 

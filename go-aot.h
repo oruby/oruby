@@ -846,4 +846,30 @@ _aot_ary_ref(mrb_state *mrb, mrb_value ary, mrb_int i)
 }
 static inline void _aot_arena_restore(mrb_state *mrb, int ai) { mrb_gc_arena_restore(mrb, ai); }
 
+/* Allocate an ASCII-8BIT (BINARY) Ruby String from bytes in one call */
+static inline mrb_value
+_aot_bytes_binary(mrb_state *mrb, const char *p, mrb_int len)
+{
+  mrb_value v = mrb_str_new(mrb, p, len);
+  struct RString *s = mrb_str_ptr(v);
+  s->flags = (s->flags & ~MRB_STR_ENCODING_MASK) | (MRB_STR_ENCODING_BINARY << MRB_STR_ENCODING_SHIFT);
+  return _aot_protected(mrb, v);
+}
+
+/* Lookup method on cls for AOT intrinsic registration (warms mruby method cache) */
+static inline mrb_method_t
+_aot_intrinsic_method(mrb_state *mrb, struct RClass *cls, mrb_sym mid, mrb_bool *found)
+{
+  struct RClass *c = cls;
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, mid);
+  *found = !MRB_METHOD_UNDEF_P(m);
+  return m;
+}
+
+static inline struct RClass *
+_aot_singleton_class_ptr(mrb_state *mrb, mrb_value v)
+{
+  return mrb_class_ptr(mrb_singleton_class(mrb, v));
+}
+
 #endif /* GOAOT_H */

@@ -16,16 +16,41 @@ func IsRiteBinary(data []byte) bool {
 
 // Options configures the oruby-compiler transpilation process.
 type Options struct {
-	PackageName string   // Output Go package name (default: "main")
-	Standalone  bool     // Generate a standalone executable with main()
-	EmbedDirs   []string // Optional directory paths to embed using //go:embed (empty = files on disk)
-	Debug       bool     // Emit line-stepping debug hooks for IDE / debugger integration
+	PackageName string      // Output Go package name (default: "main")
+	Standalone  bool        // Generate a standalone executable with main()
+	EmbedDirs   []string    // Optional directory paths to embed using //go:embed (empty = files on disk)
+	Debug       bool        // Emit line-stepping debug hooks for IDE / debugger integration
+	GoExts      []GoExtSpec // Opt-in Go extensions from github.com/oruby/oruby/goext to link (and optimize via intrinsics)
+	RBSPaths    []string    // Optional .rbs files or directories (e.g. "sig") for type-guided AOT specialization
+	RBS         *RBSEnv     // Optional pre-loaded RBSEnv (merged with RBSPaths and inline #: comments)
+	CheckRBS    bool        // Fail compilation if RBS arity/return type mismatches are found
 }
 
 // Compiler coordinates parsing Ruby code or mruby bytecode and producing Go code.
 type Compiler struct {
-	opts    Options
-	Skipped []error // extra bundle files skipped by the last CompileBundleWith
+	opts           Options
+	Skipped        []error         // extra bundle files skipped by the last CompileBundleWith
+	RBSDiagnostics []RBSDiagnostic // RBS arity/return mismatches from the last compilation
+	TypedMethods   []string        // methods specialized to unboxed pure-Go functions in the last compilation
+}
+
+func (c *Compiler) buildRBSEnv(mrb *oruby.MrbState, inline ...*RBSEnv) (*RBSEnv, error) {
+	env := NewRBSEnv()
+	if len(c.opts.RBSPaths) > 0 {
+		loaded, err := LoadRBSPaths(mrb, c.opts.RBSPaths)
+		if err != nil {
+			return nil, err
+		}
+		env.Merge(loaded)
+	}
+	env.Merge(c.opts.RBS)
+	for _, in := range inline {
+		env.Merge(in)
+	}
+	if len(env.Methods) == 0 && len(env.Ivars) == 0 {
+		return nil, nil
+	}
+	return env, nil
 }
 
 // New creates a new Compiler with the given options.
@@ -38,10 +63,18 @@ func New(opts Options) *Compiler {
 
 // CompileIrep takes an existing MrbIrep and emits the transpiled Go code.
 func (c *Compiler) CompileIrep(mrb *oruby.MrbState, irep oruby.MrbIrep) (string, error) {
+	return c.compileIrepWithRBS(mrb, irep, nil)
+}
+
+func (c *Compiler) compileIrepWithRBS(mrb *oruby.MrbState, irep oruby.MrbIrep, inline *RBSEnv) (string, error) {
 	decoder := NewDecoder(mrb)
 	unit, err := decoder.Decode(irep)
 	if err != nil {
 		return "", fmt.Errorf("decoding irep: %w", err)
+	}
+	rbsEnv, err := c.buildRBSEnv(mrb, inline)
+	if err != nil {
+		return "", err
 	}
 
 	codegen := NewCodeGen(CodeGenOptions{
@@ -49,9 +82,15 @@ func (c *Compiler) CompileIrep(mrb *oruby.MrbState, irep oruby.MrbIrep) (string,
 		Standalone:  c.opts.Standalone,
 		EmbedDirs:   c.opts.EmbedDirs,
 		Debug:       c.opts.Debug,
+		GoExts:      c.opts.GoExts,
+		RBS:         rbsEnv,
+		CheckRBS:    c.opts.CheckRBS,
 	})
 
-	return codegen.Generate(unit)
+	out, err := codegen.Generate(unit)
+	c.RBSDiagnostics = codegen.Diagnostics()
+	c.TypedMethods = codegen.TypedMethods()
+	return out, err
 }
 
 // CompileBytecode decodes precompiled mruby RiteVM bytecode (.mrb) and emits transpiled Go code.
@@ -87,7 +126,7 @@ func (c *Compiler) CompileFile(mrb *oruby.MrbState, filePath string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("generating bytecode for %s: %w", filePath, err)
 	}
-	return c.CompileIrep(mrb, proc.IRep())
+	return c.compileIrepWithRBS(mrb, proc.IRep(), ExtractInlineRBS(string(data), filePath))
 }
 
 // CompileRuby parses and compiles Ruby source code into Go code.
@@ -107,7 +146,7 @@ func (c *Compiler) CompileRuby(mrb *oruby.MrbState, code string) (string, error)
 		return "", fmt.Errorf("generating bytecode: %w", err)
 	}
 
-	return c.CompileIrep(mrb, proc.IRep())
+	return c.compileIrepWithRBS(mrb, proc.IRep(), ExtractInlineRBS(code, "<ruby>"))
 }
 
 // CompileBundle resolves all required files starting from entryFile, precompiles them, and bundles them into Go source.
@@ -125,15 +164,31 @@ func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extr
 	if err != nil {
 		return "", fmt.Errorf("resolving dependencies for %s: %w", entryFile, err)
 	}
+	var inlines []*RBSEnv
+	for _, m := range modules {
+		if m.InlineRBS != nil {
+			inlines = append(inlines, m.InlineRBS)
+		}
+	}
+	rbsEnv, err := c.buildRBSEnv(mrb, inlines...)
+	if err != nil {
+		return "", err
+	}
 
 	codegen := NewCodeGen(CodeGenOptions{
 		PackageName: c.opts.PackageName,
 		Standalone:  c.opts.Standalone,
 		EmbedDirs:   c.opts.EmbedDirs,
 		Debug:       c.opts.Debug,
+		GoExts:      c.opts.GoExts,
+		RBS:         rbsEnv,
+		CheckRBS:    c.opts.CheckRBS,
 	})
 
-	return codegen.GenerateBundle(modules)
+	out, err := codegen.GenerateBundle(modules)
+	c.RBSDiagnostics = codegen.Diagnostics()
+	c.TypedMethods = codegen.TypedMethods()
+	return out, err
 }
 
 // CompilePackageDir resolves entryFile (whether .orb, .mrb, or .rb) and its
@@ -146,15 +201,30 @@ func (c *Compiler) CompilePackageDir(mrb *oruby.MrbState, entryFile string, extr
 	if err != nil {
 		return nil, fmt.Errorf("resolving dependencies for %s: %w", entryFile, err)
 	}
+	var inlines []*RBSEnv
+	for _, m := range modules {
+		if m.InlineRBS != nil {
+			inlines = append(inlines, m.InlineRBS)
+		}
+	}
+	rbsEnv, err := c.buildRBSEnv(mrb, inlines...)
+	if err != nil {
+		return nil, err
+	}
 
 	codegen := NewCodeGen(CodeGenOptions{
 		PackageName: c.opts.PackageName,
 		Standalone:  c.opts.Standalone,
 		EmbedDirs:   c.opts.EmbedDirs,
 		Debug:       c.opts.Debug,
+		GoExts:      c.opts.GoExts,
+		RBS:         rbsEnv,
+		CheckRBS:    c.opts.CheckRBS,
 	})
 
 	files, err := codegen.GeneratePackageFiles(modules)
+	c.RBSDiagnostics = codegen.Diagnostics()
+	c.TypedMethods = codegen.TypedMethods()
 	if err != nil {
 		return nil, err
 	}

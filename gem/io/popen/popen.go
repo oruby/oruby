@@ -7,7 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 	_ "github.com/oruby/oruby/gem/io" // the "io" gem popen extends
 )
 

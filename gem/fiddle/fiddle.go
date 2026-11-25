@@ -33,7 +33,7 @@ import (
 
 	"github.com/oruby/oruby"
 	_ "github.com/oruby/oruby/gem/ffi"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 //go:embed fiddle.rb

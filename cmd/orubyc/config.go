@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/compiler"
 	yamllib "go.yaml.in/yaml/v3"
 )
 
@@ -16,22 +15,33 @@ const DefaultConfigFilename = "oruby.yml"
 
 // OrubyConfig represents the declarative configuration in oruby.yml.
 type OrubyConfig struct {
-	Name        string         `yaml:"name"`
-	Output      string         `yaml:"output"`
-	Entrypoint  string         `yaml:"entrypoint"`
-	Target      string         `yaml:"target"` // "orb" (default), "exe", "dev" or "native"
-	Compiler    CompilerConfig `yaml:"compiler"`
-	Gems        GemsConfig     `yaml:"gems"`
-	Include     []string       `yaml:"include"`
-	EmbedPublic bool           `yaml:"embed_public"`
-	Filters     FiltersConfig  `yaml:"filters"`
+	Name        string           `yaml:"name"`
+	Output      string           `yaml:"output"`
+	Entrypoint  string           `yaml:"entrypoint"`
+	Target      string           `yaml:"target"` // "orb" (default), "exe", "dev" or "native"
+	Compiler    CompilerConfig   `yaml:"compiler"`
+	Gems        GemsConfig       `yaml:"gems"`
+	Extensions  ExtensionsConfig `yaml:"extensions"`
+	Include     []string         `yaml:"include"`
+	EmbedPublic bool             `yaml:"embed_public"`
+	Filters     FiltersConfig    `yaml:"filters"`
+}
+
+// ExtensionsConfig controls whether project gems compile their upstream C
+// extensions (via gem/capi) or link opt-in Go extensions from goext/.
+type ExtensionsConfig struct {
+	Mode string   `yaml:"mode"` // "c" (default), "go", or "auto"
+	Go   []string `yaml:"go"`   // explicit per-gem Go extension overrides
+	C    []string `yaml:"c"`    // explicit per-gem C extension overrides (when mode: go)
 }
 
 type CompilerConfig struct {
-	DebugInfo  bool `yaml:"debug_info"`
-	RemoveLv   bool `yaml:"remove_lv"`
-	NoExtOps   bool `yaml:"no_ext_ops"`
-	NoOptimize bool `yaml:"no_optimize"`
+	DebugInfo  bool     `yaml:"debug_info"`
+	RemoveLv   bool     `yaml:"remove_lv"`
+	NoExtOps   bool     `yaml:"no_ext_ops"`
+	NoOptimize bool     `yaml:"no_optimize"`
+	RBS        []string `yaml:"rbs"`
+	CheckRBS   bool     `yaml:"check_rbs"`
 }
 
 type GemsConfig struct {
@@ -131,6 +141,9 @@ func DefaultOrubyConfig(projectDir string) *OrubyConfig {
 			Gemfile: "Gemfile",
 			Groups:  []string{"default", "production"},
 		},
+		Extensions: ExtensionsConfig{
+			Mode: "c",
+		},
 		Include:     includeList,
 		EmbedPublic: false,
 		Filters: FiltersConfig{
@@ -177,6 +190,31 @@ func RenderOrubyYAML(cfg *OrubyConfig) string {
 	b.WriteString("  groups:\n")
 	for _, g := range cfg.Gems.Groups {
 		fmt.Fprintf(&b, "    - %s\n", g)
+	}
+	b.WriteString("\n")
+
+	extMode := cfg.Extensions.Mode
+	if extMode == "" {
+		extMode = "c"
+	}
+	b.WriteString("# Native extension backend for target: dev, exe, or native:\n")
+	b.WriteString("#   mode: \"c\" (default: compile C extensions via gem/capi), \"go\" (prefer goext/ Go\n")
+	b.WriteString("#         replacements), or \"auto\" (try C first, fall back to Go if extconf fails)\n")
+	b.WriteString("extensions:\n")
+	fmt.Fprintf(&b, "  mode: %s\n", extMode)
+	if len(cfg.Extensions.Go) > 0 {
+		b.WriteString("  go:\n")
+		for _, g := range cfg.Extensions.Go {
+			fmt.Fprintf(&b, "    - %s\n", g)
+		}
+	} else {
+		b.WriteString("  # go: [pg, ruby-vips, zstd-ruby]\n")
+	}
+	if len(cfg.Extensions.C) > 0 {
+		b.WriteString("  c:\n")
+		for _, c := range cfg.Extensions.C {
+			fmt.Fprintf(&b, "    - %s\n", c)
+		}
 	}
 	b.WriteString("\n")
 
@@ -293,6 +331,9 @@ func LoadOrubyConfig(configPath string) (*OrubyConfig, error) {
 	}
 	if cfg.Target == "" {
 		cfg.Target = "orb"
+	}
+	if cfg.Extensions.Mode == "" {
+		cfg.Extensions.Mode = "c"
 	}
 	if cfg.Output == "" {
 		cfg.Output = "build/" + cfg.Name + ".orb"
@@ -512,8 +553,20 @@ func runInitSubcommand(args []string) int {
 func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 	configFile := DefaultConfigFilename
 	var overrideOutput, overrideEntry, overrideTarget string
+	var overrideExtMode string
+	var overrideGoExts, overrideCExts, overrideRBS []string
+	var overrideCheckRBS bool
 	var overrideEmbedPublic, hasEmbedPublic bool
 	var overrideNoGems, verbose bool
+
+	appendCSV := func(dst []string, raw string) []string {
+		for _, item := range strings.Split(raw, ",") {
+			if s := strings.TrimSpace(item); s != "" {
+				dst = append(dst, s)
+			}
+		}
+		return dst
+	}
 
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -550,6 +603,36 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 			}
 		case strings.HasPrefix(a, "--target="):
 			overrideTarget = strings.TrimPrefix(a, "--target=")
+		case a == "--ext-mode":
+			if i+1 < len(args) {
+				i++
+				overrideExtMode = args[i]
+			}
+		case strings.HasPrefix(a, "--ext-mode="):
+			overrideExtMode = strings.TrimPrefix(a, "--ext-mode=")
+		case a == "--go-ext":
+			if i+1 < len(args) {
+				i++
+				overrideGoExts = appendCSV(overrideGoExts, args[i])
+			}
+		case strings.HasPrefix(a, "--go-ext="):
+			overrideGoExts = appendCSV(overrideGoExts, strings.TrimPrefix(a, "--go-ext="))
+		case a == "--c-ext":
+			if i+1 < len(args) {
+				i++
+				overrideCExts = appendCSV(overrideCExts, args[i])
+			}
+		case strings.HasPrefix(a, "--c-ext="):
+			overrideCExts = appendCSV(overrideCExts, strings.TrimPrefix(a, "--c-ext="))
+		case a == "--rbs":
+			if i+1 < len(args) {
+				i++
+				overrideRBS = appendCSV(overrideRBS, args[i])
+			}
+		case strings.HasPrefix(a, "--rbs="):
+			overrideRBS = appendCSV(overrideRBS, strings.TrimPrefix(a, "--rbs="))
+		case a == "--check-rbs":
+			overrideCheckRBS = true
 		case a == "--embed-public":
 			overrideEmbedPublic = true
 			hasEmbedPublic = true
@@ -595,6 +678,21 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 	if overrideTarget != "" {
 		cfg.Target = overrideTarget
 	}
+	if overrideExtMode != "" {
+		cfg.Extensions.Mode = overrideExtMode
+	}
+	if len(overrideGoExts) > 0 {
+		cfg.Extensions.Go = append(cfg.Extensions.Go, overrideGoExts...)
+	}
+	if len(overrideCExts) > 0 {
+		cfg.Extensions.C = append(cfg.Extensions.C, overrideCExts...)
+	}
+	if len(overrideRBS) > 0 {
+		cfg.Compiler.RBS = append(cfg.Compiler.RBS, overrideRBS...)
+	}
+	if overrideCheckRBS {
+		cfg.Compiler.CheckRBS = true
+	}
 	if hasEmbedPublic {
 		cfg.EmbedPublic = overrideEmbedPublic
 	}
@@ -602,7 +700,19 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 		cfg.Gems.Enabled = false
 	}
 
-	// dev: the project's bin/oruby, ORuby with the gems' C extensions
+	pol, err := newExtPolicy(cfg.Extensions)
+	if err != nil {
+		return exitFailure("%s build: %v\n", prog, err)
+	}
+
+	// target: orb produces a bytecode archive for stock standalone oruby and
+	// cannot link Go extensions from goext/.
+	isOrbTarget := strings.EqualFold(cfg.Target, "orb") || cfg.Target == ""
+	if isOrbTarget && (pol.Mode == "go" || len(pol.ExplicitGo) > 0) {
+		return exitFailure("%s build: Go extensions require target: dev, exe, or native (not %q)\n", prog, cfg.Target)
+	}
+
+	// dev: the project's bin/oruby, ORuby with the gems' C and Go extensions
 	// compiled in, running the project from its files (binary.go)
 	if strings.EqualFold(cfg.Target, "dev") {
 		out := overrideOutput
@@ -612,7 +722,7 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 		if !filepath.IsAbs(out) {
 			out = filepath.Join(projectDir, filepath.FromSlash(out))
 		}
-		if err := buildProjectBinary(prog, projectDir, cfg, nil, "", out, verbose); err != nil {
+		if err := buildProjectBinary(prog, projectDir, cfg, nil, pol, "", out, verbose); err != nil {
 			return exitFailure("%s build: %v\n", prog, err)
 		}
 		fmt.Printf("Built %s\n", out)
@@ -666,6 +776,7 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 	}
 
 	// 1. Resolve and pack Gemfile gems for the configured groups
+	var packedGems []*resolvedGemDir
 	if cfg.Gems.Enabled {
 		gemfile := cfg.Gems.Gemfile
 		if gemfile == "" {
@@ -675,8 +786,21 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 			gemfile = filepath.Join(projectDir, filepath.FromSlash(gemfile))
 		}
 		if fi, err := os.Stat(gemfile); err == nil && !fi.IsDir() {
-			if err := packGemfileGemsWithGroups(mrb, builder, gemfile, projectDir, cfg.Gems.Groups, mArgs, packFileWithVirtual); err != nil {
+			packedGems, err = packGemfileGemsWithPolicy(mrb, builder, gemfile, projectDir, cfg.Gems.Groups, pol, mArgs, packFileWithVirtual)
+			if err != nil {
 				return exitFailure("%s build: %v\n", prog, err)
+			}
+			if isOrbTarget {
+				var nativeGems []string
+				for _, g := range packedGems {
+					if len(gemExtensions(g)) > 0 || hasNonExtconfExtensions(g) {
+						nativeGems = append(nativeGems, g.Name+"-"+g.Version)
+					}
+				}
+				if len(nativeGems) > 0 {
+					fmt.Fprintf(os.Stderr, "%s build: warning: gems with native extensions are not compiled into .orb (%s); install them on the target host or use --target=exe / --target=native\n",
+						prog, strings.Join(nativeGems, ", "))
+				}
 			}
 		}
 	}
@@ -805,25 +929,21 @@ func runBuildSubcommand(mrb *oruby.MrbState, prog string, args []string) int {
 		fmt.Printf("Built %s (%d project files packed)\n", cfg.Output, packedFiles)
 	}
 
-	// exe: one executable, ORuby with the gems' C extensions compiled in
+	// exe: one executable, ORuby with the gems' C and Go extensions compiled in
 	// and the bundle embedded (binary.go)
 	if strings.EqualFold(cfg.Target, "exe") {
 		exe := strings.TrimSuffix(absOut, filepath.Ext(absOut))
-		if err := buildProjectBinary(prog, projectDir, cfg, cfg.Gems.Groups, absOut, exe, verbose); err != nil {
+		if err := buildProjectBinary(prog, projectDir, cfg, cfg.Gems.Groups, pol, absOut, exe, verbose); err != nil {
 			return exitFailure("%s build: %v\n", prog, err)
 		}
 		fmt.Printf("Built executable %s\n", exe)
 	}
 	if strings.EqualFold(cfg.Target, "native") || strings.EqualFold(cfg.Target, "go") {
 		goOutDir := strings.TrimSuffix(absOut, filepath.Ext(absOut)) + "_go"
-		comp := compiler.New(compiler.Options{
-			PackageName: "main",
-			Standalone:  true,
-		})
-		if _, err := comp.CompilePackageDir(mrb, absOut, nil, nil, goOutDir); err != nil {
-			return exitFailure("%s build: native Go codegen failed: %v\n", prog, err)
+		if err := buildNativeProject(mrb, prog, projectDir, cfg, pol, absOut, goOutDir, verbose); err != nil {
+			return exitFailure("%s build: %v\n", prog, err)
 		}
-		fmt.Printf("Generated Go AOT package in %s\n", goOutDir)
+		fmt.Printf("Generated Go AOT module in %s\n", goOutDir)
 	}
 	return 0
 }

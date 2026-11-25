@@ -37,6 +37,10 @@ import (
 var libFS embed.FS
 
 func init() {
+	oruby.RegisterGemSpec(oruby.GemSpec{
+		Name: "oj", Version: "3.17.8", Feature: "oj",
+		Summary: "Oj C extension over the ORuby C API", Files: []string{"lib/oj.rb"},
+	})
 	capi.GemExtension("oj", "oj/oj", unsafe.Pointer(C.Init_oj))
 	// the library: each file a feature of its own, as on the load path
 	err := fs.WalkDir(libFS, "lib", func(path string, d fs.DirEntry, err error) error {

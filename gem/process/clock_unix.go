@@ -4,7 +4,7 @@ package process
 
 import (
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/internal/rb"
+	"github.com/oruby/oruby/gem/rb"
 	"golang.org/x/sys/unix"
 )
 

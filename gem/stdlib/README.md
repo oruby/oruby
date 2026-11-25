@@ -2,7 +2,9 @@
 
 ORuby targets **MRI Ruby 4.1 compatibility**. This is a compatibility direction, not a claim that the current provider set or any individual library is complete or passes the Ruby 4.1 specifications.
 
-Blank-import `github.com/oruby/oruby/gem/stdlib` to register the standard-library and related provider gems currently shipped with ORuby. The former `gem/fullcore` package remains as a compatibility import and forwards to this package. The database gem remains opt-in.
+Blank-import `github.com/oruby/oruby/gem/stdlib` to register the MRI 4.1 standard-library and core provider gems shipped with standalone ORuby. The former `gem/fullcore` package remains as a compatibility import and forwards to this package. The `gem/database` gem remains opt-in.
+
+Opt-in Go replacements for third-party RubyGems (`pg`, `mysql2`, `sqlite3`, `nokogiri`, `msgpack`, `bcrypt`, `zstd-ruby`, `brotli`, `oruby-vips`, `oruby-fast_blank`, `oruby-escape_utils`, `oruby-xxhash`, etc.) live in the nested `goext/` Go module (`github.com/oruby/oruby/goext`) rather than `gem/stdlib`. Standalone `oruby` leaves third-party gems to upstream C extensions via `gem/capi` / `gem install`, while `oruby build` (`--target=dev|exe|native`) and `oruby-compiler` can opt into `goext/` packages per project via `oruby.yml` (`extensions:`) or `--go-ext` — both to avoid system C library dependencies in containers and to enable guarded direct Go-to-Go AOT intrinsics (`compiler/intrinsics.go`).
 
 This is a provider collection, not a complete MRI standard library. Some names have useful Go-backed or Ruby-source implementations, some are provided by the configured mruby build, and some registrations are compatibility placeholders. Availability through `require` does not mean complete MRI behavior or passing the corresponding `ruby/spec` suite; consult individual gem sources and tests for the current implementation level.
 
