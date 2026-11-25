@@ -1098,6 +1098,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__sec_i");
   (void)mrb_intern_lit(mrb, "__secure_compare");
   (void)mrb_intern_lit(mrb, "__secure_eql");
+  (void)mrb_intern_lit(mrb, "__send__");
   (void)mrb_intern_lit(mrb, "__serialize");
   (void)mrb_intern_lit(mrb, "__service_name");
   (void)mrb_intern_lit(mrb, "__set");
@@ -2067,6 +2068,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "public_key");
   (void)mrb_intern_lit(mrb, "public_key=");
   (void)mrb_intern_lit(mrb, "public_key?");
+  (void)mrb_intern_lit(mrb, "public_send");
   (void)mrb_intern_lit(mrb, "public_to_der");
   (void)mrb_intern_lit(mrb, "public_to_pem");
   (void)mrb_intern_lit(mrb, "push");
@@ -2216,6 +2218,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "select_db");
   (void)mrb_intern_lit(mrb, "selector");
   (void)mrb_intern_lit(mrb, "self_closing?");
+  (void)mrb_intern_lit(mrb, "send");
   (void)mrb_intern_lit(mrb, "send_describe_portal");
   (void)mrb_intern_lit(mrb, "send_describe_prepared");
   (void)mrb_intern_lit(mrb, "send_flush_request");

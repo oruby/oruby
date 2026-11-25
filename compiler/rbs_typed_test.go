@@ -407,7 +407,7 @@ puts "ALL_TYPED_AOT_OK"
 		"AotCoreConstOK(",
 		"AotCoreOK(oruby.AotCoreIntTimes",
 		"AotCoreOK(oruby.AotCoreRangeEach",
-		"AotDefineMethodTracked(",
+		"AotDefineMethodTrackedSig(",
 		"AotBigInt(",
 	} {
 		if !strings.Contains(src, want) {

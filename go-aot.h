@@ -263,7 +263,7 @@ _aot_op_impl(mrb_state *mrb, int op, mrb_value a, mrb_value b, mrb_value c, mrb_
     AOT_PROTECT(
       mrb_value k = mrb_symbol_value(sym);
       if (!mrb_hash_p(a) || !mrb_hash_key_p(mrb, a, k)) {
-        mrb_raisef(mrb, E_ARGUMENT_ERROR, "missing keyword: %v", k);
+        mrb_raisef(mrb, E_ARGUMENT_ERROR, "missing keyword: %v", mrb_inspect(mrb, k));
       }
       result = mrb_hash_delete_key(mrb, a, k);
     );
@@ -271,8 +271,14 @@ _aot_op_impl(mrb_state *mrb, int op, mrb_value a, mrb_value b, mrb_value c, mrb_
   case AOT_OP_KEYEND:
     AOT_PROTECT(
       if (mrb_hash_p(a) && !mrb_hash_empty_p(mrb, a)) {
-        mrb_value key1 = mrb_hash_first_key(mrb, a);
-        mrb_raisef(mrb, E_ARGUMENT_ERROR, "unknown keyword: %v", key1);
+        /* MRI names every unknown keyword, as Kernel#inspect shows them */
+        mrb_value keys = mrb_hash_keys(mrb, a);
+        mrb_value msg = mrb_str_new_cstr(mrb, RARRAY_LEN(keys) > 1 ? "unknown keywords: " : "unknown keyword: ");
+        for (mrb_int ki = 0; ki < RARRAY_LEN(keys); ki++) {
+          if (ki) mrb_str_cat_lit(mrb, msg, ", ");
+          mrb_str_cat_str(mrb, msg, mrb_inspect(mrb, RARRAY_PTR(keys)[ki]));
+        }
+        mrb_raise(mrb, E_ARGUMENT_ERROR, RSTRING_CSTR(mrb, msg));
       }
     );
     break;
@@ -473,6 +479,26 @@ _aot_dispatch_cfunc(mrb_state *mrb, mrb_value self)
     m = mrb_method_search_vm(mrb, &c, mid);
     found = !MRB_METHOD_UNDEF_P(m);
   }
+  /* send, __send__ and public_send entered from C take the funcall path of
+     send_method, which drops the keyword hash (funcall does not support
+     keywords) and ignores public_send's visibility check. Resolve the name
+     here and dispatch the target itself. */
+  mrb_bool pub_send = FALSE;
+  while (!(mode & 1) && found && pargc >= 1 && MRB_METHOD_FUNC_P(m) &&
+         (MRB_METHOD_FUNC(m) == mrb_f_send || MRB_METHOD_FUNC(m) == mrb_f_public_send)) {
+    if (MRB_METHOD_FUNC(m) == mrb_f_public_send) pub_send = TRUE;
+    mid = mrb_obj_to_sym(mrb, pargv[0]);
+    pargv++;
+    pargc--;
+    c = mrb_class(mrb, self);
+    m = mrb_method_search_vm(mrb, &c, mid);
+    found = !MRB_METHOD_UNDEF_P(m);
+  }
+  if (pub_send && found && (m.flags & (MRB_METHOD_PRIVATE_FL | MRB_METHOD_PROTECTED_FL))) {
+    mrb_value args = mrb_ary_new_from_values(mrb, pargc, pargv);
+    mrb_no_method_error(mrb, mid, args, "%s method '%n' called for %T",
+                        (m.flags & MRB_METHOD_PRIVATE_FL) ? "private" : "protected", mid, self);
+  }
   if (!found) {
     mrb_value args = mrb_ary_new_from_values(mrb, pargc, pargv);
     if (kw && mrb_hash_p(kdict) && !mrb_hash_empty_p(mrb, kdict)) {
@@ -517,7 +543,15 @@ _aot_dispatch_cfunc(mrb_state *mrb, mrb_value self)
   if (MRB_METHOD_FUNC_P(m)) {
     return MRB_METHOD_FUNC(m)(mrb, self);
   }
-  return mrb_exec_irep(mrb, self, MRB_METHOD_PROC(m));
+  /* A method made by alias_method is a proc holding the original's name and
+     the original proc. mrb_exec_irep of a frame entered from C (this one) reads
+     the proc as bytecode, which an alias is not: resolve it, as exec_irep does. */
+  const struct RProc *mp = MRB_METHOD_PROC(m);
+  while (mp && MRB_PROC_ALIAS_P(mp)) {
+    ci->mid = mp->body.mid;
+    mp = mp->upper;
+  }
+  return mrb_exec_irep(mrb, self, mp);
 }
 
 /*
@@ -567,16 +601,70 @@ struct aot_def_args {
   struct RClass *c;
   mrb_sym mid;
   mrb_int idx;
+  mrb_bool known;       /* the signature below is the method's real one */
+  uint32_t aspec;
+  mrb_int info;         /* aspec | keyreq << 24 */
+  mrb_value params;     /* the [kind] / [kind, name] pairs Method#parameters shows */
 };
+
+/* The last env slot of a compiled method or block that carries its signature:
+   ..., params, info (the argument spec, bit 24 set when a keyword is required),
+   ORB_AOT_SIG_MARK. mrb_proc_arity (scripts/mruby_vm_compat.rb) and go-mrb.c's
+   orb_params read them. */
+#define ORB_AOT_SIG_MARK 0x4f524241
+
+/* The array of [kind] / [kind, name] pairs a "kind:name;..." string names. */
+static mrb_value
+_aot_params_body(mrb_state *mrb, void *ud)
+{
+  const char *s = (const char*)ud;
+  mrb_value out = mrb_ary_new(mrb);
+  while (s && *s) {
+    const char *end = strchr(s, ';');
+    size_t len = end ? (size_t)(end - s) : strlen(s);
+    const char *colon = memchr(s, ':', len);
+    if (colon) {
+      mrb_value pair = mrb_ary_new_capa(mrb, 2);
+      mrb_ary_push(mrb, pair, mrb_symbol_value(mrb_intern(mrb, s, (size_t)(colon - s))));
+      size_t nlen = len - (size_t)(colon - s) - 1;
+      if (nlen > 0) mrb_ary_push(mrb, pair, mrb_symbol_value(mrb_intern(mrb, colon + 1, nlen)));
+      mrb_ary_push(mrb, out, pair);
+    }
+    s = end ? end + 1 : NULL;
+  }
+  mrb_gc_register(mrb, out);   /* shared by every proc of the signature; Go keeps it */
+  return out;
+}
+
+static mrb_value
+_aot_params_new(mrb_state *mrb, const char *s)
+{
+  return _aot_protect(mrb, _aot_params_body, (void*)s);
+}
 
 static mrb_value
 _aot_define_method_body(mrb_state *mrb, void *ud)
 {
   struct aot_def_args *x = (struct aot_def_args*)ud;
   mrb_method_t m;
-  mrb_value at = mrb_fixnum_value(x->idx);
-  struct RProc *proc = mrb_proc_new_cfunc_with_env(mrb, set_mrb_env_callback, 1, &at);
-  mrb_proc_set_cfunc_aspec(proc, MRB_ARGS_ANY());
+  struct RProc *proc;
+  if (x->known) {
+    /* The real argument spec makes the VM check argument counts and keywords
+       as for a bytecode method. */
+    mrb_value env[4];
+    env[0] = mrb_fixnum_value(x->idx);
+    env[1] = x->params;
+    env[2] = mrb_fixnum_value(x->info);
+    env[3] = mrb_fixnum_value(ORB_AOT_SIG_MARK);
+    proc = mrb_proc_new_cfunc_with_env(mrb, set_mrb_env_callback, 4, env);
+    mrb_proc_set_cfunc_aspec(proc, x->aspec);
+    proc->flags |= MRB_PROC_STRICT;
+  }
+  else {
+    mrb_value at = mrb_fixnum_value(x->idx);
+    proc = mrb_proc_new_cfunc_with_env(mrb, set_mrb_env_callback, 1, &at);
+    mrb_proc_set_cfunc_aspec(proc, MRB_ARGS_ANY());
+  }
   MRB_METHOD_FROM_PROC(m, proc);
   MRB_METHOD_SET_VISIBILITY(m, MRB_METHOD_VDEFAULT_FL);
   mrb_define_method_raw(mrb, x->c, x->mid, m);
@@ -585,9 +673,9 @@ _aot_define_method_body(mrb_state *mrb, void *ud)
 }
 
 static void
-_aot_define_method(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_int idx)
+_aot_define_method(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_int idx, mrb_bool known, uint32_t aspec, mrb_int info, mrb_value params)
 {
-  struct aot_def_args x = { c, mid, idx };
+  struct aot_def_args x = { c, mid, idx, known, aspec, info, params };
   _aot_protect(mrb, _aot_define_method_body, &x);
 }
 
@@ -655,7 +743,10 @@ _aot_lookup_compiled(mrb_state *mrb, mrb_value recv, mrb_sym mid, int fcall, str
   if (!p || !MRB_PROC_CFUNC_P(p) || MRB_PROC_ALIAS_P(p) || !MRB_PROC_ENV_P(p)) return -1;
   if (MRB_PROC_CFUNC(p) != set_mrb_env_callback) return -1;
   struct REnv *e = MRB_PROC_ENV(p);
-  if (MRB_ENV_LEN(e) != 1 || !mrb_integer_p(e->stack[0])) return -1;
+  /* env: [idx], or [idx, params, info, ORB_AOT_SIG_MARK] of a method with its signature */
+  mrb_int elen = MRB_ENV_LEN(e);
+  if (elen < 1 || !mrb_integer_p(e->stack[0])) return -1;
+  if (elen != 1 && !(elen == 4 && mrb_integer_p(e->stack[3]) && mrb_integer(e->stack[3]) == ORB_AOT_SIG_MARK)) return -1;
   *owner = c;
   return mrb_integer(e->stack[0]);
 }
@@ -785,15 +876,21 @@ _aot_handle_dfree(mrb_state *mrb, void *p)
 static const struct mrb_data_type _aot_handle_type = { "ORubyAotHandle", _aot_handle_dfree };
 
 static struct RProc *
-_aot_proc_new(mrb_state *mrb, mrb_int tramp, mrb_int id, mrb_value frame, mrb_value self, mrb_bool lambda)
+_aot_proc_new(mrb_state *mrb, mrb_int tramp, mrb_int id, mrb_value frame, mrb_value self, mrb_bool lambda,
+              mrb_bool known, mrb_int info, mrb_value params)
 {
-  mrb_value env[4];
+  mrb_value env[7];
   struct RData *d = mrb_data_object_alloc(mrb, mrb->object_class, (void*)(intptr_t)id, &_aot_handle_type);
   env[0] = mrb_fixnum_value(tramp);
   env[1] = mrb_obj_value(d);
   env[2] = frame;
   env[3] = self;
-  struct RProc *p = mrb_proc_new_cfunc_with_env(mrb, set_mrb_env_callback, 4, env);
+  if (known) {
+    env[4] = params;
+    env[5] = mrb_fixnum_value(info);
+    env[6] = mrb_fixnum_value(ORB_AOT_SIG_MARK);
+  }
+  struct RProc *p = mrb_proc_new_cfunc_with_env(mrb, set_mrb_env_callback, known ? 7 : 4, env);
   if (lambda) p->flags |= MRB_PROC_STRICT;
   return p;
 }

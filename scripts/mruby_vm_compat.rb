@@ -1554,6 +1554,33 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
   end
 
   def self.proc_identity(source)
+    # a compiled method or block (go-aot.h) keeps its argument spec in the last
+    # slots of its env: spec | keyreq << 24, then the marker 0x4f524241
+    replace(source, "  if (MRB_PROC_CFUNC_P(p)) {\n    uint32_t caspec_bits = p->flags & MRB_PROC_CASPEC_MASK;\n    if (caspec_bits != 0) {\n      aspec = mrb_proc_decompress_caspec(caspec_bits);\n      ma = MRB_ASPEC_REQ(aspec);", <<~'C'.chomp)
+      if (MRB_PROC_CFUNC_P(p)) {
+        if (MRB_PROC_ENV_P(p)) {
+          struct REnv *e = MRB_PROC_ENV(p);
+          mrb_int len = MRB_ENV_LEN(e);
+          if (len >= 4 && mrb_integer_p(e->stack[len-1]) && mrb_integer(e->stack[len-1]) == 0x4f524241 &&
+              mrb_integer_p(e->stack[len-2])) {
+            mrb_int info = mrb_integer(e->stack[len-2]);
+            aspec = (mrb_aspec)(info & 0xffffff);
+            ma = MRB_ASPEC_REQ(aspec);
+            op = MRB_ASPEC_OPT(aspec);
+            ra = MRB_ASPEC_REST(aspec);
+            pa = MRB_ASPEC_POST(aspec);
+            kw = MRB_ASPEC_KEY(aspec) > 0 || MRB_ASPEC_KDICT(aspec);
+            min = ma + pa + (int)((info >> 24) & 1);
+            if (ra) { return -(min + 1); }
+            if (MRB_PROC_STRICT_P(p) && ma + op + pa + kw != min) return -(min + 1);
+            return min;
+          }
+        }
+        uint32_t caspec_bits = p->flags & MRB_PROC_CASPEC_MASK;
+        if (caspec_bits != 0) {
+          aspec = mrb_proc_decompress_caspec(caspec_bits);
+          ma = MRB_ASPEC_REQ(aspec);
+    C
     replace(source, '  if (ra) return -(min + 1);', <<~'C'.chomp.gsub(/^/, "  "))
       if (ra && (!irep->lv || ma + op >= irep->nlocals - 1 ||
                  irep->lv[ma + op] != MRB_SYM(__oruby_implicit_rest))) return -(min + 1);

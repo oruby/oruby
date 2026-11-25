@@ -242,7 +242,7 @@ def fib(n)
   end
 end
 
-fib(10)
+puts fib(10)
 `
 	goSrc, err := comp.CompileRuby(mrb, rubyCode)
 	if err != nil {
@@ -810,7 +810,7 @@ def greet(name)
   "Hello, " + name
 end
 
-greet("ORuby")
+puts greet("ORuby")
 `
 	goSrc, err := comp.CompileRuby(mrb, rubyCode)
 	if err != nil {
@@ -888,7 +888,7 @@ total = 0
 [10, 20, 30].each do |x|
   total = total + x
 end
-total
+puts total
 `
 	goSrc, err := comp.CompileRuby(mrb, rubyCode)
 	if err != nil {
@@ -962,7 +962,7 @@ func TestCompiler_HashAndIndex(t *testing.T) {
 
 	rubyCode := `
 h = { "name" => "oruby", "score" => 100 }
-h["score"]
+puts h["score"]
 `
 	goSrc, err := comp.CompileRuby(mrb, rubyCode)
 	if err != nil {
@@ -1070,7 +1070,7 @@ assert_equal(doubled, [2, 4, 6])
 dict = { "key1" => 42, "key2" => 99 }
 assert_equal(dict["key1"], 42)
 
-"ALL_SPECS_PASSED"
+puts "ALL_SPECS_PASSED"
 `
 	goSrc, err := comp.CompileRuby(mrb, rubyCode)
 	if err != nil {

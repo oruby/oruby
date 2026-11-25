@@ -179,9 +179,14 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 			file = mod.RelPath
 		}
 		g.opts.Progress.report("analyze", i+1, len(modules), file)
+		if mod.VM {
+			// bytecode run by the VM: no compiled functions, only the entry
+			g.info[mod.Root] = &unitInfo{kind: kindTop, fn: fmt.Sprintf("%sIRep_%d", prefix, mod.Root.Index)}
+			continue
+		}
 		g.analyze(mod.Root, nil, kindTop, 0, prefix, file, "")
 	}
-	g.analyzeDefs(modules)
+	g.analyzeDefs(compiledModules(modules))
 	g.analyzeTypedUnits()
 	if g.opts.CheckRBS && len(g.rbsDiagnostics) > 0 {
 		var msgs []string
@@ -195,6 +200,10 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	var unitsBuf bytes.Buffer
 	for i, mod := range modules {
 		g.opts.Progress.report("emit", i+1, len(modules), mod.RelPath)
+		if mod.VM {
+			g.emitVMStub(&unitsBuf, mod)
+			continue
+		}
 		var allUnits []*IRepUnit
 		collectUnits(mod.Root, &allUnits)
 		for _, unit := range allUnits {
@@ -319,9 +328,8 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		buf.WriteString("\t\tmrb.Close()\n")
 		buf.WriteString("\t\tos.Exit(1)\n")
 		buf.WriteString("\t}\n")
-		buf.WriteString("\tif !res.IsNil() {\n")
-		buf.WriteString("\t\tfmt.Println(mrb.String(res))\n")
-		buf.WriteString("\t}\n")
+		// the value of the script is not printed: a program prints what it prints
+		buf.WriteString("\t_ = res\n")
 		buf.WriteString("\tmrb.Close()\n")
 		buf.WriteString("}\n")
 	}
@@ -363,9 +371,14 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 			file = mod.RelPath
 		}
 		g.opts.Progress.report("analyze", i+1, len(modules), file)
+		if mod.VM {
+			// bytecode run by the VM: no compiled functions, only the entry
+			g.info[mod.Root] = &unitInfo{kind: kindTop, fn: fmt.Sprintf("%sIRep_%d", prefix, mod.Root.Index)}
+			continue
+		}
 		g.analyze(mod.Root, nil, kindTop, 0, prefix, file, "")
 	}
-	g.analyzeDefs(modules)
+	g.analyzeDefs(compiledModules(modules))
 	g.analyzeTypedUnits()
 	if g.opts.CheckRBS && len(g.rbsDiagnostics) > 0 {
 		var msgs []string
@@ -384,11 +397,15 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		g.opts.Progress.report("emit", i+1, len(modules), mod.RelPath)
 		g.modIntrinsics = make(map[string]bool)
 		var bodyBuf bytes.Buffer
-		var allUnits []*IRepUnit
-		collectUnits(mod.Root, &allUnits)
-		for _, unit := range allUnits {
-			if err := g.emitUnit(&bodyBuf, unit); err != nil {
-				return nil, err
+		if mod.VM {
+			g.emitVMStub(&bodyBuf, mod)
+		} else {
+			var allUnits []*IRepUnit
+			collectUnits(mod.Root, &allUnits)
+			for _, unit := range allUnits {
+				if err := g.emitUnit(&bodyBuf, unit); err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -533,9 +550,8 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		buf.WriteString("\t\tmrb.Close()\n")
 		buf.WriteString("\t\tos.Exit(1)\n")
 		buf.WriteString("\t}\n")
-		buf.WriteString("\tif !res.IsNil() {\n")
-		buf.WriteString("\t\tfmt.Println(mrb.String(res))\n")
-		buf.WriteString("\t}\n")
+		// the value of the script is not printed: a program prints what it prints
+		buf.WriteString("\t_ = res\n")
 		buf.WriteString("\tmrb.Close()\n")
 		buf.WriteString("}\n")
 	}
@@ -1372,7 +1388,7 @@ func compiledFinish(mrb *oruby.MrbState, id string, success bool) {
 	b.WriteString("\t}\n}\n\n")
 
 	b.WriteString(fmt.Sprintf(`// compiledFind resolves feature to a compiled module key
-func compiledFind(feature, dir string, relative bool) string {
+func compiledFind(mrb *oruby.MrbState, feature, dir string, relative bool) string {
 	var candidates []string
 	if relative || strings.HasPrefix(feature, "./") || strings.HasPrefix(feature, "../") {
 		base := dir
@@ -1400,6 +1416,25 @@ func compiledFind(feature, dir string, relative bool) string {
 	for _, c := range candidates {
 		if _, ok := compiledRegistry[c]; ok {
 			return c
+		}
+	}
+	// the load path as the program has it now: a file of the bundle is found
+	// through a directory the program added with $:.unshift or -I
+	if !relative && !filepath.IsAbs(feature) && !strings.HasPrefix(feature, "./") && !strings.HasPrefix(feature, "../") {
+		lp := mrb.GVGet(mrb.Intern("$LOAD_PATH"))
+		if lp.Type() == oruby.MrbTTArray {
+			for i, n := 0, mrb.AotAryLen(lp); i < n; i++ {
+				dirv := mrb.AotAryRef(lp, i)
+				if dirv.Type() != oruby.MrbTTString {
+					continue
+				}
+				p := filepath.Join(dirv.String(), feature)
+				for _, c := range []string{p, p + ".rb", p + ".mrb"} {
+					if _, ok := compiledRegistry[c]; ok {
+						return c
+					}
+				}
+			}
 		}
 	}
 	return ""
@@ -1443,7 +1478,7 @@ func compiledRun(mrb *oruby.MrbState, key string, once bool) (oruby.Value, error
 // doCompiledRequire loads precompiled module, or falls back to runtime loader
 func doCompiledRequire(mrb *oruby.MrbState, self, feature oruby.Value, dir string, kind int) (oruby.Value, error) {
 	if feature.Type() == oruby.MrbTTString {
-		if key := compiledFind(feature.String(), dir, kind == 1); key != "" {
+		if key := compiledFind(mrb, feature.String(), dir, kind == 1); key != "" {
 			return compiledRun(mrb, key, kind != 2)
 		}
 	}
@@ -2070,7 +2105,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 					e.w("\t\t\tif !_excl && _i == _end { break }\n")
 					e.w("\t\t}\n")
 					e.w("\t} else {\n")
-					e.w("\t\tr[%d] = mrb.AotBlock(%s, self, cx, env, false)\n", ins.A, child)
+					e.w("\t\tr[%d] = mrb.AotBlockSig(%s, self, cx, env, false, %s)\n", ins.A, child, signatureLiteral(u.Children[ins.B], false))
 					e.w("\t\tr[%d], err = mrb.AotCall(self, r[%d], %s, nil, r[%d], false, false)\n", nx.A, nx.A, symEach, ins.A)
 					e.w("\t}\n")
 					e.w("\tenv.AotBlockCallEnd(%d)\n", ins.B)
@@ -2090,7 +2125,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 					e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
 					e.w("\t\t}\n")
 					e.w("\t} else {\n")
-					e.w("\t\tr[%d] = mrb.AotBlock(%s, self, cx, env, false)\n", ins.A, child)
+					e.w("\t\tr[%d] = mrb.AotBlockSig(%s, self, cx, env, false, %s)\n", ins.A, child, signatureLiteral(u.Children[ins.B], false))
 					e.w("\t\tr[%d], err = mrb.AotCall(self, r[%d], %s, nil, r[%d], false, false)\n", nx.A, nx.A, symTimes, ins.A)
 					e.w("\t}\n")
 					e.w("\tenv.AotBlockCallEnd(%d)\n", ins.B)
@@ -2100,7 +2135,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 				}
 			}
 			if !e.targets[nx.Offset] && isLambdaCall(u, idx) {
-				e.w("\tr[%d] = mrb.AotBlock(%s, self, cx, env, true)\n", nx.A, child)
+				e.w("\tr[%d] = mrb.AotBlockSig(%s, self, cx, env, true, %s)\n", nx.A, child, signatureLiteral(u.Children[ins.B], true))
 				idx++
 				continue
 			}
@@ -2349,9 +2384,9 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 			child := u.Children[u.Instructions[idx-1].B]
 			ci := g.info[child]
 			if slot, tracked := g.trackedSlots[child]; tracked {
-				e.w("\tmrb.AotDefineMethodTracked(%d, r[%d], %s, cx, %v, %s)\n\t%s\n", slot, a, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+				e.w("\tmrb.AotDefineMethodTrackedSig(%d, r[%d], %s, cx, %v, %s, %s)\n\t%s\n", slot, a, e.sym(symName), ci.needCtx, ci.fn, signatureLiteral(child, true), e.chk(idx))
 			} else {
-				e.w("\tmrb.AotDefineMethod(r[%d], %s, cx, %v, %s)\n\t%s\n", a, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+				e.w("\tmrb.AotDefineMethodSig(r[%d], %s, cx, %v, %s, %s)\n\t%s\n", a, e.sym(symName), ci.needCtx, ci.fn, signatureLiteral(child, true), e.chk(idx))
 			}
 		} else {
 			e.w("\t_, err = mrb.AotCall(self, r[%d], %s, []oruby.Value{mrb.SymbolValue(%s), r[%d]}, mrb.NilValue(), true, false)\n\t%s\n",
@@ -2363,7 +2398,7 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 		if idx+1 < len(u.Instructions) && u.Instructions[idx+1].Op == OpDEF && u.Instructions[idx+1].A+1 == a {
 			break // consumed by OpDEF
 		}
-		e.w("\tr[%d] = mrb.AotBlock(%s, self, cx, nil, true)\n", a, e.childFn(ins.B))
+		e.w("\tr[%d] = mrb.AotBlockSig(%s, self, cx, nil, true, %s)\n", a, e.childFn(ins.B), signatureLiteral(u.Children[ins.B], true))
 
 	case OpTDEF, OpSDEF:
 		symName := e.symAt(uint32(ins.B))
@@ -2372,16 +2407,16 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 		slot, tracked := g.trackedSlots[child]
 		if ins.Op == OpTDEF {
 			if tracked {
-				e.w("\tmrb.AotDefineMethodTracked(%d, mrb.AotDefTarget(cx), %s, cx, %v, %s)\n\t%s\n", slot, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+				e.w("\tmrb.AotDefineMethodTrackedSig(%d, mrb.AotDefTarget(cx), %s, cx, %v, %s, %s)\n\t%s\n", slot, e.sym(symName), ci.needCtx, ci.fn, signatureLiteral(child, true), e.chk(idx))
 			} else {
-				e.w("\tmrb.AotDefineMethod(mrb.AotDefTarget(cx), %s, cx, %v, %s)\n\t%s\n", e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+				e.w("\tmrb.AotDefineMethodSig(mrb.AotDefTarget(cx), %s, cx, %v, %s, %s)\n\t%s\n", e.sym(symName), ci.needCtx, ci.fn, signatureLiteral(child, true), e.chk(idx))
 			}
 		} else {
 			e.w("\t{\n\t\t_sc := mrb.AotOp(oruby.AotOpSingletonClass, r[%d], mrb.NilValue(), mrb.NilValue(), 0)\n\t\t%s\n", a, e.chk(idx))
 			if tracked {
-				e.w("\t\tmrb.AotDefineMethodTracked(%d, _sc, %s, cx, %v, %s)\n\t\t%s\n\t}\n", slot, e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+				e.w("\t\tmrb.AotDefineMethodTrackedSig(%d, _sc, %s, cx, %v, %s, %s)\n\t\t%s\n\t}\n", slot, e.sym(symName), ci.needCtx, ci.fn, signatureLiteral(child, true), e.chk(idx))
 			} else {
-				e.w("\t\tmrb.AotDefineMethod(_sc, %s, cx, %v, %s)\n\t\t%s\n\t}\n", e.sym(symName), ci.needCtx, ci.fn, e.chk(idx))
+				e.w("\t\tmrb.AotDefineMethodSig(_sc, %s, cx, %v, %s, %s)\n\t\t%s\n\t}\n", e.sym(symName), ci.needCtx, ci.fn, signatureLiteral(child, true), e.chk(idx))
 			}
 		}
 		e.w("\tr[%d] = mrb.SymbolValue(%s)\n", a, e.sym(symName))
@@ -2400,7 +2435,10 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 		e.w("\tr[%d] = mrb.ObjectClass().Value()\n", a)
 
 	case OpBLOCK, OpLAMBDA:
-		e.w("\tr[%d] = mrb.AotBlock(%s, self, cx, env, %v)\n", a, e.childFn(ins.B), ins.Op == OpLAMBDA || g.info[u.Children[ins.B]].kind == kindLambda)
+		{
+			lam := ins.Op == OpLAMBDA || g.info[u.Children[ins.B]].kind == kindLambda
+			e.w("\tr[%d] = mrb.AotBlockSig(%s, self, cx, env, %v, %s)\n", a, e.childFn(ins.B), lam, signatureLiteral(u.Children[ins.B], lam))
+		}
 
 	case OpGETUPVAR:
 		e.w("\tr[%d] = %s.R[%d]\n\tmrb.AotProtect(r[%d])\n", a, e.upEnv(int(ins.C)), ins.B, a)

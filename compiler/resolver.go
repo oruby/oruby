@@ -20,6 +20,9 @@ type ModuleUnit struct {
 	Hash32    uint32         // FNV-1a 32-bit hash of the module bytecode/source payload
 	SourceOrb *oruby.OrbFile // Non-nil when module was resolved from an .orb archive
 	InlineRBS *RBSEnv        // Inline RBS annotations extracted from Ruby source comments (if source text was available)
+	VM        bool           // runs as bytecode in the VM, not compiled to Go (see vmtier.go)
+	VMReason  string         // what in the file needs the VM
+	Bytecode  []byte         // the file's bytecode, when VM
 }
 
 // DependencyResolver finds and resolves all require/require_relative dependencies.
@@ -39,7 +42,8 @@ func NewDependencyResolver(mrb *oruby.MrbState, loadPaths []string) *DependencyR
 	}
 }
 
-var reqRegex = regexp.MustCompile(`(?m)^\s*(require|require_relative)\s*\(?\s*['"]([^'"]+)['"]\)?`)
+// require, require_relative and autoload :Name, "path" with a literal path
+var reqRegex = regexp.MustCompile(`(?m)^\s*(require|require_relative|autoload)\s*\(?\s*(?::\w+\s*,\s*)?['"]([^'"]+)['"]\)?`)
 
 // Resolve walks the dependency tree starting from entryFile.
 func (r *DependencyResolver) Resolve(entryFile string) ([]*ModuleUnit, error) {
@@ -162,6 +166,14 @@ func (r *DependencyResolver) resolveRecursive(absPath, rootDir string, list *[]*
 		InlineRBS: inlineRBS,
 	}
 
+	var payload []byte
+	if isBytecode {
+		payload = content
+	}
+	if err := r.markVM(mod, irep, payload); err != nil {
+		return err
+	}
+
 	r.visited[absPath] = mod
 	*list = append(*list, mod)
 
@@ -277,6 +289,13 @@ func (r *DependencyResolver) resolveOrbBytes(absOrbPath, rootDir string, content
 			LoadPaths: orbLoadPaths,
 			Hash32:    e.Hash32,
 			SourceOrb: orb,
+		}
+		var vmPayload []byte
+		if e.Kind == oruby.OrbKindMrb || IsRiteBinary(payload) {
+			vmPayload = payload
+		}
+		if err := r.markVM(mod, irep, vmPayload); err != nil {
+			return err
 		}
 		r.visited[vfile] = mod
 		*list = append(*list, mod)

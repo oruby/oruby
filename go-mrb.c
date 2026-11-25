@@ -1969,11 +1969,29 @@ static mrb_value masgn_ary_m(mrb_state *mrb, mrb_value self) {
   return mrb_funcall_id(mrb, self, MRB_SYM(__oruby_ary_of), 1, obj);
 }
 
+/* A compiled method or block (go-aot.h) carries its parameters in its env, marked
+   by ORB_AOT_SIG_MARK: a copy of them, or nil for any other proc. */
+static mrb_value aot_sig_params(mrb_state *mrb, const struct RProc *proc) {
+  if (!MRB_PROC_CFUNC_P(proc) || !MRB_PROC_ENV_P(proc)) return mrb_nil_value();
+  struct REnv *env = MRB_PROC_ENV(proc);
+  mrb_int len = MRB_ENV_LEN(env);
+  /* ..., params, info, ORB_AOT_SIG_MARK (go-aot.h) */
+  if (len < 4 || !mrb_integer_p(env->stack[len - 1]) || mrb_integer(env->stack[len - 1]) != 0x4f524241 ||
+      !mrb_array_p(env->stack[len - 3])) return mrb_nil_value();
+  mrb_value src = env->stack[len - 3], out = mrb_ary_new_capa(mrb, RARRAY_LEN(src));
+  for (mrb_int i = 0; i < RARRAY_LEN(src); i++) mrb_ary_push(mrb, out, mrb_ary_dup(mrb, RARRAY_PTR(src)[i]));
+  return out;
+}
+
 static mrb_value orb_params(mrb_state *mrb, mrb_value procv, int lambda) {
   const struct RProc *proc = mrb_proc_ptr(procv);
   while (MRB_PROC_ALIAS_P(proc)) {
     proc = proc->upper;
     if (!proc) return mrb_ary_new(mrb);
+  }
+  {
+    mrb_value ap = aot_sig_params(mrb, proc);
+    if (!mrb_nil_p(ap)) return ap;
   }
   const mrb_irep *irep = MRB_PROC_CFUNC_P(proc) ? NULL : proc->body.irep;
   if (!irep || !irep->lv || irep->ilen < 4 || irep->iseq[0] != OP_ENTER) return mrb_proc_parameters(mrb, procv);
@@ -2106,6 +2124,10 @@ static mrb_value method_params_m(mrb_state *mrb, mrb_value self) {
       out = mrb_ary_new(mrb);
       mrb_ary_push(mrb, out, param_pair(mrb, MRB_SYM(req), 0));
       return out;
+    }
+    {
+      mrb_value ap = aot_sig_params(mrb, p);
+      if (!mrb_nil_p(ap)) return ap;
     }
     uint32_t caspec = p->flags & MRB_PROC_CASPEC_MASK;
     if (caspec) return core_params(mrb, mrb_proc_decompress_caspec(caspec));

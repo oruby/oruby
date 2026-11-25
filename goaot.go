@@ -8,6 +8,7 @@ package oruby
 // }
 import "C"
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
@@ -163,6 +164,10 @@ type aotState struct {
 	symTag          MrbSym
 	symIdx          MrbSym
 	symDispatch     MrbSym
+	symSend         MrbSym // send, __send__, public_send: see aotSendFamily
+	symSend2        MrbSym
+	symPubSend      MrbSym
+	sigVals         map[aotSigKey]Value
 	symCall         MrbSym
 	topCx           *AotCtx
 	blocks          map[int64]*aotBlockData
@@ -209,6 +214,9 @@ func (mrb *MrbState) AotInit() {
 	st.symTag = IvSym___t
 	st.symIdx = IvSym___i
 	st.symDispatch = Sym___aot_dispatch__
+	st.symSend = mrb.Intern("send")
+	st.symSend2 = mrb.Intern("__send__")
+	st.symPubSend = mrb.Intern("public_send")
 	st.symCall = Sym_call
 	st.topCx = &AotCtx{}
 	st.blocks = make(map[int64]*aotBlockData)
@@ -427,7 +435,55 @@ func (mrb *MrbState) aotReceiverClass(recv Value) *C.struct_RClass {
 // records its installed mrb_method_t at slot so specialized Go functions can
 // verify method dispatch via AotCompiledMethodOK without cgo on the hot path.
 func (mrb *MrbState) AotDefineMethodTracked(slot int, target Value, mid MrbSym, cx *AotCtx, needCtx bool, fn AotFunc) {
-	mrb.AotDefineMethod(target, mid, cx, needCtx, fn)
+	mrb.AotDefineMethodTrackedSig(slot, target, mid, cx, needCtx, fn, AotSig{})
+}
+
+// AotSig is the argument signature of a compiled method: its argument spec
+// (the operand of the OP_ENTER of its bytecode) and the parameter list
+// Method#parameters shows, "kind:name;kind:name". Known is false for a
+// method whose signature is not known, which then takes any arguments.
+type AotSig struct {
+	Aspec  uint32
+	KeyReq bool // a keyword is required: it counts in the arity
+	Params string
+	Known  bool
+}
+
+// info is the argument spec as the env of a compiled method or block keeps
+// it: the spec, with bit 24 set when a keyword is required.
+func (s AotSig) info() C.mrb_int {
+	info := C.mrb_int(s.Aspec)
+	if s.KeyReq {
+		info |= 1 << 24
+	}
+	return info
+}
+
+// aotSigValue is the parameter array of sig, made once for all the procs
+// that share it.
+func (mrb *MrbState) aotSigValue(sig AotSig) Value {
+	if !sig.Known {
+		return nilValue
+	}
+	key := aotSigKey{sig.Params}
+	if v, ok := mrb.aot.sigVals[key]; ok {
+		return v
+	}
+	cparams := C.CString(sig.Params)
+	defer C.free(unsafe.Pointer(cparams))
+	v := Value{C._aot_params_new(mrb.p, cparams)}
+	if mrb.aot.sigVals == nil {
+		mrb.aot.sigVals = make(map[aotSigKey]Value)
+	}
+	mrb.aot.sigVals[key] = v
+	return v
+}
+
+type aotSigKey struct{ params string }
+
+// AotDefineMethodTrackedSig is AotDefineMethodTracked with the method's signature.
+func (mrb *MrbState) AotDefineMethodTrackedSig(slot int, target Value, mid MrbSym, cx *AotCtx, needCtx bool, fn AotFunc, sig AotSig) {
+	mrb.AotDefineMethodSig(target, mid, cx, needCtx, fn, sig)
 	if slot < 0 {
 		return
 	}
@@ -602,6 +658,9 @@ func (mrb *MrbState) AotCall(self, recv Value, mid MrbSym, args []Value, blk Val
 	if kw {
 		return mrb.aotDispatch(2, recv, mid, nil, args, blk)
 	}
+	if mrb.aotSendFamily(mid) {
+		return mrb.aotDispatch(0, recv, mid, nil, args, blk)
+	}
 	if res, err, ok := mrb.aotDirect(recv, mid, args, blk, fcall); ok {
 		return res, err
 	}
@@ -635,8 +694,20 @@ func (mrb *MrbState) AotCall0(self, recv Value, mid MrbSym, fcall bool) (Value, 
 	return v, nil
 }
 
+// aotSendFamily reports whether mid is send, __send__ or public_send. Entered
+// from C these take send_method's funcall path, which calls any method (so
+// public_send would not refuse a private one) and drops keyword arguments;
+// aotDispatch resolves the target itself.
+func (mrb *MrbState) aotSendFamily(mid MrbSym) bool {
+	st := mrb.aot
+	return st != nil && (mid == st.symSend || mid == st.symSend2 || mid == st.symPubSend)
+}
+
 //go:noinline
 func (mrb *MrbState) aotCall1Slow(self, recv Value, mid MrbSym, a Value, fcall bool) (Value, error) {
+	if mrb.aotSendFamily(mid) {
+		return mrb.aotDispatch(0, recv, mid, nil, []Value{a}, nilValue)
+	}
 	var v Value
 	if !fcall {
 		v = Value{C._aot_funcall_public(mrb.p, self.v, recv.v, C.mrb_sym(mid), 1, &a.v, C.mrb_nil_value())}
@@ -664,6 +735,9 @@ func (mrb *MrbState) AotCall1(self, recv Value, mid MrbSym, a Value, fcall bool)
 
 //go:noinline
 func (mrb *MrbState) aotCall2Slow(self, recv Value, mid MrbSym, a, b Value, fcall bool) (Value, error) {
+	if mrb.aotSendFamily(mid) {
+		return mrb.aotDispatch(0, recv, mid, nil, []Value{a, b}, nilValue)
+	}
 	var cbuf [2]C.mrb_value
 	cbuf[0] = a.v
 	cbuf[1] = b.v
@@ -1020,6 +1094,13 @@ func (mrb *MrbState) aotBlockTrampoline(m *MrbState, self Value) MrbValue {
 
 // AotBlock creates block (or lambda) Proc for compiled function fn.
 func (mrb *MrbState) AotBlock(fn AotFunc, outerSelf Value, cx *AotCtx, env *AotEnv, lambda bool) Value {
+	return mrb.AotBlockSig(fn, outerSelf, cx, env, lambda, AotSig{})
+}
+
+// AotBlockSig is AotBlock with the block's signature, which Proc#arity and
+// #parameters answer from. It does not make the VM check arguments: a block
+// takes them as a block does, and a lambda checks its own.
+func (mrb *MrbState) AotBlockSig(fn AotFunc, outerSelf Value, cx *AotCtx, env *AotEnv, lambda bool, sig AotSig) Value {
 	mrb.AotInit()
 	st := mrb.aot
 	envVal := nilValue
@@ -1032,7 +1113,8 @@ func (mrb *MrbState) AotBlock(fn AotFunc, outerSelf Value, cx *AotCtx, env *AotE
 	st.nextBlock++
 	id := st.nextBlock
 	st.blocks[id] = &aotBlockData{fn: fn, outerSelf: outerSelf, cx: cx, env: env}
-	p := C._aot_proc_new(mrb.p, C.mrb_int(st.trampIdx), C.mrb_int(id), envVal.v, outerSelf.v, C.mrb_bool(lambda))
+	params := mrb.aotSigValue(sig)
+	p := C._aot_proc_new(mrb.p, C.mrb_int(st.trampIdx), C.mrb_int(id), envVal.v, outerSelf.v, C.mrb_bool(lambda), C.mrb_bool(sig.Known), sig.info(), params.v)
 	return Value{C.mrb_obj_value(unsafe.Pointer(p))}
 }
 
@@ -1040,6 +1122,13 @@ func (mrb *MrbState) AotBlock(fn AotFunc, outerSelf Value, cx *AotCtx, env *AotE
 // context with method name and target class (for super) is created on
 // each call.
 func (mrb *MrbState) AotDefineMethod(target Value, mid MrbSym, cx *AotCtx, needCtx bool, fn AotFunc) {
+	mrb.AotDefineMethodSig(target, mid, cx, needCtx, fn, AotSig{})
+}
+
+// AotDefineMethodSig is AotDefineMethod with the method's signature: the VM
+// checks the argument count and keywords as for a bytecode method, and
+// Method#arity and #parameters answer from it.
+func (mrb *MrbState) AotDefineMethodSig(target Value, mid MrbSym, cx *AotCtx, needCtx bool, fn AotFunc, sig AotSig) {
 	if cx == nil {
 		cx = mrb.AotTopCtx()
 	}
@@ -1072,7 +1161,8 @@ func (mrb *MrbState) AotDefineMethod(target Value, mid MrbSym, cx *AotCtx, needC
 		mrb.aot.methods = grown
 	}
 	mrb.aot.methods[idx] = &aotMethod{fn: fn, cx: cx, needCtx: needCtx}
-	C._aot_define_method(mrb.p, cls.p, C.mrb_sym(mid), C.mrb_int(idx))
+	params := mrb.aotSigValue(sig)
+	C._aot_define_method(mrb.p, cls.p, C.mrb_sym(mid), C.mrb_int(idx), C.mrb_bool(sig.Known), C.uint32_t(sig.Aspec), sig.info(), params.v)
 }
 
 //go:noinline
@@ -1231,7 +1321,11 @@ func (mrb *MrbState) AotEnter(r []Value, args []Value, blk Value, aspec uint32, 
 	if strict {
 		if argc < m1+m2 || (rest == 0 && argc > length) {
 			// same message as mruby VM (argnum_error)
-			mrb.AotOp(AotOpArgnumError, mrb.FixnumValue(argc), mrb.FixnumValue(m1+m2), mrb.FixnumValue(m1+m2), 0)
+			maxArgs := length // -1 when a rest argument takes any number
+			if rest != 0 {
+				maxArgs = -1
+			}
+			mrb.AotOp(AotOpArgnumError, mrb.FixnumValue(argc), mrb.FixnumValue(m1+m2), mrb.FixnumValue(maxArgs), 0)
 			return 0, mrb.aotExc()
 		}
 	} else if length > 1 && argc == 1 && args[0].Type() == MrbTTArray {
@@ -1710,4 +1804,19 @@ func (mrb *MrbState) AotDefinedSuper(cx *AotCtx) Value {
 // AotDefinedYield implements defined?(yield)
 func (mrb *MrbState) AotDefinedYield(blk Value) Value {
 	return mrb.aotDefinedStr(!blk.AotIsNil(), "yield")
+}
+
+// AotRunVM runs bytecode (RITE, with debug info) in the VM as a file loaded
+// by require: at the top level, with its own local variables. It is the entry
+// of a module that stays bytecode because it needs its frame (eval, binding,
+// using), see compiler/vmtier.go.
+func (mrb *MrbState) AotRunVM(codeBase64, file string) (Value, error) {
+	code, err := base64.StdEncoding.DecodeString(codeBase64)
+	if err != nil {
+		return nilValue, err
+	}
+	cxt := mrb.MrbCcontextNew()
+	defer cxt.Free()
+	cxt.Filename(file)
+	return mrb.LoadIrepBytesWrapped(code, cxt, mrb.ObjectClass(), mrb.TopSelf())
 }
