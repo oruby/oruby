@@ -179,6 +179,20 @@ func (mrb *MrbState) GetArgs(defaults ...interface{}) RArgs {
 	return ret
 }
 
+// GetArgsKw is GetArgs with the keyword arguments, if any, as a last Hash:
+// the arguments a method without keywords of its own takes (p a: 1 prints
+// {a: 1}, as MRI's)
+func (mrb *MrbState) GetArgsKw() RArgs {
+	args := mrb.GetArgs()
+	if mrb.hasFastArgs {
+		return args
+	}
+	if kw := mrb.KeywordArgsValue(); kw.IsHash() && mrb.HashSize(kw) > 0 {
+		args.items = append(args.items, kw)
+	}
+	return args
+}
+
 // GetArgsWithBlock returns array with all arguments passed to MrbFuncT function
 // and block as second value.
 func (mrb *MrbState) GetArgsWithBlock(defaults ...interface{}) (RArgs, RProc) {

@@ -80,6 +80,74 @@ module ORubyVMCompat
 
   def self.vm(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/debug.h>\n#include \"oruby-vm-compat.h\"")
+    # Machine-stack guard where C enters the VM (mrb_funcall, yield,
+    # mrb_vm_run): Ruby recursing through C methods (map, sort_by, a C
+    # extension's rb_yield) raises SystemStackError before it runs off the
+    # stack. Without MRB_USE_C_STACK_CHECK (which changes mrb_state's layout
+    # for every cgo package) mruby checks nothing, and MRB_CALL_LEVEL_MAX,
+    # its only bound, had to stay at 512 frames. A goroutine moves between OS
+    # threads, so one stack address per state does not do: the floor is the
+    # current thread's own, from pthread, cached per thread
+    replace(source, "#else\n#define c_stack_check(mrb) ((void)0)\n#endif\n", <<~'C')
+      #else
+      #if defined(__APPLE__) || defined(__linux__)
+      #include <pthread.h>
+      #if defined(__linux__)
+      extern int pthread_getattr_np(pthread_t, pthread_attr_t*);
+      #endif
+      /* the headroom kept below the last check: the raise, Go callbacks and
+         a compile (Prism, up to PRISM_DEPTH_MAXIMUM deep) run past it */
+      #define ORB_C_STACK_HEADROOM (1024 * 1024)
+      static _Thread_local uintptr_t orb_c_stack_floor_tls;
+      /* nonzero while oruby's VM poll runs (go-signal.c): a thread handoff
+         or a signal dispatch at an instruction near the floor runs in the
+         headroom, a SystemStackError there would cut it off halfway */
+      _Thread_local int orb_c_stack_relaxed;
+
+      static uintptr_t
+      orb_c_stack_floor(void)
+      {
+        uintptr_t lo = 0, size = 0;
+      #if defined(__APPLE__)
+        pthread_t t = pthread_self();
+        size = (uintptr_t)pthread_get_stacksize_np(t);
+        lo = (uintptr_t)pthread_get_stackaddr_np(t) - size;
+      #else
+        pthread_attr_t a;
+        void *addr;
+        size_t sz;
+        if (pthread_getattr_np(pthread_self(), &a) == 0) {
+          if (pthread_attr_getstack(&a, &addr, &sz) == 0) { lo = (uintptr_t)addr; size = sz; }
+          pthread_attr_destroy(&a);
+        }
+      #endif
+        if (!lo || !size) return 1; /* unknown: no check */
+        return lo + (size > 4 * ORB_C_STACK_HEADROOM ? ORB_C_STACK_HEADROOM : size / 4);
+      }
+
+      static inline void
+      c_stack_check(mrb_state *mrb)
+      {
+        char here;
+        uintptr_t floor = orb_c_stack_floor_tls;
+        if (!floor) orb_c_stack_floor_tls = floor = orb_c_stack_floor();
+        if ((uintptr_t)&here < floor && !orb_c_stack_relaxed) {
+          mrb_exc_raise(mrb, mrb_obj_value(mrb->stack_err));
+        }
+      }
+      #else
+      #define c_stack_check(mrb) ((void)0)
+      #endif
+      #endif
+    C
+    # mrb_vm_run's own check comes after its caller pushed a CINFO_DIRECT
+    # frame (yield_with_attr, mrb_funcall_with_block) and before mrb_vm_exec
+    # sets its catch: a raise there unwinds the outer VM loop to that frame,
+    # which takes it for a C boundary and jumps past the Ruby frames under it
+    # (rescue and ensure never run). Its callers that nest check before they
+    # push
+    replace(source, "  if (!c->stbase) {\n    stack_init(mrb);\n  }\n  c_stack_check(mrb);\n  if (stack_keep > nregs)",
+      "  if (!c->stbase) {\n    stack_init(mrb);\n  }\n  if (stack_keep > nregs)")
     replace(source, '    cipush(mrb, 0, CINFO_SKIP, mrb->object_class, NULL, NULL, 0, 0);', <<~'C'.chomp.gsub(/^/, "    "))
       /* A loaded file starts its own visibility scope, like the main file. */
       mrb_bool file_scope = !MRB_PROC_CFUNC_P(proc) && MRB_PROC_CREF_P(proc);

@@ -135,6 +135,12 @@ void
 _orb_tstate_finish(mrb_state *mrb, orb_tstate *st)
 {
   if (st->root_c) st->root_c->status = MRB_FIBER_TERMINATED;
+  /* the arena it ran with (the GC reallocs a full one): what
+     _orb_tstate_free frees, the one saved at its last handoff being gone */
+  if (st->owned_arena) {
+    st->arena = mrb->gc.arena;
+    st->arena_capa = mrb->gc.arena_capa;
+  }
 }
 
 // called once another thread's state is loaded

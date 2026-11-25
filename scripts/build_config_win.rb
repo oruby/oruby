@@ -42,6 +42,11 @@ oruby_build = MRuby::Build.new do |conf|
   # through one process-wide mrb_state (global_mrb), so states compiling on
   # different threads at once run each other's GC
   cc.defines << 'MRC_PRISM_LIBC'
+  # Nesting as deep as MRI's code takes (Prism's 10000 there): mruby caps
+  # both at 256, for a small C stack. Go threads have 8 MB, where an -O3
+  # build compiles 8000-deep literals without overflowing; 2048 keeps a 4x
+  # margin (deeper code is a SyntaxError, not a crash)
+  cc.defines += %w(PRISM_DEPTH_MAXIMUM=2048 MRC_CODEGEN_LEVEL_MAX=2048)
   #   cc.option_include_path = '-I%s'
   #   cc.option_define = '-D%s'
   #   cc.compile_options = "%{flags} -MMD -o %{outfile} -c %{infile}"

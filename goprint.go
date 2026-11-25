@@ -238,7 +238,7 @@ func (mrb *MrbState) printOther(helper string, out Value, args []interface{}) Mr
 }
 
 func printPrint(mrb *MrbState, self Value) MrbValue {
-	args := mrb.GetArgs()
+	args := mrb.GetArgsKw()
 	if out, ok := mrb.stdout(); ok {
 		if !mrb.stdoutIO(out) && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_io_print")) {
 			return mrb.printOther("__oruby_io_print", out, args.SliceIntf())
@@ -259,7 +259,7 @@ func printPrint(mrb *MrbState, self Value) MrbValue {
 }
 
 func printPuts(mrb *MrbState, self Value) MrbValue {
-	args := mrb.GetArgs()
+	args := mrb.GetArgsKw()
 	if out, ok := mrb.stdout(); ok {
 		if !mrb.stdoutIO(out) && mrb.RespondTo(mrb.KernelModule().Value(), mrb.Intern("__oruby_io_puts")) {
 			return mrb.printOther("__oruby_io_puts", out, args.SliceIntf())
@@ -299,7 +299,7 @@ func (mrb *MrbState) writeStdout(s string) error {
 }
 
 func printP(mrb *MrbState, self Value) MrbValue {
-	args := mrb.GetArgs()
+	args := mrb.GetArgsKw()
 	inspect := Sym_inspect
 	var b strings.Builder
 	for i := 0; i < args.Len(); i++ {

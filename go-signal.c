@@ -117,7 +117,36 @@ static void orb_thread_interrupt(mrb_state *mrb) {
 // _orb_vm_poll runs one pending request of mrb's, at an instruction
 // boundary (the hook, the injector); the rest are polled at the next
 // instruction, so one that raises does not drop them
+#if defined(__APPLE__) || defined(__linux__)
+/* mruby_vm_compat.rb's machine-stack check: off while the poll runs */
+extern _Thread_local int orb_c_stack_relaxed;
+#define ORB_RELAX(d) (orb_c_stack_relaxed += (d))
+#else
+#define ORB_RELAX(d) ((void)0)
+#endif
+
+static void orb_vm_poll(mrb_state *mrb);
+
 void _orb_vm_poll(mrb_state *mrb) {
+  struct mrb_jmpbuf *prev = mrb->jmp;
+  struct mrb_jmpbuf c_jmp;
+  ORB_RELAX(1);
+  MRB_TRY(&c_jmp) {
+    mrb->jmp = &c_jmp;
+    orb_vm_poll(mrb);
+    mrb->jmp = prev;
+  }
+  MRB_CATCH(&c_jmp) {
+    /* what the poll raised (Timeout, Thread#raise) goes on to Ruby */
+    mrb->jmp = prev;
+    ORB_RELAX(-1);
+    MRB_THROW(prev);
+  }
+  MRB_END_EXC(&c_jmp);
+  ORB_RELAX(-1);
+}
+
+static void orb_vm_poll(mrb_state *mrb) {
   int main_thread = 1;
   if (atomic_load(&orb_threads_active)) {
     int r = go_thread_safepoint(_mrb_get_idx(mrb));
