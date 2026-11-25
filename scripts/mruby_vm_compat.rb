@@ -1565,12 +1565,8 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
           (mrb_proc_refined_p(mrb, p1) || mrb_proc_refined_p(mrb, p2))) return FALSE;
       #endif
     C
-    # A define_method body is a method scope (MRB_PROC_SCOPE_P) that still holds
-    # its creation env. Nested closures inside it must keep ci->mid (the defined
-    # method name), not inherit the dead outer def's mid from MRB_PROC_ENV(up).
-    replace(source,
-      '    if (MRB_PROC_ENV_P(up) && MRB_PROC_ENV(up)->cxt == NULL) {',
-      '    if (!MRB_PROC_SCOPE_P(up) && MRB_PROC_ENV_P(up) && MRB_PROC_ENV(up)->cxt == NULL) {')
+    # (a block in a define_method body keeping ci->mid is upstream's now:
+    # mruby f9b4ba50b, #7871)
   end
 
   def self.gc(source)

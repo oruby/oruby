@@ -1,0 +1,84 @@
+--- a/mrbgems/mruby-regexp/src/re_exec.c
++++ b/mrbgems/mruby-regexp/src/re_exec.c
+@@ -1266,6 +1266,11 @@
+      1, would stop there with "b" captured, where a fresh pass goes round
+      once more and leaves "". */
+   int *entered_in;
++  /* Per pc, a signature of each capture group's state (unmatched / non-empty /
++     empty) when the iteration that entered_at[pc] names began. An iteration
++     that ended where it began is empty only if the states are what they were
++     then (see ITER_EMPTY). */
++  int *entered_sig;
+   int pass;
+   int pass_seq;
+   mrb_bool binary;
+@@ -1285,10 +1290,32 @@
+   re_undo undo_inline[RE_BT_INLINE];
+ } bt_state;
+ 
++/* Signature of every capture group's state (0 = unmatched, 1 = non-empty,
++   2 = empty), hashed with FNV-1a. Hashing the 3-valued state rather than raw
++   offsets avoids oscillation when a lookahead writes different non-empty spans
++   into the same group at a fixed position, while still noticing unmatched ->
++   empty, non-empty -> empty, and unmatched -> non-empty transitions. */
++static int
++bt_caps_sig(const bt_state *m)
++{
++  uint32_t h = 2166136261u;
++  for (int i = 2; i + 1 < m->ncap; i += 2) {
++    int s = m->captures[i], e = m->captures[i + 1];
++    uint32_t st = (s < 0 || e < 0) ? 0u : (s == e ? 2u : 1u);
++    h = (h ^ st) * 16777619u;
++  }
++  return (int)h;
++}
++
+ /* Whether the loop `key` keys is at the end of an iteration that began at
+-   sp: the record is this pass's and names sp. */
++   sp and left every capture group in the state it found it in: the record is
++   this pass's, names sp, and holds the same signature. An iteration that
++   consumed nothing but changed a capture's state (e.g. setting an empty group
++   in `(a|\2b|())*` or `(a|\2b|(c?))*`) is not empty, matching Onigmo's
++   NULL_CHECK_MEMST; the next iteration leaves the states unchanged and stops. */
+ #define ITER_EMPTY(m, key, sp) \
+-  ((m)->entered_at[key] == (int)((sp) - (m)->str) && (m)->entered_in[key] == (m)->pass)
++  ((m)->entered_at[key] == (int)((sp) - (m)->str) && (m)->entered_in[key] == (m)->pass && \
++   (m)->entered_sig[key] == bt_caps_sig(m))
+ 
+ /* Whether the search may hold one more entry of backtracking state.
+    MRB_REGEXP_STACK_LIMIT counts the two stacks together: a choice point and
+@@ -1431,7 +1458,8 @@
+ bt_iter_begin(bt_state *m, uint32_t key, const char *sp)
+ {
+   int r = bt_log(m, &m->entered_at[key], (int)(sp - m->str));
+-  return r != BT_OK ? r : bt_log(m, &m->entered_in[key], m->pass);
++  if (r == BT_OK) r = bt_log(m, &m->entered_in[key], m->pass);
++  return r != BT_OK ? r : bt_log(m, &m->entered_sig[key], bt_caps_sig(m));
+ }
+ 
+ /*
+@@ -2069,7 +2097,7 @@
+      re_check_exec_error() turns into the raise, and a search that raised
+      from here instead would be one the caller never saw stop. */
+   int caps_inline[RE_BT_CAPS_INLINE];
+-  size_t caps_n = (size_t)ncap + 2 * (size_t)pat->code_len;
++  size_t caps_n = (size_t)ncap + 3 * (size_t)pat->code_len;
+   int *caps = caps_n <= RE_BT_CAPS_INLINE ? caps_inline
+             : (int*)mrb_malloc_simple(mrb, sizeof(int) * caps_n);
+   if (!caps) return RE_NOMEM;
+@@ -2083,6 +2111,7 @@
+   m.ncap = ncap;
+   m.entered_at = caps + ncap;
+   m.entered_in = m.entered_at + pat->code_len;
++  m.entered_sig = m.entered_in + pat->code_len;
+   m.pass = 0;
+   m.pass_seq = 0;
+   m.binary = binary;
+@@ -2095,6 +2124,7 @@
+   m.undo_capa = m.cp_capa;
+   memset(m.entered_at, -1, sizeof(int) * pat->code_len);
+   memset(m.entered_in, 0, sizeof(int) * pat->code_len);
++  memset(m.entered_sig, 0, sizeof(int) * pat->code_len);
+ 
+   const char *eol = NULL;  /* see skip_to_end_window() */
+   for (const char *sp = str + start; sp <= str_end && sp <= start_cap; sp++) {
