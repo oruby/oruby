@@ -281,3 +281,71 @@ end
 		t.Fatalf("want framey.rb as bytecode (1) and plain.rb compiled (1), got %d and %d", vm, compiled)
 	}
 }
+
+// super inside a method defined by define_method, a block with no method
+// context of its own: its caller's frame is the method.
+func TestAOTSuperInDefineMethod(t *testing.T) {
+	src := `
+def t(name); r = yield; puts "#{name}: #{r.inspect}"; rescue Exception => e; puts "#{name}: RAISED #{e.class}"; end
+class A; def hi(x = 1) = [:a, x]; def kw(k: 0) = [:akw, k]; end
+class B < A
+  define_method(:hi) { |x = 2| [:b, super(x)] }
+  define_method(:kw) { |k: 5| [:bkw, super(k: k)] }
+end
+class C < A; define_method(:hi) { |*a| super(*a) }; end
+module M; def hi(x = 1) = [:m, super(x)]; end
+class F < A; include M; define_method(:hi) { |x = 3| [:f, super(x)] }; end
+t("super(x)") { B.new.hi }
+t("super(k:)") { B.new.kw }
+t("super(*a)") { C.new.hi(7) }
+t("through a module") { F.new.hi }
+t("twice") { b = B.new; [b.hi, b.hi(4)] }
+t("singleton") { o = A.new; o.define_singleton_method(:hi) { |x = 5| [:s, super(x)] }; o.hi }
+`
+	want := strings.Join([]string{
+		`super(x): [:b, [:a, 2]]`,
+		`super(k:): [:bkw, [:akw, 5]]`,
+		`super(*a): [:a, 7]`,
+		`through a module: [:f, [:m, [:a, 3]]]`,
+		`twice: [[:b, [:a, 2]], [:b, [:a, 4]]]`,
+		`singleton: [:s, [:a, 5]]`,
+	}, "\n")
+	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Semantics compiled code must keep: defined? on scoped constants, a call that
+// breaks a method's visibility reaching method_missing, Proc#== telling two
+// compiled methods and blocks apart, and the length of a non-UTF-8 string.
+func TestAOTSemantics(t *testing.T) {
+	src := `
+def t(name); r = yield; puts "#{name}: #{r.inspect}"; rescue Exception => e; puts "#{name}: RAISED #{e.class}"; end
+module Mo; X = 1; module In; Y = 2; end; end
+t("defined? A::B") { [defined?(Mo::X), defined?(Mo::In::Y), defined?(Mo::Nope), defined?(::String), defined?(File::RDONLY)] }
+class Ghost
+  def method_missing(n, *a) = [:mm, n, a]
+  def respond_to_missing?(*) = true
+  private def hidden(x) = :hidden
+  protected def guarded = :guarded
+end
+t("private -> method_missing") { Ghost.new.hidden(1) }
+t("protected -> method_missing") { Ghost.new.guarded }
+def m1; end
+def m2; end
+t("Method#== of two methods") { [method(:m1) == method(:m1), method(:m1) == method(:m2)] }
+t("Proc#== of two blocks") { a = proc { 1 }; b = proc { 1 }; [a == a, a == b, a.dup == a] }
+t("UTF-16 length") { ["abあ".encode("UTF-16LE").length, "abあ".encode("UTF-32LE").length, "abあ".length] }
+`
+	want := strings.Join([]string{
+		`defined? A::B: ["constant", "constant", nil, "constant", "constant"]`,
+		`private -> method_missing: [:mm, :hidden, [1]]`,
+		`protected -> method_missing: [:mm, :guarded, []]`,
+		`Method#== of two methods: [true, false]`,
+		`Proc#== of two blocks: [true, false, true]`,
+		`UTF-16 length: [3, 3, 3]`,
+	}, "\n")
+	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}

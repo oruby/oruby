@@ -609,7 +609,13 @@ func (mrb *MrbState) AotStrLen(s Value) (int64, bool) {
 	flags := (*(*uint32)(unsafe.Add(aotObjPtr(s), 8))) >> 12
 	cr := (flags >> 9) & 3
 	enc := (flags >> 11) & 3
-	if cr == 1 || enc == 1 { // MRB_STR_CODERANGE_7BIT or BINARY
+	// A string of any encoding but UTF-8 is flagged BINARY and carries its
+	// encoding as a tag the flags do not show (gem/core_ext 00_encoding.rb:
+	// UTF-16 and UTF-32 are not one byte a character): String#length decides.
+	if enc == 1 {
+		return 0, false
+	}
+	if cr == 1 { // MRB_STR_CODERANGE_7BIT
 		return int64(len(b)), true
 	}
 	if cr == 2 || (cr == 0 && utf8.Valid(b)) { // MRB_STR_CODERANGE_VALID

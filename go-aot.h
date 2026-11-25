@@ -415,6 +415,20 @@ _aot_funcall_public(mrb_state *mrb, mrb_value self, mrb_value recv, mrb_sym mid,
   struct RClass *c = mrb_class(mrb, recv);
   mrb_method_t m = mrb_method_search_vm(mrb, &c, mid);
   if (!MRB_METHOD_UNDEF_P(m) && (m.flags & (MRB_METHOD_PRIVATE_FL|MRB_METHOD_PROTECTED_FL))) {
+    /* A call that breaks the method's visibility is a call of method_missing: the
+       default one raises the NoMethodError, a class's own one answers it. */
+    mrb_bool violation = (m.flags & MRB_METHOD_PRIVATE_FL) || !mrb_obj_is_kind_of(mrb, self, c);
+    if (violation) {
+      struct RClass *mc = mrb_class(mrb, recv);
+      mrb_method_t mm = mrb_method_search_vm(mrb, &mc, MRB_SYM(method_missing));
+      if (!MRB_METHOD_UNDEF_P(mm) && mc != mrb->object_class->super) {
+        mrb_value mm_args = mrb_ary_new_capa(mrb, argc + 1);
+        mrb_ary_push(mrb, mm_args, mrb_symbol_value(mid));
+        for (mrb_int i = 0; i < argc; i++) mrb_ary_push(mrb, mm_args, argv[i]);
+        struct aot_call_args mx = { recv, MRB_SYM(method_missing), argc + 1, RARRAY_PTR(mm_args), blk };
+        return _aot_protect(mrb, _aot_funcall_body, &mx);
+      }
+    }
     struct aot_vis_args vx = { self, recv, mid, argc, argv };
     _aot_protect(mrb, _aot_check_visibility_body, &vx);
     if (mrb->exc != NULL) return mrb_nil_value();

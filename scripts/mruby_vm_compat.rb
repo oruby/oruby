@@ -1554,6 +1554,22 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
   end
 
   def self.proc_identity(source)
+    # C function procs that differ in what they captured are different procs:
+    # every compiled method and block (go-aot.h) and Go method shares one function
+    replace(source, "    if (p1->body.func != p2->body.func) return FALSE;\n  }\n  else if (MRB_PROC_CFUNC_P(p2)) return FALSE;", <<~'C'.chomp)
+      if (p1->body.func != p2->body.func) return FALSE;
+          if (MRB_PROC_ENV_P(p1) != MRB_PROC_ENV_P(p2)) return FALSE;
+          if (MRB_PROC_ENV_P(p1) && MRB_PROC_ENV(p1) != MRB_PROC_ENV(p2)) {
+            struct REnv *e1 = MRB_PROC_ENV(p1), *e2 = MRB_PROC_ENV(p2);
+            mrb_int n = MRB_ENV_LEN(e1);
+            if (n != MRB_ENV_LEN(e2)) return FALSE;
+            for (mrb_int i = 0; i < n; i++) {
+              if (!mrb_obj_eq(mrb, e1->stack[i], e2->stack[i])) return FALSE;
+            }
+          }
+        }
+        else if (MRB_PROC_CFUNC_P(p2)) return FALSE;
+    C
     # a compiled method or block (go-aot.h) keeps its argument spec in the last
     # slots of its env: spec | keyreq << 24, then the marker 0x4f524241
     replace(source, "  if (MRB_PROC_CFUNC_P(p)) {\n    uint32_t caspec_bits = p->flags & MRB_PROC_CASPEC_MASK;\n    if (caspec_bits != 0) {\n      aspec = mrb_proc_decompress_caspec(caspec_bits);\n      ma = MRB_ASPEC_REQ(aspec);", <<~'C'.chomp)

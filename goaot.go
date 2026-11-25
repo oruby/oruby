@@ -786,7 +786,18 @@ func (mrb *MrbState) aotDispatch(mode int, recv Value, mid MrbSym, tc unsafe.Poi
 
 // AotSuper calls super method of current method context
 func (mrb *MrbState) AotSuper(self Value, cx *AotCtx, args []Value, blk Value, kw bool) (Value, error) {
-	if cx == nil || cx.Mid == 0 || cx.Super == nil {
+	mid, super := MrbSym(0), unsafe.Pointer(nil)
+	if cx != nil {
+		mid, super = cx.Mid, cx.Super
+	}
+	if mid == 0 || super == nil {
+		// A block that is a method's body (define_method) has no method context
+		// of its own: its caller's frame is the method, with its name and class.
+		if m, tc := mrb.aotCiInfo(); m != 0 && tc != nil {
+			mid, super = m, tc
+		}
+	}
+	if mid == 0 || super == nil {
 		e := mrb.ExcNew(mrb.ENoMethodError(), "super called outside of method")
 		return nilValue, mrb.AotSetExc(e)
 	}
@@ -794,7 +805,7 @@ func (mrb *MrbState) AotSuper(self Value, cx *AotCtx, args []Value, blk Value, k
 	if kw {
 		mode |= 2
 	}
-	return mrb.aotDispatch(mode, self, cx.Mid, cx.Super, args, blk)
+	return mrb.aotDispatch(mode, self, mid, super, args, blk)
 }
 
 // AotYield calls block with arguments (OP_BLKCALL)
@@ -1767,21 +1778,57 @@ func (mrb *MrbState) AotDefinedConst(cx *AotCtx, sym Value) Value {
 }
 
 // AotDefinedConstPath implements defined?(Parent::Child)
-func (mrb *MrbState) AotDefinedConstPath(cx *AotCtx, parent, child Value) Value {
-	if parent.Type() != MrbTTSymbol || child.Type() != MrbTTSymbol || !mrb.aotConstDefined(cx, parent.Symbol()) {
+func (mrb *MrbState) AotDefinedConstPath(cx *AotCtx, start, path Value) Value {
+	if path.Type() != MrbTTArray {
 		return nilValue
 	}
-	pv := mrb.AotConstGet(cx, parent.Symbol())
-	if mrb.p.exc != nil {
-		mrb.p.exc = nil
+	n := mrb.AotAryLen(path)
+	if n == 0 || mrb.AotAryRef(path, 0).Type() != MrbTTSymbol {
 		return nilValue
 	}
-	switch pv.Type() {
-	case MrbTTClass, MrbTTModule, MrbTTSClass:
-	default:
-		return nilValue
+	// nil: the first name is looked up where the code stands; otherwise
+	// (::X, or an expression's value) from the object the caller evaluated
+	outer := start
+	i := 0
+	if start.IsNil() {
+		first := mrb.AotAryRef(path, 0).Symbol()
+		if !mrb.aotConstDefined(cx, first) {
+			return nilValue
+		}
+		if n == 1 {
+			return mrb.aotDefinedStr(true, "constant")
+		}
+		outer = mrb.AotConstGet(cx, first)
+		if mrb.p.exc != nil {
+			mrb.p.exc = nil
+			return nilValue
+		}
+		i = 1
 	}
-	return mrb.aotDefinedStr(C.mrb_const_defined(mrb.p, pv.v, C.mrb_sym(child.Symbol())) != false, "constant")
+	for ; i < n; i++ {
+		switch outer.Type() {
+		case MrbTTClass, MrbTTModule, MrbTTSClass:
+		default:
+			return nilValue
+		}
+		name := mrb.AotAryRef(path, i)
+		if name.Type() != MrbTTSymbol {
+			return nilValue
+		}
+		if C.mrb_const_defined(mrb.p, outer.v, C.mrb_sym(name.Symbol())) == false {
+			return nilValue
+		}
+		if i < n-1 {
+			// a name before the last is read (it may be an autoload)
+			v, err := mrb.AotCall(nilValue, outer, mrb.Intern("const_get"), []Value{name}, nilValue, true, false)
+			if err != nil {
+				mrb.p.exc = nil
+				return nilValue
+			}
+			outer = v
+		}
+	}
+	return mrb.aotDefinedStr(true, "constant")
 }
 
 // AotDefinedCVar implements defined?(@@var)
