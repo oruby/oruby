@@ -349,3 +349,119 @@ t("UTF-16 length") { ["abあ".encode("UTF-16LE").length, "abあ".encode("UTF-32L
 		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// Fibers of a compiled program run on goroutines: Fiber.yield crosses the Go
+// frames of compiled blocks and methods, and Enumerator#next works.
+func TestAOTFibers(t *testing.T) {
+	src := `
+def t(name); r = yield; puts "#{name}: #{r.inspect}"; rescue Exception => e; puts "#{name}: RAISED #{e.class}: #{e.message}"; end
+t("basic") { f = Fiber.new { |x| y = Fiber.yield(x + 1); z = Fiber.yield(y * 2); :done }; [f.resume(1), f.resume(10), f.resume(0), f.alive?] }
+t("yield in a block") { f = Fiber.new { [1, 2, 3].each { |x| Fiber.yield x }; :end }; [f.resume, f.resume, f.resume, f.resume] }
+t("yield in a method") { def gen; 3.times { |i| Fiber.yield i * 10 }; :fin; end; f = Fiber.new { gen }; [f.resume, f.resume, f.resume, f.resume] }
+t("Enumerator#next") { e = [10, 20, 30].each; [e.next, e.next, e.next, (e.next rescue :stop)] }
+t("Enumerator.new") { e = Enumerator.new { |y| y << 1; y << 2 }; [e.next, e.next, e.take(2)] }
+t("lazy") { (1..Float::INFINITY).lazy.map { |x| x * 2 }.select { |x| x % 3 == 0 }.first(3) }
+t("exception") { f = Fiber.new { raise ArgumentError, "boom" }; begin; f.resume; rescue => e; [e.class, e.message, f.alive?]; end }
+t("terminated") { f = Fiber.new { 1 }; f.resume; begin; f.resume; rescue FiberError => e; e.message; end }
+t("root yield") { begin; Fiber.yield; rescue FiberError => e; e.message; end }
+t("nested") { a = Fiber.new { b = Fiber.new { Fiber.yield :in1; :in2 }; [b.resume, Fiber.yield(:out1), b.resume] }; [a.resume, a.resume(:x)] }
+t("raise into") { f = Fiber.new { begin; Fiber.yield 1; rescue => e; [:caught, e.message]; end }; f.resume; f.raise("injected") }
+t("kill runs ensure") { f = Fiber.new { begin; Fiber.yield 1; ensure; $ens = :ran; end }; f.resume; f.kill; [f.alive?, $ens] }
+t("200 fibers") { fs = 200.times.map { |i| Fiber.new { Fiber.yield i; i * 2 } }; fs.map(&:resume).sum + fs.map(&:resume).sum }
+t("in a thread") { Thread.new { f = Fiber.new { Fiber.yield 1; 2 }; [f.resume, f.resume] }.value }
+t("resume itself") { f = Fiber.new { f.resume }; begin; f.resume; rescue FiberError => e; e.message; end }
+t("resume a resuming fiber") { root = Fiber.current; f = Fiber.new { root.resume }; begin; f.resume; rescue FiberError => e; e.message; end }
+t("transfer") { begin; Fiber.new { 1 }.transfer; rescue FiberError => e; e.message[0, 31]; end }
+t("storage") { Fiber[:k] = 1; [Fiber.new { Fiber[:k] }.resume, Fiber.new(storage: nil) { Fiber[:k] }.resume, Fiber.new(storage: {k: 2}) { Fiber[:k] }.resume] }
+t("root status") { Fiber.current.inspect.end_with?("(resumed)>") }
+`
+	want := strings.Join([]string{
+		`basic: [2, 20, :done, false]`,
+		`yield in a block: [1, 2, 3, :end]`,
+		`yield in a method: [0, 10, 20, :fin]`,
+		`Enumerator#next: [10, 20, 30, :stop]`,
+		`Enumerator.new: [1, 2, [1, 2]]`,
+		`lazy: [6, 12, 18]`,
+		`exception: [ArgumentError, "boom", false]`,
+		`terminated: "attempt to resume a terminated fiber"`,
+		`root yield: "attempt to yield on a not resumed fiber"`,
+		`nested: [:out1, [:in1, :x, :in2]]`,
+		`raise into: [:caught, "injected"]`,
+		`kill runs ensure: [false, :ran]`,
+		`200 fibers: 59700`,
+		`in a thread: [1, 2]`,
+		`resume itself: "attempt to resume the current fiber"`,
+		`resume a resuming fiber: "attempt to resume a resuming fiber"`,
+		`transfer: "Fiber#transfer is not supported"`,
+		`storage: [1, nil, 2]`,
+		`root status: true`,
+	}, "\n")
+	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A define_method block becomes a method body: its `return` ends the method,
+// not the frame the block was written in (a class body or the script itself).
+func TestAOTDefineMethodReturn(t *testing.T) {
+	src := `
+def t(name); r = yield; puts "#{name}: #{r.inspect}"; rescue Exception => e; puts "#{name}: RAISED #{e.class}"; end
+k = Class.new do
+  define_method(:a) { |x| return x * 2 }
+  define_method(:b) { |x, y = 1| return x, y }
+  define_method(:c) { |x| [1, 2, 3].each { |v| return v if v == x }; :none }
+  define_method(:d) { |x| if x > 0 then return :pos end; :nonpos }
+  define_method(:e) { return }
+  define_method(:f) { |x| begin; return :from_begin; ensure; $ens = x; end }
+end
+o = k.new
+o.define_singleton_method(:g) { |x| return x + 100 }
+t("value") { o.a(21) }
+t("several values") { o.b(1) }
+t("from a nested block") { o.c(2) }
+t("conditional") { [o.d(1), o.d(-1)] }
+t("bare") { o.e }
+t("with ensure") { [o.f(7), $ens] }
+t("singleton") { o.g(1) }
+puts "the script goes on"
+`
+	want := strings.Join([]string{
+		`value: 42`,
+		`several values: [1, 1]`,
+		`from a nested block: 2`,
+		`conditional: [:pos, :nonpos]`,
+		`bare: nil`,
+		`with ensure: [:from_begin, 7]`,
+		`singleton: 101`,
+		`the script goes on`,
+	}, "\n")
+	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A compiled program ends as oruby does: at_exit handlers run, SystemExit
+// gives the status, and SIGTERM raises SignalException (SIGINT: Interrupt).
+func TestAOTProgramEnd(t *testing.T) {
+	src := `
+at_exit { puts "at_exit 1" }
+at_exit { puts "at_exit 2" }
+begin
+  Process.kill(:TERM, Process.pid)
+  sleep 1
+rescue SignalException => e
+  puts "signal: #{e.signm}"
+end
+begin
+  Process.kill(:INT, Process.pid)
+  sleep 1
+rescue Interrupt
+  puts "interrupt"
+end
+puts "end of script"
+`
+	want := strings.Join([]string{"signal: SIGTERM", "interrupt", "end of script", "at_exit 2", "at_exit 1"}, "\n")
+	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}

@@ -222,7 +222,6 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		buf.WriteString("\t\"embed\"\n")
 	}
 	if g.opts.Standalone {
-		buf.WriteString("\t\"fmt\"\n")
 		buf.WriteString("\t\"os\"\n")
 	}
 	if isBundle {
@@ -239,6 +238,7 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 	}
 	if g.opts.Standalone {
 		buf.WriteString("\t_ \"github.com/oruby/oruby/gem/stdlib\"\n")
+		buf.WriteString("\torubysignal \"github.com/oruby/oruby/gem/signal\"\n")
 		for _, ext := range g.opts.GoExts {
 			if !aliasedPaths[ext.ImportPath] {
 				fmt.Fprintf(&buf, "\t_ %q\n", ext.ImportPath)
@@ -251,11 +251,6 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 		g.emitEmbed(&buf)
 	}
 
-	var symSysExit, symStatus string
-	if g.opts.Standalone {
-		symSysExit = g.internSym("SystemExit")
-		symStatus = g.internSym("status")
-	}
 	if isBundle {
 		g.internSym("require")
 		g.internSym("require_relative")
@@ -308,29 +303,23 @@ func (g *CodeGen) GenerateBundle(modules []*ModuleUnit) (string, error) {
 			entry = modules[0].RelPath
 		}
 		buf.WriteString("func main() {\n")
-		buf.WriteString("\tmrb := oruby.MrbOpen()\n\n")
+		buf.WriteString("\tmrb := oruby.MrbOpen()\n")
+		// MRI's handlers: SIGINT raises Interrupt, SIGTERM & co. SignalException
+		buf.WriteString("\torubysignal.InstallDefaults(mrb)\n\n")
 		buf.WriteString("\tmrb.DefineGlobalConst(\"ARGV\", mrb.Value(os.Args[1:]))\n")
 		buf.WriteString(fmt.Sprintf("\tmrb.SetGV(\"$0\", %q)\n", entry))
 		buf.WriteString(fmt.Sprintf("\tmrb.SetGV(\"$PROGRAM_NAME\", %q)\n", entry))
-		buf.WriteString("\tres, err := Run(mrb)\n")
+		// the end of the program as oruby's: at_exit handlers, the uncaught
+		// exception, SystemExit's status; the value of the script is not printed
+		buf.WriteString("\t_, err := Run(mrb)\n")
+		buf.WriteString("\tcode := 0\n")
 		buf.WriteString("\tif err != nil {\n")
-		buf.WriteString("\t\texc := mrb.Exc()\n")
-		buf.WriteString(fmt.Sprintf("\t\tif exc != nil && exc.IsKindOf(mrb.ClassGetID(%s)) {\n", symSysExit))
-		buf.WriteString("\t\t\tcode := 0\n")
-		buf.WriteString(fmt.Sprintf("\t\t\tif st, e := mrb.AotCall0(mrb.TopSelf(), exc.Value(), %s, true); e == nil && st.Type() == oruby.MrbTTInteger {\n", symStatus))
-		buf.WriteString("\t\t\t\tcode = st.Int()\n\t\t\t}\n")
-		buf.WriteString("\t\t\tmrb.ExcClear()\n")
-		buf.WriteString("\t\t\tmrb.Close()\n")
-		buf.WriteString("\t\t\tos.Exit(code)\n")
-		buf.WriteString("\t\t}\n")
-		buf.WriteString("\t\tfmt.Fprintf(os.Stderr, \"Execution error: %v\\n\", err)\n")
-		buf.WriteString("\t\tmrb.ExcClear()\n")
-		buf.WriteString("\t\tmrb.Close()\n")
-		buf.WriteString("\t\tos.Exit(1)\n")
+		buf.WriteString("\t\tcode, _ = mrb.ReportException(os.Args[0], err)\n")
+		buf.WriteString("\t} else {\n")
+		buf.WriteString("\t\tcode = mrb.FinishProgram(os.Args[0])\n")
 		buf.WriteString("\t}\n")
-		// the value of the script is not printed: a program prints what it prints
-		buf.WriteString("\t_ = res\n")
 		buf.WriteString("\tmrb.Close()\n")
+		buf.WriteString("\tos.Exit(code)\n")
 		buf.WriteString("}\n")
 	}
 
@@ -449,7 +438,6 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		buf.WriteString("\t\"embed\"\n")
 	}
 	if g.opts.Standalone {
-		buf.WriteString("\t\"fmt\"\n")
 		buf.WriteString("\t\"os\"\n")
 	}
 	if isBundle {
@@ -464,6 +452,7 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 	}
 	if g.opts.Standalone {
 		buf.WriteString("\t_ \"github.com/oruby/oruby/gem/stdlib\"\n")
+		buf.WriteString("\torubysignal \"github.com/oruby/oruby/gem/signal\"\n")
 		for _, ext := range g.opts.GoExts {
 			fmt.Fprintf(&buf, "\t_ %q\n", ext.ImportPath)
 		}
@@ -474,11 +463,6 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 		g.emitEmbed(&buf)
 	}
 
-	var symSysExit, symStatus string
-	if g.opts.Standalone {
-		symSysExit = g.internSym("SystemExit")
-		symStatus = g.internSym("status")
-	}
 	if isBundle {
 		g.internSym("require")
 		g.internSym("require_relative")
@@ -530,29 +514,23 @@ func (g *CodeGen) GeneratePackageFiles(modules []*ModuleUnit) (map[string]string
 			entry = modules[0].RelPath
 		}
 		buf.WriteString("func main() {\n")
-		buf.WriteString("\tmrb := oruby.MrbOpen()\n\n")
+		buf.WriteString("\tmrb := oruby.MrbOpen()\n")
+		// MRI's handlers: SIGINT raises Interrupt, SIGTERM & co. SignalException
+		buf.WriteString("\torubysignal.InstallDefaults(mrb)\n\n")
 		buf.WriteString("\tmrb.DefineGlobalConst(\"ARGV\", mrb.Value(os.Args[1:]))\n")
 		buf.WriteString(fmt.Sprintf("\tmrb.SetGV(\"$0\", %q)\n", entry))
 		buf.WriteString(fmt.Sprintf("\tmrb.SetGV(\"$PROGRAM_NAME\", %q)\n", entry))
-		buf.WriteString("\tres, err := Run(mrb)\n")
+		// the end of the program as oruby's: at_exit handlers, the uncaught
+		// exception, SystemExit's status; the value of the script is not printed
+		buf.WriteString("\t_, err := Run(mrb)\n")
+		buf.WriteString("\tcode := 0\n")
 		buf.WriteString("\tif err != nil {\n")
-		buf.WriteString("\t\texc := mrb.Exc()\n")
-		buf.WriteString(fmt.Sprintf("\t\tif exc != nil && exc.IsKindOf(mrb.ClassGetID(%s)) {\n", symSysExit))
-		buf.WriteString("\t\t\tcode := 0\n")
-		buf.WriteString(fmt.Sprintf("\t\t\tif st, e := mrb.AotCall0(mrb.TopSelf(), exc.Value(), %s, true); e == nil && st.Type() == oruby.MrbTTInteger {\n", symStatus))
-		buf.WriteString("\t\t\t\tcode = st.Int()\n\t\t\t}\n")
-		buf.WriteString("\t\t\tmrb.ExcClear()\n")
-		buf.WriteString("\t\t\tmrb.Close()\n")
-		buf.WriteString("\t\t\tos.Exit(code)\n")
-		buf.WriteString("\t\t}\n")
-		buf.WriteString("\t\tfmt.Fprintf(os.Stderr, \"Execution error: %v\\n\", err)\n")
-		buf.WriteString("\t\tmrb.ExcClear()\n")
-		buf.WriteString("\t\tmrb.Close()\n")
-		buf.WriteString("\t\tos.Exit(1)\n")
+		buf.WriteString("\t\tcode, _ = mrb.ReportException(os.Args[0], err)\n")
+		buf.WriteString("\t} else {\n")
+		buf.WriteString("\t\tcode = mrb.FinishProgram(os.Args[0])\n")
 		buf.WriteString("\t}\n")
-		// the value of the script is not printed: a program prints what it prints
-		buf.WriteString("\t_ = res\n")
 		buf.WriteString("\tmrb.Close()\n")
+		buf.WriteString("\tos.Exit(code)\n")
 		buf.WriteString("}\n")
 	}
 
@@ -641,7 +619,7 @@ func (g *CodeGen) analyze(u *IRepUnit, parent *IRepUnit, kind unitKind, childIdx
 				kinds[ins.B] = kindLambda
 			}
 		case OpBLOCK:
-			if int(ins.B) < len(kinds) && isLambdaCall(u, idx) {
+			if int(ins.B) < len(kinds) && (isLambdaCall(u, idx) || isMethodBodyBlock(u, idx)) {
 				kinds[ins.B] = kindLambda
 			}
 		case OpEXEC:
@@ -682,6 +660,23 @@ func isLambdaCall(u *IRepUnit, idx int) bool {
 	}
 	nx := u.Instructions[idx+1]
 	return nx.Op == OpSSENDB && nx.C == 0 && nx.A+1 == ins.A && int(nx.B) < len(u.Syms) && u.Syms[nx.B] == "lambda"
+}
+
+// isMethodBodyBlock reports whether OpBLOCK at idx is the block of a
+// define_method / define_singleton_method call. That block becomes a method
+// body, whose `return` ends the method: it is compiled as a lambda is, or the
+// return would unwind to the frame the block was written in (a class body, or
+// the top level of the script, which it would end).
+func isMethodBodyBlock(u *IRepUnit, idx int) bool {
+	if idx+1 >= len(u.Instructions) {
+		return false
+	}
+	ins, nx := u.Instructions[idx], u.Instructions[idx+1]
+	if (nx.Op != OpSSENDB && nx.Op != OpSENDB) || int(nx.B) >= len(u.Syms) || int(nx.A)+1+int(nx.C) != int(ins.A) {
+		return false
+	}
+	name := u.Syms[nx.B]
+	return name == "define_method" || name == "define_singleton_method"
 }
 
 // subtreeHas checks unit and its blocks/lambdas (not nested methods or classes)

@@ -26,6 +26,13 @@ void _orb_tstate_finish(mrb_state *mrb, orb_tstate *st);
 void _orb_tstate_free(mrb_state *mrb, orb_tstate *st);
 mrb_value _orb_tstate_fiber(mrb_state *mrb, orb_tstate *st);
 int _orb_thread_run(mrb_state *mrb, mrb_value body, mrb_value *result);
+
+// Fibers over goroutines (fiber_go.go): the context of a Fiber object, made
+// as a thread's is, and the calls that switch it
+orb_tstate *_orb_fiber_init(mrb_state *mrb, mrb_value fiber, mrb_value body);
+orb_tstate *_orb_tstate_alloc(void);
+void _orb_ctx_status(mrb_state *mrb, int status);
+int _orb_fiber_run(mrb_state *mrb, mrb_value body, mrb_int argc, const mrb_value *argv, mrb_value *result);
 void _orb_threads_active(int delta);
 
 #endif

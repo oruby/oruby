@@ -203,6 +203,7 @@ func (mrb *MrbState) AotInit() {
 		return
 	}
 	C._aot_init(mrb.p)
+	mrb.EnableGoFibers() // a Fiber.yield must cross the Go frames of compiled code
 	st := mrb.aot
 	if st == nil {
 		st = &aotState{}

@@ -94,6 +94,11 @@ type MrbState struct {
 	atExitStatusSet bool
 
 	funcIndex map[unsafe.Pointer]int // registerMrbFuncT: a funcval's index
+
+	goFibers bool // Fibers run on goroutines (fiber_go.go)
+	fibers   map[uintptr]*fiberUnit
+	curFiber *fiberUnit // the running goroutine Fiber; nil for the thread's own context
+	mainRoot *fiberUnit // the main thread's own context, before the first Thread.new
 }
 
 // coreMu serializes writes to go-mrb.c's process-wide tables (virtual
@@ -143,6 +148,10 @@ func NewCore() (*MrbState, error) {
 		Nil,
 		0,
 		false,
+		nil,
+		false,
+		nil,
+		nil,
 		nil,
 	}
 

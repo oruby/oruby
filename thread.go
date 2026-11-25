@@ -65,6 +65,8 @@ type Thread struct {
 	intr    atomic.Bool // an interrupt was posted (Thread#raise, #kill)
 
 	fiberSched   bool        // a Fiber scheduler is set (Fiber.set_scheduler)
+	curFiber     *fiberUnit  // the goroutine Fiber it runs while it is switched out (fiber_go.go)
+	rootUnit     *fiberUnit  // its own context as the unit that resumes a Fiber
 	fiberJoiners []fiberWait // non-blocking fibers joining it (unblocked when it ends)
 
 	// guarded by threadSched.mu
@@ -318,6 +320,7 @@ func (s *threadSched) yield(t *Thread) {
 
 func (mrb *MrbState) threadOut(t *Thread) {
 	t.fastArgs, t.hasFastArgs = mrb.fastArgs, mrb.hasFastArgs
+	t.curFiber = mrb.curFiber
 	if mrb.aot != nil {
 		t.aotDepth = mrb.aot.depth
 		t.aotIntDisabled = mrb.aot.intDisabled
@@ -329,6 +332,7 @@ func (mrb *MrbState) threadIn(t *Thread) {
 	s := mrb.sched
 	C._orb_tstate_load(mrb.p, t.st, t.keep.v)
 	mrb.fastArgs, mrb.hasFastArgs = t.fastArgs, t.hasFastArgs
+	mrb.curFiber = t.curFiber
 	if mrb.aot != nil {
 		mrb.aot.depth = t.aotDepth
 		mrb.aot.intDisabled = t.aotIntDisabled

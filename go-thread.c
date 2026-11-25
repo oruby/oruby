@@ -172,3 +172,55 @@ _orb_thread_run(mrb_state *mrb, mrb_value body, mrb_value *result)
 {
   return _go_mrb_protect(mrb, orb_thread_body, &body, result);
 }
+
+// the context of Fiber object fiber, with the stacks and the arena a thread's
+// has; it starts CREATED, and its first resume runs body in it on a goroutine
+orb_tstate *
+_orb_fiber_init(mrb_state *mrb, mrb_value fiber, mrb_value body)
+{
+  struct RFiber *f = (struct RFiber *)mrb_ptr(fiber);
+  struct mrb_context *c = (struct mrb_context *)mrb_malloc(mrb, sizeof(struct mrb_context));
+  memset(c, 0, sizeof(*c));
+  c->status = MRB_FIBER_CREATED;
+  c->stbase = (mrb_value *)mrb_malloc(mrb, ORB_STACK_INIT * sizeof(mrb_value));
+  c->stend = c->stbase + ORB_STACK_INIT;
+  for (int i = 0; i < ORB_STACK_INIT; i++) c->stbase[i] = mrb_nil_value();
+  c->cibase = (mrb_callinfo *)mrb_calloc(mrb, ORB_CI_INIT, sizeof(mrb_callinfo));
+  c->ciend = c->cibase + ORB_CI_INIT;
+  c->ci = c->cibase;
+  c->ci->u.target_class = mrb->object_class;
+  c->ci->proc = mrb_proc_ptr(body);
+  c->ci->stack = c->stbase;
+  c->ci->vis = 1;
+  f->cxt = c;
+  c->fib = f;
+
+  orb_tstate *st = (orb_tstate *)calloc(1, sizeof(orb_tstate));
+  st->c = st->root_c = c;
+  st->arena_capa = MRB_GC_ARENA_SIZE;
+  st->arena = (struct RBasic **)mrb_malloc(mrb, sizeof(struct RBasic *) * st->arena_capa);
+  st->arena_idx = 0;
+  st->owned_arena = 1;
+  return st;
+}
+
+// a slot to save a thread's own part of the state in when it resumes a fiber
+orb_tstate *
+_orb_tstate_alloc(void)
+{
+  return (orb_tstate *)calloc(1, sizeof(orb_tstate));
+}
+
+// the status of the running context (enum mrb_fiber_state)
+void
+_orb_ctx_status(mrb_state *mrb, int status)
+{
+  mrb->c->status = (enum mrb_fiber_state)status;
+}
+
+// run a fiber's block with the arguments of its first resume
+int
+_orb_fiber_run(mrb_state *mrb, mrb_value body, mrb_int argc, const mrb_value *argv, mrb_value *result)
+{
+  return _mrb_yield_argv(mrb, body, argc, argv, result);
+}
