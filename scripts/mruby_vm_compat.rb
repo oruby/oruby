@@ -335,6 +335,12 @@ module ORubyVMCompat
   # "#{a}#{b}": a BINARY and a UTF-8 string, both with other than ASCII, do
   # not combine (Encoding::CompatibilityError, as String#+); the bytes are
   # read only when the two flags differ
+  # Float#divmod and #%: a zero remainder keeps the dividend's sign
+  # ((-2.0).divmod(1.0) == [-2, -0.0]), as MRI's flodivmod
+  def self.float_divmod(source)
+    replace(source, "  if (div == 0) div = 0.0;\n  if (mod == 0) mod = 0.0;\n", "  if (div == 0) div = 0.0;\n")
+  end
+
   def self.strcat_encoding_check(source)
     replace(source, "      if (mrb_string_p(ret)) {\n        mrb_str_cat_str(mrb, regs[a], ret);\n", <<~'C'.gsub(/^/, "      "))
       if (mrb_string_p(ret)) {
@@ -1075,6 +1081,10 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
 
   def self.chilled_uplus(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
+    # String#clear leaves the string NUL-terminated, as MRI's (a C extension
+    # reads RSTRING_PTR as a C string)
+    replace(source, "  mrb_str_modify(mrb, s);\n  RSTR_SET_LEN(s, 0);\n  return self;\n",
+      "  mrb_str_modify(mrb, s);\n  RSTR_SET_LEN(s, 0);\n  RSTR_PTR(s)[0] = '\\0';\n  return self;\n")
     replace(source, "  if (mrb_frozen_p(mrb_obj_ptr(str))) {\n    return str_copy_with_class(mrb, str);", <<~'C'.chomp.gsub(/^/, "  "))
       if (mrb_frozen_p(mrb_obj_ptr(str)) || (mrb_basic_ptr(str)->flags & ORUBY_STRING_CHILLED)) {
         return str_copy_with_class(mrb, str);
@@ -1775,7 +1785,7 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       "vm" => :vm, "gc" => :gc, "class" => :const_names, "refinement" => :refinement,
       "proc" => :proc_identity, "array" => :array_splat, "variable" => :variable,
       "error" => :chilled_mutation, "kernel" => :defined_queries, "object" => :kind_of_mt,
-      "symbol" => :symbol_encodings
+      "symbol" => :symbol_encodings, "numeric" => :float_divmod
     }.each do |name, patch|
       original = File.join(inputs, "#{name}.c")
       generated = File.join(overrides, "#{name}.c")

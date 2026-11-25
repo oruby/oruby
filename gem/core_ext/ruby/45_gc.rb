@@ -43,6 +43,19 @@ module GC
       @__oruby_stress = (Integer === flag) ? flag : (flag ? true : false)
     end
 
+    # mruby's collector does not move objects: compaction is a collection
+    # that moves none, reported as MRI's GC.latest_compact_info
+    def compact
+      start
+      latest_compact_info
+    end
+
+    def latest_compact_info = {considered: {}, moved: {}, moved_up: {}, moved_down: {}}
+
+    def verify_compaction_references(toward: nil, double_heap: false, expand_heap: false)
+      compact
+    end
+
     def auto_compact = @__oruby_auto_compact
     def auto_compact=(flag)
       @__oruby_auto_compact = flag ? true : false

@@ -511,6 +511,15 @@ func (runner *cmdRunner) parseFd(key, val oruby.Value) {
 		return
 	}
 
+	// an IO key is the child's descriptor of its number (w => w keeps a
+	// pipe end open in the child, as MRI's)
+	if !key.IsArray() && mrb.RespondTo(key, oruby.Sym_fileno) {
+		if fd, err := mrb.Funcall(key, oruby.Sym_fileno); err == nil && fd.Value().IsInteger() {
+			runner.parseFd(fd.Value(), val)
+			return
+		}
+	}
+
 	if key.IsData() {
 		if file, ok := mrb.Data(val).(*os.File); ok {
 			switch file {

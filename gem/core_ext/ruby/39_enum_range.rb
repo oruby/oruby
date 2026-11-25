@@ -800,7 +800,8 @@ class Range
   def bsearch(&block)
     b = self.begin
     e = self.end
-    unless (b.nil? || Numeric === b) && (e.nil? || Numeric === e)
+    # Integer and Float ends only (Rational, BigDecimal: TypeError), as MRI's
+    unless (b.nil? || Integer === b || Float === b) && (e.nil? || Integer === e || Float === e)
       raise TypeError, "can't do binary search for #{(b || e).class}"
     end
     return to_enum(:bsearch) { nil } unless block

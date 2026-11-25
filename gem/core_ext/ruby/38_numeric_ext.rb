@@ -1172,6 +1172,18 @@ class Rational
           return Rational(num / g2, den / g2)
         end
       end
+      if (op == :* || op == :/) && (Integer === other || Rational === other)
+        begin
+          return __send__(orig, other)
+        rescue RangeError
+          # mruby's int64 Rational overflowed: the product in Integers
+          c = other.numerator
+          d = other.denominator
+          c, d = d, c if op == :/
+          raise ZeroDivisionError, "divided by 0" if d == 0
+          return Rational(numerator * c, denominator * d)
+        end
+      end
       if Integer === other || Rational === other || Complex === other
         return __send__(orig, other)
       end

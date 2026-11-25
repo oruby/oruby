@@ -170,13 +170,17 @@ class Module
 end
 
 class Hash
-  alias __oruby_fetch fetch
+  alias __oruby_hash_key? key?
+  # MRI's: the table's own lookup, not #[] or #key? a subclass redefines
+  # (Oj::EasyHash#[] calls fetch)
   def fetch(key, *default, &block)
-    if !default.empty? && block && default.size == 1
-      warn("warning: block supersedes default value argument")
-      return key?(key) ? self[key] : block.call(key)
+    raise ArgumentError, "wrong number of arguments (given #{default.size + 1}, expected 1..2)" if default.size > 1
+    return __oruby_hash_aref(key) if __oruby_hash_key?(key)
+    if block
+      warn("warning: block supersedes default value argument") unless default.empty?
+      return block.call(key)
     end
-    return __oruby_fetch(key, *default, &block) if !default.empty? || block || key?(key)
+    return default[0] unless default.empty?
     raise KeyError.new("key not found: #{key.inspect}", receiver: self, key: key)
   end
 end

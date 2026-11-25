@@ -93,7 +93,28 @@ func (d *decimal) exponent() int64 {
 	if d.kind != kFinite || d.isZero() {
 		return 0
 	}
-	return d.digits() + d.exp
+	return satAdd(d.digits(), d.exp)
+}
+
+// The range of BigDecimal#exponent, as MRI's (its exponent counts BASE
+// words in an intptr_t): above it a value overflows to Infinity, below it
+// underflows to 0.
+const (
+	expMax = math.MaxInt64 / 9 * 9 // 9223372036854775800
+	expMin = -9223372036854775799  // (INTPTR_MIN - 2) / 9 * 9 + 9 + 1, floored
+)
+
+// satAdd is a+b, saturating at the int64 bounds (beyond the exponent range
+// either way, so an overflowing exponent is an over/underflow, not a wrap)
+func satAdd(a, b int64) int64 {
+	c := a + b
+	if (c > a) != (b > 0) {
+		if b > 0 {
+			return math.MaxInt64
+		}
+		return math.MinInt64
+	}
+	return c
 }
 
 func pow10(n int64) *big.Int {
@@ -222,13 +243,9 @@ func mul(a, b *decimal) *decimal {
 	if a.isZero() || b.isZero() {
 		return zero(a.neg != b.neg)
 	}
-	if b.exp > 0 && a.exp > math.MaxInt64-b.exp {
-		return inf(a.neg != b.neg)
-	}
-	if b.exp < 0 && a.exp < math.MinInt64-b.exp {
-		return zero(a.neg != b.neg)
-	}
-	return newFinite(a.neg != b.neg, new(big.Int).Mul(a.coef, b.coef), a.exp+b.exp)
+	// an exponent beyond int64 saturates: wrap makes it Infinity or 0 under
+	// the exception modes
+	return newFinite(a.neg != b.neg, new(big.Int).Mul(a.coef, b.coef), satAdd(a.exp, b.exp))
 }
 
 // words counts base 10**9 words of internal representation (precision rules)
@@ -297,7 +314,7 @@ func div(a, b *decimal, prec int64, mode int) *decimal {
 		q.Add(q, big.NewInt(1))
 		shift++
 	}
-	res := newFinite(a.neg != b.neg, q, a.exp-b.exp-shift)
+	res := newFinite(a.neg != b.neg, q, satAdd(satAdd(a.exp, -b.exp), -shift))
 	return roundSig(res, prec, mode)
 }
 
@@ -446,7 +463,10 @@ func sqrt(d *decimal, n int64) *decimal {
 
 // -- parsing ---------------------------------------------------------------
 
-var reDecimal = regexp.MustCompile(`\A\s*([-+])?(\d+(?:_\d+)*)?(?:\.(\d+(?:_\d+)*)?)?(?:[eEdD]([-+]?\d+))?\s*\z`)
+var reDecimal = regexp.MustCompile(`\A\s*([-+])?(\d+(?:_\d+)*)?(?:\.(\d+(?:_\d+)*)?)?(?:[eEdD]([-+]?\d+(?:_\d+)*))?\s*\z`)
+
+// an integer may end in one underscore, with nothing after it ("1_1_1_")
+var reTrailingUnderscore = regexp.MustCompile(`\A(\s*[-+]?\d+(?:_\d+)*)_(\s*)\z`)
 
 func parse(s string, strict bool) (*decimal, bool) {
 	t := strings.TrimSpace(s)
@@ -457,6 +477,9 @@ func parse(s string, strict bool) (*decimal, bool) {
 		return inf(false), true
 	case "-Infinity":
 		return inf(true), true
+	}
+	if t := reTrailingUnderscore.FindStringSubmatch(s); t != nil {
+		s = t[1] + t[2]
 	}
 	m := reDecimal.FindStringSubmatch(s)
 	if m == nil || (m[2] == "" && m[3] == "") {
@@ -479,12 +502,12 @@ func parse(s string, strict bool) (*decimal, bool) {
 	frac := strings.ReplaceAll(m[3], "_", "")
 	var exp int64
 	if m[4] != "" {
-		v, err := strconv.ParseInt(m[4], 10, 64)
-		if err != nil {
+		v, err := strconv.ParseInt(strings.ReplaceAll(m[4], "_", ""), 10, 64)
+		if err != nil { // beyond int64: saturated, for wrap's range check
+			v = math.MaxInt64
 			if strings.HasPrefix(m[4], "-") {
-				return zero(m[1] == "-"), true
+				v = math.MinInt64
 			}
-			return inf(m[1] == "-"), true
 		}
 		exp = v
 	}
@@ -492,7 +515,7 @@ func parse(s string, strict bool) (*decimal, bool) {
 	if !ok {
 		coef = new(big.Int)
 	}
-	return newFinite(m[1] == "-", coef, exp-int64(len(frac))), true
+	return newFinite(m[1] == "-", coef, satAdd(exp, -int64(len(frac)))), true
 }
 
 // -- formatting ------------------------------------------------------------
@@ -621,8 +644,6 @@ func (d *decimal) truncInt() *big.Int {
 
 // -- Ruby binding ----------------------------------------------------------
 
-var limitDigits int64
-
 func init() {
 	oruby.LazyGem("bigdecimal.so", func(mrb *oruby.MrbState) interface{} {
 		cls := rb.DataClass(mrb.DefineClass("BigDecimal", mrb.ClassGet("Numeric")))
@@ -661,7 +682,7 @@ func init() {
 			return wrap(mrb, negate(get(mrb, self)))
 		})
 		// x * 10**n, exactly (the library's Ruby scales with it)
-		m("_decimal_shift", 1, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		m("__decimal_shift", 1, func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			d := get(mrb, self)
 			if d.kind != kFinite || d.isZero() {
 				return self
@@ -745,17 +766,6 @@ func init() {
 			}
 			return mrb.FixnumValue(int(h))
 		})
-		cls.DefineClassMethod("__limit", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-			old := limitDigits
-			if v := mrb.GetArgsFirst(); !v.IsNil() {
-				n, _ := rb.Int(mrb, v)
-				if n < 0 {
-					return mrb.Raise(mrb.EArgumentError(), "argument must be positive")
-				}
-				limitDigits = n
-			}
-			return mrb.FixnumValue(int(old))
-		}, mrb.ArgsOpt(1))
 		cls.DefineClassMethod("__from_float", bdFromFloat, mrb.ArgsReq(2))
 		cls.DefineClassMethod("__log", bdLog, mrb.ArgsReq(2))
 		rb.LoadRuby(mrb, "<internal:bigdecimal.so>", coreRb)
@@ -789,9 +799,41 @@ func get(mrb *oruby.MrbState, v oruby.Value) *decimal {
 	return d
 }
 
-func wrap(mrb *oruby.MrbState, d *decimal) oruby.Value {
-	if limitDigits > 0 {
-		d = roundSig(d, limitDigits, roundHalfUp)
+// wrap makes d a BigDecimal: one beyond the exponent range is Infinity or
+// 0, a FloatDomainError where BigDecimal.mode has EXCEPTION_OVERFLOW or
+// EXCEPTION_UNDERFLOW on. BigDecimal.limit is the Ruby side's (core.rb).
+func wrap(mrb *oruby.MrbState, d *decimal) oruby.Value { return wrapMode(mrb, d, true) }
+
+// wrapQuiet is wrap for a value read from a string: beyond the exponent
+// range it is Infinity or 0, as MRI's, except that an overflow raises
+// "exponent overflow" under EXCEPTION_OVERFLOW (an underflow never does)
+func wrapQuiet(mrb *oruby.MrbState, d *decimal) oruby.Value { return wrapMode(mrb, d, false) }
+
+func wrapMode(mrb *oruby.MrbState, d *decimal, raise bool) oruby.Value {
+	if d.kind == kFinite && !d.isZero() {
+		// an exponent that saturated (satAdd) is out of range however
+		// its digits place it
+		if e := d.exponent(); e > expMax || e < expMin || d.exp == math.MinInt64 || d.exp == math.MaxInt64 {
+			over := e > expMax || d.exp == math.MaxInt64
+			flag, msg := 0x04, "Exponent underflow"
+			if over {
+				flag, msg = 0x01, "Exponent overflow"
+			}
+			if !raise && over {
+				raise, msg = true, "exponent overflow"
+			}
+			if raise {
+				cls := mrb.ClassGet("BigDecimal")
+				if v, err := mrb.Funcall(cls.Value(), mrb.Intern("__exc?"), mrb.FixnumValue(flag)); err == nil && v.Value().Bool() {
+					return mrb.Raise(mrb.ClassGet("FloatDomainError"), msg).Value()
+				}
+			}
+			if over {
+				d = inf(d.neg)
+			} else {
+				d = zero(d.neg)
+			}
+		}
 	}
 	cls := mrb.ClassGet("BigDecimal")
 	obj, err := mrb.ObjNew(cls)
@@ -822,7 +864,7 @@ func bdNew(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if p := a[1].Int64(); p > 0 {
 		d = roundSig(d, p, roundHalfUp)
 	}
-	return wrap(mrb, d)
+	return wrapQuiet(mrb, d)
 }
 
 func bdDiv(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

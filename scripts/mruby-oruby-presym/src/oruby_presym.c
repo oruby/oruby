@@ -235,6 +235,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "Argon2");
   (void)mrb_intern_lit(mrb, "ArgonHashFail");
   (void)mrb_intern_lit(mrb, "Attr");
+  (void)mrb_intern_lit(mrb, "AttributeDecl");
   (void)mrb_intern_lit(mrb, "BCrypt");
   (void)mrb_intern_lit(mrb, "BCryptPbkdf");
   (void)mrb_intern_lit(mrb, "BIG_ENDIAN");
@@ -340,10 +341,12 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "EXTENDED");
   (void)mrb_intern_lit(mrb, "Ed25519");
   (void)mrb_intern_lit(mrb, "Element");
+  (void)mrb_intern_lit(mrb, "ElementDecl");
   (void)mrb_intern_lit(mrb, "EncodeError");
   (void)mrb_intern_lit(mrb, "Encoding");
   (void)mrb_intern_lit(mrb, "EncodingError");
   (void)mrb_intern_lit(mrb, "Engine");
+  (void)mrb_intern_lit(mrb, "EntityDecl");
   (void)mrb_intern_lit(mrb, "EntityReference");
   (void)mrb_intern_lit(mrb, "Enumerable");
   (void)mrb_intern_lit(mrb, "Errno");
@@ -382,6 +385,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "Find");
   (void)mrb_intern_lit(mrb, "Fixnum");
   (void)mrb_intern_lit(mrb, "Float");
+  (void)mrb_intern_lit(mrb, "FloatDomainError");
   (void)mrb_intern_lit(mrb, "ForkSafety");
   (void)mrb_intern_lit(mrb, "Frame");
   (void)mrb_intern_lit(mrb, "Function");
@@ -755,6 +759,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__colourspace");
   (void)mrb_intern_lit(mrb, "__compile");
   (void)mrb_intern_lit(mrb, "__composite_over");
+  (void)mrb_intern_lit(mrb, "__compress");
   (void)mrb_intern_lit(mrb, "__connect");
   (void)mrb_intern_lit(mrb, "__connect_timeout");
   (void)mrb_intern_lit(mrb, "__conv");
@@ -767,6 +772,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__css");
   (void)mrb_intern_lit(mrb, "__decode_cell");
   (void)mrb_intern_lit(mrb, "__decode_stream");
+  (void)mrb_intern_lit(mrb, "__decompress");
   (void)mrb_intern_lit(mrb, "__defined_const_path?");
   (void)mrb_intern_lit(mrb, "__deflate_init");
   (void)mrb_intern_lit(mrb, "__diff");
@@ -788,8 +794,11 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__errinfo");
   (void)mrb_intern_lit(mrb, "__escape");
   (void)mrb_intern_lit(mrb, "__escape_html");
+  (void)mrb_intern_lit(mrb, "__exc?");
   (void)mrb_intern_lit(mrb, "__extract_band");
+  (void)mrb_intern_lit(mrb, "__feed");
   (void)mrb_intern_lit(mrb, "__feed_token");
+  (void)mrb_intern_lit(mrb, "__finish");
   (void)mrb_intern_lit(mrb, "__finished?");
   (void)mrb_intern_lit(mrb, "__fixed_length_secure_compare");
   (void)mrb_intern_lit(mrb, "__flatten");
@@ -812,6 +821,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__identical");
   (void)mrb_intern_lit(mrb, "__implicit");
   (void)mrb_intern_lit(mrb, "__inflate_init");
+  (void)mrb_intern_lit(mrb, "__init");
   (void)mrb_intern_lit(mrb, "__init_extension");
   (void)mrb_intern_lit(mrb, "__inner_html");
   (void)mrb_intern_lit(mrb, "__insert");
@@ -821,7 +831,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__is_immediate");
   (void)mrb_intern_lit(mrb, "__kind");
   (void)mrb_intern_lit(mrb, "__label__");
-  (void)mrb_intern_lit(mrb, "__limit");
   (void)mrb_intern_lit(mrb, "__linear");
   (void)mrb_intern_lit(mrb, "__lineno__");
   (void)mrb_intern_lit(mrb, "__log");
@@ -1066,6 +1075,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__raise_gen_error");
   (void)mrb_intern_lit(mrb, "__random_bytes");
   (void)mrb_intern_lit(mrb, "__random_seed");
+  (void)mrb_intern_lit(mrb, "__raw_content_spec");
   (void)mrb_intern_lit(mrb, "__raw_delete");
   (void)mrb_intern_lit(mrb, "__raw_get");
   (void)mrb_intern_lit(mrb, "__raw_keys");
@@ -1073,6 +1083,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__raw_value");
   (void)mrb_intern_lit(mrb, "__raw_values");
   (void)mrb_intern_lit(mrb, "__read_nonblock");
+  (void)mrb_intern_lit(mrb, "__read_skippable");
   (void)mrb_intern_lit(mrb, "__reader_gone?");
   (void)mrb_intern_lit(mrb, "__render");
   (void)mrb_intern_lit(mrb, "__replace");
@@ -1121,6 +1132,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__validate_xml");
   (void)mrb_intern_lit(mrb, "__write");
   (void)mrb_intern_lit(mrb, "__write_nonblock");
+  (void)mrb_intern_lit(mrb, "__write_skippable");
   (void)mrb_intern_lit(mrb, "__write_to_buffer");
   (void)mrb_intern_lit(mrb, "__write_to_file");
   (void)mrb_intern_lit(mrb, "__write_to_target");
@@ -1202,6 +1214,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "attribute_count");
   (void)mrb_intern_lit(mrb, "attribute_hash");
   (void)mrb_intern_lit(mrb, "attribute_nodes");
+  (void)mrb_intern_lit(mrb, "attribute_type");
   (void)mrb_intern_lit(mrb, "attribute_with_ns");
   (void)mrb_intern_lit(mrb, "attributes");
   (void)mrb_intern_lit(mrb, "attributes?");
@@ -1376,6 +1389,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "cooked!");
   (void)mrb_intern_lit(mrb, "copy");
   (void)mrb_intern_lit(mrb, "copy_from");
+  (void)mrb_intern_lit(mrb, "coredump?");
   (void)mrb_intern_lit(mrb, "cost");
   (void)mrb_intern_lit(mrb, "count");
   (void)mrb_intern_lit(mrb, "crc32_combine");
@@ -1412,6 +1426,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "def_class");
   (void)mrb_intern_lit(mrb, "def_method");
   (void)mrb_intern_lit(mrb, "def_module");
+  (void)mrb_intern_lit(mrb, "default");
   (void)mrb_intern_lit(mrb, "default=");
   (void)mrb_intern_lit(mrb, "default?");
   (void)mrb_intern_lit(mrb, "default_external");
@@ -1439,7 +1454,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "dev_major");
   (void)mrb_intern_lit(mrb, "dev_minor");
   (void)mrb_intern_lit(mrb, "dh_compute_key");
-  (void)mrb_intern_lit(mrb, "dict");
   (void)mrb_intern_lit(mrb, "digest");
   (void)mrb_intern_lit(mrb, "digest_length");
   (void)mrb_intern_lit(mrb, "digest_size");
@@ -1479,6 +1493,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "eid=");
   (void)mrb_intern_lit(mrb, "element?");
   (void)mrb_intern_lit(mrb, "element_children");
+  (void)mrb_intern_lit(mrb, "element_type");
   (void)mrb_intern_lit(mrb, "elements");
   (void)mrb_intern_lit(mrb, "empty?");
   (void)mrb_intern_lit(mrb, "empty_element?");
@@ -1492,7 +1507,9 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "end");
   (void)mrb_intern_lit(mrb, "enter_pipeline_mode");
   (void)mrb_intern_lit(mrb, "entities");
+  (void)mrb_intern_lit(mrb, "entity_type");
   (void)mrb_intern_lit(mrb, "entries");
+  (void)mrb_intern_lit(mrb, "enumeration");
   (void)mrb_intern_lit(mrb, "env");
   (void)mrb_intern_lit(mrb, "eof");
   (void)mrb_intern_lit(mrb, "eof?");
@@ -1805,7 +1822,6 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "length");
   (void)mrb_intern_lit(mrb, "less_equal_operator");
   (void)mrb_intern_lit(mrb, "less_operator");
-  (void)mrb_intern_lit(mrb, "level");
   (void)mrb_intern_lit(mrb, "lgamma");
   (void)mrb_intern_lit(mrb, "lgwin");
   (void)mrb_intern_lit(mrb, "library_version");
@@ -1964,6 +1980,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "options");
   (void)mrb_intern_lit(mrb, "options=");
   (void)mrb_intern_lit(mrb, "order");
+  (void)mrb_intern_lit(mrb, "original_content");
   (void)mrb_intern_lit(mrb, "original_name");
   (void)mrb_intern_lit(mrb, "oruby_backend");
   (void)mrb_intern_lit(mrb, "out");
@@ -2502,6 +2519,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "yield");
   (void)mrb_intern_lit(mrb, "zero?");
   (void)mrb_intern_lit(mrb, "zone");
+  (void)mrb_intern_lit(mrb, "zstd_version");
   (void)mrb_intern_lit(mrb, "|");
   (void)mrb_intern_lit(mrb, "~");
 }

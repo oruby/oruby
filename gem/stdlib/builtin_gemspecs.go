@@ -31,7 +31,7 @@ func init() {
 		{Name: "nokogiri", Version: "1.19.7", Feature: "nokogiri", Summary: "ORuby pure-Go Nokogiri (XML/HTML5/XPath/CSS/XSD/XSLT/RelaxNG)", Files: []string{"lib/nokogiri.rb"}},
 		{Name: "oruby-vips", Version: "2.3.0", Feature: "oruby-vips", Summary: "ORuby united libvips/pure-Go image processor", Files: []string{"lib/oruby-vips.rb", "lib/vips.rb", "lib/ruby-vips.rb"}},
 		{Name: "ruby-vips", Version: "2.3.0", Feature: "oruby-vips", Summary: "ORuby ruby-vips compatibility provider", Files: []string{"lib/ruby-vips.rb", "lib/vips.rb"}},
-		{Name: "oj", Version: "3.16.7", Feature: "oj", Summary: "ORuby pure-Go Oj JSON", Files: []string{"lib/oj.rb"}},
+		{Name: "oj", Version: "3.17.8", Feature: "oj", Summary: "Oj C extension over the ORuby C API", Files: []string{"lib/oj.rb"}},
 		{Name: "ffi", Version: "1.17.4", Feature: "ffi", Summary: "ORuby FFI", Files: []string{"lib/ffi.rb"}},
 		{Name: "pg", Version: "1.5.9", Feature: "pg", Summary: "ORuby pure-Go PostgreSQL driver (pgx)", Files: []string{"lib/pg.rb"}},
 		{Name: "mysql2", Version: "0.5.6", Feature: "mysql2", Summary: "ORuby pure-Go MySQL driver", Files: []string{"lib/mysql2.rb"}},
@@ -46,7 +46,7 @@ func init() {
 		{Name: "rbnacl", Version: "7.1.2", Feature: "rbnacl", Summary: "ORuby pure-Go RbNaCl", Files: []string{"lib/rbnacl.rb"}},
 		{Name: "ed25519", Version: "1.4.0", Feature: "ed25519", Summary: "ORuby pure-Go Ed25519", Files: []string{"lib/ed25519.rb"}},
 		{Name: "brotli", Version: "0.6.0", Feature: "brotli", Summary: "ORuby pure-Go Brotli", Files: []string{"lib/brotli.rb"}},
-		{Name: "zstd-ruby", Version: "1.5.4", Feature: "zstd-ruby", Summary: "ORuby pure-Go Zstandard", Files: []string{"lib/zstd-ruby.rb"}},
+		{Name: "zstd-ruby", Version: "2.0.10", Feature: "zstd-ruby", Summary: "ORuby pure-Go Zstandard", Files: []string{"lib/zstd-ruby.rb"}},
 		{Name: "commonmarker", Version: "2.0.0", Feature: "commonmarker", Summary: "ORuby pure-Go CommonMarker (Goldmark)", Files: []string{"lib/commonmarker.rb"}},
 
 		// Newly added oruby-* gems (registered under both oruby-* and replaced gem name)

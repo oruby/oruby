@@ -100,6 +100,7 @@ test:
 	(cd gem/nokogiri && go test)
 	(cd gem/objspace && go test)
 	(cd gem/oj && go test)
+	(cd gem/oruby-oj && go test)
 	(cd gem/oruby-cbor && go test)
 	(cd gem/oruby-digest-crc && go test)
 	(cd gem/oruby-escape_utils && go test)

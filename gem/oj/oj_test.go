@@ -7,6 +7,7 @@ import (
 	_ "github.com/oruby/oruby/gem/core_ext"
 	_ "github.com/oruby/oruby/gem/load"
 	_ "github.com/oruby/oruby/gem/oj"
+	_ "github.com/oruby/oruby/gem/stdlib"
 )
 
 func TestOj(t *testing.T) {
@@ -30,14 +31,8 @@ raise "indent" unless pretty.include?("\n  ")
 xss = Oj.dump("<script>&</script>", mode: :rails)
 raise "xss_safe=#{xss}" unless xss == '"\u003cscript\u003e\u0026\u003c/script\u003e"'
 
-# Strict mode rejects symbols
-raised = false
-begin
-  Oj.dump(:sym, mode: :strict)
-rescue TypeError
-  raised = true
-end
-raise "expected strict TypeError" unless raised
+# Strict mode dumps a Symbol as its String (as oj on MRI)
+raise "strict symbol" unless Oj.dump(:sym, mode: :strict) == '"sym"'
 
 # Multi-document streaming (NDJSON)
 docs = []

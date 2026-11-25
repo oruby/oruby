@@ -674,10 +674,26 @@ VALUE rb_class_new_instance(int argc, const VALUE *argv, VALUE k) { return rb_cl
 VALUE rb_class_new_instance_pass_kw(int argc, const VALUE *argv, VALUE k) {
   return rb_class_new_instance_kw(argc, argv, k, rb_keyword_given_p());
 }
-VALUE rb_obj_alloc(VALUE k) { return V(call0(MV(k), "allocate")); }
+/* a Struct is allocated with its members, all nil, as MRI's: Struct's own
+   initialize (not the class's) sizes it, with no arguments */
+VALUE rb_obj_alloc(VALUE k) {
+  mrb_value obj = call0(MV(k), "allocate");
+  if (mrb_type(obj) == MRB_TT_STRUCT && mrb_obj_is_kind_of(M, obj, CLS(rb_cStruct))) {
+    mrb_value init = call1(MV(rb_cStruct), "instance_method", mrb_symbol_value(SYM("initialize")));
+    call1(init, "bind_call", obj);
+  }
+  else if (mrb_type(obj) == MRB_TT_STRUCT) {
+    /* a Data (mruby-data keeps its values as an Array): its members, nil
+       and settable until it is frozen, as MRI's struct-based Data */
+    mrb_ary_resize(M, obj, RARRAY_LEN(call0(MV(k), "members")));
+  }
+  return V(obj);
+}
 VALUE rb_obj_is_kind_of(VALUE v, VALUE k) { return B(mrb_obj_is_kind_of(M, MV(v), CLS(k))); }
 VALUE rb_obj_is_instance_of(VALUE v, VALUE k) { return B(mrb_obj_is_instance_of(M, MV(v), CLS(k))); }
-int rb_respond_to(VALUE v, ID id) { return mrb_respond_to(M, MV(v), (mrb_sym)id); }
+/* public methods only, through #respond_to? (a redefinition counts), as MRI's
+   rb_obj_respond_to(obj, id, FALSE) */
+int rb_respond_to(VALUE v, ID id) { return rb_obj_respond_to(v, id, 0); }
 /* klass's instances have the method (ex: a public one) */
 int rb_method_boundp(VALUE klass, ID id, int ex) {
   struct RClass *c = mrb_class_ptr(MV(klass));
@@ -1658,8 +1674,50 @@ VALUE rb_struct_new(VALUE k, ...) {
   va_end(ap);
   return V(mrb_funcall_argv(M, MV(k), SYM("new"), n, RARRAY_PTR(a)));
 }
-VALUE rb_struct_aref(VALUE s, VALUE i) { return V(call1(MV(s), "[]", MV(i))); }
-VALUE rb_struct_aset(VALUE s, VALUE i, VALUE v) { mrb_value a[2] = {MV(i), MV(v)}; mrb_funcall_argv(M, MV(s), SYM("[]="), 2, a); return v; }
+/* MRI's Range and Data are structs too: a Range's members are begin, end
+   and excl; a Data's, its class's members, read by name */
+static mrb_value range_members(void) {
+  mrb_value a = mrb_ary_new_capa(M, 3);
+  mrb_ary_push(M, a, mrb_symbol_value(SYM("begin")));
+  mrb_ary_push(M, a, mrb_symbol_value(SYM("end")));
+  mrb_ary_push(M, a, mrb_symbol_value(SYM("excl")));
+  return a;
+}
+static mrb_value struct_members_of(mrb_value s) {
+  if (mrb_range_p(s)) return range_members();
+  if (mrb_respond_to(M, s, SYM("members"))) return call0(s, "members");
+  return call0(mrb_obj_value(mrb_obj_class(M, s)), "members");
+}
+VALUE rb_struct_aref(VALUE s, VALUE i) {
+  mrb_value m = MV(s);
+  if (mrb_type(m) == MRB_TT_STRUCT && mrb_respond_to(M, m, SYM("[]"))) return V(call1(m, "[]", MV(i)));
+  long k = FIXNUM_P(i) ? FIX2LONG(i) : -1;
+  if (mrb_range_p(m)) {
+    if (k == 0) return V(call0(m, "begin"));
+    if (k == 1) return V(call0(m, "end"));
+    if (k == 2) return V(call0(m, "exclude_end?"));
+    rb_raise(rb_eIndexError, "offset %ld too large for struct(size:3)", k);
+  }
+  mrb_value members = struct_members_of(m);
+  mrb_value name = SYMBOL_P(i) ? MV(i) : (k >= 0 && k < RARRAY_LEN(members) ? RARRAY_PTR(members)[k] : mrb_nil_value());
+  if (mrb_nil_p(name)) rb_raise(rb_eIndexError, "offset %ld too large for struct(size:%ld)", k, (long)RARRAY_LEN(members));
+  return V(mrb_funcall_argv(M, m, mrb_symbol(name), 0, NULL));
+}
+VALUE rb_struct_aset(VALUE s, VALUE i, VALUE v) {
+  mrb_value m = MV(s);
+  if (mrb_type(m) == MRB_TT_STRUCT && !mrb_obj_is_kind_of(M, m, CLS(rb_cStruct))) {
+    /* a Data rb_obj_alloc made, not yet frozen */
+    if (mrb_frozen_p(mrb_basic_ptr(m))) rb_raise(rb_eFrozenError, "can't modify frozen %s", rb_obj_classname(s));
+    long k = FIXNUM_P(i) ? FIX2LONG(i) : -1;
+    if (k < 0 || k >= RARRAY_LEN(m)) rb_raise(rb_eIndexError, "offset %ld too large for data(size:%ld)", k, (long)RARRAY_LEN(m));
+    mrb_ary_set(M, m, k, MV(v));
+    return v;
+  }
+  if (mrb_type(m) != MRB_TT_STRUCT) rb_raise(rb_eFrozenError, "can't modify frozen %s", rb_obj_classname(s));
+  mrb_value a[2] = {MV(i), MV(v)};
+  mrb_funcall_argv(M, m, SYM("[]="), 2, a);
+  return v;
+}
 VALUE rb_struct_getmember(VALUE s, ID id) { return V(call1(MV(s), "[]", mrb_symbol_value((mrb_sym)id))); }
 VALUE rb_time_new(time_t sec, long usec) {
   mrb_value a[2] = {mrb_int_value(M, (mrb_int)sec), mrb_int_value(M, usec)};
@@ -1720,9 +1778,12 @@ size_t rb_absint_size(VALUE v, int *nlz) {
   return n;
 }
 
-VALUE rb_struct_size(VALUE s) { return V(call0(MV(s), "size")); }
-VALUE rb_struct_members(VALUE s) { return V(call0(MV(s), "members")); }
-VALUE rb_struct_s_members(VALUE k) { return V(call0(MV(k), "members")); }
+VALUE rb_struct_size(VALUE s) { return LONG2NUM((long)RARRAY_LEN(struct_members_of(MV(s)))); }
+VALUE rb_struct_members(VALUE s) { return V(struct_members_of(MV(s))); }
+VALUE rb_struct_s_members(VALUE k) {
+  if (mrb_obj_is_kind_of(M, MV(k), M->class_class) && mrb_test(call1(MV(k), "<=", MV(rb_cRange)))) return V(range_members());
+  return V(call0(MV(k), "members"));
+}
 
 int rb_obj_method_arity(VALUE obj, ID mid) {
   return (int)mrb_integer(call0(call1(MV(obj), "method", mrb_symbol_value((mrb_sym)mid)), "arity"));

@@ -124,6 +124,14 @@ func initStatus(mProc oruby.RClass) {
 	cProcessStatus.DefineAlias("exited?", "is_exited")
 	cProcessStatus.DefineAlias("signaled?", "is_signaled")
 	cProcessStatus.DefineAlias("stopped?", "is_stopped")
+	// WCOREDUMP: the core-dump bit of the wait status, for a signaled process
+	cProcessStatus.DefineMethod("coredump?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+		st, ok := mrb.Data(self).(*status)
+		if !ok || st == nil {
+			return mrb.FalseValue()
+		}
+		return mrb.BoolValue(st.IsSignaled && st.ToI&0x80 != 0)
+	}, mrb.ArgsNone())
 	cProcessStatus.DefineMethod("success?", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		st, ok := mrb.Data(self).(*status)
 		if !ok || st == nil || !st.IsExited {
