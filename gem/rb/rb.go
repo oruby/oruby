@@ -3,18 +3,52 @@
 package rb
 
 import (
+	"crypto/sha256"
+	_ "embed"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/oruby/oruby"
 )
+
+//go:embed precompiled.orb
+var precompiledOrbBytes []byte
+
+var (
+	precompiledOrbOnce sync.Once
+	precompiledOrbVal  *oruby.OrbFile
+)
+
+func getPrecompiledOrb() *oruby.OrbFile {
+	precompiledOrbOnce.Do(func() {
+		if len(precompiledOrbBytes) == 0 {
+			return
+		}
+		orb, err := oruby.ParseOrb("<internal:rb_precompiled.orb>", precompiledOrbBytes)
+		if err != nil {
+			return
+		}
+		precompiledOrbVal = orb
+	})
+	return precompiledOrbVal
+}
 
 // LoadRuby evaluates embedded Ruby glue code of a gem. Errors are fatal:
 // the source is part of the binary.
 func LoadRuby(mrb *oruby.MrbState, name string, src []byte) {
 	c := mrb.MrbCcontextNew()
 	defer c.Free()
-	c.Filename(name)
+	c.InternalFilename(name)
+	if orb := getPrecompiledOrb(); orb != nil {
+		sum := fmt.Sprintf("%x", sha256.Sum256(src))
+		if e, ok := orb.Lookup(sum); ok {
+			if _, err := mrb.LoadIrepCxt(orb.EntryData(e), c); err == nil {
+				return
+			}
+			mrb.ExcClear()
+		}
+	}
 	if _, err := mrb.LoadBytesCxt(src, c); err != nil {
 		panic(fmt.Sprintf("%s: %v", name, err))
 	}

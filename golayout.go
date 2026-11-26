@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
 
 // RubyVersion is the MRI version ORuby targets (RUBY_VERSION).
@@ -33,17 +34,87 @@ func InstallPrefix() string {
 	if installPrefix != "" {
 		return installPrefix
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return "/usr/local"
-	}
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
-	}
-	return filepath.Dir(filepath.Dir(exe))
+	defaultPrefixOnce.Do(func() {
+		exe, err := os.Executable()
+		if err != nil {
+			defaultInstallPrefix = "/usr/local"
+			return
+		}
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		defaultInstallPrefix = filepath.Dir(filepath.Dir(exe))
+	})
+	return defaultInstallPrefix
 }
 
-var installPrefix string
+var (
+	installPrefix        string
+	defaultPrefixOnce    sync.Once
+	defaultInstallPrefix string
+
+	stdlibOrbMu     sync.Mutex
+	stdlibOrbDir    string
+	stdlibOrbLoaded bool
+	stdlibOrbFile   *OrbFile
+)
+
+// StdlibOrb returns the parsed rubygems.orb archive for the current
+// RubyLibPrefix()/RubyVersion directory, or nil if absent/invalid.
+func StdlibOrb() *OrbFile {
+	libDir := filepath.Join(RubyLibPrefix(), RubyVersion)
+	stdlibOrbMu.Lock()
+	defer stdlibOrbMu.Unlock()
+	if stdlibOrbLoaded && stdlibOrbDir == libDir {
+		return stdlibOrbFile
+	}
+	stdlibOrbDir = libDir
+	stdlibOrbLoaded = true
+	stdlibOrbFile = nil
+	orbPath := filepath.Join(libDir, "rubygems.orb")
+	data, err := os.ReadFile(orbPath)
+	if err != nil {
+		return nil
+	}
+	orb, err := ParseOrb(orbPath, data)
+	if err != nil {
+		return nil
+	}
+	stdlibOrbFile = orb
+	return orb
+}
+
+var (
+	stdlibExtraMu     sync.Mutex
+	stdlibExtraDir    string
+	stdlibExtraLoaded bool
+	stdlibExtraFile   *OrbFile
+)
+
+// StdlibExtraOrb returns the parsed stdlib.orb archive for the current
+// RubyLibPrefix()/RubyVersion directory, or nil if absent/invalid.
+func StdlibExtraOrb() *OrbFile {
+	libDir := filepath.Join(RubyLibPrefix(), RubyVersion)
+	stdlibExtraMu.Lock()
+	defer stdlibExtraMu.Unlock()
+	if stdlibExtraLoaded && stdlibExtraDir == libDir {
+		return stdlibExtraFile
+	}
+	stdlibExtraDir = libDir
+	stdlibExtraLoaded = true
+	stdlibExtraFile = nil
+	orbPath := filepath.Join(libDir, "stdlib.orb")
+	data, err := os.ReadFile(orbPath)
+	if err != nil {
+		return nil
+	}
+	orb, err := ParseOrb(orbPath, data)
+	if err != nil {
+		return nil
+	}
+	stdlibExtraFile = orb
+	return orb
+}
 
 // SetInstallPrefix names the directory ORuby is installed in, for an
 // executable that is not under it: a project's own bin/oruby, built with

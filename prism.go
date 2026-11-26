@@ -127,7 +127,7 @@ func updateCompilerLiteralOptions() {
 	C.oruby_compiler_literal_options(options)
 }
 
-func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
+func prismScan(mrb *MrbState, src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 	if len(src) == 0 {
 		return nil, "", true
 	}
@@ -147,9 +147,13 @@ func prismScan(src []byte, opts *PreprocessOptions) ([]prismRec, string, bool) {
 		defer C.free(unsafe.Pointer(cs))
 		so.encoding = cs
 	}
+	var mrbPtr *C.mrb_state
+	if mrb != nil {
+		mrbPtr = mrb.p
+	}
 	var encName [64]C.char
 	var msgs *C.char
-	p := C._oruby_prism_scan(nil, (*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src)), &so, &n, &errs, &encName[0], C.size_t(len(encName)), &msgs)
+	p := C._oruby_prism_scan(mrbPtr, (*C.char)(unsafe.Pointer(&src[0])), C.size_t(len(src)), &so, &n, &errs, &encName[0], C.size_t(len(encName)), &msgs)
 	enc := C.GoString(&encName[0])
 	if msgs != nil {
 		defer C.free(unsafe.Pointer(msgs))
@@ -586,22 +590,26 @@ func nextSiteID(prefix uint64, counter *uint64) uint64 {
 
 // PreprocessRubyWith is PreprocessRubyBytes with per-source options
 func PreprocessRubyWith(src []byte, opts *PreprocessOptions) []byte {
-	out, _ := preprocessRuby(src, opts)
+	out, _ := preprocessRuby(nil, src, opts)
 	return out
 }
 
-func preprocessRuby(src []byte, opts *PreprocessOptions) ([]byte, error) {
+func preprocessRuby(mrb *MrbState, src []byte, opts *PreprocessOptions) ([]byte, error) {
 	if !mayNeedRewrite(src, opts) {
 		return src, nil
 	}
+	recs, encName, ok := prismScan(mrb, src, opts)
+	return finishPreprocess(mrb, src, opts, recs, encName, ok)
+}
+
+func finishPreprocess(mrb *MrbState, src []byte, opts *PreprocessOptions, recs []prismRec, encName string, ok bool) ([]byte, error) {
 	prefix := sitePrefix(src, opts)
-	recs, encName, ok := prismScan(src, opts)
 	for ok {
 		prepared := prepareMasgnOperands(src, recs)
 		if prepared == nil {
 			break
 		}
-		next, encoding, valid := prismScan(prepared, opts)
+		next, encoding, valid := prismScan(mrb, prepared, opts)
 		if !valid {
 			break
 		}
@@ -1255,7 +1263,7 @@ func SplitBeginBlocks(src []byte) (begins, body []byte) {
 	if !bytes.Contains(src, []byte("BEGIN")) {
 		return nil, src
 	}
-	recs, _, ok := prismScan(src, nil)
+	recs, _, ok := prismScan(nil, src, nil)
 	if !ok {
 		return nil, src
 	}

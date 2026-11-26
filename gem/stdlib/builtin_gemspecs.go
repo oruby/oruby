@@ -1,9 +1,72 @@
 package stdlib
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/rb"
 )
+
+type defaultSpecMeta struct {
+	Size int64 `json:"size"`
+}
+
+type defaultSpecsManifest struct {
+	DefaultSpecsPrefix string                     `json:"default_specs_prefix"`
+	DefaultSpecs       map[string]defaultSpecMeta `json:"default_specs"`
+}
+
+type defaultSpecsOrbCache struct {
+	orb         *oruby.OrbFile
+	prefixSlash string
+	files       map[string]defaultSpecMeta
+}
+
+var (
+	defaultSpecsCacheOnce sync.Once
+	defaultSpecsCacheVal  *defaultSpecsOrbCache
+)
+
+func getDefaultSpecsOrbCache() *defaultSpecsOrbCache {
+	defaultSpecsCacheOnce.Do(func() {
+		orb := oruby.StdlibOrb()
+		if orb == nil {
+			return
+		}
+		me, ok := orb.Lookup("_manifest.json")
+		if !ok {
+			return
+		}
+		var manifest defaultSpecsManifest
+		if err := json.Unmarshal(orb.EntryData(me), &manifest); err != nil {
+			return
+		}
+		if manifest.DefaultSpecsPrefix == "" || len(manifest.DefaultSpecs) == 0 {
+			return
+		}
+		defaultSpecsDir := filepath.Join(oruby.RubyLibPrefix(), "gems", oruby.RubyVersion, "specifications", "default")
+		if abs, err := filepath.Abs(defaultSpecsDir); err == nil {
+			if real, err := filepath.EvalSymlinks(abs); err == nil {
+				defaultSpecsDir = real
+			} else {
+				defaultSpecsDir = abs
+			}
+		}
+		if manifest.DefaultSpecsPrefix != filepath.ToSlash(defaultSpecsDir) {
+			return
+		}
+		defaultSpecsCacheVal = &defaultSpecsOrbCache{
+			orb:         orb,
+			prefixSlash: strings.TrimSuffix(manifest.DefaultSpecsPrefix, "/") + "/",
+			files:       manifest.DefaultSpecs,
+		}
+	})
+	return defaultSpecsCacheVal
+}
 
 func init() {
 	// Built-in gem specifications for compiled-in ORuby gems. Only specs whose
@@ -68,9 +131,69 @@ func initRubyGemsDefaults(mrb *oruby.MrbState) any {
 		// a compiled-in C extension is the Go gem named as its library (gem/capi)
 		return mrb.BoolValue(mrb.GemAvailable(mrb.String(mrb.GetArgsFirst()) + ".so"))
 	}, mrb.ArgsReq(1))
+	gemMod.DefineClassMethod("__oruby_load_gemspec", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		cache := getDefaultSpecsOrbCache()
+		if cache == nil {
+			return mrb.NilValue()
+		}
+		arg := mrb.GetArgsFirst()
+		if !arg.IsString() {
+			return mrb.NilValue()
+		}
+		file := mrb.String(arg)
+		real := file
+		if abs, err := filepath.Abs(file); err == nil {
+			if r, err := filepath.EvalSymlinks(abs); err == nil {
+				real = r
+			} else {
+				real = abs
+			}
+		}
+		realSlash := filepath.ToSlash(real)
+		if !strings.HasPrefix(realSlash, cache.prefixSlash) {
+			return mrb.NilValue()
+		}
+		rel := strings.TrimPrefix(realSlash, cache.prefixSlash)
+		meta, ok := cache.files[rel]
+		if !ok {
+			return mrb.NilValue()
+		}
+		fi, err := os.Stat(real)
+		if err != nil || fi.IsDir() || fi.Size() != meta.Size {
+			return mrb.NilValue()
+		}
+		entry, ok := cache.orb.Lookup("default_specs/" + rel)
+		if !ok {
+			return mrb.NilValue()
+		}
+		cxt := mrb.MrbCcontextNew()
+		defer cxt.Free()
+		cxt.Filename(file)
+		cxt.SetCaptureErrors(true)
+		v, err := mrb.LoadIrepCxt(cache.orb.EntryData(entry), cxt)
+		if err != nil {
+			mrb.ExcClear()
+			return mrb.NilValue()
+		}
+		return v
+	}, mrb.ArgsReq(1))
 
 	rb.LoadRuby(mrb, "<internal:rubygems/defaults/oruby>", []byte(`
 module ORubyDefaultGemSpecs
+  def load(file)
+    return super unless file
+    spec = @load_cache_mutex.synchronize { @load_cache[file] }
+    return spec if spec
+    if (pre = Gem.__oruby_load_gemspec(file))
+      if Gem::Specification === pre
+        pre.loaded_from = File.expand_path(file.to_s)
+        @load_cache_mutex.synchronize { @load_cache[file] ||= pre }
+        return @load_cache[file]
+      end
+    end
+    super
+  end
+
   def __oruby_builtin_specs
     @__oruby_builtin_specs ||= begin
       dir = Gem.default_specifications_dir
@@ -107,6 +230,42 @@ module ORubyDefaultGemSpecs
 end
 
 Gem::Specification.singleton_class.prepend(ORubyDefaultGemSpecs)
+
+module ORubyFastRegisterDefaultSpec
+  def register_default_spec(spec)
+    extended_require_paths = spec.require_paths.map { |f| f + "/" }
+    new_format = extended_require_paths.any? { |path| spec.files.any? { |f| f.start_with?(path) } }
+    native_extension_suffixes = Gem.dynamic_library_suffixes.reject(&:empty?)
+
+    spec.files.each do |file|
+      if new_format
+        matched = nil
+        extended_require_paths.each do |prefix|
+          if file.start_with?(prefix)
+            matched = file.byteslice(prefix.bytesize, file.bytesize - prefix.bytesize)
+            break
+          end
+        end
+        if matched
+          file = matched
+        else
+          next if file.include?("/")
+          next unless file.end_with?(*native_extension_suffixes)
+        end
+      end
+
+      next if file.start_with?("rubygems/")
+
+      spec.activate if already_loaded?(file)
+
+      @path_to_default_spec_map[file] = spec
+      base = file.end_with?(".rb") ? file.byteslice(0, file.bytesize - 3) : file.sub(suffix_regexp, "")
+      @path_to_default_spec_map[base] = spec
+    end
+  end
+end
+
+Gem.singleton_class.prepend(ORubyFastRegisterDefaultSpec)
 
 # A gem's C extension that oruby compiles in (a Go gem registered under the
 # extension's name, through the Ruby C API layer gem/capi: rbs_extension)

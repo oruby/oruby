@@ -1,6 +1,7 @@
 package load
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -68,7 +69,7 @@ func init() {
 		kernel.DefineClassMethod("__oruby_autoload_registered", autoloadRegistered, mrb.ArgsReq(3))
 		kernel.DefineClassMethod("__oruby_autoload_other_thread?", autoloadOtherThread, mrb.ArgsReq(1))
 		kernel.DefineClassMethod("__oruby_autoload_wait", autoloadWait, mrb.ArgsReq(1))
-		return make(map[string]*loadLock)
+		return newLoadState()
 	})
 }
 
@@ -143,10 +144,116 @@ func loadIrep(mrb *oruby.MrbState, fileName string) (oruby.RProc, error) {
 	return proc, nil
 }
 
+type stdlibFileMeta struct {
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+type stdlibManifest struct {
+	Prefix string                    `json:"prefix"`
+	Files  map[string]stdlibFileMeta `json:"files"`
+}
+
+type stdlibOrbCache struct {
+	orb         *oruby.OrbFile
+	prefixSlash string
+	files       map[string]stdlibFileMeta
+}
+
+var (
+	stdlibCacheOnce      sync.Once
+	stdlibCacheVal       *stdlibOrbCache
+	stdlibExtraCacheOnce sync.Once
+	stdlibExtraCacheVal  *stdlibOrbCache
+)
+
+func parseStdlibOrbCache(orb *oruby.OrbFile) *stdlibOrbCache {
+	if orb == nil {
+		return nil
+	}
+	libDir := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion)
+	me, ok := orb.Lookup("_manifest.json")
+	if !ok {
+		return nil
+	}
+	var manifest stdlibManifest
+	if err := json.Unmarshal(orb.EntryData(me), &manifest); err != nil {
+		return nil
+	}
+	realLib := filepath.ToSlash(realpathOf(expandPath(libDir)))
+	if manifest.Prefix == "" || manifest.Prefix != realLib {
+		return nil
+	}
+	return &stdlibOrbCache{
+		orb:         orb,
+		prefixSlash: strings.TrimSuffix(manifest.Prefix, "/") + "/",
+		files:       manifest.Files,
+	}
+}
+
+func getStdlibOrbCache() *stdlibOrbCache {
+	stdlibCacheOnce.Do(func() {
+		stdlibCacheVal = parseStdlibOrbCache(oruby.StdlibOrb())
+	})
+	return stdlibCacheVal
+}
+
+func getStdlibExtraOrbCache() *stdlibOrbCache {
+	stdlibExtraCacheOnce.Do(func() {
+		stdlibExtraCacheVal = parseStdlibOrbCache(oruby.StdlibExtraOrb())
+	})
+	return stdlibExtraCacheVal
+}
+
+func tryLoadFromStdlibCache(mrb *oruby.MrbState, cache *stdlibOrbCache, fullName, realSlash string) (bool, error) {
+	if cache == nil || !strings.HasPrefix(realSlash, cache.prefixSlash) {
+		return false, nil
+	}
+	rel := strings.TrimPrefix(realSlash, cache.prefixSlash)
+	meta, ok := cache.files[rel]
+	if !ok {
+		return false, nil
+	}
+	fi, err := os.Stat(fullName)
+	if err != nil || fi.IsDir() || fi.Size() != meta.Size {
+		return false, nil
+	}
+	entry, ok := cache.orb.Lookup(rel)
+	if !ok {
+		return false, nil
+	}
+	cxt := mrb.MrbCcontextNew()
+	defer cxt.Free()
+	cxt.Filename(fullName)
+	cxt.SetCaptureErrors(true)
+	_, err = mrb.LoadIrepCxt(cache.orb.EntryData(entry), cxt)
+	return true, err
+}
+
+func coverageActive(mrb *oruby.MrbState) bool {
+	if !mrb.ClassDefined("Coverage") {
+		return false
+	}
+	cov := mrb.ModuleGet("Coverage")
+	return mrb.RespondTo(cov.Value(), mrb.Intern("__oruby_instrument"))
+}
+
 func doLoad(mrb *oruby.MrbState, fullName string) error {
 	if entry, orb, ok := mrb.OrbLookupVirtual(fullName); ok {
 		_, err := mrb.ExecuteOrbEntry(orb, entry, nil)
 		return err
+	}
+
+	if filepath.Ext(fullName) == ".rb" && !coverageActive(mrb) {
+		realSlash := filepath.ToSlash(realpathOf(fullName))
+		if loaded, err := tryLoadFromStdlibCache(mrb, getStdlibOrbCache(), fullName, realSlash); loaded {
+			return err
+		}
+		if cache := getStdlibOrbCache(); cache != nil && strings.HasPrefix(realSlash, cache.prefixSlash) {
+			if loaded, err := tryLoadFromStdlibCache(mrb, getStdlibExtraOrbCache(), fullName, realSlash); loaded {
+				return err
+			}
+		}
 	}
 
 	data, err := os.ReadFile(fullName)
@@ -303,9 +410,37 @@ type autoloadMark struct {
 	trigger   bool // its constant lookup started the require
 }
 
+type loadState struct {
+	locks      map[string]*loadLock
+	lpVal      oruby.Value
+	lpRaw      []string
+	lpExpanded []string
+	lfVal      oruby.Value
+	lfEntries  []string
+	lfExact    map[string]bool
+	lfNoExt    map[string]byte
+	lfReal     map[string]bool
+}
+
+func newLoadState() *loadState {
+	return &loadState{
+		locks:   make(map[string]*loadLock),
+		lfExact: make(map[string]bool),
+		lfNoExt: make(map[string]byte),
+		lfReal:  make(map[string]bool),
+	}
+}
+
+func getLoadState(mrb *oruby.MrbState) *loadState {
+	st, _ := mrb.GemData("load").(*loadState)
+	return st
+}
+
 func loadLocks(mrb *oruby.MrbState) map[string]*loadLock {
-	locks, _ := mrb.GemData("load").(map[string]*loadLock)
-	return locks
+	if st := getLoadState(mrb); st != nil {
+		return st.locks
+	}
+	return nil
 }
 
 func (lk *loadLock) ownedBy(thread *oruby.Thread) bool {
@@ -478,6 +613,9 @@ func fileLoadOK(p string) bool {
 	if err != nil || fi.IsDir() {
 		return false
 	}
+	if fi.Mode().Perm()&0444 == 0444 {
+		return true
+	}
 	f, err := os.Open(p)
 	if err != nil {
 		return false
@@ -560,14 +698,56 @@ func expandedLoadPath(mrb *oruby.MrbState) []string {
 	if !lpv.IsArray() {
 		return nil
 	}
-	a := mrb.GVGetObj(oruby.GvSym_LOAD_PATH).RArray()
-	out := make([]string, 0, a.Len())
-	for i := 0; i < a.Len(); i++ {
-		p, err := pathArg(mrb, a.Item(i))
-		if err != nil {
-			continue
+	st := getLoadState(mrb)
+	elems, ok := mrb.AotArySlice(lpv)
+	if !ok {
+		return nil
+	}
+	if st != nil && lpv == st.lpVal && len(elems) == len(st.lpRaw) {
+		match := true
+		for i, ev := range elems {
+			if b, sok := mrb.AotStringBytes(ev); !sok || string(b) != st.lpRaw[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return st.lpExpanded
+		}
+	}
+	out := make([]string, 0, len(elems))
+	var raw []string
+	allStrings := st != nil
+	if allStrings {
+		raw = make([]string, len(elems))
+	}
+	for i, ev := range elems {
+		var p string
+		if b, sok := mrb.AotStringBytes(ev); sok {
+			p = string(b)
+			if allStrings {
+				raw[i] = p
+			}
+		} else {
+			allStrings = false
+			var err error
+			p, err = pathArg(mrb, ev)
+			if err != nil {
+				continue
+			}
 		}
 		out = append(out, realpathOf(expandPath(p)))
+	}
+	if st != nil {
+		if allStrings {
+			st.lpVal = lpv
+			st.lpRaw = raw
+			st.lpExpanded = out
+		} else {
+			st.lpVal = oruby.Value{}
+			st.lpRaw = nil
+			st.lpExpanded = nil
+		}
 	}
 	return out
 }
@@ -610,6 +790,75 @@ func findFileInState(mrb *oruby.MrbState, feature string, exts, lp []string) (st
 	return "", ""
 }
 
+func (st *loadState) indexFeature(s string) {
+	st.lfExact[s] = true
+	if ext := filepath.Ext(s); ext != "" {
+		base := s[:len(s)-len(ext)]
+		if ext == ".rb" || ext == ".mrb" || ext == ".orb" {
+			st.lfNoExt[base] = 'r'
+		} else if isSoExt(ext) {
+			if st.lfNoExt[base] == 0 {
+				st.lfNoExt[base] = 's'
+			}
+		}
+	}
+	if filepath.IsAbs(s) {
+		st.lfReal[realpathOf(s)] = true
+	}
+}
+
+func syncLoadedFeatures(mrb *oruby.MrbState, lf oruby.Value) *loadState {
+	st := getLoadState(mrb)
+	if st == nil {
+		return nil
+	}
+	elems, ok := mrb.AotArySlice(lf)
+	if !ok {
+		return nil
+	}
+	start := 0
+	if lf == st.lfVal && len(elems) >= len(st.lfEntries) {
+		match := true
+		for i, prev := range st.lfEntries {
+			ev := elems[i]
+			b, sok := mrb.AotStringBytes(ev)
+			if !sok {
+				if prev != "" {
+					match = false
+					break
+				}
+				continue
+			}
+			if string(b) != prev {
+				match = false
+				break
+			}
+		}
+		if match {
+			start = len(st.lfEntries)
+		}
+	}
+	if start == 0 {
+		clear(st.lfExact)
+		clear(st.lfNoExt)
+		clear(st.lfReal)
+		st.lfEntries = make([]string, 0, len(elems))
+		st.lfVal = lf
+	}
+	for i := start; i < len(elems); i++ {
+		ev := elems[i]
+		b, sok := mrb.AotStringBytes(ev)
+		if !sok {
+			st.lfEntries = append(st.lfEntries, "")
+			continue
+		}
+		s := string(b)
+		st.lfEntries = append(st.lfEntries, s)
+		st.indexFeature(s)
+	}
+	return st
+}
+
 // featureP is MRI's rb_feature_p: how $LOADED_FEATURES has feature: 'r' as
 // Ruby, 's' as a C extension, 'u' by the name alone, 0 not. kind is the
 // feature's own extension kind (0: none); lp (nil for an expanded path)
@@ -619,45 +868,29 @@ func featureP(mrb *oruby.MrbState, feature string, kind byte, lp []string) byte 
 	if !lf.IsArray() {
 		return 0
 	}
-	match := func(e, base string) byte {
+	st := syncLoadedFeatures(mrb, lf)
+	if st == nil {
+		return 0
+	}
+	lookup := func(base string) byte {
 		if kind != 0 {
-			if e == base {
+			if st.lfExact[base] {
 				return kind
 			}
 			return 0
 		}
-		if e == base {
+		if st.lfExact[base] {
 			return 'u'
 		}
-		if strings.HasPrefix(e, base) {
-			rest := e[len(base):]
-			switch {
-			case rest == ".rb" || rest == ".mrb" || rest == ".orb":
-				return 'r'
-			case isSoExt(rest):
-				return 's'
-			}
-		}
-		return 0
+		return st.lfNoExt[base]
 	}
-	viaLoadPath := lp != nil && !isExplicit(feature)
-	for i := 0; i < oruby.RArrayLen(lf); i++ {
-		ev := mrb.AryEntry(lf, i)
-		if !ev.IsString() {
-			continue
-		}
-		e := mrb.String(ev)
-		if !strings.Contains(e, feature) {
-			continue
-		}
-		if k := match(e, feature); k != 0 {
-			return k
-		}
-		if viaLoadPath {
-			for _, dir := range lp {
-				if k := match(e, dir+"/"+feature); k != 0 {
-					return k
-				}
+	if k := lookup(feature); k != 0 {
+		return k
+	}
+	if lp != nil && !isExplicit(feature) {
+		for _, dir := range lp {
+			if k := lookup(dir + "/" + feature); k != 0 {
+				return k
 			}
 		}
 	}
@@ -670,17 +903,32 @@ func loadedByRealpath(mrb *oruby.MrbState, name, real string) bool {
 	if !lf.IsArray() {
 		return false
 	}
-	for i := 0; i < oruby.RArrayLen(lf); i++ {
-		ev := mrb.AryEntry(lf, i)
-		if !ev.IsString() {
-			continue
-		}
-		s := mrb.String(ev)
-		if s == name || s == real || filepath.IsAbs(s) && realpathOf(s) == real {
-			return true
-		}
+	st := syncLoadedFeatures(mrb, lf)
+	if st == nil {
+		return false
 	}
-	return false
+	return st.lfExact[name] || st.lfExact[real] || st.lfReal[real]
+}
+
+var (
+	upstreamTopOnce sync.Once
+	upstreamTopMap  map[string]bool
+)
+
+func getUpstreamLibTopEntries() map[string]bool {
+	upstreamTopOnce.Do(func() {
+		dir := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		m := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			m[e.Name()] = true
+		}
+		upstreamTopMap = m
+	})
+	return upstreamTopMap
 }
 
 // upstreamLib returns the shipped upstream copy of library feature in the
@@ -701,6 +949,13 @@ func upstreamLib(mrb *oruby.MrbState, feature string) string {
 				return orb.VirtualPath(e)
 			}
 		}
+	}
+	firstSeg := name
+	if idx := strings.IndexByte(name, '/'); idx >= 0 {
+		firstSeg = name[:idx]
+	}
+	if top := getUpstreamLibTopEntries(); top != nil && !top[firstSeg] {
+		return ""
 	}
 	p := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion, name)
 	if st, err := os.Stat(p); err == nil && !st.IsDir() {

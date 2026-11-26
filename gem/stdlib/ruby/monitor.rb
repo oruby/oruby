@@ -53,11 +53,22 @@ class Monitor
   end
 
   def synchronize
-    enter
+    cur = Thread.current
+    if @mon_owner != cur
+      @mon_mutex.lock
+      @mon_owner = cur
+      @mon_count = 0
+    end
+    @mon_count += 1
     begin
       yield
     ensure
-      self.exit
+      raise ThreadError, "current thread not owner" unless @mon_owner == cur
+      @mon_count -= 1
+      if @mon_count == 0
+        @mon_owner = nil
+        @mon_mutex.unlock
+      end
     end
   end
   alias mon_synchronize synchronize

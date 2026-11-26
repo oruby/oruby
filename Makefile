@@ -40,6 +40,9 @@ capi-lib : libmruby.a
 
 bin : libmruby.a capi-lib
 	ruby scripts/gen_prism.rb
+	go run ./tools/genbytecode -core-ext
+	go run ./tools/genbytecode -stdlib-dir lib/oruby/4.1.0 -out lib/oruby/4.1.0/rubygems.orb
+	go run ./tools/genbytecode -stdlib-extra -stdlib-dir lib/oruby/4.1.0 -out lib/oruby/4.1.0/stdlib.orb
 	go build -o bin/oruby ./cmd/oruby
 	go build -o bin/orbi ./cmd/orbi
 	go build -o bin/orubyc ./cmd/orubyc
@@ -51,6 +54,8 @@ install : bin
 	install -d $(PREFIX)/bin $(PREFIX)/lib
 	install bin/oruby bin/orbi bin/orubyc $(PREFIX)/bin
 	cp -R lib/oruby $(PREFIX)/lib/
+	go run ./tools/genbytecode -stdlib-dir $(PREFIX)/lib/oruby/4.1.0 -out $(PREFIX)/lib/oruby/4.1.0/rubygems.orb
+	go run ./tools/genbytecode -stdlib-extra -stdlib-dir $(PREFIX)/lib/oruby/4.1.0 -out $(PREFIX)/lib/oruby/4.1.0/stdlib.orb
 	$(PREFIX)/bin/oruby scripts/gen_bin_stubs.rb $(PREFIX)/bin
 	install -m 644 lib/liboruby-capi.a lib/libmruby.a $(PREFIX)/lib
 	install -d $(PREFIX)/include/oruby-4.1.0

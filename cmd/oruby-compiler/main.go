@@ -35,6 +35,7 @@ var (
 	pkgSize    = flag.Int("pkgsize", -1, "Split the bundle into Go packages of about N modules each (-1 = auto (>40 modules), 0 = one package)")
 	gemsFlag   = flag.String("gems", compiler.GemsAll, "Gems to link: all, core (without the web gems: HTTP, Rack, sockets, TLS, open-uri; about 7 MB smaller) or auto (core unless the program requires them)")
 	stripFlag  = flag.Bool("strip", false, "Strip symbols and DWARF from the binary (about 8 MB smaller; Go debuggers need them)")
+	fastFlag   = flag.Bool("fast", false, "Faster compilation by disabling Go SSA optimization and inlining (-gcflags=all=-N -l)")
 	progressF  = flag.String("progress", "auto", "Progress reporting on stderr: auto (when stderr is a terminal), on, off")
 )
 
@@ -480,11 +481,13 @@ func main() {
 		}
 		if *stripFlag {
 			buildArgs = append(buildArgs, "-ldflags=-s -w", "-trimpath")
-		}
-		if *pkgSize > 0 {
+		} else if *pkgSize != 0 {
 			// the scratch directory differs on every run; without -trimpath its path is part of
 			// each package's cache key and nothing would be reused
 			buildArgs = append(buildArgs, "-trimpath")
+		}
+		if *fastFlag {
+			buildArgs = append(buildArgs, "-gcflags=all=-N -l")
 		}
 		buildCmd := exec.Command("go", append(buildArgs, ".")...)
 		buildCmd.Dir = tmpDir

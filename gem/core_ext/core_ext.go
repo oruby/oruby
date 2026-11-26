@@ -1,15 +1,17 @@
 package core_ext
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
+	"sync"
 
 	"github.com/oruby/oruby"
 	// gems the Ruby extensions build on, always linked with core_ext
@@ -23,6 +25,68 @@ import (
 
 //go:embed ruby/*.rb
 var rubyFiles embed.FS
+
+//go:embed core_ext.orb
+var coreExtOrbBytes []byte
+
+type coreExtEntry struct {
+	name     string
+	mrbBytes []byte
+	rbBytes  []byte
+}
+
+var (
+	coreExtOrbOnce sync.Once
+	coreExtEntries []coreExtEntry
+)
+
+func getCoreExtEntries() []coreExtEntry {
+	coreExtOrbOnce.Do(func() {
+		entries, err := fs.ReadDir(rubyFiles, "ruby")
+		if err != nil {
+			panic("core_ext read error: " + err.Error())
+		}
+		var orb *oruby.OrbFile
+		var orbHashes map[string]string
+		if len(coreExtOrbBytes) > 0 {
+			if parsed, perr := oruby.ParseOrb("<internal:core_ext.orb>", coreExtOrbBytes); perr == nil {
+				if e, ok := parsed.Lookup("_manifest.json"); ok {
+					var hashes map[string]string
+					if json.Unmarshal(parsed.EntryData(e), &hashes) == nil {
+						orb = parsed
+						orbHashes = hashes
+					}
+				}
+			}
+		}
+		out := make([]coreExtEntry, 0, len(entries))
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".rb") {
+				continue
+			}
+			path := "ruby/" + entry.Name()
+			data, err := rubyFiles.ReadFile(path)
+			if err != nil {
+				panic(fmt.Sprintf("core_ext read error for %s: %s", path, err))
+			}
+			if len(data) == 0 {
+				continue
+			}
+			ent := coreExtEntry{name: entry.Name(), rbBytes: data}
+			if orb != nil {
+				sum := fmt.Sprintf("%x", sha256.Sum256(data))
+				if orbHashes[entry.Name()] == sum {
+					if e, ok := orb.Lookup(entry.Name()); ok {
+						ent.mrbBytes = orb.EntryData(e)
+					}
+				}
+			}
+			out = append(out, ent)
+		}
+		coreExtEntries = out
+	})
+	return coreExtEntries
+}
 
 func init() {
 	oruby.Gem("rbconfig", func(mrb *oruby.MrbState) interface{} {
@@ -44,106 +108,97 @@ func init() {
 		if runtime.GOOS == "darwin" {
 			dlext = "bundle"
 		}
-		mrb.Eval(fmt.Sprintf(`
-module RbConfig
-  ruby_version = RUBY_VERSION
-  prefix = %q
-  join = lambda { |*parts| parts.join('/') } # File may not be loaded yet
-  major, minor, teeny = ruby_version.split('.')
-  rubylibprefix = join.call(prefix, 'lib', 'oruby')
-  sitedir = join.call(rubylibprefix, 'site_ruby')
-  vendordir = join.call(rubylibprefix, 'vendor_ruby')
-  CONFIG = {
-    'host_os' => %q,
-    'host_cpu' => %q,
-    'host' => %q,
-    'arch' => %q,
-    'target_os' => %q,
-    'target_cpu' => %q,
-    'EXEEXT' => '',
-    'DLEXT' => %q,
-    'MAJOR' => major, 'MINOR' => minor, 'TEENY' => teeny, 'PATCHLEVEL' => '0',
-    'ruby_version' => ruby_version,
-    'RUBY_PROGRAM_VERSION' => ruby_version,
-    'RUBY_API_VERSION' => [major, minor].join('.'),
-    'prefix' => prefix,
-    'exec_prefix' => prefix,
-    'bindir' => join.call(prefix, 'bin'),
-    'libdir' => join.call(prefix, 'lib'),
-    'datadir' => join.call(prefix, 'share'),
-    'sysconfdir' => join.call(prefix, 'etc'),
-    'rubylibprefix' => rubylibprefix,
-    'rubylibdir' => join.call(rubylibprefix, ruby_version),
-    'rubyarchdir' => join.call(rubylibprefix, ruby_version, %q),
-    'archdir' => join.call(rubylibprefix, ruby_version, %q),
-    'sitedir' => sitedir,
-    'sitelibdir' => join.call(sitedir, ruby_version),
-    'sitearchdir' => join.call(sitedir, ruby_version, %q),
-    'vendordir' => vendordir,
-    'vendorlibdir' => join.call(vendordir, ruby_version),
-    'vendorarchdir' => join.call(vendordir, ruby_version, %q),
-    'ruby_install_name' => 'oruby',
-    'RUBY_INSTALL_NAME' => 'oruby',
-    'RUBY_BASE_NAME' => 'oruby',
-    'RUBY_SO_NAME' => 'oruby',
-    'UNICODE_VERSION' => '17.0.0',
-    'UNICODE_EMOJI_VERSION' => '17.0',
-    'CROSS_COMPILING' => 'no',
-    # oruby is one static executable: no libruby to link against
-    'ENABLE_SHARED' => 'no',
-    'LIBRUBY' => 'liboruby-static.a',
-    'LIBRUBY_A' => 'liboruby-static.a',
-    'LIBRUBY_SO' => 'liboruby.' + %q,
-    'libdirname' => 'libdir',
-    # every extension oruby has is built in, none a dynamically loaded file
-    'EXTSTATIC' => 'static',
-    'LIBPATHENV' => 'DYLD_LIBRARY_PATH'
-  }
-  # what mkmf compiles and links with: the C API's headers (gem/capi) and,
-  # for its link tests, the C API and libmruby as static libraries
-  CONFIG.update(%s)
-  # no frozen values (MRI's CONFIG is mutable, under --enable-frozen-string-literal too)
-  CONFIG.each { |k, v| CONFIG[k] = v.dup if String === v && v.frozen? }
-  TOPDIR = prefix
-  # MRI's unexpanded table; oruby's values hold no $(refs)
-  MAKEFILE_CONFIG = {}
-  CONFIG.each { |k, v| MAKEFILE_CONFIG[k] = String === v ? v.dup : v }
-  def self.ruby
-    CONFIG['bindir'] + '/' + CONFIG['ruby_install_name'] + CONFIG['EXEEXT']
-  end
-  # MRI's RbConfig.expand: the $(name) and ${name} references in val
-  # replaced by config's values, recursively
-  def self.expand(val, config = CONFIG)
-    newval = val.gsub(/\$\$|\$\(([^()]+)\)|\$\{([^{}]+)\}/) do
-      var = $&
-      if !(v = $1 || $2)
-        '$'
-      # MRI's, without its lookaheads (RE2, the regexp engine of a binary
-      # without gem/regexp/full, has none): $(name:pat=sub)
-      elsif v =~ /\A([^:]+)(?::(.*?)=(.*))?\z/ && (key = config[v = $1])
-        pat, sub = $2, $3
-        config[v] = false
-        config[v] = expand(key, config)
-        key = key.gsub(/#{Regexp.quote(pat)}(\s|\z)/n) { sub + $1 } if pat
-        key
-      else
-        var
-      end
-    end
-    val.replace(newval) unless newval == val
-    val
-  end
-  # CONFIG is the expanded table, as MRI's
-  CONFIG.each_value { |v| expand(v) if String === v }
-end
-CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
-`, prefix, runtime.GOOS, cpu, host, arch, runtime.GOOS, cpu, dlext, arch, arch, arch, arch, dlext, buildConfig(prefix)))
+		rbVer := oruby.RubyVersion
+		parts := strings.Split(rbVer, ".")
+		apiVer := rbVer
+		if len(parts) >= 2 {
+			apiVer = parts[0] + "." + parts[1]
+		}
+		rubylibprefix := prefix + "/lib/oruby"
+		sitedir := rubylibprefix + "/site_ruby"
+		vendordir := rubylibprefix + "/vendor_ruby"
+
+		rbConfigMod := mrb.DefineModule("RbConfig")
+		cfgMap := buildConfigMap(prefix)
+		extraCfg := map[string]string{
+			"host_os":               runtime.GOOS,
+			"host_cpu":              cpu,
+			"host":                  host,
+			"arch":                  arch,
+			"target_os":             runtime.GOOS,
+			"target_cpu":            cpu,
+			"EXEEXT":                "",
+			"DLEXT":                 dlext,
+			"MAJOR":                 parts[0],
+			"MINOR":                 parts[1],
+			"TEENY":                 parts[2],
+			"PATCHLEVEL":            "0",
+			"ruby_version":          rbVer,
+			"RUBY_PROGRAM_VERSION":  rbVer,
+			"RUBY_API_VERSION":      apiVer,
+			"prefix":                prefix,
+			"exec_prefix":           prefix,
+			"bindir":                prefix + "/bin",
+			"libdir":                prefix + "/lib",
+			"datadir":               prefix + "/share",
+			"sysconfdir":            prefix + "/etc",
+			"rubylibprefix":         rubylibprefix,
+			"rubylibdir":            rubylibprefix + "/" + rbVer,
+			"rubyarchdir":           rubylibprefix + "/" + rbVer + "/" + arch,
+			"archdir":               rubylibprefix + "/" + rbVer + "/" + arch,
+			"sitedir":               sitedir,
+			"sitelibdir":            sitedir + "/" + rbVer,
+			"sitearchdir":           sitedir + "/" + rbVer + "/" + arch,
+			"vendordir":             vendordir,
+			"vendorlibdir":          vendordir + "/" + rbVer,
+			"vendorarchdir":         vendordir + "/" + rbVer + "/" + arch,
+			"ruby_install_name":     "oruby",
+			"RUBY_INSTALL_NAME":     "oruby",
+			"RUBY_BASE_NAME":        "oruby",
+			"RUBY_SO_NAME":          "oruby",
+			"UNICODE_VERSION":       "17.0.0",
+			"UNICODE_EMOJI_VERSION": "17.0",
+			"CROSS_COMPILING":       "no",
+			"ENABLE_SHARED":         "no",
+			"LIBRUBY":               "liboruby-static.a",
+			"LIBRUBY_A":             "liboruby-static.a",
+			"LIBRUBY_SO":            "liboruby." + dlext,
+			"libdirname":            "libdir",
+			"EXTSTATIC":             "static",
+			"LIBPATHENV":            "DYLD_LIBRARY_PATH",
+		}
+		for k, v := range extraCfg {
+			cfgMap[k] = v
+		}
+		cfgHash := mrb.HashNewCapa(len(cfgMap))
+		mkHash := mrb.HashNewCapa(len(cfgMap))
+		for k, v := range cfgMap {
+			kv := mrb.StrNew(k)
+			cfgHash.Set(kv, mrb.StrNew(v))
+			mkHash.Set(kv, mrb.StrNew(v))
+		}
+		mrb.DefineConst(rbConfigMod, "CONFIG", cfgHash.Value())
+		mrb.DefineConst(rbConfigMod, "MAKEFILE_CONFIG", mkHash.Value())
+		mrb.DefineConst(rbConfigMod, "TOPDIR", mrb.StrNew(prefix))
+		if !mrb.ConstDefinedAt(mrb.ObjectClass(), mrb.Intern("CROSS_COMPILING")) {
+			mrb.DefineGlobalConst("CROSS_COMPILING", mrb.NilValue())
+		}
+		mrb.DefineModuleFunction(rbConfigMod, "ruby", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+			cfg := mrb.ConstGet(mrb.ClassPtr(self), mrb.Intern("CONFIG"))
+			b := mrb.String(mrb.HashGet(cfg, mrb.StrNew("bindir")))
+			n := mrb.String(mrb.HashGet(cfg, mrb.Intern("ruby_install_name")))
+			if n == "" {
+				n = mrb.String(mrb.HashGet(cfg, mrb.StrNew("ruby_install_name")))
+			}
+			e := mrb.String(mrb.HashGet(cfg, mrb.StrNew("EXEEXT")))
+			return mrb.StrNew(b + "/" + n + e)
+		}, oruby.ArgsNone())
 		return nil
 	})
 
 	oruby.Gem("core_ext", func(mrb *oruby.MrbState) interface{} {
 		// Ruby extensions below reopen classes defined by these gems
-		for _, dep := range []string{"io", "io/file", "regexp", "time/core", "thread", "process"} {
+		for _, dep := range []string{"io", "io/file", "regexp", "time/core", "thread", "process", "rbconfig"} {
 			mrb.Resolve(dep)
 		}
 		initFormat(mrb)
@@ -156,7 +211,9 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		initCrypt(mrb)
 		initISeq(mrb)
 		// IO::Buffer (ruby/32_io_buffer.rb) sizes its mappings by the page size
-		mrb.Eval(fmt.Sprintf("class IO; class Buffer; PAGE_SIZE = %d; end; end", os.Getpagesize()))
+		ioCls := mrb.ClassGet("IO")
+		bufCls := mrb.DefineClassUnder(ioCls, "Buffer", mrb.ObjectClass())
+		mrb.DefineConst(bufCls, "PAGE_SIZE", mrb.FixnumValue(os.Getpagesize()))
 		floatClass := mrb.FloatClass()
 		mrb.DefineMethod(floatClass, "prev_float", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			f := self.Float64()
@@ -179,11 +236,6 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		initNumconv(mrb)
 		initFloatRound(mrb)
 
-		entries, err := fs.ReadDir(rubyFiles, "ruby")
-		if err != nil {
-			panic("core_ext read error: " + err.Error())
-		}
-
 		if mrb.ClassDefined("ObjectSpace") {
 			mObjSpace := mrb.ModuleGet("ObjectSpace")
 			mrb.DefineClassMethod(mObjSpace, "_caller_receiver", func(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -194,23 +246,17 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 		c := mrb.MrbCcontextNew()
 		defer c.Free()
 
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".rb") {
-				continue
-			}
-			path := "ruby/" + entry.Name()
-			data, err := rubyFiles.ReadFile(path)
-			if err != nil {
-				panic(fmt.Sprintf("core_ext read error for %s: %s", path, err))
-			}
-			if len(data) == 0 {
-				continue
-			}
+		for _, ent := range getCoreExtEntries() {
 			// a core file, which backtraces show as MRI shows its own
-			c.Filename("<internal:core_ext/" + entry.Name() + ">")
-			_, err = mrb.LoadBytesCxt(data, c)
+			c.InternalFilename("<internal:core_ext/" + ent.name + ">")
+			var err error
+			if ent.mrbBytes != nil {
+				_, err = mrb.LoadIrepCxt(ent.mrbBytes, c)
+			} else {
+				_, err = mrb.LoadBytesCxt(ent.rbBytes, c)
+			}
 			if err != nil {
-				panic(fmt.Sprintf("core_ext error loading %s: %s", path, err))
+				panic(fmt.Sprintf("core_ext error loading ruby/%s: %s", ent.name, err))
 			}
 		}
 		// C front ends in place of the hot methods the Ruby above redefines
@@ -225,7 +271,22 @@ CROSS_COMPILING = nil unless Object.const_defined?(:CROSS_COMPILING)
 			return nil
 		}
 		if def := oruby.DefaultLoadPath(); len(def) > 0 {
-			mrb.Eval(fmt.Sprintf("if (i = $LOAD_PATH.index(%q)); $LOAD_PATH[i..].each { |pa| pa.instance_variable_set(:@gem_prelude_index, pa) unless pa.frozen? }; end", def[0]))
+			if lpv := mrb.GVGet(oruby.GvSym_LOAD_PATH); lpv.IsArray() {
+				if elems, ok := mrb.AotArySlice(lpv); ok {
+					found := false
+					ivSym := mrb.Intern("@gem_prelude_index")
+					for _, pa := range elems {
+						if !found {
+							if b, sok := mrb.AotStringBytes(pa); sok && string(b) == def[0] {
+								found = true
+							}
+						}
+						if found && !pa.Frozen() {
+							_ = mrb.IVSet(pa, ivSym, pa)
+						}
+					}
+				}
+			}
 		}
 		return nil
 	})
@@ -317,7 +378,7 @@ func initMathGamma(mrb *oruby.MrbState) {
 // static libraries in <prefix>/lib (make bin), so they find what the C API
 // has. Extensions are compiled into an oruby binary (oruby build), never
 // loaded as files.
-func buildConfig(prefix string) string {
+func buildConfigMap(prefix string) map[string]string {
 	hdr := ""
 	for _, d := range []string{
 		filepath.Join(prefix, "include", "oruby-"+oruby.RubyVersion),
@@ -366,19 +427,5 @@ func buildConfig(prefix string) string {
 			kv[k] = hdr
 		}
 	}
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	b.WriteString("{")
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%q => %q", k, kv[k])
-	}
-	b.WriteString("}")
-	return b.String()
+	return kv
 }

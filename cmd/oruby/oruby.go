@@ -586,7 +586,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "%v: Invalid mrb_state, exiting oruby\n", progName())
 		return 1
 	}
-	defer mrb.Close()
+	defer mrb.CloseFast()
 	// MRI's handlers: SIGINT raises Interrupt, SIGTERM & co. SignalException
 	signal.InstallDefaults(mrb)
 
@@ -738,7 +738,9 @@ func run() int {
 	for cat, on := range o.warnCats {
 		fmt.Fprintf(&pre, "Warning[:%s] = %v if Warning.categories.include?(:%s)\n", cat, on, cat)
 	}
-	fmt.Fprintf(&pre, "Process.instance_variable_set(:@argv0, %q.dup.freeze)\n", cmdline)
+	argv0 := mrb.StrNew(cmdline)
+	mrb.ObjFreeze(argv0)
+	_ = mrb.IVSet(mrb.ModuleGet("Process"), mrb.Intern("@argv0"), argv0)
 	mrb.SetGV("$0", cmdline)
 	if o.backtraceLimit != "" {
 		if n, err := strconv.Atoi(o.backtraceLimit); err == nil {
@@ -764,12 +766,17 @@ func run() int {
 	// --enable-gems asks for it explicitly)
 	gems := o.feature("gems", !isOrb && os.Getenv("MSPEC_RUNNER") == "")
 	if gems {
-		mrb.LoadString("begin; require 'rubygems'; rescue LoadError => e; warn \"`RubyGems' were not loaded: #{e}\" if $VERBOSE; end")
+		if _, err := mrb.Funcall(mrb.TopSelf(), oruby.Sym_require, "rubygems"); err != nil {
+			mrb.ExcClear()
+			if mrb.GVGet(oruby.GvSym_VERBOSE).Bool() {
+				fmt.Fprintf(os.Stderr, "`RubyGems' were not loaded: %s\n", err.Error())
+			}
+		}
 	}
 	// DidYouMean is autoloaded, as MRI's gem_prelude does (with the gems, or
 	// when --enable=did_you_mean asks for it)
 	if o.feature("did_you_mean", gems) {
-		mrb.LoadString("Object.autoload(:DidYouMean, 'did_you_mean')")
+		_, _ = mrb.Funcall(mrb.ObjectClass().Value(), oruby.Sym_autoload, mrb.SymbolValue(mrb.Intern("DidYouMean")), "did_you_mean")
 	}
 
 	for _, lib := range o.libs {
@@ -825,6 +832,8 @@ func run() int {
 	default:
 		if o.dashN || o.dashP {
 			src = loopWrap(src, o)
+		} else if len(o.eLines) > 0 && !o.checkSyntax && len(bytes.TrimSpace(src)) == 0 {
+			break
 		}
 		if o.kcode != "" {
 			src = oruby.PreprocessRubyWith(src, &oruby.PreprocessOptions{SourceEncoding: o.kcode})

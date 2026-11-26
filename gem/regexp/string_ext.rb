@@ -77,3 +77,11 @@ class String
     __re_aset(b, m.end(cap) - b, val)
   end
 end
+
+class << Regexp
+  private
+
+  def __oruby_compile_keywords(args, options, block)
+    new(*args, **options, &block)
+  end
+end

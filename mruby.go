@@ -461,7 +461,7 @@ end
 			// otherwise, as MRI's eval
 			opts.SourceEncoding = "ASCII-8BIT"
 		}
-		out, err := preprocessRuby([]byte(src.String()), &opts)
+		out, err := preprocessRuby(mrb, []byte(src.String()), &opts)
 		if err != nil {
 			return mrb.RaiseError(err)
 		}
@@ -762,6 +762,26 @@ func (mrb *MrbState) Close() {
 		mrb.funcIndex = nil
 		mrb.features = nil
 	}
+}
+
+// CloseFast runs exit handlers and shuts down goroutines/signals without
+// tearing down the C mruby heap (used by CLI processes right before os.Exit).
+func (mrb *MrbState) CloseFast() {
+	if mrb.p == nil {
+		return
+	}
+	mrb.threadsTerminate()
+	close(mrb.exitChan)
+	mrb.WaitGroup.Wait()
+	if mrb.injectVMChan != nil {
+		close(mrb.injectVMChan)
+	}
+	if mrb.InjectChan != nil {
+		close(mrb.InjectChan)
+	}
+	mrb.RunAtExitHandlers()
+	mrb.signalRelease()
+	mrb.p = nil
 }
 
 // New oruby state with all gems

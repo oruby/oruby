@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"unsafe"
 )
 
@@ -77,12 +78,22 @@ func (c *MrbCcontext) Filename(filename string) string {
 	return C.GoString(C.mrb_ccontext_filename(c.mrb.p, c.p, cfn))
 }
 
+// InternalFilename sets the context filename for embedded/internal code without
+// touching the filesystem to resolve a real path.
+func (c *MrbCcontext) InternalFilename(filename string) string {
+	cfn := C.CString(filename)
+	defer C.free(unsafe.Pointer(cfn))
+	return C.GoString(C.mrb_ccontext_filename(c.mrb.p, c.p, cfn))
+}
+
 func (c *MrbCcontext) filename() string {
 	if c == nil || c.p == nil || c.p.filename == nil {
 		return ""
 	}
 	return C.GoString(c.p.filename)
 }
+
+var sourceRealpathCache sync.Map
 
 // Remember the file while its spelling still resolves. Its display name is
 // also used by __FILE__ and may be relative or point at a symlink.
@@ -94,9 +105,20 @@ func (c *MrbCcontext) rememberSourcePath(filename string) {
 	if err != nil {
 		return
 	}
-	real, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return
+	var real string
+	if cached, ok := sourceRealpathCache.Load(absolute); ok {
+		real = cached.(string)
+		if real == "" {
+			return
+		}
+	} else {
+		r, err := filepath.EvalSymlinks(absolute)
+		if err != nil {
+			sourceRealpathCache.Store(absolute, "")
+			return
+		}
+		real = r
+		sourceRealpathCache.Store(absolute, real)
 	}
 	mrb := c.mrb
 	kernel := mrb.KernelModule()
@@ -395,7 +417,7 @@ func (mrb *MrbState) ParseFile(fileName string, context *MrbCcontext) (MrbParser
 
 // ParseString to oruby parser state
 func (mrb *MrbState) ParseString(s string, context *MrbCcontext) (MrbParserState, error) {
-	buf, err := preprocessRuby([]byte(s), &PreprocessOptions{Filename: context.filename()})
+	buf, err := preprocessRuby(mrb, []byte(s), &PreprocessOptions{Filename: context.filename()})
 	if err != nil {
 		return MrbParserState{nil}, err
 	}
@@ -450,7 +472,7 @@ func (mrb *MrbState) LoadFile(fileName string) (Value, error) {
 // LoadString loads string to oruby value
 func (mrb *MrbState) LoadString(s string) (Value, error) {
 	orig := []byte(s)
-	buf, err := preprocessRuby(orig, nil)
+	buf, err := preprocessRuby(mrb, orig, nil)
 	if err != nil {
 		return mrb.NilValue(), err
 	}
@@ -460,7 +482,7 @@ func (mrb *MrbState) LoadString(s string) (Value, error) {
 	var result C.mrb_value
 	status := C._mrb_load_nstring_cxt(mrb.p, cs, C.size_t(len(buf)), nil, &result)
 	if status != 0 && strings.Contains(mrb.String(mrb.ExcMessage(Value{result})), "too big jump offset") {
-		if fb, err2 := preprocessRuby(orig, &PreprocessOptions{NoRegexpLiterals: true, NoFrozenLiterals: true}); err2 == nil && len(fb) > 0 {
+		if fb, err2 := preprocessRuby(mrb, orig, &PreprocessOptions{NoRegexpLiterals: true, NoFrozenLiterals: true}); err2 == nil && len(fb) > 0 {
 			status = C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&fb[0])), C.size_t(len(fb)), nil, &result)
 			runtime.KeepAlive(fb)
 		}
@@ -494,7 +516,7 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	}
 	orig := buf
 	fn := context.filename()
-	buf, err := preprocessRuby(buf, &PreprocessOptions{Filename: fn})
+	buf, err := preprocessRuby(mrb, buf, &PreprocessOptions{Filename: fn})
 	if err != nil {
 		return mrb.NilValue(), err
 	}
@@ -502,7 +524,7 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	status := C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), context.p, &result)
 	runtime.KeepAlive(buf)
 	if status != 0 && strings.Contains(mrb.String(mrb.ExcMessage(Value{result})), "too big jump offset") {
-		if fb, err2 := preprocessRuby(orig, &PreprocessOptions{Filename: fn, NoRegexpLiterals: true, NoFrozenLiterals: true}); err2 == nil && len(fb) > 0 {
+		if fb, err2 := preprocessRuby(mrb, orig, &PreprocessOptions{Filename: fn, NoRegexpLiterals: true, NoFrozenLiterals: true}); err2 == nil && len(fb) > 0 {
 			status = C._mrb_load_nstring_cxt(mrb.p, (*C.char)(unsafe.Pointer(&fb[0])), C.size_t(len(fb)), context.p, &result)
 			runtime.KeepAlive(fb)
 		}
@@ -516,7 +538,7 @@ func (mrb *MrbState) LoadBytesWrapped(buf []byte, context *MrbCcontext, klass RC
 	if len(buf) == 0 {
 		return nilValue, nil
 	}
-	buf, err := preprocessRuby(buf, &PreprocessOptions{Filename: context.filename()})
+	buf, err := preprocessRuby(mrb, buf, &PreprocessOptions{Filename: context.filename()})
 	if err != nil {
 		return mrb.NilValue(), err
 	}

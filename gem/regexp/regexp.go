@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/oruby/oruby"
-	"github.com/oruby/oruby/gem/rb"
 )
 
 // oruby regex options
@@ -125,15 +124,6 @@ func init() {
 		mrb.DefineClassUnder(cls, "TimeoutError", mrb.ERegexpError())
 
 		mrb.DefineGlobalConst("Regexp", cls)
-		rb.LoadRuby(mrb, "<internal:regexp>", []byte(`
-class << Regexp
-  private
-
-  def __oruby_compile_keywords(args, options, block)
-    new(*args, **options, &block)
-  end
-end
-`))
 
 		initString(mrb)
 		return nil
