@@ -52,6 +52,7 @@ func reportResults(t *testing.T, mrb *oruby.MrbState) {
 
 func AssertCode(t *testing.T, mrb *oruby.MrbState, code string) {
 	t.Helper()
+	mrb.Resolve("assert")
 	//mrb_init_test_vformat(mrb);
 	mrb.SetGV("$mrbtest_verbose", testing.Verbose())
 
@@ -66,6 +67,7 @@ func AssertCode(t *testing.T, mrb *oruby.MrbState, code string) {
 
 func AssertFileVerbose(t *testing.T, mrb *oruby.MrbState, filename string) {
 	t.Helper()
+	mrb.Resolve("assert")
 
 	//mrb_init_test_vformat(mrb);
 	mrb.SetGV("$mrbtest_verbose", true)
@@ -82,6 +84,7 @@ func AssertFileVerbose(t *testing.T, mrb *oruby.MrbState, filename string) {
 
 func AssertFile(t *testing.T, mrb *oruby.MrbState, filename string) {
 	t.Helper()
+	mrb.Resolve("assert")
 
 	//mrb_init_test_vformat(mrb);
 	//mrb.SetGV("$mrbtest_verbose", testing.Verbose())

@@ -1142,6 +1142,9 @@ func TestCompiler_Phase3_HTTPAndJSON(t *testing.T) {
 	})
 
 	rubyCode := `
+require "json"
+require "http"
+
 parsed = JSON.parse('{"status": "ok", "value": 42}')
 json_out = JSON.generate({"message" => "Phase3 Success", "val" => parsed["value"]})
 
