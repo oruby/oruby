@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "5b5f366c93b44b06"
+const presymTable = "71a969ba1af65f40"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -1169,6 +1169,7 @@ const (
 	Sym___oruby_implicit_params                 MrbSym = C.MRB_SYM____oruby_implicit_params                 // "__oruby_implicit_params"
 	Sym___oruby_implicit_rest                   MrbSym = C.MRB_SYM____oruby_implicit_rest                   // "__oruby_implicit_rest"
 	Sym___oruby_init_struct                     MrbSym = C.MRB_SYM____oruby_init_struct                     // "__oruby_init_struct"
+	Sym___oruby_initialize                      MrbSym = C.MRB_SYM____oruby_initialize                      // "__oruby_initialize"
 	Sym___oruby_inspect_part                    MrbSym = C.MRB_SYM____oruby_inspect_part                    // "__oruby_inspect_part"
 	Sym___oruby_install_defaults__              MrbSym = C.MRB_SYM____oruby_install_defaults__              // "__oruby_install_defaults__"
 	Sym___oruby_instrument                      MrbSym = C.MRB_SYM____oruby_instrument                      // "__oruby_instrument"
@@ -1238,6 +1239,7 @@ const (
 	Sym___oruby_reopen_io                       MrbSym = C.MRB_SYM____oruby_reopen_io                       // "__oruby_reopen_io"
 	Sym___oruby_reopen_path                     MrbSym = C.MRB_SYM____oruby_reopen_path                     // "__oruby_reopen_path"
 	Sym___oruby_rescue_splat                    MrbSym = C.MRB_SYM____oruby_rescue_splat                    // "__oruby_rescue_splat"
+	Sym___oruby_resume                          MrbSym = C.MRB_SYM____oruby_resume                          // "__oruby_resume"
 	Sym___oruby_root_fiber                      MrbSym = C.MRB_SYM____oruby_root_fiber                      // "__oruby_root_fiber"
 	Sym___oruby_rpos                            MrbSym = C.MRB_SYM____oruby_rpos                            // "__oruby_rpos"
 	Sym___oruby_ruby2_keywords                  MrbSym = C.MRB_SYM____oruby_ruby2_keywords                  // "__oruby_ruby2_keywords"
@@ -1276,12 +1278,14 @@ const (
 	Sym___oruby_tpath                           MrbSym = C.MRB_SYM____oruby_tpath                           // "__oruby_tpath"
 	Sym___oruby_trace_exc                       MrbSym = C.MRB_SYM____oruby_trace_exc                       // "__oruby_trace_exc"
 	Sym___oruby_trace_fire                      MrbSym = C.MRB_SYM____oruby_trace_fire                      // "__oruby_trace_fire"
+	Sym___oruby_transfer_raw                    MrbSym = C.MRB_SYM____oruby_transfer_raw                    // "__oruby_transfer_raw"
 	Sym___oruby_tsym                            MrbSym = C.MRB_SYM____oruby_tsym                            // "__oruby_tsym"
 	Sym___oruby_unblocks                        MrbSym = C.MRB_SYM____oruby_unblocks                        // "__oruby_unblocks"
 	Sym___oruby_unjoin                          MrbSym = C.MRB_SYM____oruby_unjoin                          // "__oruby_unjoin"
 	Sym___oruby_unpack                          MrbSym = C.MRB_SYM____oruby_unpack                          // "__oruby_unpack"
 	Sym___oruby_wakeup                          MrbSym = C.MRB_SYM____oruby_wakeup                          // "__oruby_wakeup"
 	Sym___oruby_warn_here                       MrbSym = C.MRB_SYM____oruby_warn_here                       // "__oruby_warn_here"
+	Sym___oruby_yield                           MrbSym = C.MRB_SYM____oruby_yield                           // "__oruby_yield"
 	Sym___owners__                              MrbSym = C.MRB_SYM____owners__                              // "__owners__"
 	Sym___params                                MrbSym = C.MRB_SYM____params                                // "__params"
 	Sym___parse                                 MrbSym = C.MRB_SYM____parse                                 // "__parse"
@@ -1339,6 +1343,7 @@ const (
 	Sym___spawn                                 MrbSym = C.MRB_SYM____spawn                                 // "__spawn"
 	Sym___split                                 MrbSym = C.MRB_SYM____split                                 // "__split"
 	Sym___state                                 MrbSym = C.MRB_SYM____state                                 // "__state"
+	Sym___storage__                             MrbSym = C.MRB_SYM____storage__                             // "__storage__"
 	Sym___sync                                  MrbSym = C.MRB_SYM____sync                                  // "__sync"
 	Sym___sync_point                            MrbSym = C.MRB_SYM____sync_point                            // "__sync_point"
 	Sym___systmpdir                             MrbSym = C.MRB_SYM____systmpdir                             // "__systmpdir"
@@ -2323,6 +2328,7 @@ const (
 	Sym_stime                                   MrbSym = C.MRB_SYM__stime                                   // "stime"
 	Sym_stop                                    MrbSym = C.MRB_SYM__stop                                    // "stop"
 	Sym_stopsig                                 MrbSym = C.MRB_SYM__stopsig                                 // "stopsig"
+	Sym_storage                                 MrbSym = C.MRB_SYM__storage                                 // "storage"
 	Sym_strftime                                MrbSym = C.MRB_SYM__strftime                                // "strftime"
 	Sym_strict_decode64                         MrbSym = C.MRB_SYM__strict_decode64                         // "strict_decode64"
 	Sym_strict_encode64                         MrbSym = C.MRB_SYM__strict_encode64                         // "strict_encode64"

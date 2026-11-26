@@ -288,7 +288,16 @@ func (g *CodeGen) analyzeTypedUnits() {
 			for i := range intParams {
 				intParams[i] = TypeInt64
 			}
+			// A self-recursive method (fib) has no return type to start from, as
+			// the result of its own call is part of what it returns. Speculate
+			// the return type: inferTypedPlan uses it for the self calls and
+			// keeps the plan only if every return path is that type.
 			if plan, _ := g.inferTypedPlan(u, intParams, TypeUnknown, false, ""); plan != nil {
+				g.typedPlans[inf.fn] = plan
+				changed = true
+				continue
+			}
+			if plan, _ := g.inferTypedPlan(u, intParams, TypeInt64, false, ""); plan != nil {
 				g.typedPlans[inf.fn] = plan
 				changed = true
 				continue
@@ -299,6 +308,9 @@ func (g *CodeGen) analyzeTypedUnits() {
 					fltParams[i] = TypeFloat64
 				}
 				if plan, _ := g.inferTypedPlan(u, fltParams, TypeUnknown, false, ""); plan != nil {
+					g.typedPlans[inf.fn] = plan
+					changed = true
+				} else if plan, _ := g.inferTypedPlan(u, fltParams, TypeFloat64, false, ""); plan != nil {
 					g.typedPlans[inf.fn] = plan
 					changed = true
 				}

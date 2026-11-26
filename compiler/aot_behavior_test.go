@@ -490,3 +490,208 @@ puts JSON.generate({a: 1})
 		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// A self-recursive method is specialized to unboxed integers by speculation
+// (the return type is assumed, then checked); every case the speculation
+// cannot cover falls back to the generic code with the same answer.
+func TestAOTSpeculatedRecursion(t *testing.T) {
+	src := `
+def t(name); r = yield; puts "#{name}: #{r.inspect}"; rescue Exception => e; puts "#{name}: RAISED #{e.class}"; end
+def fib(n) = n < 2 ? n : fib(n - 1) + fib(n - 2)
+def fact(n) = n <= 1 ? 1 : n * fact(n - 1)
+def down(n) = n == 0 ? nil : down(n - 1)
+def sum_to(n) = n == 0 ? 0 : n + sum_to(n - 1)
+def maybe(n) = n > 3 ? "big" : maybe(n + 1)
+t("fib") { fib(20) }
+t("fact past 64 bits") { fact(25) }
+t("float argument") { fib(5.5) }
+t("string argument") { begin; fib("a"); rescue => e; e.class; end }
+t("nil result") { down(3) }
+t("sum") { sum_to(1000) }
+t("other return type") { maybe(0) }
+class Integer; def fib_check = fib(self); end
+t("redefined +") { class Integer; alias_method :orig_plus, :+; def +(o) = orig_plus(o).orig_plus(1); end; r = fib(5); class Integer; alias_method :+, :orig_plus; end; r }
+t("after restoring +") { fib(10) }
+`
+	want := strings.Join([]string{
+		`fib: 6765`,
+		`fact past 64 bits: 15511210043330985984000000`,
+		`float argument: 9.0`,
+		`string argument: ArgumentError`,
+		`nil result: nil`,
+		`sum: 500500`,
+		`other return type: "big"`,
+		`redefined +: 12`,
+		`after restoring +: 55`,
+	}, "\n")
+	got := strings.TrimSpace(aotRun(t, src, 0))
+	if got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Pure integer loops run unboxed (compiler/intloop.go) and give the answers
+// of MRI 4.1: overflow to bignum, break and next, if/else and elsif inside the
+// loop, variables assigned in the loop, floats, a redefined operator, a
+// Timeout that interrupts the loop, and the modulo and shift edges. The
+// expected output is MRI 4.1.0's own.
+func TestAOTIntegerLoops(t *testing.T) {
+	src := `require "timeout"
+def t(name); r = yield; puts "#{name}: #{r.inspect}"; rescue Exception => e; puts "#{name}: RAISED #{e.class}"; end
+t("sum") { i = 0; s = 0; while i < 1000; s += i; i += 1; end; [s, i] }
+t("mul overflow to bignum") { s = 1; i = 0; while i < 100; s = s * 3; i += 1; end; s }
+t("add overflow to bignum") { s = 1; i = 0; while i < 80; s += s; i += 1; end; s }
+t("shift") { s = 1; i = 0; while i < 70; s = s << 1; i += 1; end; s }
+t("shift right neg") { s = -1000; i = 0; while i < 5; s = s >> 1; i += 1; end; s }
+t("mod neg") { s = -17; r = []; i = 0; while i < 4; r << (s % 5); s -= 3; i += 1; end; r }
+t("mod loop sum") { i = 0; s = 0; while i < 100; s += i % 7; i += 1; end; s }
+t("mod by zero") { i = 0; s = 5; while i < 3; s = s % (2 - i); i += 1; end; s }
+t("bit ops") { i = 0; s = 0; while i < 64; s ^= (i & 5) | (i << 1); i += 1; end; s }
+t("break") { i = 0; s = 0; while true; s += i; i += 1; break if i > 10; end; [s, i] }
+t("next") { i = 0; s = 0; while i < 20; i += 1; next if i % 3 == 0; s += i; end; [s, i] }
+t("while with condition var") { i = 0; n = 50; s = 0; while i < n; s += n - i; i += 1; end; s }
+t("carried read after") { i = 0; s = 0; while i < 10; s += 2; i += 1; end; s * i }
+t("assigned in loop, read after") { i = 0; last = nil; while i < 10; last = i * 2; i += 1; end; last }
+t("conditionally assigned") { i = 0; hit = nil; while i < 10; hit = i if i == 4; i += 1; end; hit }
+t("nested") { s = 0; i = 0; while i < 30; j = 0; while j < 30; s += i * j; j += 1; end; i += 1; end; s }
+t("float counter") { i = 0.0; s = 0.0; while i < 10.0; s += i; i += 0.5; end; [s, i] }
+t("mixed float") { i = 0; s = 0.0; while i < 10; s += i; i += 1; end; s }
+t("nil operand") { i = 0; s = nil; begin; while i < 3; s += 1; i += 1; end; rescue NoMethodError; :nomethod; end }
+t("comparison chain") { i = 0; c = 0; while i < 100; c += 1 if i > 10 && i <= 50; i += 1; end; c }
+t("neq") { i = 0; c = 0; while i != 25; c += 2; i += 1; end; [c, i] }
+t("negative literals") { i = 100; s = 0; while i > -100; s += i; i -= 7; end; [s, i] }
+t("large literals") { i = 4_000_000_000; s = 0; while i < 4_000_000_005; s += i; i += 1; end; s }
+t("timeout interrupts a typed loop") { begin; Timeout.timeout(0.3) { i = 0; while true; i += 1; end }; rescue Timeout::Error; :timed_out; end }
+t("if else in loop") { i = 0; a = 0; b = 0; while i < 40; if i % 2 == 0 then a += i else b += i end; i += 1; end; [a, b] }
+t("elsif chain") { i = 0; r = [0, 0, 0]; while i < 30; if i % 3 == 0 then r[0] += 1 elsif i % 3 == 1 then r[1] += 1 else r[2] += 1 end; i += 1; end; r }
+t("break in if else") { i = 0; s = 0; while i < 100; if i > 20 then break else s += i end; i += 1; end; [s, i] }
+t("next in else") { i = 0; s = 0; while i < 20; i += 1; if i < 5 then s += 100 else next end; s += 1; end; [s, i] }
+t("unless/until") { i = 0; s = 0; until i >= 15; s += i unless i % 4 == 0; i += 1; end; s }
+t("ternary in loop") { i = 0; s = 0; while i < 12; s += i.odd? ? 1 : 2; i += 1; end; s }
+t("break out of nested") { s = 0; i = 0; while i < 10; j = 0; while j < 10; break if j > i; s += 1; j += 1; end; i += 1; end; s }
+t("loop result value") { i = 0; r = while i < 3; i += 1; end; [r, i] }
+t("break with value") { i = 0; r = while i < 10; i += 1; break i * 100 if i == 4; end; r }
+t("user class defines %") { c = Class.new { def %(x) = :user }; i = 0; s = 0; while i < 50; s += i % 7; i += 1; end; [s, c.new % 1] }
+t("redefine Integer#%") { class Integer; alias_method :old_mod, :%; def %(o) = old_mod(o) + 1000; end; i = 0; s = 0; while i < 5; s += i % 3; i += 1; end; class Integer; alias_method :%, :old_mod; end; s }
+t("restored %") { i = 0; s = 0; while i < 5; s += i % 3; i += 1; end; s }
+t("redefine Integer#<<") { class Integer; alias_method :old_shl, :<<; def <<(o) = old_shl(o) + 1; end; i = 0; s = 0; while i < 4; s += 1 << i; i += 1; end; class Integer; alias_method :<<, :old_shl; end; s }
+t("prepend Integer &") { Integer.prepend(Module.new { def &(o) = 42 }); i = 0; s = 0; while i < 4; s += i & 1; i += 1; end; s }
+t("redefined +") { class Integer; alias_method :old_plus, :+; def +(o) = old_plus(o).old_plus(1); end; i = 0; s = 0; while i < 5; s += 1; i = i.old_plus(1); end; class Integer; alias_method :+, :old_plus; end; s }
+t("after restore") { i = 0; s = 0; while i < 5; s += 1; i += 1; end; s }
+t("method loop") { def m(n); i = 0; s = 0; while i < n; s += i * i; i += 1; end; s; end; [m(100), m(0), m(3)] }
+t("block loop") { r = []; 3.times { |k| i = 0; s = 0; while i < k * 10; s += i; i += 1; end; r << s }; r }
+t("max int") { i = 9223372036854775800; while i < 9223372036854775810; i += 1; end; i }
+t("min int") { i = -9223372036854775800; while i > -9223372036854775810; i -= 1; end; i }
+nil
+`
+	want := `sum: [499500, 1000]
+mul overflow to bignum: 515377520732011331036461129765621272702107522001
+add overflow to bignum: 1208925819614629174706176
+shift: 1180591620717411303424
+shift right neg: -32
+mod neg: [3, 0, 2, 4]
+mod loop sum: 295
+mod by zero: RAISED ZeroDivisionError
+bit ops: 0
+break: [55, 11]
+next: [147, 20]
+while with condition var: 1275
+carried read after: 200
+assigned in loop, read after: 18
+conditionally assigned: 4
+nested: 189225
+float counter: [95.0, 10.0]
+mixed float: 45.0
+nil operand: :nomethod
+comparison chain: 40
+neq: [50, 25]
+negative literals: [58, -103]
+large literals: 20000000010
+timeout interrupts a typed loop: :timed_out
+if else in loop: [380, 400]
+elsif chain: [10, 10, 10]
+break in if else: [210, 21]
+next in else: [404, 20]
+unless/until: 81
+ternary in loop: 18
+break out of nested: 55
+loop result value: [nil, 3]
+break with value: 400
+user class defines %: [147, :user]
+redefine Integer#%: 5004
+restored %: 4
+redefine Integer#<<: 19
+prepend Integer &: 168
+redefined +: 10
+after restore: 5
+method loop: [328350, 0, 5]
+block loop: [0, 45, 190]
+max int: 9223372036854775810
+min int: -9223372036854775810`
+	got := strings.TrimSpace(aotRun(t, src, 0))
+	if got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// [] and []= on Array and Hash are guarded by mruby's own idx_class slots: one
+// pointer comparison that a subclass, a singleton, an override, an alias, a
+// prepended module or a restored method all answer as MRI does. The expected
+// output is MRI 4.1.0's own.
+func TestAOTIndexOperators(t *testing.T) {
+	src := `def t(name); r = yield; puts "#{name}: #{r.inspect}"; rescue Exception => e; puts "#{name}: RAISED #{e.class}"; end
+t("array") { a = [10, 20, 30]; [a[0], a[2], a[3], a[-1], a[-4]] }
+t("array set") { a = [1, 2]; a[0] = 9; a[5] = 7; a }
+t("hash") { h = {a: 1, "b" => 2, 3 => 4}; [h[:a], h["b"], h[3], h[:zz]] }
+t("hash default") { h = Hash.new(0); h[:x] += 1; h[:x] += 1; [h[:x], h[:y]] }
+t("hash default proc") { h = Hash.new { |hh, k| hh[k] = k.to_s * 2 }; [h[:ab], h.size, h[:ab]] }
+t("hash set") { h = {}; h[:a] = 1; h["s"] = 2; h[[1, 2]] = 3; [h, h[[1, 2]]] }
+t("string index") { s = "hello"; [s[1], s[1, 3], s[1..2], s[-1], s["ell"], s[9]] }
+t("frozen array set") { a = [1].freeze; begin; a[0] = 2; rescue => e; e.class; end }
+t("frozen hash set") { h = {a: 1}.freeze; begin; h[:b] = 2; rescue => e; e.class; end }
+t("custom class []") { c = Class.new { def [](i) = i * 2; def []=(i, v); @last = [i, v]; end; attr_reader :last }; o = c.new; o[4] = 5; [o[21], o.last] }
+t("hash subclass []") { c = Class.new(Hash) { def [](k) = "sub:#{super}" }; h = c.new; h[:a] = 1; [h[:a], h[:b]] }
+t("array subclass []") { c = Class.new(Array) { def [](i) = "sub#{i}" }; [c.new([1, 2])[1]] }
+t("hash subclass []=") { c = Class.new(Hash) { def []=(k, v); super(k, v * 10); end }; h = c.new; h[:a] = 1; h }
+t("singleton []") { h = {a: 1}; def h.[](k) = :single; [h[:a], {a: 1}[:a]] }
+t("redefine Hash#[]") { class Hash; alias_method :old_aref, :[]; def [](k) = [:redef, old_aref(k)]; end; r = {a: 1}[:a]; class Hash; alias_method :[], :old_aref; end; r }
+t("after restoring Hash#[]") { {a: 1}[:a] }
+t("redefine Array#[]") { class Array; alias_method :old_aref, :[]; def [](i) = [:redef, old_aref(i)]; end; r = [5, 6][1]; class Array; alias_method :[], :old_aref; end; r }
+t("redefine Array#[]=") { class Array; alias_method :old_aset, :[]=; def []=(i, v); old_aset(i, v + 100); end; end; a = [0, 0]; a[1] = 1; class Array; alias_method :[]=, :old_aset; end; a }
+t("redefine Hash#[]=") { class Hash; alias_method :old_hset, :[]=; def []=(k, v); old_hset(k, v + 100); end; end; h = {}; h[:a] = 1; class Hash; alias_method :[]=, :old_hset; end; h }
+t("after restoring []=") { a = [0, 0]; a[1] = 1; h = {}; h[:a] = 1; [a, h] }
+t("prepend on Array") { m = Module.new { def [](i) = [:prepended, super] }; Array.prepend(m); r = [1, 2][0]; r }
+t("hash key with custom hash") { k = Class.new { attr_reader :v; def initialize(v); @v = v; end; def hash = @v.hash; def eql?(o) = v == o.v }; h = {k.new(1) => :one}; [h[k.new(1)], h[k.new(2)]] }
+t("hash key raising") { k = Class.new { def hash = raise("boom") }; begin; {}[k.new]; rescue => e; e.message; end }
+t("many lookups") { h = {}; 1000.times { |i| h[i] = i * i }; s = 0; 1000.times { |i| s += h[i] }; s }
+nil
+`
+	want := `array: [10, 30, nil, 30, nil]
+array set: [9, 2, nil, nil, nil, 7]
+hash: [1, 2, 4, nil]
+hash default: [2, 0]
+hash default proc: ["abab", 1, "abab"]
+hash set: [{a: 1, "s" => 2, [1, 2] => 3}, 3]
+string index: ["e", "ell", "el", "o", "ell", nil]
+frozen array set: FrozenError
+frozen hash set: FrozenError
+custom class []: [42, [4, 5]]
+hash subclass []: ["sub:1", "sub:"]
+array subclass []: ["sub1"]
+hash subclass []=: {a: 10}
+singleton []: [:single, 1]
+redefine Hash#[]: [:redef, 1]
+after restoring Hash#[]: 1
+redefine Array#[]: [:redef, 6]
+redefine Array#[]=: [0, 101]
+redefine Hash#[]=: {a: 101}
+after restoring []=: [[0, 1], {a: 1}]
+prepend on Array: [:prepended, 1]
+hash key with custom hash: [:one, nil]
+hash key raising: nil
+many lookups: 332833500`
+	got := strings.TrimSpace(aotRun(t, src, 0))
+	if got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}

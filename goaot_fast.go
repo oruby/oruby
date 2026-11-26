@@ -22,6 +22,12 @@ const (
 	AotCoreAryLast
 	AotCoreAryIdx
 	AotCoreIntTimes
+	AotCoreIntAnd
+	AotCoreIntOr
+	AotCoreIntXor
+	AotCoreIntShl
+	AotCoreIntShr
+	AotCoreIntMod
 	AotCoreRangeEach
 	AotCoreStrBytesize
 	AotCoreStrLen
@@ -66,10 +72,12 @@ func (mrb *MrbState) aotInitCoreIntrinsics(st *aotState) {
 		if !bool(found) {
 			return
 		}
+		key := (uintptr(unsafe.Pointer(cls)) >> 4) ^ uintptr(mid)
 		st.coreIntrinsics[id] = aotIntrinsicSlot{
 			cls:    cls,
 			mid:    mid,
 			method: m,
+			way0:   (uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)) * 2,
 		}
 	}
 
@@ -83,6 +91,12 @@ func (mrb *MrbState) aotInitCoreIntrinsics(st *aotState) {
 	regCls(AotCoreAryIdx, ac, "[]")
 
 	regCls(AotCoreIntTimes, mrb.p.integer_class, "times")
+	regCls(AotCoreIntAnd, mrb.p.integer_class, "&")
+	regCls(AotCoreIntOr, mrb.p.integer_class, "|")
+	regCls(AotCoreIntXor, mrb.p.integer_class, "^")
+	regCls(AotCoreIntShl, mrb.p.integer_class, "<<")
+	regCls(AotCoreIntShr, mrb.p.integer_class, ">>")
+	regCls(AotCoreIntMod, mrb.p.integer_class, "%")
 	regCls(AotCoreRangeEach, mrb.p.range_class, "each")
 
 	sc := mrb.p.string_class
@@ -166,6 +180,58 @@ func (mrb *MrbState) aotCacheMatch(cls *C.struct_RClass, mid C.mrb_sym, expected
 		return mc1.m == expected
 	}
 	return mrb.aotCacheMatchSlow(cls, mid, expected)
+}
+
+// AotIdxSlot names a slot of mruby's idx_class (the guards the VM's inline
+// index opcodes use). The slot holds the core class while its builtin is the
+// method in force and NULL once it is overridden, refined or a module is
+// prepended; mruby keeps it up to date on every method definition.
+type AotIdxSlot int
+
+const (
+	AotIdxAryAref  = AotIdxSlot(C.MRB_IDX_OP_ARY_AREF)  // Array#[]
+	AotIdxHashAref = AotIdxSlot(C.MRB_IDX_OP_HASH_AREF) // Hash#[]
+	AotIdxStrAref  = AotIdxSlot(C.MRB_IDX_OP_STR_AREF)  // String#[]
+	AotIdxAryAset  = AotIdxSlot(C.MRB_IDX_OP_ARY_ASET)  // Array#[]=
+	AotIdxHashAset = AotIdxSlot(C.MRB_IDX_OP_HASH_ASET) // Hash#[]=
+	AotIdxStrAset  = AotIdxSlot(C.MRB_IDX_OP_STR_ASET)  // String#[]=
+	AotIdxStrAdd   = AotIdxSlot(C.MRB_IDX_OP_STR_ADD)   // String#+
+	AotIdxStrEq    = AotIdxSlot(C.MRB_IDX_OP_STR_EQ)    // String#==
+)
+
+// AotIdxOK reports whether recv is an instance of exactly the core class slot
+// guards and its builtin is still the method in force: one pointer comparison
+// in pure Go, as mruby's own OP_GETIDX does. A subclass, a singleton, an
+// override and a refinement all fail it, so a user class that defines [] (the
+// common case) never affects it.
+func (mrb *MrbState) AotIdxOK(slot AotIdxSlot, recv Value) bool {
+	if recv.v.tt <= C.MRB_TT_CPTR { // an immediate has no class pointer to read
+		return false
+	}
+	return (*C.struct_RBasic)(aotObjPtr(recv)).c == mrb.p.idx_class[slot]
+}
+
+// AotIntCoreOK is AotCoreOK for an Integer receiver (the caller has checked its
+// type) of one of the Integer methods registered with AotCore...: the class is
+// known, so only the method cache entry is compared, at the index kept in the
+// slot. It is the check of every inline integer bit operation.
+func (mrb *MrbState) AotIntCoreOK(id AotCoreID) bool {
+	st := mrb.aot
+	if st == nil {
+		return false
+	}
+	s := &st.coreIntrinsics[id]
+	if s.cls == nil || (mrb.p.refined_mids[0]|mrb.p.refined_mids[1]|mrb.p.refined_mids[2]|mrb.p.refined_mids[3]) != 0 {
+		return false
+	}
+	mc := &mrb.p.cache[s.way0]
+	if mc.c != s.cls || mc.mid != s.mid {
+		mc = &mrb.p.cache[s.way0+1]
+		if mc.c != s.cls || mc.mid != s.mid {
+			return mrb.aotCacheMatchSlow(s.cls, s.mid, s.method)
+		}
+	}
+	return mc.m == s.method
 }
 
 // AotCoreOK checks in pure Go (zero cgo on warm cache) that calling core
@@ -438,13 +504,21 @@ func (mrb *MrbState) aotMethodIdxFromCache(recv Value, mid MrbSym, fcall bool) (
 	if env == nil {
 		return -1, nil, true
 	}
+	// env: [idx], or [idx, params, info, ORB_AOT_SIG_MARK] of a method with its
+	// signature (go-aot.h _aot_define_method_body)
 	envLen := ((*(*uint32)(unsafe.Add(unsafe.Pointer(env), 8))) >> 12) & 0xff
-	if envLen != 1 {
+	if envLen != 1 && envLen != 4 {
 		return -1, nil, true
 	}
 	stack := *(**C.mrb_value)(unsafe.Add(unsafe.Pointer(env), 16))
 	if stack == nil || stack.tt != C.MRB_TT_INTEGER {
 		return -1, nil, true
+	}
+	if envLen == 4 {
+		mark := (*C.mrb_value)(unsafe.Add(unsafe.Pointer(stack), 3*unsafe.Sizeof(*stack)))
+		if mark.tt != C.MRB_TT_INTEGER || *(*int64)(unsafe.Pointer(mark)) != 0x4f524241 {
+			return -1, nil, true
+		}
 	}
 	return int(*(*int64)(unsafe.Pointer(stack))), mc.c0, true
 }

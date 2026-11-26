@@ -29,6 +29,10 @@ _aot_protect(mrb_state *mrb, mrb_protect_error_func *body, void *ud)
   return r;
 }
 
+/* class.c (scripts/mruby_vm_compat.rb, bop_extra_slots): record the core
+   operators now in force as the builtins of the extra bop_redefined slots */
+void orb_bop_x_arm(mrb_state *mrb);
+
 int _orb_vm_hooked(mrb_state *mrb);
 void _orb_vm_poll(mrb_state *mrb);
 

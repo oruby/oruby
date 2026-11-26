@@ -591,6 +591,7 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
     C
     metaclass_class(source)
     bop_redefined_warning(source)
+    bop_extra_slots(source)
     prepend_fixes(source)
     class_initialize_removed(source)
     # the message names the class: a BasicObject superclass has no #inspect
@@ -757,6 +758,102 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       }
     }
     C
+  end
+
+  # More operators under the same mask: the ones compiled code evaluates
+  # inline beyond mruby's own nine. They take the free bits above
+  # MRB_BOP_NIL_TRUE_FALSE_EQ (bit 19) of `bop_redefined`, so the struct is
+  # unchanged. oruby itself replaces some of them after boot (core_ext defines
+  # Integer#& and friends in Ruby for MRI's coercion), so the methods they are
+  # judged against are recorded when the compiled program's runtime starts
+  # (orb_bop_x_arm), not at boot, and per state: they may be procs. The record
+  # is a binary String held by an ivar of Integer (freed with the state); a
+  # recorded proc is gc-registered, so a redefinition cannot reuse its address.
+  # Until armed the bits stay clear and nothing reads them. After that every
+  # method definition rechecks the slot of its name, so a user class defining
+  # the name never touches it; only the core class itself, a module prepended
+  # to it, or a refinement does.
+  #   bits 20..25 Integer % & | ^ << >>   26 Integer **   27 Integer <=>
+  #        28 Array <<                    30 armed
+  def self.bop_extra_slots(source)
+    replace(source, "/* Records the builtin operators of each core class and arms their slots.", <<~'C'.chomp)
+      #define ORUBY_BOP_X_FIRST 20
+      #define ORUBY_BOP_X_COUNT 9
+      #define ORUBY_BOP_X_ARMED (1u << 30)
+
+      static struct RClass*
+      bop_x_class(mrb_state *mrb, int i)
+      {
+        return i == 8 ? mrb->array_class : mrb->integer_class;
+      }
+
+      static mrb_sym
+      bop_x_mid(int i)
+      {
+        static const mrb_sym mids[ORUBY_BOP_X_COUNT] = {
+          MRB_OPSYM(mod), MRB_OPSYM(and), MRB_OPSYM(or), MRB_OPSYM(xor),
+          MRB_OPSYM(lshift), MRB_OPSYM(rshift), MRB_OPSYM(pow), MRB_OPSYM(cmp),
+          MRB_OPSYM(lshift),
+        };
+        return mids[i];
+      }
+
+      static mrb_method_t*
+      bop_x_table(mrb_state *mrb, mrb_bool create)
+      {
+        mrb_sym key = mrb_intern_lit(mrb, "__oruby_bop_builtins__");
+        mrb_value holder = mrb_obj_value(mrb->integer_class);
+        mrb_value s = mrb_iv_get(mrb, holder, key);
+
+        if (!mrb_string_p(s)) {
+          if (!create) return NULL;
+          s = mrb_str_new(mrb, NULL, sizeof(mrb_method_t) * ORUBY_BOP_X_COUNT);
+          memset(RSTRING_PTR(s), 0, sizeof(mrb_method_t) * ORUBY_BOP_X_COUNT);
+          mrb_iv_set(mrb, holder, key, s);
+        }
+        return (mrb_method_t*)RSTRING_PTR(s);
+      }
+
+      /* Records the operators now in force as the builtins and arms the slots. */
+      void
+      orb_bop_x_arm(mrb_state *mrb)
+      {
+        mrb_method_t *table = bop_x_table(mrb, TRUE);
+
+        for (int i = 0; i < ORUBY_BOP_X_COUNT; i++) {
+          struct RClass *c = bop_x_class(mrb, i);
+          mrb_method_t m = mrb_vm_find_method(mrb, c, &c, bop_x_mid(i));
+
+          table[i] = m;
+          if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_PROC_P(m) && MRB_METHOD_PROC(m)) {
+            mrb_gc_register(mrb, mrb_obj_value((struct RObject*)MRB_METHOD_PROC(m)));
+          }
+          mrb->bop_redefined &= ~(1u << (ORUBY_BOP_X_FIRST + i));
+        }
+        mrb->bop_redefined |= ORUBY_BOP_X_ARMED;
+      }
+
+      static void
+      bop_x_check(mrb_state *mrb, int i)
+      {
+        uint32_t bit = 1u << (ORUBY_BOP_X_FIRST + i);
+        mrb_method_t *table = bop_x_table(mrb, FALSE);
+        struct RClass *c = bop_x_class(mrb, i);
+        mrb_method_t m = mrb_vm_find_method(mrb, c, &c, bop_x_mid(i));
+
+        if (table == NULL) return;
+        if (m.flags == table[i].flags && m.as.func == table[i].as.func) {
+          mrb->bop_redefined &= ~bit;
+        }
+        else {
+          mrb->bop_redefined |= bit;
+        }
+      }
+
+      /* Records the builtin operators of each core class and arms their slots.
+    C
+    replace(source, "    if (mid == 0 || mid == bop_mid(slot)) bop_refresh(mrb, slot);\n  }\n",
+      "    if (mid == 0 || mid == bop_mid(slot)) bop_refresh(mrb, slot);\n  }\n  if (mrb->bop_redefined & ORUBY_BOP_X_ARMED) {\n    for (int i = 0; i < ORUBY_BOP_X_COUNT; i++) {\n      if (mid == 0 || mid == bop_x_mid(i)) bop_x_check(mrb, i);\n    }\n  }\n")
   end
 
   # Object#freeze: a metaclass's inherited class is not its own to freeze

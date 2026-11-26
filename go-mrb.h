@@ -1051,7 +1051,12 @@ void _mrb_make_method_private(mrb_state *mrb, struct RClass *c, mrb_sym mid);
                       f(MRB_BOP_EQ) | f(MRB_BOP_LT) | f(MRB_BOP_LE) | f(MRB_BOP_GT) | f(MRB_BOP_GE))
 enum {
   _AOT_INT_BOP_MASK = _AOT_BOPS(MRB_BOP_INTEGER),
-  _AOT_FLOAT_BOP_MASK = _AOT_BOPS(MRB_BOP_FLOAT)
+  _AOT_FLOAT_BOP_MASK = _AOT_BOPS(MRB_BOP_FLOAT),
+  /* the extra slots of scripts/mruby_vm_compat.rb (bop_extra_slots) */
+  _AOT_INT_OPS2_MASK = 0x03f00000u,    /* Integer % & | ^ << >> (bits 20..25) */
+  _AOT_INT_POW_BIT = 1u << 26,         /* Integer ** */
+  _AOT_INT_CMP_BIT = 1u << 27,         /* Integer <=> */
+  _AOT_ARY_PUSH_BIT = 1u << 28         /* Array << */
 };
 
 #if defined(__cplusplus)

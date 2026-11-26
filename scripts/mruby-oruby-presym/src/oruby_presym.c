@@ -931,6 +931,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_implicit_params");
   (void)mrb_intern_lit(mrb, "__oruby_implicit_rest");
   (void)mrb_intern_lit(mrb, "__oruby_init_struct");
+  (void)mrb_intern_lit(mrb, "__oruby_initialize");
   (void)mrb_intern_lit(mrb, "__oruby_inspect_part");
   (void)mrb_intern_lit(mrb, "__oruby_inspect_symbol_quote?");
   (void)mrb_intern_lit(mrb, "__oruby_install_defaults__");
@@ -1008,6 +1009,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_reopen_io");
   (void)mrb_intern_lit(mrb, "__oruby_reopen_path");
   (void)mrb_intern_lit(mrb, "__oruby_rescue_splat");
+  (void)mrb_intern_lit(mrb, "__oruby_resume");
   (void)mrb_intern_lit(mrb, "__oruby_root_fiber");
   (void)mrb_intern_lit(mrb, "__oruby_rpos");
   (void)mrb_intern_lit(mrb, "__oruby_ruby2_keywords");
@@ -1047,6 +1049,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_tpath");
   (void)mrb_intern_lit(mrb, "__oruby_trace_exc");
   (void)mrb_intern_lit(mrb, "__oruby_trace_fire");
+  (void)mrb_intern_lit(mrb, "__oruby_transfer_raw");
   (void)mrb_intern_lit(mrb, "__oruby_tsym");
   (void)mrb_intern_lit(mrb, "__oruby_unblocks");
   (void)mrb_intern_lit(mrb, "__oruby_unjoin");
@@ -1054,6 +1057,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_wakeup");
   (void)mrb_intern_lit(mrb, "__oruby_warn_here");
   (void)mrb_intern_lit(mrb, "__oruby_writable?");
+  (void)mrb_intern_lit(mrb, "__oruby_yield");
   (void)mrb_intern_lit(mrb, "__owners__");
   (void)mrb_intern_lit(mrb, "__params");
   (void)mrb_intern_lit(mrb, "__parse");
@@ -1115,6 +1119,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__spawn");
   (void)mrb_intern_lit(mrb, "__split");
   (void)mrb_intern_lit(mrb, "__state");
+  (void)mrb_intern_lit(mrb, "__storage__");
   (void)mrb_intern_lit(mrb, "__sync");
   (void)mrb_intern_lit(mrb, "__sync_point");
   (void)mrb_intern_lit(mrb, "__systmpdir");
@@ -2298,6 +2303,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "stop");
   (void)mrb_intern_lit(mrb, "stopped?");
   (void)mrb_intern_lit(mrb, "stopsig");
+  (void)mrb_intern_lit(mrb, "storage");
   (void)mrb_intern_lit(mrb, "strftime");
   (void)mrb_intern_lit(mrb, "strict_decode64");
   (void)mrb_intern_lit(mrb, "strict_encode64");

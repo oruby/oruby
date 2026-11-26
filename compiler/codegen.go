@@ -1108,6 +1108,49 @@ func aotModII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
 	return aotSetInt(a, m), true
 }
 
+// Integer bit operations: both operands Integer, the core methods (the
+// extra bop_redefined slots, one mask test), and the result no bignum; otherwise the method is called.
+func aotAndII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger || mrb.AotIntBitOpsRedefined() {
+		return a, false
+	}
+	return aotSetInt(a, aotInt(a)&aotInt(b)), true
+}
+func aotOrII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger || mrb.AotIntBitOpsRedefined() {
+		return a, false
+	}
+	return aotSetInt(a, aotInt(a)|aotInt(b)), true
+}
+func aotXorII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger || mrb.AotIntBitOpsRedefined() {
+		return a, false
+	}
+	return aotSetInt(a, aotInt(a)^aotInt(b)), true
+}
+func aotShlII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger || mrb.AotIntBitOpsRedefined() {
+		return a, false
+	}
+	x, y := aotInt(a), aotInt(b)
+	if y < 0 || y > 62 {
+		return a, false
+	}
+	if z := x << uint(y); z>>uint(y) == x {
+		return aotSetInt(a, z), true
+	}
+	return a, false
+}
+func aotShrII(mrb *oruby.MrbState, a, b oruby.Value) (oruby.Value, bool) {
+	if a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger || mrb.AotIntBitOpsRedefined() {
+		return a, false
+	}
+	y := aotInt(b)
+	if y < 0 || y > 63 {
+		return a, false
+	}
+	return aotSetInt(a, aotInt(a)>>uint(y)), true
+}
 func aotCmpII(mrb *oruby.MrbState, a, b oruby.Value) (int64, int64, bool) {
 	if mrb.AotIntOpsRedefined() || a.Type() != oruby.MrbTTInteger || b.Type() != oruby.MrbTTInteger {
 		return 0, 0, false
@@ -1183,21 +1226,33 @@ func %s(mrb *oruby.MrbState, a, b oruby.Value) oruby.Value {
 	}
 	b.WriteString(fmt.Sprintf(`
 func fastGetIdx(mrb *oruby.MrbState, self, recv, key oruby.Value) (oruby.Value, error) {
-	if key.Type() == oruby.MrbTTInteger && mrb.AotCoreOK(oruby.AotCoreAryIdx, recv) {
-		return mrb.AotAryRef(recv, int(aotInt(key))), nil
+	switch recv.Type() {
+	case oruby.MrbTTArray:
+		if key.Type() == oruby.MrbTTInteger && mrb.AotIdxOK(oruby.AotIdxAryAref, recv) {
+			return mrb.AotAryRef(recv, int(aotInt(key))), nil
+		}
+	case oruby.MrbTTHash:
+		// Hash#[] with its default value, as the VM's OP_GETIDX: one crossing
+		if mrb.AotIdxOK(oruby.AotIdxHashAref, recv) {
+			v := mrb.AotOp(oruby.AotOpHashGet, recv, key, mrb.NilValue(), 0)
+			if mrb.HasExc() {
+				return mrb.NilValue(), mrb.AotErr()
+			}
+			return v, nil
+		}
 	}
 	return mrb.AotCall1(self, recv, %s, key, false)
 }
 
 func fastSetIdx(mrb *oruby.MrbState, self, recv, key, val oruby.Value) error {
-	if key.Type() == oruby.MrbTTInteger && mrb.AotIsPlainArray(recv) {
+	if key.Type() == oruby.MrbTTInteger && mrb.AotIdxOK(oruby.AotIdxAryAset, recv) {
 		mrb.AotOp(oruby.AotOpArySet, recv, val, key, 0)
 		if mrb.HasExc() {
 			return mrb.AotErr()
 		}
 		return nil
 	}
-	if mrb.AotIsPlainHash(recv) {
+	if mrb.AotIdxOK(oruby.AotIdxHashAset, recv) {
 		mrb.AotOp(oruby.AotOpHashSet, recv, key, val, 0)
 		if mrb.HasExc() {
 			return mrb.AotErr()
@@ -2040,8 +2095,15 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 	g := e.g
 	lastDebugLine := -1
 
+	var intLoops map[int]*intLoop
+	if !g.opts.Debug {
+		intLoops = findIntLoops(u)
+	}
 	for idx := 0; idx < len(u.Instructions); idx++ {
 		ins := u.Instructions[idx]
+		if l := intLoops[idx]; l != nil && e.targets[ins.Offset] {
+			e.emitIntLoop(l) // its typed form, tried before the generic loop below
+		}
 		if e.targets[ins.Offset] {
 			e.w("L_%04d:\n", ins.Offset)
 		}

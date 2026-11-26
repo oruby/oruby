@@ -272,7 +272,28 @@ func (g *CodeGen) emitCoreStdlibIntrinsic(e *unitEmitter, idx int, a uint32, rec
 		if n != 1 {
 			return false
 		}
+		// String#<< appends; Integer#<< shifts (when the result fits, else the method)
 		e.w("\tif mrb.AotCoreOK(oruby.AotCoreStrConcat, %s) && mrb.AotStrConcatInPlace(%s, %s) {\n\t\tr[%d] = %s\n", recv, recv, list[0], a, recv)
+		e.w("\t} else if _s, _ok := aotShlII(mrb, %s, %s); _ok {\n\t\tr[%d] = _s\n", recv, list[0], a)
+		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, list[0], e.errChk(idx))
+		return true
+
+	case "&", "|", "^", ">>":
+		// Integer bit operations on two Integers, as the method would: the core
+		// method must be the original (AotCoreOK), the result needs no bignum
+		if n != 1 {
+			return false
+		}
+		helper := "aotAndII"
+		switch symName {
+		case "|":
+			helper = "aotOrII"
+		case "^":
+			helper = "aotXorII"
+		case ">>":
+			helper = "aotShrII"
+		}
+		e.w("\tif _z, _ok := %s(mrb, %s, %s); _ok {\n\t\tr[%d] = _z\n", helper, recv, list[0], a)
 		e.w("\t} else {\n\t\tr[%d], err = mrb.AotCall1(self, %s, %s, %s, false)\n\t\t%s\n\t}\n", a, recv, symVar, list[0], e.errChk(idx))
 		return true
 

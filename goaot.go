@@ -90,11 +90,24 @@ func (mrb *MrbState) aotInspectMessage(exc Value) string {
 }
 
 // AotIntOpsRedefined reports whether the program redefined an Integer
-// operator that compiled code evaluates inline (+ - * / == < <= > >=). It
+// operator that compiled code evaluates inline (+ - * / == < <= > >= and
+// % & | ^ << >>, the extra slots of the bop_redefined patch). It
 // reads mruby's redefinition bits directly, without a cgo call, so generated
 // code can check it on every operation.
 func (mrb *MrbState) AotIntOpsRedefined() bool {
-	return mrb.p.bop_redefined&C._AOT_INT_BOP_MASK != 0
+	return mrb.p.bop_redefined&(C._AOT_INT_BOP_MASK|C._AOT_INT_OPS2_MASK) != 0
+}
+
+// AotIntBitOpsRedefined reports whether Integer#% & | ^ << >> was redefined
+// (or a module prepended): one mask test on the extra slots of mruby's
+// bop_redefined. A user class defining one of these names does not set it.
+func (mrb *MrbState) AotIntBitOpsRedefined() bool {
+	return mrb.p.bop_redefined&C._AOT_INT_OPS2_MASK != 0
+}
+
+// AotAryPushRedefined reports whether Array#<< was redefined.
+func (mrb *MrbState) AotAryPushRedefined() bool {
+	return mrb.p.bop_redefined&C._AOT_ARY_PUSH_BIT != 0
 }
 
 // AotFloatOpsRedefined is AotIntOpsRedefined for the Float operators.
@@ -150,6 +163,7 @@ type aotIntrinsicSlot struct {
 	mid    C.mrb_sym        // method symbol
 	method C.mrb_method_t   // expected original method entry in mruby's method cache
 	flag   bool             // optional per-intrinsic runtime flag (e.g. EscapeUtils.html_secure)
+	way0   uint32           // index of the first of the two method cache entries of (cls, mid), fixed for the slot
 }
 
 var (
@@ -225,6 +239,7 @@ func (mrb *MrbState) AotInit() {
 	mrb.aot = st
 	st.trampIdx = mrb.registerMrbFuncT(mrb.aotBlockTrampoline)
 	mrb.aotInitCoreIntrinsics(st)
+	C.orb_bop_x_arm(mrb.p) // % & | ^ << >> ** <=> and Array#<<: the methods in force now are the builtins
 }
 
 // AotRegisterInstanceIntrinsic records a Go-extension instance method on cls
@@ -1004,6 +1019,13 @@ func (mrb *MrbState) AotHasHook() bool {
 // arena or service an armed VM hook.
 func (mrb *MrbState) AotNeedBackEdge(ai int32) bool {
 	return int32(mrb.p.gc.arena_idx) > ai+64 || mrb.p.code_fetch_hook != nil
+}
+
+// AotHookPending reports whether a hook is armed: a signal, a Timeout deadline
+// or a thread switch waits for the next instruction. A typed integer loop
+// (compiler/intloop.go) leaves for the generic loop, which services it.
+func (mrb *MrbState) AotHookPending() bool {
+	return mrb.p.code_fetch_hook != nil
 }
 
 // AotIntCanRun reports whether integer-specialized code may run on the
