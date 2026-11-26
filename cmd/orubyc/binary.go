@@ -330,6 +330,8 @@ func buildNativeProject(mrb *oruby.MrbState, prog, projectDir string, cfg *Oruby
 		GoExts:      goExts,
 		RBSPaths:    rbsPaths,
 		CheckRBS:    cfg.Compiler.CheckRBS,
+		GroupSize:   -1,
+		NoFormat:    true,
 	})
 	if _, err := comp.CompilePackageDir(mrb, orbPath, nil, nil, mainDir); err != nil {
 		return fmt.Errorf("native Go codegen failed: %w", err)

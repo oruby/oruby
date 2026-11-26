@@ -25,8 +25,9 @@ type Options struct {
 	RBS         *RBSEnv      // Optional pre-loaded RBSEnv (merged with RBSPaths and inline #: comments)
 	CheckRBS    bool         // Fail compilation if RBS arity/return type mismatches are found
 	Progress    ProgressFunc // Optional progress reporting for the resolve/analyze/emit/write stages
-	GroupSize   int          // CompilePackageDir: modules per Go package (0 = one package)
+	GroupSize   int          // CompilePackageDir: modules per Go package (0 = one package, <0 = auto)
 	ModulePath  string       // Go module path of the output package (default "app")
+	NoFormat    bool         // Skip go/format on generated code (faster for throwaway -build)
 }
 
 // Compiler coordinates parsing Ruby code or mruby bytecode and producing Go code.
@@ -93,6 +94,7 @@ func (c *Compiler) compileIrepWithRBS(mrb *oruby.MrbState, irep oruby.MrbIrep, i
 		Progress:    c.opts.Progress,
 		GroupSize:   c.opts.GroupSize,
 		ModulePath:  c.opts.ModulePath,
+		NoFormat:    c.opts.NoFormat,
 	})
 
 	out, err := codegen.Generate(unit)
@@ -196,6 +198,7 @@ func (c *Compiler) CompileBundleWith(mrb *oruby.MrbState, entryFile string, extr
 		Progress:    c.opts.Progress,
 		GroupSize:   c.opts.GroupSize,
 		ModulePath:  c.opts.ModulePath,
+		NoFormat:    c.opts.NoFormat,
 	})
 
 	out, err := codegen.GenerateBundle(modules)
@@ -238,6 +241,7 @@ func (c *Compiler) CompilePackageDir(mrb *oruby.MrbState, entryFile string, extr
 		Progress:    c.opts.Progress,
 		GroupSize:   c.opts.GroupSize,
 		ModulePath:  c.opts.ModulePath,
+		NoFormat:    c.opts.NoFormat,
 	})
 
 	files, err := codegen.GeneratePackageFiles(modules)

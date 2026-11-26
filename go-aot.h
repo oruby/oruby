@@ -1009,6 +1009,55 @@ _aot_env_callback_ptr(void)
   return (void*)set_mrb_env_callback;
 }
 
+extern mrb_value mrb_attr_reader(mrb_state *mrb, mrb_value obj);
+extern mrb_value mrb_attr_writer(mrb_state *mrb, mrb_value obj);
+
+static inline void *
+_aot_attr_reader_ptr(void)
+{
+  return (void*)mrb_attr_reader;
+}
+
+static inline void *
+_aot_attr_writer_ptr(void)
+{
+  return (void*)mrb_attr_writer;
+}
+
+static inline void
+_aot_struct_data_ref_ptrs(mrb_state *mrb, void **struct_fn, void **data_fn)
+{
+  *struct_fn = NULL;
+  *data_fn = NULL;
+  int ai = mrb_gc_arena_save(mrb);
+  mrb_sym mid = mrb_intern_lit(mrb, "_a");
+  if (mrb_class_defined_id(mrb, MRB_SYM(Struct))) {
+    struct RClass *sc = mrb_class_get_id(mrb, MRB_SYM(Struct));
+    mrb_value sub = mrb_funcall_id(mrb, mrb_obj_value(sc), MRB_SYM(new), 1, mrb_symbol_value(mid));
+    if (mrb->exc == NULL && mrb_class_p(sub)) {
+      struct RClass *c = mrb_class_ptr(sub);
+      mrb_method_t m = mrb_vm_find_method(mrb, c, &c, mid);
+      if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_PROC_P(m) && MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m))) {
+        *struct_fn = (void*)MRB_PROC_CFUNC(MRB_METHOD_PROC(m));
+      }
+    }
+    mrb->exc = NULL;
+  }
+  if (mrb_class_defined_id(mrb, MRB_SYM(Data))) {
+    struct RClass *dc = mrb_class_get_id(mrb, MRB_SYM(Data));
+    mrb_value sub = mrb_funcall_id(mrb, mrb_obj_value(dc), MRB_SYM(define), 1, mrb_symbol_value(mid));
+    if (mrb->exc == NULL && mrb_class_p(sub)) {
+      struct RClass *c = mrb_class_ptr(sub);
+      mrb_method_t m = mrb_vm_find_method(mrb, c, &c, mid);
+      if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_PROC_P(m) && MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m))) {
+        *data_fn = (void*)MRB_PROC_CFUNC(MRB_METHOD_PROC(m));
+      }
+    }
+    mrb->exc = NULL;
+  }
+  mrb_gc_arena_restore(mrb, ai);
+}
+
 /* Construct a BigInt literal from irep pool digits + base (matching OP_LOADL) */
 static inline mrb_value
 _aot_bigint_new_str(mrb_state *mrb, const char *digits, mrb_int len, int8_t base)

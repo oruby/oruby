@@ -21,13 +21,17 @@ const (
 	AotCoreAryFirst
 	AotCoreAryLast
 	AotCoreAryIdx
+	AotCoreAryMap
+	AotCoreAryCollect
+	AotCoreArySelect
+	AotCoreAryEachWithIndex
+	AotCoreArySum
+	AotCoreAryInject
+	AotCoreAryReduce
 	AotCoreIntTimes
-	AotCoreIntAnd
-	AotCoreIntOr
-	AotCoreIntXor
-	AotCoreIntShl
-	AotCoreIntShr
-	AotCoreIntMod
+	AotCoreIntUpto
+	AotCoreIntDownto
+	AotCoreIntStep
 	AotCoreRangeEach
 	AotCoreStrBytesize
 	AotCoreStrLen
@@ -89,14 +93,18 @@ func (mrb *MrbState) aotInitCoreIntrinsics(st *aotState) {
 	regCls(AotCoreAryFirst, ac, "first")
 	regCls(AotCoreAryLast, ac, "last")
 	regCls(AotCoreAryIdx, ac, "[]")
+	regCls(AotCoreAryMap, ac, "map")
+	regCls(AotCoreAryCollect, ac, "collect")
+	regCls(AotCoreArySelect, ac, "select")
+	regCls(AotCoreAryEachWithIndex, ac, "each_with_index")
+	regCls(AotCoreArySum, ac, "sum")
+	regCls(AotCoreAryInject, ac, "inject")
+	regCls(AotCoreAryReduce, ac, "reduce")
 
 	regCls(AotCoreIntTimes, mrb.p.integer_class, "times")
-	regCls(AotCoreIntAnd, mrb.p.integer_class, "&")
-	regCls(AotCoreIntOr, mrb.p.integer_class, "|")
-	regCls(AotCoreIntXor, mrb.p.integer_class, "^")
-	regCls(AotCoreIntShl, mrb.p.integer_class, "<<")
-	regCls(AotCoreIntShr, mrb.p.integer_class, ">>")
-	regCls(AotCoreIntMod, mrb.p.integer_class, "%")
+	regCls(AotCoreIntUpto, mrb.p.integer_class, "upto")
+	regCls(AotCoreIntDownto, mrb.p.integer_class, "downto")
+	regCls(AotCoreIntStep, mrb.p.integer_class, "step")
 	regCls(AotCoreRangeEach, mrb.p.range_class, "each")
 
 	sc := mrb.p.string_class
@@ -211,29 +219,6 @@ func (mrb *MrbState) AotIdxOK(slot AotIdxSlot, recv Value) bool {
 	return (*C.struct_RBasic)(aotObjPtr(recv)).c == mrb.p.idx_class[slot]
 }
 
-// AotIntCoreOK is AotCoreOK for an Integer receiver (the caller has checked its
-// type) of one of the Integer methods registered with AotCore...: the class is
-// known, so only the method cache entry is compared, at the index kept in the
-// slot. It is the check of every inline integer bit operation.
-func (mrb *MrbState) AotIntCoreOK(id AotCoreID) bool {
-	st := mrb.aot
-	if st == nil {
-		return false
-	}
-	s := &st.coreIntrinsics[id]
-	if s.cls == nil || (mrb.p.refined_mids[0]|mrb.p.refined_mids[1]|mrb.p.refined_mids[2]|mrb.p.refined_mids[3]) != 0 {
-		return false
-	}
-	mc := &mrb.p.cache[s.way0]
-	if mc.c != s.cls || mc.mid != s.mid {
-		mc = &mrb.p.cache[s.way0+1]
-		if mc.c != s.cls || mc.mid != s.mid {
-			return mrb.aotCacheMatchSlow(s.cls, s.mid, s.method)
-		}
-	}
-	return mc.m == s.method
-}
-
 // AotCoreOK checks in pure Go (zero cgo on warm cache) that calling core
 // method id on recv resolves to the original unmodified core method (exact
 // core class, no monkey-patch, subclass, singleton override, or refinement).
@@ -307,6 +292,79 @@ func aotAryMem(ary Value) (*C.mrb_value, int) {
 		return nil, 0
 	}
 	return *(**C.mrb_value)(unsafe.Add(up, 32)), n
+}
+
+// aotStructSlotRef reads slot i of a Struct or Data object (MRB_TT_STRUCT,
+// which uses the RArray layout) in pure Go without cgo.
+func (mrb *MrbState) aotStructSlotRef(obj Value, i int) (Value, bool) {
+	if obj.Type() != MrbTTStruct || obj.Pointer() <= 65536 || i < 0 {
+		return nilValue, false
+	}
+	up := aotObjPtr(obj)
+	flags := (*(*uint32)(unsafe.Add(up, 8))) >> 12
+	var ptr *C.mrb_value
+	var n int
+	if embed := flags & 7; embed != 0 {
+		ptr = (*C.mrb_value)(unsafe.Add(up, 16))
+		n = int(embed - 1)
+	} else {
+		n = int(*(*int64)(unsafe.Add(up, 16)))
+		ptr = *(**C.mrb_value)(unsafe.Add(up, 32))
+	}
+	if i >= n || ptr == nil {
+		return nilValue, true
+	}
+	v := *(*C.mrb_value)(unsafe.Add(unsafe.Pointer(ptr), uintptr(i)*unsafe.Sizeof(C.mrb_value{})))
+	return mrb.aotProtect(Value{v}), true
+}
+
+// AotAryNewCapa allocates an empty Ruby Array with capacity n and protects it
+// in the current GC arena.
+func (mrb *MrbState) AotAryNewCapa(n int) Value {
+	return mrb.aotProtect(Value{C.mrb_ary_new_capa(mrb.p, C.mrb_int(n))})
+}
+
+// AotArySlice returns a read-only Go slice over the backing mrb_value buffer of
+// a plain Array in pure Go (zero cgo).
+func (mrb *MrbState) AotArySlice(ary Value) ([]Value, bool) {
+	if ary.Type() != MrbTTArray || ary.Pointer() <= 65536 {
+		return nil, false
+	}
+	up := aotObjPtr(ary)
+	if (*C.struct_RBasic)(up).c != mrb.p.array_class {
+		return nil, false
+	}
+	ptr, n := aotAryMem(ary)
+	if n == 0 || ptr == nil {
+		return nil, true
+	}
+	return unsafe.Slice((*Value)(unsafe.Pointer(ptr)), n), true
+}
+
+// AotArySliceMutable returns a mutable Go slice over the backing mrb_value
+// buffer of a non-frozen, non-shared plain Array in pure Go (for immediate
+// Fixnum/Float/Bool writes without write barriers).
+func (mrb *MrbState) AotArySliceMutable(ary Value) ([]Value, bool) {
+	if ary.Type() != MrbTTArray || ary.Pointer() <= 65536 {
+		return nil, false
+	}
+	up := aotObjPtr(ary)
+	if (*C.struct_RBasic)(up).c != mrb.p.array_class {
+		return nil, false
+	}
+	word := *(*uint32)(unsafe.Add(up, 8))
+	if (word & (1 << 11)) != 0 { // frozen
+		return nil, false
+	}
+	flags := word >> 12
+	if (flags & 256) != 0 { // MRB_ARY_SHARED
+		return nil, false
+	}
+	ptr, n := aotAryMem(ary)
+	if n == 0 || ptr == nil {
+		return nil, true
+	}
+	return unsafe.Slice((*Value)(unsafe.Pointer(ptr)), n), true
 }
 
 // AotAryRefRaw reads element i of a plain Array in pure Go without GC arena
@@ -455,19 +513,70 @@ func (mrb *MrbState) AotIVSetImmediate(obj Value, sym MrbSym, val Value) bool {
 	return true
 }
 
+const (
+	aotFastAttrRead  = -2
+	aotFastAttrWrite = -3
+	aotFastStructRef = -4
+)
+
+// AotShapedBase returns the base values pointer and shape of a shaped RObject
+// in pure Go (zero cgo) so _typed methods can hoist slot lookups once at entry.
+func (mrb *MrbState) AotShapedBase(obj Value) (unsafe.Pointer, unsafe.Pointer, bool) {
+	if obj.Type() != MrbTTObject || obj.Pointer() <= 65536 {
+		return nil, nil, false
+	}
+	up := aotObjPtr(obj)
+	flags := (*(*uint32)(unsafe.Add(up, 8))) >> 12
+	if (flags & (1 << 5)) == 0 { // MRB_FL_OBJ_SHAPED
+		return nil, nil, false
+	}
+	siv := *(**C.mrb_shaped_iv)(unsafe.Add(up, 16))
+	if siv == nil || siv.shape == nil {
+		return nil, nil, false
+	}
+	return unsafe.Pointer(&siv.values[0]), unsafe.Pointer(siv.shape), true
+}
+
+// AotShapedSlot resolves the slot index of sym in a shape previously returned by
+// AotShapedBase, or -1 if absent.
+func (mrb *MrbState) AotShapedSlot(shapePtr unsafe.Pointer, sym MrbSym) int {
+	return mrb.aotShapeLookup((*C.mrb_iv_shape)(shapePtr), C.mrb_sym(sym))
+}
+
+// AotShapedRead reads an already-resolved shaped ivar slot in pure Go.
+func (mrb *MrbState) AotShapedRead(valsPtr unsafe.Pointer, idx int) Value {
+	v := *(*C.mrb_value)(unsafe.Add(valsPtr, uintptr(idx)*unsafe.Sizeof(C.mrb_value{})))
+	if v.tt == C.MRB_TT_UNDEF {
+		return nilValue
+	}
+	return Value{v}
+}
+
+// AotShapedWriteImm writes an immediate Value into a pre-resolved shaped ivar
+// slot on a non-frozen object in pure Go (zero cgo, no write barrier needed).
+func (mrb *MrbState) AotShapedWriteImm(obj Value, valsPtr unsafe.Pointer, idx int, v Value) bool {
+	up := aotObjPtr(obj)
+	if (*(*uint32)(unsafe.Add(up, 8)) & (1 << 11)) != 0 { // frozen
+		return false
+	}
+	slot := (*C.mrb_value)(unsafe.Add(valsPtr, uintptr(idx)*unsafe.Sizeof(C.mrb_value{})))
+	*slot = v.v
+	return true
+}
+
 // aotMethodIdxFromCache probes mruby's 2-way method cache in pure Go (zero cgo)
 // to resolve recv.mid directly to a compiled AOT method index and owner class.
 // Returns (idx, owner, hit):
 //   - hit == true && idx >= 0: cache hit on a callable compiled method
 //   - hit == true && idx < 0:  cache hit on a non-compiled or visibility-gated method
 //   - hit == false:            cache miss (caller should probe C to warm cache)
-func (mrb *MrbState) aotMethodIdxFromCache(recv Value, mid MrbSym, fcall bool) (idx int, owner *C.struct_RClass, hit bool) {
+func (mrb *MrbState) aotMethodIdxFromCache(recv Value, mid MrbSym, fcall bool) (idx int, owner *C.struct_RClass, fastVal uintptr, hit bool) {
 	if (mrb.p.refined_mids[0] | mrb.p.refined_mids[1] | mrb.p.refined_mids[2] | mrb.p.refined_mids[3]) != 0 {
-		return -1, nil, false
+		return -1, nil, 0, false
 	}
 	oc := mrb.aotReceiverClass(recv)
 	if oc == nil {
-		return -1, nil, false
+		return -1, nil, 0, false
 	}
 	cmid := C.mrb_sym(mid)
 	key := (uintptr(unsafe.Pointer(oc)) >> 4) ^ uintptr(cmid)
@@ -476,51 +585,68 @@ func (mrb *MrbState) aotMethodIdxFromCache(recv Value, mid MrbSym, fcall bool) (
 	if mc.c != oc || mc.mid != cmid {
 		mc = &mrb.p.cache[h*2+1]
 		if mc.c != oc || mc.mid != cmid {
-			return -1, nil, false
+			return -1, nil, 0, false
 		}
 	}
 	mflags := mc.m.flags
 	// MRB_METHOD_FUNC_FL = 1<<24; compiled methods are RProc (flags & (1<<24) == 0)
 	if (mflags & (1 << 24)) != 0 {
-		return -1, nil, true
+		return -1, nil, 0, true
 	}
 	if !fcall && (mflags&((1<<25)|(1<<26))) != 0 { // private or protected
-		return -1, nil, true
+		return -1, nil, 0, true
 	}
 	proc := *(**C.struct_RProc)(unsafe.Pointer(&mc.m.as))
 	if proc == nil {
-		return -1, nil, true
+		return -1, nil, 0, true
 	}
 	pFlags := (*(*uint32)(unsafe.Add(unsafe.Pointer(proc), 8))) >> 12
 	// Need MRB_PROC_CFUNC_FL (128) | MRB_PROC_ENVSET (1024), and NOT MRB_PROC_ALIAS (8192)
 	if (pFlags & (128 | 1024 | 8192)) != (128 | 1024) {
-		return -1, nil, true
+		return -1, nil, 0, true
 	}
 	fnPtr := *(*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(proc), 16))
-	if fnPtr != mrb.aot.envCallbackPtr {
-		return -1, nil, true
-	}
 	env := *(**C.struct_REnv)(unsafe.Add(unsafe.Pointer(proc), 32))
 	if env == nil {
-		return -1, nil, true
+		return -1, nil, 0, true
 	}
 	// env: [idx], or [idx, params, info, ORB_AOT_SIG_MARK] of a method with its
 	// signature (go-aot.h _aot_define_method_body)
 	envLen := ((*(*uint32)(unsafe.Add(unsafe.Pointer(env), 8))) >> 12) & 0xff
 	if envLen != 1 && envLen != 4 {
-		return -1, nil, true
+		return -1, nil, 0, true
 	}
 	stack := *(**C.mrb_value)(unsafe.Add(unsafe.Pointer(env), 16))
-	if stack == nil || stack.tt != C.MRB_TT_INTEGER {
-		return -1, nil, true
+	if stack == nil {
+		return -1, nil, 0, true
 	}
-	if envLen == 4 {
-		mark := (*C.mrb_value)(unsafe.Add(unsafe.Pointer(stack), 3*unsafe.Sizeof(*stack)))
-		if mark.tt != C.MRB_TT_INTEGER || *(*int64)(unsafe.Pointer(mark)) != 0x4f524241 {
-			return -1, nil, true
+	if fnPtr == mrb.aot.envCallbackPtr {
+		if stack.tt != C.MRB_TT_INTEGER {
+			return -1, nil, 0, true
+		}
+		if envLen == 4 {
+			mark := (*C.mrb_value)(unsafe.Add(unsafe.Pointer(stack), 3*unsafe.Sizeof(*stack)))
+			if mark.tt != C.MRB_TT_INTEGER || *(*int64)(unsafe.Pointer(mark)) != 0x4f524241 {
+				return -1, nil, 0, true
+			}
+		}
+		return int(*(*int64)(unsafe.Pointer(stack))), mc.c0, 0, true
+	}
+	if envLen == 1 {
+		if (fnPtr == mrb.aot.attrReaderPtr || fnPtr == mrb.aot.attrWriterPtr) && stack.tt == C.MRB_TT_SYMBOL {
+			sym := uintptr(*(*uint32)(unsafe.Pointer(stack)))
+			code := aotFastAttrRead
+			if fnPtr == mrb.aot.attrWriterPtr {
+				code = aotFastAttrWrite
+			}
+			return code, nil, sym, true
+		}
+		if (fnPtr == mrb.aot.structRefPtr || fnPtr == mrb.aot.dataRefPtr) && stack.tt == C.MRB_TT_INTEGER {
+			slot := uintptr(*(*int64)(unsafe.Pointer(stack)))
+			return aotFastStructRef, nil, slot, true
 		}
 	}
-	return int(*(*int64)(unsafe.Pointer(stack))), mc.c0, true
+	return -1, nil, 0, true
 }
 
 func aotConstHash(key, sym uintptr) uint32 {

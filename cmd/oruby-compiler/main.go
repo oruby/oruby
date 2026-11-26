@@ -32,7 +32,7 @@ var (
 	rbsFlag    = flag.String("rbs", "", "Comma-separated .rbs files or directories (e.g. sig) for RBS-guided AOT type specialization")
 	checkRBS   = flag.Bool("check-rbs", false, "Fail compilation if RBS arity/return type mismatches are found")
 	verbose    = flag.Bool("v", false, "Verbose output")
-	pkgSize    = flag.Int("pkgsize", 0, "Split the bundle into Go packages of about N modules each (built in parallel and cached by go build); 0 = one package")
+	pkgSize    = flag.Int("pkgsize", -1, "Split the bundle into Go packages of about N modules each (-1 = auto (>40 modules), 0 = one package)")
 	gemsFlag   = flag.String("gems", compiler.GemsAll, "Gems to link: all, core (without the web gems: HTTP, Rack, sockets, TLS, open-uri; about 7 MB smaller) or auto (core unless the program requires them)")
 	stripFlag  = flag.Bool("strip", false, "Strip symbols and DWARF from the binary (about 8 MB smaller; Go debuggers need them)")
 	progressF  = flag.String("progress", "auto", "Progress reporting on stderr: auto (when stderr is a terminal), on, off")
@@ -246,6 +246,7 @@ func main() {
 	}
 
 	standalone := (*buildBin != "") || (*pkgName == "main")
+	noFormat := (*buildBin != "") && (*outFile == "") && (*outDir == "")
 	comp := compiler.New(compiler.Options{
 		PackageName: *pkgName,
 		Standalone:  standalone,
@@ -256,6 +257,7 @@ func main() {
 		CheckRBS:    *checkRBS,
 		Progress:    prog.Report,
 		GroupSize:   *pkgSize,
+		NoFormat:    noFormat,
 	})
 
 	var goSrc string
@@ -299,7 +301,7 @@ func main() {
 				}
 			}
 		}
-		if *pkgSize > 0 && *outDir == "" && *buildBin != "" {
+		if *pkgSize != 0 && *outDir == "" && *buildBin != "" {
 			// a grouped build is several packages: write them to a scratch module
 			tmp, terr := os.MkdirTemp("", "oruby_build_*")
 			if terr != nil {
@@ -426,11 +428,13 @@ func main() {
 		}
 		_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(modContent), 0644)
 
-		endTidy := prog.Stage("go mod tidy")
-		tidyCmd := exec.Command("go", "mod", "tidy")
-		tidyCmd.Dir = tmpDir
-		_ = tidyCmd.Run()
-		endTidy()
+		if orubyPath == "" {
+			endTidy := prog.Stage("go mod tidy")
+			tidyCmd := exec.Command("go", "mod", "tidy")
+			tidyCmd.Dir = tmpDir
+			_ = tidyCmd.Run()
+			endTidy()
+		}
 
 		absBin, err := filepath.Abs(*buildBin)
 		if err != nil {
@@ -462,7 +466,7 @@ func main() {
 			}
 		}
 
-		buildArgs := []string{"build", "-o", absBin}
+		buildArgs := []string{"build", "-mod=mod", "-o", absBin}
 		// the web gems are behind a build tag; the program decides (gems.go)
 		features, dynamic := comp.Features, comp.DynamicRequire
 		if !*bundle || inputPath == "-" {

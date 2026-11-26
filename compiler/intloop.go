@@ -45,11 +45,11 @@ type intLoop struct {
 	moveBool   map[int]bool               // MOVE instruction index -> it moves a Bool
 	dead       map[int]bool               // instructions no path reaches (after a jump, before a label): not emitted
 	boolRegs   []uint32                   // registers the loop writes a Bool to
+	usesBitOps bool                       // loop uses % & | ^ << >> (needs extra bop guard)
 }
 
-var intLoopBitOps = map[string]string{
-	"&": "AotCoreIntAnd", "|": "AotCoreIntOr", "^": "AotCoreIntXor",
-	"<<": "AotCoreIntShl", ">>": "AotCoreIntShr", "%": "AotCoreIntMod",
+var intLoopBitOps = map[string]bool{
+	"&": true, "|": true, "^": true, "<<": true, ">>": true, "%": true,
 }
 
 // findIntLoops finds the pure integer loops of u, by header instruction.
@@ -93,7 +93,7 @@ func analyzeIntLoop(u *IRepUnit, h, j int, offIdx map[int]int) *intLoop {
 	liveIn := map[uint32]bool{}
 	modified := map[uint32]bool{}
 	used := map[uint32]bool{}
-	guards := map[string]bool{}
+	usesBitOps := false
 	pending := map[int]map[uint32]regKind{} // in region forward jump targets: state there
 	exits := map[int]map[uint32]regKind{}
 	moveBool := map[int]bool{}
@@ -226,11 +226,11 @@ func analyzeIntLoop(u *IRepUnit, h, j int, offIdx map[int]int) *intLoop {
 				bad = true
 				break
 			}
-			if g, ok := intLoopBitOps[name]; ok {
+			if intLoopBitOps[name] {
 				read(a, kInt)
 				read(a+1, kInt)
 				write(a, kInt)
-				guards[g] = true
+				usesBitOps = true
 			} else if name == "!=" {
 				read(a, kInt)
 				read(a+1, kInt)
@@ -269,7 +269,7 @@ func analyzeIntLoop(u *IRepUnit, h, j int, offIdx map[int]int) *intLoop {
 	if bad || len(pending) > 0 || len(exits) == 0 || dead[j] {
 		return nil // dead[j]: the back jump is never reached, so it is not a loop
 	}
-	l := &intLoop{head: h, tail: j, exits: exits, moveBool: moveBool, dead: dead}
+	l := &intLoop{head: h, tail: j, exits: exits, moveBool: moveBool, dead: dead, usesBitOps: usesBitOps}
 	for r := range boolRegs {
 		l.boolRegs = append(l.boolRegs, r)
 	}
@@ -285,13 +285,9 @@ func analyzeIntLoop(u *IRepUnit, h, j int, offIdx map[int]int) *intLoop {
 	for r := range used {
 		l.used = append(l.used, r)
 	}
-	for g := range guards {
-		l.guards = append(l.guards, g)
-	}
 	for _, s := range [][]uint32{l.liveIn, l.carried, l.modified, l.used, l.boolRegs} {
 		sort.Slice(s, func(x, y int) bool { return s[x] < s[y] })
 	}
-	sort.Strings(l.guards)
 	// Only the named locals (registers below nlocals) can be read after the
 	// loop; the compiler's temporaries are dead at its exits. A local the loop
 	// writes before it reads it (an assignment in the body) might be read
@@ -360,7 +356,7 @@ func (e *unitEmitter) emitIntLoop(l *intLoop) {
 	for _, r := range l.liveIn {
 		cond = append(cond, fmt.Sprintf("r[%d].Type() == oruby.MrbTTInteger", r))
 	}
-	if len(l.guards) > 0 { // % & | ^ << >>: one mask test of the extra bop slots
+	if l.usesBitOps { // % & | ^ << >>: one mask test of the extra bop slots
 		cond = append(cond, "!mrb.AotIntBitOpsRedefined()")
 	}
 	w("\t// typed form of the integer loop at %04d\n", headOff)
@@ -483,7 +479,6 @@ func (e *unitEmitter) emitIntLoop(l *intLoop) {
 				w("\t\t{ s := ti%d; if s < 0 || s > 63 { goto %s }; ti%d = ti%d >> uint(s) }\n", a+1, deopt(), a, a)
 			case "<<":
 				w("\t\t{ s := ti%d; if s < 0 || s > 62 { goto %s }; z := ti%d << uint(s); if z>>uint(s) != ti%d { goto %s }; ti%d = z }\n", a+1, deopt(), a, a, deopt(), a)
-			case "%%":
 			case "%":
 				w("\t\t{ x, y := ti%d, ti%d; if y == 0 || (x == aotMinInt && y == -1) { goto %s }; m := x %% y; if m != 0 && (m < 0) != (y < 0) { m += y }; ti%d = m }\n", a, a+1, deopt(), a)
 			}

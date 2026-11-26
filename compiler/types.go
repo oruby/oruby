@@ -112,7 +112,11 @@ type TypedPlan struct {
 	NeedsFloatGuard bool
 	NeedsSelf       bool           // true if unit or a self-callee reads/writes @ivars
 	HasCalls        bool           // true if unit makes direct calls (needs local _depth int)
+	HasIvarWrites   bool           // true if unit executes OpSETIV
+	WritesAry       bool           // true if unit executes OpSETIDX on a typed Array[T]
+	Ivars           []string       // sorted deduplicated @ivar symbols accessed by this unit
 	CoreGuards      []string       // AotCoreID expressions checked via AotCoreClassOK
+	IdxGuards       []string       // AotIdxSlot expressions checked via AotIdxOK on Array[T] params
 	MathGuards      []string       // Math AotCoreID expressions checked via AotCoreOK(..., Math)
 	DirectCalls     []typedCallRef // direct callees inside this unit
 	GuardCalls      []typedCallRef // transitive deduplicated callees to guard at entry
@@ -332,9 +336,13 @@ func (g *CodeGen) analyzeTypedUnits() {
 		seenCall := make(map[string]bool)
 		seenUnit := make(map[*IRepUnit]bool)
 		coreSet := make(map[string]bool)
+		idxSet := make(map[string]bool)
 		mathSet := make(map[string]bool)
 		for _, cg := range plan.CoreGuards {
 			coreSet[cg] = true
+		}
+		for _, ig := range plan.IdxGuards {
+			idxSet[ig] = true
 		}
 		for _, mg := range plan.MathGuards {
 			mathSet[mg] = true
@@ -378,6 +386,9 @@ func (g *CodeGen) analyzeTypedUnits() {
 			for _, cg := range cplan.CoreGuards {
 				coreSet[cg] = true
 			}
+			for _, ig := range cplan.IdxGuards {
+				idxSet[ig] = true
+			}
 			for _, mg := range cplan.MathGuards {
 				mathSet[mg] = true
 			}
@@ -387,6 +398,7 @@ func (g *CodeGen) analyzeTypedUnits() {
 		}
 
 		plan.CoreGuards = sortedKeys(coreSet)
+		plan.IdxGuards = sortedKeys(idxSet)
 		plan.MathGuards = sortedKeys(mathSet)
 		sort.Slice(plan.GuardCalls, func(i, j int) bool {
 			if plan.GuardCalls[i].constClass != plan.GuardCalls[j].constClass {
@@ -457,9 +469,11 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 			in[0][i+1] = primToFlow(pt)
 		}
 
-		var needsInt, needsFloat, needsSelf bool
+		var needsInt, needsFloat, needsSelf, hasIvarWrites, writesAry bool
 		coreGuards := make(map[string]bool)
+		idxGuards := make(map[string]bool)
 		mathGuards := make(map[string]bool)
+		ivarSet := make(map[string]bool)
 		var directCalls []typedCallRef
 		directSeen := make(map[string]bool)
 		retFlow := flowUnvisited
@@ -495,9 +509,11 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 
 		for iter := 0; iter < insCount*4+16; iter++ {
 			progress := false
-			needsInt, needsFloat, needsSelf = false, false, false
+			needsInt, needsFloat, needsSelf, hasIvarWrites, writesAry = false, false, false, false, false
 			clear(coreGuards)
+			clear(idxGuards)
 			clear(mathGuards)
+			clear(ivarSet)
 			retFlow = flowUnvisited
 			directCalls = nil
 			clear(directSeen)
@@ -584,11 +600,13 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					if g.opts.RBS == nil || inf.singleton || inf.className == "" || int(ins.B) >= len(unit.Syms) {
 						return nil, flowUnknown, ""
 					}
-					ivType := g.opts.RBS.LookupIvar(inf.className, unit.Syms[ins.B])
+					ivName := unit.Syms[ins.B]
+					ivType := g.opts.RBS.LookupIvar(inf.className, ivName)
 					if !ivType.IsSpecializable() {
 						return nil, flowUnknown, ""
 					}
 					needsSelf = true
+					ivarSet[ivName] = true
 					if !setReg(ins.A, primToFlow(ivType)) {
 						return nil, flowUnknown, ""
 					}
@@ -596,11 +614,14 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					if g.opts.RBS == nil || inf.singleton || inf.className == "" || int(ins.B) >= len(unit.Syms) {
 						return nil, flowUnknown, ""
 					}
-					ivType := g.opts.RBS.LookupIvar(inf.className, unit.Syms[ins.B])
+					ivName := unit.Syms[ins.B]
+					ivType := g.opts.RBS.LookupIvar(inf.className, ivName)
 					if !ivType.IsSpecializable() || getReg(ins.A) != primToFlow(ivType) {
 						return nil, flowUnknown, ""
 					}
 					needsSelf = true
+					hasIvarWrites = true
+					ivarSet[ivName] = true
 				case OpGETIDX:
 					ta, tb := getReg(ins.A), getReg(ins.A+1)
 					if tb != flowInt64 {
@@ -624,6 +645,29 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 						setReg(ins.A, flowInt64)
 					case flowArrayFloat64:
 						coreGuards["oruby.AotCoreAryIdx"] = true
+						setReg(ins.A, flowFloat64)
+					default:
+						return nil, flowUnknown, ""
+					}
+				case OpSETIDX:
+					ta, tb, tc := getReg(ins.A), getReg(ins.A+1), getReg(ins.A+2)
+					if tb != flowInt64 {
+						return nil, flowUnknown, ""
+					}
+					switch ta {
+					case flowArrayInt64:
+						if tc != flowInt64 {
+							return nil, flowUnknown, ""
+						}
+						idxGuards["oruby.AotIdxAryAset"] = true
+						writesAry = true
+						setReg(ins.A, flowInt64)
+					case flowArrayFloat64:
+						if tc != flowFloat64 {
+							return nil, flowUnknown, ""
+						}
+						idxGuards["oruby.AotIdxAryAset"] = true
+						writesAry = true
 						setReg(ins.A, flowFloat64)
 					default:
 						return nil, flowUnknown, ""
@@ -970,7 +1014,11 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 			NeedsIntGuard:   needsInt,
 			NeedsFloatGuard: needsFloat,
 			NeedsSelf:       needsSelf,
+			HasIvarWrites:   hasIvarWrites,
+			WritesAry:       writesAry,
+			Ivars:           sortedKeys(ivarSet),
 			CoreGuards:      sortedKeys(coreGuards),
+			IdxGuards:       sortedKeys(idxGuards),
 			MathGuards:      sortedKeys(mathGuards),
 			DirectCalls:     directCalls,
 			FromRBS:         fromRBS,

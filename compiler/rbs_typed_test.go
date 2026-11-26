@@ -102,6 +102,7 @@ class Object
   def helper_sq: (Float x) -> Float
   def dist_sq: (Float x, Float y) -> Float
   def dot_f: (Array[Float] a, Array[Float] b) -> Float
+  def scale_arr!: (Array[Integer] a, Integer k) -> Integer
 end
 
 class Calc
@@ -181,6 +182,20 @@ def dot_f(a, b)
     i += 1
   end
   acc
+end
+
+# Typed Array[Integer] in-place OpSETIDX writes
+def scale_arr!(a, k)
+  n = a.length
+  i = 0
+  s = 0
+  while i < n
+    v = a[i] * k
+    a[i] = v
+    s += v
+    i += 1
+  end
+  s
 end
 
 # RBS @ivar reads and immediate writes inside _typed
@@ -271,16 +286,48 @@ raise "Math.sqrt negative" unless euclid(0.0, 0.0) == 0.0
 raise "bit_mix" unless bit_mix(10) == ((0 << 2) ^ 0 | 1) + (1 >> 1) + ((2 << 2) ^ 2 | 1) + (3 >> 1) + ((4 << 2) ^ 4 | 1) + (5 >> 1) + ((6 << 2) ^ 6 | 1) + (7 >> 1) + ((8 << 2) ^ 0 | 1) + (9 >> 1)
 raise "call_calc_mix" unless (call_calc_mix(4, 1.4) - (11.4 + 1.0 + 2.0 + 1.0)).abs < 1e-9
 
-# 4. Verify RBS Array[Float] dot product + mixed-type fallback
+# 4. Verify RBS Array[Float] dot product + Array[Integer] OpSETIDX in-place writes + fallbacks
 raise "dot_f" unless (dot_f([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) - 32.0).abs < 1e-9
 raise "dot_f fallback int" unless (dot_f([1, 2], [3.0, 4.0]) - 11.0).abs < 1e-9
+ia = [1, 2, 3, 4]
+raise "scale_arr!" unless scale_arr!(ia, 3) == 30 && ia == [3, 6, 9, 12]
+frozen_ia = [1, 2].freeze
+ferr_ary = begin; scale_arr!(frozen_ia, 2); false; rescue FrozenError; true; end
+raise "scale_arr! frozen fallback" unless ferr_ary
 
-# 5. Verify RBS @ivar Point#dist, Point#sum_dist (typed loop calling dist!), and Point#scale!
+# 5. Verify RBS @ivar Point#dist, Point#sum_dist (typed loop calling dist!), Point#scale!, and frozen fallback
 pt = Point.new(3.0, 4.0)
 raise "Point#dist" unless (pt.dist - 5.0).abs < 1e-9
 raise "Point#sum_dist" unless (pt.sum_dist(100) - 500.0).abs < 1e-9
 raise "Point#scale!" unless (pt.scale!(2.0) - 14.0).abs < 1e-9
 raise "Point#dist after scale" unless (pt.dist - 10.0).abs < 1e-9
+ferr_pt = begin; pt.freeze.scale!(2.0); false; rescue FrozenError; true; end
+raise "Point#scale! frozen fallback" unless ferr_pt
+
+# 5a. Verify pure-Go attr_reader / attr_writer, Struct.new, and Data.define
+class Box
+  attr_accessor :x, :y
+  def initialize(x, y)
+    @x = x
+    @y = y
+  end
+end
+bx = Box.new(10, 20)
+raise "attr_reader" unless bx.x == 10 && bx.y == 20
+bx.x = 42
+raise "attr_writer imm" unless bx.x == 42
+bx.x = "str"
+raise "attr_writer heap fallback" unless bx.x == "str"
+ferr_bx = begin; bx.freeze.x = 1; false; rescue FrozenError; true; end
+raise "attr_writer frozen fallback" unless ferr_bx
+
+SPair = Struct.new(:a, :b)
+sp = SPair.new(7, "ok")
+raise "Struct ref" unless sp.a == 7 && sp.b == "ok"
+
+DPair = Data.define(:a, :b)
+dp = DPair.new(9, "data")
+raise "Data ref" unless dp.a == 9 && dp.b == "data"
 
 # 5b. Verify new string & boolean intrinsics (!, length/size, <<, strip/downcase/upcase, gsub, split)
 raise "not bool" unless !false == true && !nil == true && !true == false && !0 == false
@@ -316,6 +363,34 @@ raise "range break" unless rb == 6
 as = 0
 [10, 20, 30].each { |x| as += x }
 raise "ary each" unless as == 60
+
+# 6b. Verify map, collect, select, each_with_index, sum, inject/reduce, upto, downto, step
+raise "map" unless [1, 2, 3].map { |x| x * 10 } == [10, 20, 30]
+raise "map break" unless [1, 2, 3].map { |x| break 99 if x == 2; x } == 99
+raise "collect" unless [1, 2, 3].collect { |x| x + 1 } == [2, 3, 4]
+raise "select" unless [1, 2, 3, 4, 5].select { |x| x.even? } == [2, 4]
+ewi = []
+["a", "b"].each_with_index { |v, i| ewi << "#{i}:#{v}" }
+raise "each_with_index" unless ewi == ["0:a", "1:b"]
+raise "ary sum" unless [1, 2, 3, 4].sum { |x| x * 2 } == 20
+raise "inject 0" unless [1, 2, 3, 4].inject { |a, b| a + b } == 10
+raise "inject 1" unless [1, 2, 3].inject(100) { |a, b| a + b } == 106
+raise "reduce 0" unless [].reduce { |a, b| a + b }.nil?
+us = []
+3.upto(6) { |i| us << i }
+raise "upto" unless us == [3, 4, 5, 6]
+raise "upto break" unless (1.upto(5) { |i| break i * 2 if i == 3 }) == 6
+ds = []
+5.downto(2) { |i| ds << i }
+raise "downto" unless ds == [5, 4, 3, 2]
+ss = []
+1.step(7, 2) { |i| ss << i }
+raise "step +" unless ss == [1, 3, 5, 7]
+ssn = []
+10.step(2, -3) { |i| ssn << i }
+raise "step -" unless ssn == [10, 7, 4]
+st_err = begin; 1.step(5, 0) { |_| }; false; rescue ArgumentError; true; end
+raise "step 0 err" unless st_err
 
 # 7. Verify core stdlib zero-cgo intrinsics
 s = "hello world"
@@ -407,6 +482,18 @@ puts "ALL_TYPED_AOT_OK"
 		"AotCoreConstOK(",
 		"AotCoreOK(oruby.AotCoreIntTimes",
 		"AotCoreOK(oruby.AotCoreRangeEach",
+		"AotCoreOK(oruby.AotCoreIntUpto",
+		"AotCoreOK(oruby.AotCoreIntDownto",
+		"AotCoreOK(oruby.AotCoreIntStep",
+		"AotCoreOK(oruby.AotCoreAryMap",
+		"AotCoreOK(oruby.AotCoreArySelect",
+		"AotCoreOK(oruby.AotCoreAryEachWithIndex",
+		"AotCoreOK(oruby.AotCoreArySum",
+		"AotCoreOK(oruby.AotCoreAryInject",
+		"AotShapedBase(",
+		"AotArySlice(",
+		"AotArySliceMutable(",
+		"AotAryNewCapa(",
 		"AotDefineMethodTrackedSig(",
 		"AotBigInt(",
 	} {

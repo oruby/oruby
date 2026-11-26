@@ -90,6 +90,12 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 
 	useOk := false
 	hasReturn := false
+	hoistIvars := !plan.HasCalls && len(plan.Ivars) > 0
+	hoistAry := !plan.HasCalls && useV
+	ivarSlot := make(map[string]string, len(plan.Ivars))
+	for i, iv := range plan.Ivars {
+		ivarSlot[iv] = fmt.Sprintf("_ix%d", i)
+	}
 
 	for idx := 0; idx < len(unit.Instructions); idx++ {
 		ins := unit.Instructions[idx]
@@ -120,6 +126,14 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 		case OpENTER:
 			for i, pt := range plan.Params {
 				fmt.Fprintf(&body, "\t%s = _a%d\n", regExpr(uint32(i+1), pt), i+1)
+				if hoistAry && (pt == TypeArrayInt64 || pt == TypeArrayFloat64) {
+					fn := "AotArySlice"
+					if plan.WritesAry {
+						fn = "AotArySliceMutable"
+					}
+					fmt.Fprintf(&body, "\tif _sv[%d], _ok = mrb.%s(_a%d); !_ok { %s }\n", i+1, fn, i+1, bail)
+					useOk = true
+				}
 			}
 		case OpMOVE:
 			if constOf(uint32(ins.B)) != "" {
@@ -127,6 +141,9 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 			}
 			t := typeOf(uint32(ins.B))
 			fmt.Fprintf(&body, "\t%s = %s\n", regExpr(ins.A, t), regExpr(uint32(ins.B), t))
+			if hoistAry && (t == TypeArrayInt64 || t == TypeArrayFloat64) {
+				fmt.Fprintf(&body, "\t_sv[%d] = _sv[%d]\n", ins.A, ins.B)
+			}
 		case OpLOADL:
 			switch v := unit.Pool[ins.B].(type) {
 			case int32:
@@ -156,38 +173,76 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 		case OpGETIV:
 			ivName := unit.Syms[ins.B]
 			ivType := g.opts.RBS.LookupIvar(inf.className, ivName)
-			symVar := g.internSym(ivName)
-			switch ivType {
-			case TypeInt64:
-				useI = true
-				fmt.Fprintf(&body, "\tif _iv := mrb.AotIVGet(self, %s); _iv.Type() == oruby.MrbTTInteger { ri[%d] = aotInt(_iv) } else { %s }\n", symVar, ins.A, bail)
-			case TypeFloat64:
-				useF = true
-				fmt.Fprintf(&body, "\tif _iv := mrb.AotIVGet(self, %s); _iv.Type() == oruby.MrbTTFloat { rf[%d] = oruby.AotFloat(_iv) } else { %s }\n", symVar, ins.A, bail)
-			case TypeBool:
-				useB = true
-				fmt.Fprintf(&body, "\tif _iv := mrb.AotIVGet(self, %s); _iv.Type() == oruby.MrbTTTrue || (_iv.Type() == oruby.MrbTTFalse && !_iv.IsNil()) { rb[%d] = _iv.Type() == oruby.MrbTTTrue } else { %s }\n", symVar, ins.A, bail)
+			if hoistIvars {
+				ix := ivarSlot[ivName]
+				switch ivType {
+				case TypeInt64:
+					useI = true
+					fmt.Fprintf(&body, "\tif _iv := mrb.AotShapedRead(_svals, %s); _iv.Type() == oruby.MrbTTInteger { ri[%d] = aotInt(_iv) } else { %s }\n", ix, ins.A, bail)
+				case TypeFloat64:
+					useF = true
+					fmt.Fprintf(&body, "\tif _iv := mrb.AotShapedRead(_svals, %s); _iv.Type() == oruby.MrbTTFloat { rf[%d] = oruby.AotFloat(_iv) } else { %s }\n", ix, ins.A, bail)
+				case TypeBool:
+					useB = true
+					fmt.Fprintf(&body, "\tif _iv := mrb.AotShapedRead(_svals, %s); _iv.Type() == oruby.MrbTTTrue || (_iv.Type() == oruby.MrbTTFalse && !_iv.IsNil()) { rb[%d] = _iv.Type() == oruby.MrbTTTrue } else { %s }\n", ix, ins.A, bail)
+				}
+			} else {
+				symVar := g.internSym(ivName)
+				switch ivType {
+				case TypeInt64:
+					useI = true
+					fmt.Fprintf(&body, "\tif _iv := mrb.AotIVGet(self, %s); _iv.Type() == oruby.MrbTTInteger { ri[%d] = aotInt(_iv) } else { %s }\n", symVar, ins.A, bail)
+				case TypeFloat64:
+					useF = true
+					fmt.Fprintf(&body, "\tif _iv := mrb.AotIVGet(self, %s); _iv.Type() == oruby.MrbTTFloat { rf[%d] = oruby.AotFloat(_iv) } else { %s }\n", symVar, ins.A, bail)
+				case TypeBool:
+					useB = true
+					fmt.Fprintf(&body, "\tif _iv := mrb.AotIVGet(self, %s); _iv.Type() == oruby.MrbTTTrue || (_iv.Type() == oruby.MrbTTFalse && !_iv.IsNil()) { rb[%d] = _iv.Type() == oruby.MrbTTTrue } else { %s }\n", symVar, ins.A, bail)
+				}
 			}
 		case OpSETIV:
 			ivName := unit.Syms[ins.B]
 			ivType := g.opts.RBS.LookupIvar(inf.className, ivName)
-			symVar := g.internSym(ivName)
-			switch ivType {
-			case TypeInt64:
-				useI = true
-				fmt.Fprintf(&body, "\tif !mrb.AotIVSetImmediate(self, %s, oruby.AotFixnum(ri[%d])) { %s }\n", symVar, ins.A, bail)
-			case TypeFloat64:
-				useF = true
-				fmt.Fprintf(&body, "\tif !mrb.AotIVSetImmediate(self, %s, mrb.AotFloatValue(rf[%d])) { %s }\n", symVar, ins.A, bail)
-			case TypeBool:
-				useB = true
-				fmt.Fprintf(&body, "\tif !mrb.AotIVSetImmediate(self, %s, mrb.BoolValue(rb[%d])) { %s }\n", symVar, ins.A, bail)
+			if hoistIvars {
+				ix := ivarSlot[ivName]
+				switch ivType {
+				case TypeInt64:
+					useI = true
+					fmt.Fprintf(&body, "\tif !mrb.AotShapedWriteImm(self, _svals, %s, oruby.AotFixnum(ri[%d])) { %s }\n", ix, ins.A, bail)
+				case TypeFloat64:
+					useF = true
+					fmt.Fprintf(&body, "\tif !mrb.AotShapedWriteImm(self, _svals, %s, mrb.AotFloatValue(rf[%d])) { %s }\n", ix, ins.A, bail)
+				case TypeBool:
+					useB = true
+					fmt.Fprintf(&body, "\tif !mrb.AotShapedWriteImm(self, _svals, %s, mrb.BoolValue(rb[%d])) { %s }\n", ix, ins.A, bail)
+				}
+			} else {
+				symVar := g.internSym(ivName)
+				switch ivType {
+				case TypeInt64:
+					useI = true
+					fmt.Fprintf(&body, "\tif !mrb.AotIVSetImmediate(self, %s, oruby.AotFixnum(ri[%d])) { %s }\n", symVar, ins.A, bail)
+				case TypeFloat64:
+					useF = true
+					fmt.Fprintf(&body, "\tif !mrb.AotIVSetImmediate(self, %s, mrb.AotFloatValue(rf[%d])) { %s }\n", symVar, ins.A, bail)
+				case TypeBool:
+					useB = true
+					fmt.Fprintf(&body, "\tif !mrb.AotIVSetImmediate(self, %s, mrb.BoolValue(rb[%d])) { %s }\n", symVar, ins.A, bail)
+				}
 			}
 		case OpGETIDX:
 			ta := typeOf(ins.A)
 			useI = true
 			useV = true
-			if ta == TypeArrayInt64 {
+			if hoistAry {
+				fmt.Fprintf(&body, "\t{ _ai := int(ri[%d]); _s := _sv[%d]; if _ai < 0 { _ai += len(_s) }; if _ai < 0 || _ai >= len(_s) { %s }; _el := _s[_ai]; ", ins.A+1, ins.A, bail)
+				if ta == TypeArrayInt64 {
+					fmt.Fprintf(&body, "if _el.Type() != oruby.MrbTTInteger { %s }; ri[%d] = aotInt(_el) }\n", bail, ins.A)
+				} else {
+					useF = true
+					fmt.Fprintf(&body, "if _el.Type() != oruby.MrbTTFloat { %s }; rf[%d] = oruby.AotFloat(_el) }\n", bail, ins.A)
+				}
+			} else if ta == TypeArrayInt64 {
 				fmt.Fprintf(&body, "\tif _el, _eok := mrb.AotAryRefRaw(rv[%d], int(ri[%d])); _eok && _el.Type() == oruby.MrbTTInteger { ri[%d] = aotInt(_el) } else { %s }\n",
 					ins.A, ins.A+1, ins.A, bail)
 			} else {
@@ -198,7 +253,16 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 		case OpGETIDX0:
 			tb := typeOf(uint32(ins.B))
 			useV = true
-			if tb == TypeArrayInt64 {
+			if hoistAry {
+				fmt.Fprintf(&body, "\t{ _s := _sv[%d]; if len(_s) == 0 { %s }; _el := _s[0]; ", ins.B, bail)
+				if tb == TypeArrayInt64 {
+					useI = true
+					fmt.Fprintf(&body, "if _el.Type() != oruby.MrbTTInteger { %s }; ri[%d] = aotInt(_el) }\n", bail, ins.A)
+				} else {
+					useF = true
+					fmt.Fprintf(&body, "if _el.Type() != oruby.MrbTTFloat { %s }; rf[%d] = oruby.AotFloat(_el) }\n", bail, ins.A)
+				}
+			} else if tb == TypeArrayInt64 {
 				useI = true
 				fmt.Fprintf(&body, "\tif _el, _eok := mrb.AotAryRefRaw(rv[%d], 0); _eok && _el.Type() == oruby.MrbTTInteger { ri[%d] = aotInt(_el) } else { %s }\n",
 					ins.B, ins.A, bail)
@@ -206,6 +270,21 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 				useF = true
 				fmt.Fprintf(&body, "\tif _el, _eok := mrb.AotAryRefRaw(rv[%d], 0); _eok && _el.Type() == oruby.MrbTTFloat { rf[%d] = oruby.AotFloat(_el) } else { %s }\n",
 					ins.B, ins.A, bail)
+			}
+		case OpSETIDX:
+			ta := typeOf(ins.A)
+			useI = true
+			useV = true
+			if hoistAry {
+				fmt.Fprintf(&body, "\t{ _ai := int(ri[%d]); _s := _sv[%d]; if _ai < 0 { _ai += len(_s) }; if _ai < 0 || _ai >= len(_s) { %s }; ", ins.A+1, ins.A, bail)
+			} else {
+				fmt.Fprintf(&body, "\t{ _s, _sok := mrb.AotArySliceMutable(rv[%d]); if !_sok { %s }; _ai := int(ri[%d]); if _ai < 0 { _ai += len(_s) }; if _ai < 0 || _ai >= len(_s) { %s }; ", ins.A, bail, ins.A+1, bail)
+			}
+			if ta == TypeArrayInt64 {
+				fmt.Fprintf(&body, "_v := ri[%d]; _s[_ai] = oruby.AotFixnum(_v); ri[%d] = _v }\n", ins.A+2, ins.A)
+			} else {
+				useF = true
+				fmt.Fprintf(&body, "_v := rf[%d]; _s[_ai] = mrb.AotFloatValue(_v); rf[%d] = _v }\n", ins.A+2, ins.A)
 			}
 		case OpADD, OpSUB, OpMUL, OpDIV:
 			ta, tb := typeOf(ins.A), typeOf(ins.A+1)
@@ -346,7 +425,11 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 			if ta == TypeArrayInt64 || ta == TypeArrayFloat64 {
 				useI = true
 				useV = true
-				fmt.Fprintf(&body, "\tri[%d] = int64(mrb.AotAryLen(rv[%d]))\n", ins.A, ins.A)
+				if hoistAry {
+					fmt.Fprintf(&body, "\tri[%d] = int64(len(_sv[%d]))\n", ins.A, ins.A)
+				} else {
+					fmt.Fprintf(&body, "\tri[%d] = int64(mrb.AotAryLen(rv[%d]))\n", ins.A, ins.A)
+				}
 				break
 			}
 
@@ -507,9 +590,19 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 	}
 	if useV {
 		fmt.Fprintf(b, "\tvar rv [%d]oruby.Value\n\t_ = rv\n", nregs)
+		if hoistAry {
+			fmt.Fprintf(b, "\tvar _sv [%d][]oruby.Value\n\t_ = _sv\n", nregs)
+		}
 	}
 	if useOk {
 		b.WriteString("\tvar _ok bool\n\t_ = _ok\n")
+	}
+	if hoistIvars {
+		b.WriteString(fmt.Sprintf("\t_svals, _sshape, _sok := mrb.AotShapedBase(self)\n\tif !_sok { return %s, false }\n", retZero))
+		for i, iv := range plan.Ivars {
+			symVar := g.internSym(iv)
+			fmt.Fprintf(b, "\t_ix%d := mrb.AotShapedSlot(_sshape, %s)\n\tif _ix%d < 0 { return %s, false }\n", i, symVar, i, retZero)
+		}
 	}
 	b.Write(body.Bytes())
 	if !hasReturn {
@@ -592,6 +685,9 @@ func (g *CodeGen) emitTypedEntryGuard(out *bytes.Buffer, plan *TypedPlan) {
 			callArgs = append(callArgs, fmt.Sprintf("%s.Type() == oruby.MrbTTTrue", a))
 		case TypeArrayInt64, TypeArrayFloat64:
 			conds = append(conds, fmt.Sprintf("mrb.AotIsPlainArray(%s)", a))
+			if len(plan.IdxGuards) > 0 {
+				conds = append(conds, fmt.Sprintf("mrb.AotIdxOK(oruby.AotIdxAryAset, %s)", a))
+			}
 			callArgs = append(callArgs, a)
 		}
 	}

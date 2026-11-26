@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "71a969ba1af65f40"
+const presymTable = "34f1f1c56c064c67"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -574,6 +574,7 @@ const (
 	Sym_DEFAULT_SORT_KEYS                       MrbSym = C.MRB_SYM__DEFAULT_SORT_KEYS                       // "DEFAULT_SORT_KEYS"
 	Sym_DSYNC                                   MrbSym = C.MRB_SYM__DSYNC                                   // "DSYNC"
 	Sym_DTD                                     MrbSym = C.MRB_SYM__DTD                                     // "DTD"
+	Sym_Data                                    MrbSym = C.MRB_SYM__Data                                    // "Data"
 	Sym_Database                                MrbSym = C.MRB_SYM__Database                                // "Database"
 	Sym_Date                                    MrbSym = C.MRB_SYM__Date                                    // "Date"
 	Sym_DepthError                              MrbSym = C.MRB_SYM__DepthError                              // "DepthError"
@@ -1369,6 +1370,7 @@ const (
 	Sym___write_to_target                       MrbSym = C.MRB_SYM____write_to_target                       // "__write_to_target"
 	Sym___xpath                                 MrbSym = C.MRB_SYM____xpath                                 // "__xpath"
 	Sym___xpath_for                             MrbSym = C.MRB_SYM____xpath_for                             // "__xpath_for"
+	Sym__a                                      MrbSym = C.MRB_SYM___a                                      // "_a"
 	Sym__binread                                MrbSym = C.MRB_SYM___binread                                // "_binread"
 	Sym__binwrite                               MrbSym = C.MRB_SYM___binwrite                               // "_binwrite"
 	Sym__caller_receiver                        MrbSym = C.MRB_SYM___caller_receiver                        // "_caller_receiver"
@@ -1611,6 +1613,7 @@ const (
 	Sym_default_external                        MrbSym = C.MRB_SYM__default_external                        // "default_external"
 	Sym_default_internal                        MrbSym = C.MRB_SYM__default_internal                        // "default_internal"
 	Sym_default_options                         MrbSym = C.MRB_SYM__default_options                         // "default_options"
+	Sym_define                                  MrbSym = C.MRB_SYM__define                                  // "define"
 	Sym_define_method                           MrbSym = C.MRB_SYM__define_method                           // "define_method"
 	Sym_deflate                                 MrbSym = C.MRB_SYM__deflate                                 // "deflate"
 	Sym_degree                                  MrbSym = C.MRB_SYM__degree                                  // "degree"

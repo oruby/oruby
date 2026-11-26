@@ -191,6 +191,10 @@ type aotState struct {
 	depth           int
 	intDisabled     int
 	envCallbackPtr  unsafe.Pointer
+	attrReaderPtr   unsafe.Pointer
+	attrWriterPtr   unsafe.Pointer
+	structRefPtr    unsafe.Pointer
+	dataRefPtr      unsafe.Pointer
 	argBuf          [aotMaxDirectDepth + 2][2]Value
 	intrinsics      [aotIntrinsicCount]aotIntrinsicSlot
 	coreIntrinsics  [aotCoreCount]aotIntrinsicSlot
@@ -236,6 +240,9 @@ func (mrb *MrbState) AotInit() {
 	st.topCx = &AotCtx{}
 	st.blocks = make(map[int64]*aotBlockData)
 	st.envCallbackPtr = C._aot_env_callback_ptr()
+	st.attrReaderPtr = C._aot_attr_reader_ptr()
+	st.attrWriterPtr = C._aot_attr_writer_ptr()
+	C._aot_struct_data_ref_ptrs(mrb.p, &st.structRefPtr, &st.dataRefPtr)
 	mrb.aot = st
 	st.trampIdx = mrb.registerMrbFuncT(mrb.aotBlockTrampoline)
 	mrb.aotInitCoreIntrinsics(st)
@@ -1217,9 +1224,30 @@ func (mrb *MrbState) aotDirect(recv Value, mid MrbSym, args []Value, blk Value, 
 	if blk.v.tt != C.MRB_TT_FALSE && blk.v.tt != C.MRB_TT_PROC {
 		return nilValue, nil, false // needs to_proc conversion
 	}
-	idx, owner, hit := mrb.aotMethodIdxFromCache(recv, mid, fcall)
+	idx, owner, fastVal, hit := mrb.aotMethodIdxFromCache(recv, mid, fcall)
 	if !hit {
 		idx, owner = mrb.aotLookupCompiledSlow(recv, mid, fcall)
+	}
+	if idx <= aotFastAttrRead && blk.IsNil() {
+		switch idx {
+		case aotFastAttrRead:
+			if len(args) == 0 {
+				return mrb.AotIVGet(recv, MrbSym(fastVal)), nil, true
+			}
+			return nilValue, nil, false
+		case aotFastAttrWrite:
+			if len(args) == 1 && mrb.AotIVSetImmediate(recv, MrbSym(fastVal), args[0]) {
+				return args[0], nil, true
+			}
+			return nilValue, nil, false
+		case aotFastStructRef:
+			if len(args) == 0 {
+				if v, ok := mrb.aotStructSlotRef(recv, int(fastVal)); ok {
+					return v, nil, true
+				}
+			}
+			return nilValue, nil, false
+		}
 	}
 	if idx < 0 || idx >= len(st.methods) {
 		return nilValue, nil, false

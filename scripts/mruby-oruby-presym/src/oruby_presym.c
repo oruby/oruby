@@ -320,6 +320,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "DEFAULT_SORT_KEYS");
   (void)mrb_intern_lit(mrb, "DSYNC");
   (void)mrb_intern_lit(mrb, "DTD");
+  (void)mrb_intern_lit(mrb, "Data");
   (void)mrb_intern_lit(mrb, "Database");
   (void)mrb_intern_lit(mrb, "Date");
   (void)mrb_intern_lit(mrb, "DepthError");
@@ -1146,6 +1147,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__write_to_target");
   (void)mrb_intern_lit(mrb, "__xpath");
   (void)mrb_intern_lit(mrb, "__xpath_for");
+  (void)mrb_intern_lit(mrb, "_a");
   (void)mrb_intern_lit(mrb, "_binread");
   (void)mrb_intern_lit(mrb, "_binwrite");
   (void)mrb_intern_lit(mrb, "_caller_receiver");
@@ -1442,6 +1444,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "default_namespace=");
   (void)mrb_intern_lit(mrb, "default_options");
   (void)mrb_intern_lit(mrb, "default_options=");
+  (void)mrb_intern_lit(mrb, "define");
   (void)mrb_intern_lit(mrb, "define_method");
   (void)mrb_intern_lit(mrb, "defined?");
   (void)mrb_intern_lit(mrb, "deflate");
