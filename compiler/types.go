@@ -110,11 +110,13 @@ type TypedPlan struct {
 	InConsts        [][]string   // InConsts[insIdx][reg] = constant class/module name on entry to insIdx
 	NeedsIntGuard   bool
 	NeedsFloatGuard bool
-	NeedsSelf       bool           // true if unit or a self-callee reads/writes @ivars
-	HasCalls        bool           // true if unit makes direct calls (needs local _depth int)
-	HasIvarWrites   bool           // true if unit executes OpSETIV
-	WritesAry       bool           // true if unit executes OpSETIDX on a typed Array[T]
-	Ivars           []string       // sorted deduplicated @ivar symbols accessed by this unit
+	NeedsSelf       bool     // true if unit or a self-callee reads/writes @ivars
+	HasCalls        bool     // true if unit makes direct calls (needs local _depth int)
+	HasIvarWrites   bool     // true if unit executes OpSETIV
+	WritesAry       bool     // true if unit executes OpSETIDX on a typed Array[T]
+	Ivars           []string // sorted deduplicated @ivar symbols accessed by this unit
+	IvarsRead       map[string]bool
+	IvarsWritten    map[string]bool
 	CoreGuards      []string       // AotCoreID expressions checked via AotCoreClassOK
 	IdxGuards       []string       // AotIdxSlot expressions checked via AotIdxOK on Array[T] params
 	MathGuards      []string       // Math AotCoreID expressions checked via AotCoreOK(..., Math)
@@ -474,6 +476,8 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 		idxGuards := make(map[string]bool)
 		mathGuards := make(map[string]bool)
 		ivarSet := make(map[string]bool)
+		ivarReadSet := make(map[string]bool)
+		ivarWriteSet := make(map[string]bool)
 		var directCalls []typedCallRef
 		directSeen := make(map[string]bool)
 		retFlow := flowUnvisited
@@ -514,6 +518,8 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 			clear(idxGuards)
 			clear(mathGuards)
 			clear(ivarSet)
+			clear(ivarReadSet)
+			clear(ivarWriteSet)
 			retFlow = flowUnvisited
 			directCalls = nil
 			clear(directSeen)
@@ -607,6 +613,7 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					}
 					needsSelf = true
 					ivarSet[ivName] = true
+					ivarReadSet[ivName] = true
 					if !setReg(ins.A, primToFlow(ivType)) {
 						return nil, flowUnknown, ""
 					}
@@ -622,6 +629,7 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 					needsSelf = true
 					hasIvarWrites = true
 					ivarSet[ivName] = true
+					ivarWriteSet[ivName] = true
 				case OpGETIDX:
 					ta, tb := getReg(ins.A), getReg(ins.A+1)
 					if tb != flowInt64 {
@@ -1017,6 +1025,8 @@ func (g *CodeGen) inferTypedPlan(unit *IRepUnit, paramTypes []PrimType, expected
 			HasIvarWrites:   hasIvarWrites,
 			WritesAry:       writesAry,
 			Ivars:           sortedKeys(ivarSet),
+			IvarsRead:       ivarReadSet,
+			IvarsWritten:    ivarWriteSet,
 			CoreGuards:      sortedKeys(coreGuards),
 			IdxGuards:       sortedKeys(idxGuards),
 			MathGuards:      sortedKeys(mathGuards),

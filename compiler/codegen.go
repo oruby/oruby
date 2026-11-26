@@ -1864,22 +1864,34 @@ func enterLayout(u *IRepUnit) (kidx, bidx int) {
 
 // unitEmitter generates Go code of a single irep.
 type unitEmitter struct {
-	g                *CodeGen
-	u                *IRepUnit
-	inf              *unitInfo
-	b                bytes.Buffer
-	nregs            int
-	targets          map[int]bool    // offsets which may get a label
-	refs             map[string]bool // referenced labels
-	stubs            map[string][]int
-	stubIDs          []string
-	unwind           bool // uses pending return/jump through ensure
-	kidx             int
-	bidx             int
-	fixed            int // fixed arity (-1 if not)
-	file             string
-	mayReadMatchData bool  // true if unit or nested blocks may read $~ / $1.. / last_match
-	jmpuw            []int // JMPUW targets
+	g                   *CodeGen
+	u                   *IRepUnit
+	inf                 *unitInfo
+	b                   bytes.Buffer
+	nregs               int
+	targets             map[int]bool    // offsets which may get a label
+	refs                map[string]bool // referenced labels
+	stubs               map[string][]int
+	stubIDs             []string
+	unwind              bool // uses pending return/jump through ensure
+	kidx                int
+	bidx                int
+	fixed               int // fixed arity (-1 if not)
+	file                string
+	mayReadMatchData    bool  // true if unit or nested blocks may read $~ / $1.. / last_match
+	jmpuw               []int // JMPUW targets
+	icCount             int
+	icOwner             *unitEmitter
+	inline              bool
+	inlineSite          int
+	inlineSiteSeq       int
+	inlineResult        string
+	inlineLoopLabel     string
+	inlineNeedLoopLabel *bool
+	inlineHasBreak      *bool
+	inlineReadOnlyUp0   map[uint32]bool
+	readOnlyUp0         map[uint32]bool
+	envDepthShift       int
 }
 
 func (e *unitEmitter) w(format string, args ...interface{}) {
@@ -1888,6 +1900,9 @@ func (e *unitEmitter) w(format string, args ...interface{}) {
 
 func (e *unitEmitter) lbl(off int) string {
 	l := fmt.Sprintf("L_%04d", off)
+	if e.inline {
+		l = fmt.Sprintf("IB%d_%04d", e.inlineSite, off)
+	}
 	e.refs[l] = true
 	return l
 }
@@ -1929,6 +1944,11 @@ func (e *unitEmitter) ensures(idx int) []int {
 
 // exc returns label to jump to when an exception is pending at instruction idx
 func (e *unitEmitter) exc(idx int) string {
+	if e.inline {
+		l := fmt.Sprintf("IB%d_err", e.inlineSite)
+		e.refs[l] = true
+		return l
+	}
 	hs := e.handlers(idx)
 	if len(hs) == 0 {
 		e.refs["E_ret"] = true
@@ -1978,6 +1998,17 @@ func (e *unitEmitter) retStmt(expr string) string {
 
 // ret emits return from instruction idx, running ensure clauses first
 func (e *unitEmitter) ret(idx int, expr string) {
+	if e.inline {
+		if e.inlineResult != "" {
+			e.w("\t%s = %s\n", e.inlineResult, expr)
+		}
+		if idx < len(e.u.Instructions)-1 {
+			nxt := fmt.Sprintf("IB%d_next", e.inlineSite)
+			e.refs[nxt] = true
+			e.w("\tgoto %s\n", nxt)
+		}
+		return
+	}
 	if ens := e.ensures(idx); len(ens) > 0 {
 		e.w("\t_uwk = 1; _uwv = %s; goto %s\n", expr, e.lbl(e.u.Catch[ens[0]].Target))
 		return
@@ -1988,6 +2019,13 @@ func (e *unitEmitter) ret(idx int, expr string) {
 func (e *unitEmitter) reg(i uint32) string { return fmt.Sprintf("r[%d]", i) }
 
 func (e *unitEmitter) upEnv(depth int) string {
+	if e.inline {
+		s := "env"
+		for i := 0; i < depth; i++ {
+			s += ".Up"
+		}
+		return s
+	}
 	s := "up"
 	for i := 0; i < depth; i++ {
 		s += ".Up"
@@ -2140,6 +2178,11 @@ func (g *CodeGen) emitUnit(out *bytes.Buffer, unit *IRepUnit) error {
 	if err := e.emitBody(hasDebug); err != nil {
 		return err
 	}
+	if e.icCount > 0 {
+		for i := 0; i < e.icCount; i++ {
+			out.WriteString(fmt.Sprintf("\tvar _ic%d oruby.AotIC\n", i))
+		}
+	}
 
 	// Exception stubs
 	for i := 0; i < len(e.stubIDs); i++ {
@@ -2258,7 +2301,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 	lastDebugLine := -1
 
 	var intLoops map[int]*intLoop
-	if !g.opts.Debug {
+	if !g.opts.Debug && !e.inline {
 		intLoops = findIntLoops(u)
 	}
 	for idx := 0; idx < len(u.Instructions); idx++ {
@@ -2267,7 +2310,11 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 			e.emitIntLoop(l) // its typed form, tried before the generic loop below
 		}
 		if e.targets[ins.Offset] {
-			e.w("L_%04d:\n", ins.Offset)
+			if e.inline {
+				e.w("IB%d_%04d:\n", e.inlineSite, ins.Offset)
+			} else {
+				e.w("L_%04d:\n", ins.Offset)
+			}
 		}
 		if g.opts.Debug && ins.Line > 0 && ins.Op != OpENTER && (ins.Line != lastDebugLine || e.targets[ins.Offset]) {
 			e.w("\tif mrb.LineDebug() {\n\t\tmrb.TriggerDebug(\"step\", %q, %d, self, nil, r[:], _locals)\n\t}\n", e.file, ins.Line)
@@ -2297,7 +2344,7 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 		}
 
 		// Peephole: BLOCK + SENDB for hot Array, Range, and Integer iteration loops.
-		if ins.Op == OpBLOCK && idx+1 < len(u.Instructions) && int(ins.B) < len(u.Children) {
+		if !e.inline && ins.Op == OpBLOCK && idx+1 < len(u.Instructions) && int(ins.B) < len(u.Children) {
 			nx := u.Instructions[idx+1]
 			child := e.childFn(ins.B)
 			if !e.targets[nx.Offset] && nx.Op == OpSENDB && !g.opts.Debug {
@@ -2317,9 +2364,140 @@ func (e *unitEmitter) emitBody(hasDebug bool) error {
 			return err
 		}
 	}
-	// fall off the end (should not happen: ireps end with return)
-	e.w("\t%s\n", e.retStmt("r[0]"))
+	if !e.inline {
+		// fall off the end (should not happen: ireps end with return)
+		e.w("\t%s\n", e.retStmt("r[0]"))
+	}
 	return nil
+}
+
+func readOnlyLevel0Upvars(parent *IRepUnit) map[uint32]bool {
+	written := make(map[uint32]bool)
+	var walk func(u *IRepUnit, depth uint32)
+	walk = func(u *IRepUnit, depth uint32) {
+		for _, ins := range u.Instructions {
+			if ins.Op == OpSETUPVAR && uint32(ins.C) == depth {
+				written[uint32(ins.B)] = true
+			}
+		}
+		for _, ch := range u.Children {
+			walk(ch, depth+1)
+		}
+	}
+	for _, ch := range parent.Children {
+		walk(ch, 0)
+	}
+	ro := make(map[uint32]bool)
+	for i := 0; i < parent.NRegs+3; i++ {
+		if !written[uint32(i)] {
+			ro[uint32(i)] = true
+		}
+	}
+	return ro
+}
+
+func (e *unitEmitter) canInlineLoopBlock(child *IRepUnit, yieldArity int) (m1 int, hasEnter bool, ok bool) {
+	inf := e.g.info[child]
+	if inf == nil || inf.kind != kindBlock || inf.needEnv || len(child.Catch) > 0 || len(child.Instructions) == 0 || len(child.Instructions) > 64 || unitHasDebugCall(child) {
+		return 0, false, false
+	}
+	start := 0
+	if child.Instructions[0].Op == OpENTER {
+		hasEnter = true
+		start = 1
+		a := child.Instructions[0].A
+		m1 = aspecReq(a)
+		if a != uint32(m1)<<18 || m1 > yieldArity {
+			return 0, false, false
+		}
+	}
+	for _, ins := range child.Instructions[start:] {
+		switch ins.Op {
+		case OpENTER, OpARGARY, OpBLKPUSH, OpSUPER, OpDEF, OpTDEF, OpSDEF,
+			OpCLASS, OpMODULE, OpEXEC, OpBLOCK, OpLAMBDA, OpMETHOD, OpJMPUW, OpSTOP:
+			return 0, false, false
+		}
+	}
+	return m1, hasEnter, true
+}
+
+func (e *unitEmitter) emitInlinedBlock(site int, child *IRepUnit, m1 int, hasEnter bool, yieldArgs []string, resultVar string, loopLabel string, needLoopLabel, hasBreak *bool) {
+	if e.readOnlyUp0 == nil {
+		e.readOnlyUp0 = readOnlyLevel0Upvars(e.u)
+	}
+	icOwner := e.icOwner
+	if icOwner == nil {
+		icOwner = e
+	}
+	nregs := child.NRegs + 3
+	if nregs < 4 {
+		nregs = 4
+	}
+	if hasEnter && m1+2 > nregs {
+		nregs = m1 + 2
+	}
+	ce := &unitEmitter{
+		g:                   e.g,
+		u:                   child,
+		inf:                 e.g.info[child],
+		targets:             make(map[int]bool),
+		refs:                make(map[string]bool),
+		stubs:               make(map[string][]int),
+		fixed:               -1,
+		file:                e.file,
+		mayReadMatchData:    e.mayReadMatchData,
+		icOwner:             icOwner,
+		inline:              true,
+		inlineSite:          site,
+		inlineResult:        resultVar,
+		inlineLoopLabel:     loopLabel,
+		inlineNeedLoopLabel: needLoopLabel,
+		inlineHasBreak:      hasBreak,
+		inlineReadOnlyUp0:   e.readOnlyUp0,
+		envDepthShift:       1,
+	}
+	for _, ins := range child.Instructions {
+		if ins.IsJump() && ins.Target >= 0 {
+			ce.targets[ins.Target] = true
+		}
+	}
+	_ = ce.emitBody(false)
+
+	lblPrefix := fmt.Sprintf("IB%d_", site)
+	var sb strings.Builder
+	for _, line := range strings.SplitAfter(ce.b.String(), "\n") {
+		if strings.HasPrefix(line, lblPrefix) && strings.HasSuffix(line, ":\n") {
+			if !ce.refs[strings.TrimSuffix(line, ":\n")] {
+				continue
+			}
+		}
+		sb.WriteString(line)
+	}
+
+	e.w("\t\t\t{\n\t\t\t\tvar r [%d]oruby.Value\n\t\t\t\tr[0] = self\n", nregs)
+	for i := 0; i < m1 && i < len(yieldArgs); i++ {
+		e.w("\t\t\t\tr[%d] = %s\n", i+1, yieldArgs[i])
+	}
+	for i := m1; i < len(yieldArgs); i++ {
+		e.w("\t\t\t\t_ = %s\n", yieldArgs[i])
+	}
+	if hasEnter {
+		e.w("\t\t\t\tr[%d] = mrb.NilValue()\n", m1+1)
+	} else {
+		e.w("\t\t\t\tr[1] = mrb.NilValue()\n")
+	}
+	e.b.WriteString(sb.String())
+	errLbl := fmt.Sprintf("IB%d_err", site)
+	nextLbl := fmt.Sprintf("IB%d_next", site)
+	if ce.refs[errLbl] {
+		*needLoopLabel = true
+		e.w("\t\t\t\tgoto %s\n", nextLbl)
+		e.w("%s:\n\t\t\t\tif err == nil { err = mrb.AotErr() }\n\t\t\t\tbreak %s\n", errLbl, loopLabel)
+		e.w("%s:\n\t\t\t\t_ = r[0]\n", nextLbl)
+	} else if ce.refs[nextLbl] {
+		e.w("%s:\n\t\t\t\t_ = r[0]\n", nextLbl)
+	}
+	e.w("\t\t\t}\n")
 }
 
 func (e *unitEmitter) emitBlockLoopPeephole(idx int, ins, nx Instruction, child string) bool {
@@ -2329,34 +2507,198 @@ func (e *unitEmitter) emitBlockLoopPeephole(idx int, ins, nx Instruction, child 
 	if nx.A+uint32(argc)+1 != ins.A {
 		return false
 	}
+	childUnit := u.Children[ins.B]
 
-	finish := func(fallbackArgs string) {
+	finishFallback := func(fallbackArgs string, inlined bool) {
 		symVar := e.sym(symName)
 		e.w("\t} else {\n")
-		e.w("\t\tr[%d] = mrb.AotBlockSig(%s, self, cx, env, false, %s)\n", ins.A, child, signatureLiteral(u.Children[ins.B], false))
+		if inlined {
+			e.w("\t\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
+		e.w("\t\tr[%d] = mrb.AotBlockSig(%s, self, cx, env, false, %s)\n", ins.A, child, signatureLiteral(childUnit, false))
 		e.w("\t\tr[%d], err = mrb.AotCall(self, r[%d], %s, %s, r[%d], false, false)\n", nx.A, nx.A, symVar, fallbackArgs, ins.A)
+		if inlined {
+			e.w("\t\tenv.AotBlockCallEnd(%d)\n", ins.B)
+			e.w("\t\tif err != nil {\n\t\t\tif _v, _ok := mrb.AotCatchBreak(env, %d); _ok { r[%d] = _v; err = nil }\n\t\t}\n", ins.B, nx.A)
+		}
 		e.w("\t}\n")
-		e.w("\tenv.AotBlockCallEnd(%d)\n", ins.B)
-		e.w("\tif err != nil {\n\t\tif _v, _ok := mrb.AotCatchBreak(env, %d); _ok { r[%d] = _v; err = nil } else { goto %s }\n\t}\n", ins.B, nx.A, e.exc(idx+1))
+		if inlined {
+			e.w("\tif err != nil { goto %s }\n", e.exc(idx+1))
+		} else {
+			e.w("\tenv.AotBlockCallEnd(%d)\n", ins.B)
+			e.w("\tif err != nil {\n\t\tif _v, _ok := mrb.AotCatchBreak(env, %d); _ok { r[%d] = _v; err = nil } else { goto %s }\n\t}\n", ins.B, nx.A, e.exc(idx+1))
+		}
+	}
+
+	wrapInlinedLoop := func(emitFn func(site int, loopLabel string, needLabel, hasBreak *bool)) bool {
+		site := e.inlineSiteSeq
+		e.inlineSiteSeq++
+		loopLabel := fmt.Sprintf("L_loop_%d", site)
+		needLabel := false
+		hasBreak := false
+		saved := e.b
+		e.b = bytes.Buffer{}
+		emitFn(site, loopLabel, &needLabel, &hasBreak)
+		loopCode := e.b.Bytes()
+		e.b = saved
+		if hasBreak {
+			e.w("\t\tvar _broke bool\n\t\tvar _breakVal oruby.Value\n")
+		}
+		if needLabel {
+			e.w("\t%s:\n", loopLabel)
+		}
+		e.b.Write(loopCode)
+		return hasBreak
+	}
+
+	emitTypedSetup := func(tb *typedBlockLoop, site int, extraPre []string, extraConds []string) {
+		for _, p := range extraPre {
+			e.w("\t\t%s\n", p)
+		}
+		for i, acc := range tb.pureAccessors {
+			e.w("\t\t_ap%d, _aok%d := mrb.AotResolvePureAccessor(env.R[%d], %s)\n", i, i, acc.upSlot, e.sym(acc.sym))
+		}
+		conds := []string{"mrb.AotIntCanRun()"}
+		conds = append(conds, extraConds...)
+		for _, u := range tb.intUpvars {
+			conds = append(conds, fmt.Sprintf("env.R[%d].Type() == oruby.MrbTTInteger", u))
+		}
+		for i := range tb.pureAccessors {
+			conds = append(conds, fmt.Sprintf("_aok%d", i))
+		}
+		e.w("\t\tif %s {\n", strings.Join(conds, " && "))
+		for _, u := range tb.intUpvars {
+			e.w("\t\t\t_uv%d := aotInt(env.R[%d])\n\t\t\t_ = _uv%d\n", u, u, u)
+		}
+		for _, u := range tb.writtenUpvars {
+			e.w("\t\t\tvar _snap%d int64\n", u)
+		}
+	}
+
+	emitTypedFlush := func(tb *typedBlockLoop, prefix string) {
+		for _, u := range tb.writtenUpvars {
+			e.w("\t\t\tenv.R[%d] = oruby.AotFixnum(%s%d)\n", u, prefix, u)
+		}
 	}
 
 	switch {
 	case argc == 0 && symName == "each":
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 1)
+		var tb *typedBlockLoop
+		if canInline {
+			tb = e.analyzeTypedBlockLoop(childUnit, 1, bkUnknown)
+		}
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		e.w("\tif mrb.AotCoreOK(oruby.AotCoreAryEach, r[%d]) {\n", nx.A)
-		e.w("\t\t_recv := r[%d]\n\t\tvar _ea [1]oruby.Value\n", nx.A)
-		e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
-		e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n", child)
+		e.w("\t\t_recv := r[%d]\n", nx.A)
+		if canInline {
+			if tb != nil {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := 0\n\t\t_typedDone := false\n")
+				emitTypedSetup(tb, site, []string{"_src, _sok := mrb.AotArySlice(_recv)"}, []string{"_sok"})
+				e.w("\t\t\tfor _i := 0; _i < len(_src); _i++ {\n")
+				e.w("\t\t\t\tif mrb.AotHookPending() || _src[_i].Type() != oruby.MrbTTInteger { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				e.emitTypedBlockBody(tb, site, []string{"aotInt(_src[_i])"}, "", deoptLbl)
+				e.w("\t\t\t}\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n", deoptLbl)
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t}\n")
+				e.w("\t\tif !_typedDone {\n")
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _ti; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					e.w("\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+				e.w("\t\t}\n")
+			} else {
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					e.w("\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+			}
+		} else {
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
+			e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n", child)
+		}
 		e.w("\t} else if _beg, _end, _excl, _rok := mrb.AotRangeIntBounds(r[%d]); _rok && mrb.AotCoreOK(oruby.AotCoreRangeEach, r[%d]) {\n", nx.A, nx.A)
-		e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := _beg; ; _i++ {\n")
-		e.w("\t\t\tif _excl { if _i >= _end { break } } else { if _i > _end { break } }\n")
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
-		e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
-		e.w("\t\t\tif !_excl && _i == _end { break }\n\t\t}\n")
-		finish("nil")
+		if canInline {
+			if tb != nil {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := _beg\n\t\t_typedDone := false\n")
+				emitTypedSetup(tb, site, nil, nil)
+				e.w("\t\t\tfor _i := _beg; ; _i++ {\n")
+				e.w("\t\t\t\tif _excl { if _i >= _end { break } } else { if _i > _end { break } }\n")
+				e.w("\t\t\t\tif mrb.AotHookPending() { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				e.emitTypedBlockBody(tb, site, []string{"_i"}, "", deoptLbl)
+				e.w("\t\t\t\tif !_excl && _i == _end { break }\n\t\t\t}\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n", deoptLbl)
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t}\n")
+				e.w("\t\tif !_typedDone {\n")
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _ti; ; _i++ {\n")
+					e.w("\t\t\tif _excl { if _i >= _end { break } } else { if _i > _end { break } }\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					e.w("\t\t\tif !_excl && _i == _end { break }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+				e.w("\t\t}\n")
+			} else {
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _beg; ; _i++ {\n")
+					e.w("\t\t\tif _excl { if _i >= _end { break } } else { if _i > _end { break } }\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					e.w("\t\t\tif !_excl && _i == _end { break }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+			}
+			finishFallback("nil", true)
+		} else {
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := _beg; ; _i++ {\n")
+			e.w("\t\t\tif _excl { if _i >= _end { break } } else { if _i > _end { break } }\n")
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
+			e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+			e.w("\t\t\tif !_excl && _i == _end { break }\n\t\t}\n")
+			finishFallback("nil", false)
+		}
 		return true
 
 	case argc == 0 && (symName == "map" || symName == "collect"):
@@ -2364,54 +2706,254 @@ func (e *unitEmitter) emitBlockLoopPeephole(idx int, ins, nx Instruction, child 
 		if symName == "collect" {
 			slot = "oruby.AotCoreAryCollect"
 		}
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 1)
+		var tb *typedBlockLoop
+		if canInline {
+			tb = e.analyzeTypedBlockLoop(childUnit, 1, bkInt64)
+		}
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		e.w("\tif mrb.AotCoreOK(%s, r[%d]) {\n", slot, nx.A)
-		e.w("\t\t_recv := r[%d]\n\t\t_res := mrb.AotAryNewCapa(mrb.AotAryLen(_recv))\n\t\tvar _ea [1]oruby.Value\n\t\tvar _bv oruby.Value\n", nx.A)
-		e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
-		e.w("\t\t\tif _bv, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
-		e.w("\t\t\tmrb.AotOp(oruby.AotOpAryPush, _res, _bv, mrb.NilValue(), 0)\n")
-		e.w("\t\t\tif mrb.HasExc() { err = mrb.AotErr(); break }\n\t\t}\n")
-		e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
-		finish("nil")
+		e.w("\t\t_recv := r[%d]\n\t\t_res := mrb.AotAryNewCapa(mrb.AotAryLen(_recv))\n\t\tvar _bv oruby.Value\n", nx.A)
+		if canInline {
+			if tb != nil {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := 0\n\t\t_typedDone := false\n")
+				emitTypedSetup(tb, site,
+					[]string{"_src, _sok := mrb.AotArySlice(_recv)", "_dst, _dok := mrb.AotAryCapaSlice(_res)"},
+					[]string{"_sok", "_dok", "len(_dst) >= len(_src)"})
+				e.w("\t\t\tvar _bvI int64\n")
+				e.w("\t\t\tfor _i := 0; _i < len(_src); _i++ {\n")
+				e.w("\t\t\t\tif mrb.AotHookPending() || _src[_i].Type() != oruby.MrbTTInteger { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				e.emitTypedBlockBody(tb, site, []string{"aotInt(_src[_i])"}, "_bvI", deoptLbl)
+				e.w("\t\t\t\t_dst[_i] = oruby.AotFixnum(_bvI)\n\t\t\t}\n")
+				e.w("\t\t\tmrb.AotArySetLen(_res, len(_src))\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n", deoptLbl)
+				e.w("\t\t\t\tmrb.AotArySetLen(_res, _ti)\n")
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t}\n")
+				e.w("\t\tif !_typedDone {\n")
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _ti; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "_bv", loopLabel, nl, hb)
+					e.w("\t\t\tmrb.AotAryPushFast(_res, _bv)\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil { if _broke { r[%d] = _breakVal } else { r[%d] = _res } }\n", nx.A, nx.A)
+				} else {
+					e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
+				}
+				e.w("\t\t} else {\n\t\t\tr[%d] = _res\n\t\t}\n", nx.A)
+			} else {
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "_bv", loopLabel, nl, hb)
+					e.w("\t\t\tmrb.AotAryPushFast(_res, _bv)\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil { if _broke { r[%d] = _breakVal } else { r[%d] = _res } }\n", nx.A, nx.A)
+				} else {
+					e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
+				}
+			}
+			finishFallback("nil", true)
+		} else {
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
+			e.w("\t\t\tif _bv, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+			e.w("\t\t\tmrb.AotAryPushFast(_res, _bv)\n\t\t}\n")
+			e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
+			finishFallback("nil", false)
+		}
 		return true
 
 	case argc == 0 && symName == "select":
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 1)
+		var tb *typedBlockLoop
+		if canInline {
+			tb = e.analyzeTypedBlockLoop(childUnit, 1, bkBool)
+		}
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		e.w("\tif mrb.AotCoreOK(oruby.AotCoreArySelect, r[%d]) {\n", nx.A)
-		e.w("\t\t_recv := r[%d]\n\t\t_res := mrb.AotAryNewCapa(0)\n\t\tvar _ea [1]oruby.Value\n\t\tvar _bv oruby.Value\n", nx.A)
-		e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
-		e.w("\t\t\tif _bv, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
-		e.w("\t\t\tif _bv.Bool() {\n\t\t\t\tmrb.AotOp(oruby.AotOpAryPush, _res, _ea[0], mrb.NilValue(), 0)\n\t\t\t\tif mrb.HasExc() { err = mrb.AotErr(); break }\n\t\t\t}\n\t\t}\n")
-		e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
-		finish("nil")
+		e.w("\t\t_recv := r[%d]\n\t\t_res := mrb.AotAryNewCapa(0)\n\t\tvar _bv oruby.Value\n", nx.A)
+		if canInline {
+			if tb != nil {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := 0\n\t\t_typedDone := false\n")
+				emitTypedSetup(tb, site, []string{"_src, _sok := mrb.AotArySlice(_recv)"}, []string{"_sok"})
+				e.w("\t\t\tvar _bvB bool\n")
+				e.w("\t\t\tfor _i := 0; _i < len(_src); _i++ {\n")
+				e.w("\t\t\t\tif mrb.AotHookPending() || _src[_i].Type() != oruby.MrbTTInteger { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				e.emitTypedBlockBody(tb, site, []string{"aotInt(_src[_i])"}, "_bvB", deoptLbl)
+				e.w("\t\t\t\tif _bvB { mrb.AotAryPushFast(_res, _src[_i]) }\n\t\t\t}\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n", deoptLbl)
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t}\n")
+				e.w("\t\tif !_typedDone {\n")
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _ti; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "_bv", loopLabel, nl, hb)
+					e.w("\t\t\tif _bv.Bool() { mrb.AotAryPushFast(_res, _y0) }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil { if _broke { r[%d] = _breakVal } else { r[%d] = _res } }\n", nx.A, nx.A)
+				} else {
+					e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
+				}
+				e.w("\t\t} else {\n\t\t\tr[%d] = _res\n\t\t}\n", nx.A)
+			} else {
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "_bv", loopLabel, nl, hb)
+					e.w("\t\t\tif _bv.Bool() { mrb.AotAryPushFast(_res, _y0) }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil { if _broke { r[%d] = _breakVal } else { r[%d] = _res } }\n", nx.A, nx.A)
+				} else {
+					e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
+				}
+			}
+			finishFallback("nil", true)
+		} else {
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
+			e.w("\t\t\tif _bv, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+			e.w("\t\t\tif _bv.Bool() {\n\t\t\t\tmrb.AotAryPushFast(_res, _ea[0])\n\t\t\t}\n\t\t}\n")
+			e.w("\t\tif err == nil { r[%d] = _res }\n", nx.A)
+			finishFallback("nil", false)
+		}
 		return true
 
 	case argc == 0 && symName == "each_with_index":
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 2)
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		e.w("\tif mrb.AotCoreOK(oruby.AotCoreAryEachWithIndex, r[%d]) {\n", nx.A)
-		e.w("\t\t_recv := r[%d]\n\t\tvar _ea [2]oruby.Value\n", nx.A)
-		e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n\t\t\t_ea[1] = oruby.AotFixnum(int64(_i))\n")
-		e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n", child)
-		finish("nil")
+		e.w("\t\t_recv := r[%d]\n", nx.A)
+		if canInline {
+			hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+				e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+				e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+				e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n\t\t\t_y1 := oruby.AotFixnum(int64(_i))\n")
+				e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0", "_y1"}, "", loopLabel, nl, hb)
+				e.w("\t\t}\n")
+			})
+			if hasBreak {
+				e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+			}
+			finishFallback("nil", true)
+		} else {
+			e.w("\t\tvar _ea [2]oruby.Value\n\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n\t\t\t_ea[1] = oruby.AotFixnum(int64(_i))\n")
+			e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n", child)
+			finishFallback("nil", false)
+		}
 		return true
 
 	case argc == 0 && symName == "sum":
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 1)
+		var tb *typedBlockLoop
+		if canInline {
+			tb = e.analyzeTypedBlockLoop(childUnit, 1, bkInt64)
+		}
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		e.w("\tif mrb.AotCoreOK(oruby.AotCoreArySum, r[%d]) {\n", nx.A)
-		e.w("\t\t_recv := r[%d]\n\t\t_acc := oruby.AotFixnum(0)\n\t\tvar _ea [1]oruby.Value\n\t\tvar _bv oruby.Value\n", nx.A)
-		e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
-		e.w("\t\t\tif _bv, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
-		e.w("\t\t\tif _z, _ok := aotAddII(mrb, _acc, _bv); _ok { _acc = _z } else { _acc = fastAdd(mrb, _acc, _bv); if mrb.HasExc() { err = mrb.AotErr(); break } }\n\t\t}\n")
-		e.w("\t\tif err == nil { r[%d] = _acc }\n", nx.A)
-		finish("nil")
+		e.w("\t\t_recv := r[%d]\n\t\t_acc := oruby.AotFixnum(0)\n\t\tvar _bv oruby.Value\n", nx.A)
+		if canInline {
+			if tb != nil {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := 0\n\t\t_typedDone := false\n")
+				emitTypedSetup(tb, site, []string{"_src, _sok := mrb.AotArySlice(_recv)"}, []string{"_sok"})
+				e.w("\t\t\tvar _accI int64\n\t\t\tvar _bvI int64\n")
+				e.w("\t\t\tfor _i := 0; _i < len(_src); _i++ {\n")
+				e.w("\t\t\t\tif mrb.AotHookPending() || _src[_i].Type() != oruby.MrbTTInteger { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				e.emitTypedBlockBody(tb, site, []string{"aotInt(_src[_i])"}, "_bvI", deoptLbl)
+				e.w("\t\t\t\tif _zI, _zok := aotIntAdd64(_accI, _bvI); _zok { _accI = _zI } else {\n")
+				e.w("\t\t\t\t\t_acc = fastAdd(mrb, oruby.AotFixnum(_accI), oruby.AotFixnum(_bvI))\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t\t\tif mrb.HasExc() { err = mrb.AotErr(); _typedDone = true } else { _ti = _i + 1 }\n")
+				e.w("\t\t\t\t\tgoto %s_skip_snap\n\t\t\t\t}\n", deoptLbl)
+				e.w("\t\t\t}\n")
+				e.w("\t\t\t_acc = oruby.AotFixnum(_accI)\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n\t\t\t\t_acc = oruby.AotFixnum(_accI)\n", deoptLbl)
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t%s_skip_snap:\n\t\t}\n", deoptLbl)
+				e.w("\t\tif !_typedDone {\n")
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _ti; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "_bv", loopLabel, nl, hb)
+					e.w("\t\t\tif _z, _ok := aotAddII(mrb, _acc, _bv); _ok { _acc = _z } else { _acc = fastAdd(mrb, _acc, _bv); if mrb.HasExc() { err = mrb.AotErr(); break } }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil { if _broke { r[%d] = _breakVal } else { r[%d] = _acc } }\n", nx.A, nx.A)
+				} else {
+					e.w("\t\tif err == nil { r[%d] = _acc }\n", nx.A)
+				}
+				e.w("\t\t} else if err == nil {\n\t\t\tr[%d] = _acc\n\t\t}\n", nx.A)
+			} else {
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					e.w("\t\t\t_y0 := mrb.AotAryRef(_recv, _i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "_bv", loopLabel, nl, hb)
+					e.w("\t\t\tif _z, _ok := aotAddII(mrb, _acc, _bv); _ok { _acc = _z } else { _acc = fastAdd(mrb, _acc, _bv); if mrb.HasExc() { err = mrb.AotErr(); break } }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil { if _broke { r[%d] = _breakVal } else { r[%d] = _acc } }\n", nx.A, nx.A)
+				} else {
+					e.w("\t\tif err == nil { r[%d] = _acc }\n", nx.A)
+				}
+			}
+			finishFallback("nil", true)
+		} else {
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = mrb.AotAryRef(_recv, _i)\n")
+			e.w("\t\t\tif _bv, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+			e.w("\t\t\tif _z, _ok := aotAddII(mrb, _acc, _bv); _ok { _acc = _z } else { _acc = fastAdd(mrb, _acc, _bv); if mrb.HasExc() { err = mrb.AotErr(); break } }\n\t\t}\n")
+			e.w("\t\tif err == nil { r[%d] = _acc }\n", nx.A)
+			finishFallback("nil", false)
+		}
 		return true
 
 	case (argc == 0 || argc == 1) && (symName == "inject" || symName == "reduce"):
@@ -2419,58 +2961,285 @@ func (e *unitEmitter) emitBlockLoopPeephole(idx int, ins, nx Instruction, child 
 		if symName == "reduce" {
 			slot = "oruby.AotCoreAryReduce"
 		}
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
-		e.w("\tif mrb.AotCoreOK(%s, r[%d]) {\n", slot, nx.A)
-		e.w("\t\t_recv := r[%d]\n\t\tvar _ea [2]oruby.Value\n", nx.A)
-		if argc == 0 {
-			e.w("\t\t_acc := mrb.NilValue()\n\t\tif mrb.AotAryLen(_recv) > 0 {\n\t\t\t_acc = mrb.AotAryRef(_recv, 0)\n")
-			e.w("\t\t\tfor _i := 1; _i < mrb.AotAryLen(_recv); _i++ {\n")
-		} else {
-			e.w("\t\t_acc := r[%d]\n\t\t{\n\t\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n", nx.A+1)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 2)
+		var tb *typedBlockLoop
+		if canInline {
+			tb = e.analyzeTypedBlockLoop(childUnit, 2, bkInt64)
 		}
-		e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t\t_ea[0] = _acc\n\t\t\t\t_ea[1] = mrb.AotAryRef(_recv, _i)\n")
-		e.w("\t\t\t\tif _acc, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n", child)
-		e.w("\t\tif err == nil { r[%d] = _acc }\n", nx.A)
-		if argc == 0 {
-			finish("nil")
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
+		e.w("\tif mrb.AotCoreOK(%s, r[%d]) {\n", slot, nx.A)
+		e.w("\t\t_recv := r[%d]\n", nx.A)
+		if canInline {
+			emitTypedInject := func(startIdx int) {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := %d\n\t\t_typedDone := false\n", startIdx)
+				emitTypedSetup(tb, site, []string{"_src, _sok := mrb.AotArySlice(_recv)"}, []string{"_sok", "_acc.Type() == oruby.MrbTTInteger"})
+				e.w("\t\t\t_accI := aotInt(_acc)\n")
+				e.w("\t\t\tfor _i := %d; _i < len(_src); _i++ {\n", startIdx)
+				e.w("\t\t\t\tif mrb.AotHookPending() || _src[_i].Type() != oruby.MrbTTInteger { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				e.emitTypedBlockBody(tb, site, []string{"_accI", "aotInt(_src[_i])"}, "_accI", deoptLbl)
+				e.w("\t\t\t}\n")
+				e.w("\t\t\t_acc = oruby.AotFixnum(_accI)\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n\t\t\t\t_acc = oruby.AotFixnum(_accI)\n", deoptLbl)
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t}\n")
+				e.w("\t\tif !_typedDone {\n")
+			}
+			if argc == 0 {
+				e.w("\t\t_acc := mrb.NilValue()\n\t\tif mrb.AotAryLen(_recv) > 0 {\n\t\t\t_acc = mrb.AotAryRef(_recv, 0)\n")
+				if tb != nil {
+					emitTypedInject(1)
+					hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+						e.w("\t\t\tfor _i := _ti; _i < mrb.AotAryLen(_recv); _i++ {\n")
+						e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+						e.w("\t\t\t\t_y0, _y1 := _acc, mrb.AotAryRef(_recv, _i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0", "_y1"}, "_acc", loopLabel, nl, hb)
+						e.w("\t\t\t}\n")
+					})
+					if hasBreak {
+						e.w("\t\t\tif err == nil && _broke { _acc = _breakVal }\n")
+					}
+					e.w("\t\t}\n")
+				} else {
+					hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+						e.w("\t\t\tfor _i := 1; _i < mrb.AotAryLen(_recv); _i++ {\n")
+						e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+						e.w("\t\t\t\t_y0, _y1 := _acc, mrb.AotAryRef(_recv, _i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0", "_y1"}, "_acc", loopLabel, nl, hb)
+						e.w("\t\t\t}\n")
+					})
+					if hasBreak {
+						e.w("\t\t\tif err == nil && _broke { _acc = _breakVal }\n")
+					}
+				}
+				e.w("\t\t}\n")
+			} else {
+				e.w("\t\t_acc := r[%d]\n", nx.A+1)
+				if tb != nil {
+					emitTypedInject(0)
+					hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+						e.w("\t\tfor _i := _ti; _i < mrb.AotAryLen(_recv); _i++ {\n")
+						e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+						e.w("\t\t\t_y0, _y1 := _acc, mrb.AotAryRef(_recv, _i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0", "_y1"}, "_acc", loopLabel, nl, hb)
+						e.w("\t\t}\n")
+					})
+					if hasBreak {
+						e.w("\t\tif err == nil && _broke { _acc = _breakVal }\n")
+					}
+					e.w("\t\t}\n")
+				} else {
+					hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+						e.w("\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n")
+						e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+						e.w("\t\t\t_y0, _y1 := _acc, mrb.AotAryRef(_recv, _i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0", "_y1"}, "_acc", loopLabel, nl, hb)
+						e.w("\t\t}\n")
+					})
+					if hasBreak {
+						e.w("\t\tif err == nil && _broke { _acc = _breakVal }\n")
+					}
+				}
+			}
+			e.w("\t\tif err == nil { r[%d] = _acc }\n", nx.A)
+			if argc == 0 {
+				finishFallback("nil", true)
+			} else {
+				finishFallback(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1), true)
+			}
 		} else {
-			finish(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1))
+			e.w("\t\tvar _ea [2]oruby.Value\n")
+			if argc == 0 {
+				e.w("\t\t_acc := mrb.NilValue()\n\t\tif mrb.AotAryLen(_recv) > 0 {\n\t\t\t_acc = mrb.AotAryRef(_recv, 0)\n")
+				e.w("\t\t\tfor _i := 1; _i < mrb.AotAryLen(_recv); _i++ {\n")
+			} else {
+				e.w("\t\t_acc := r[%d]\n\t\t{\n\t\t\tfor _i := 0; _i < mrb.AotAryLen(_recv); _i++ {\n", nx.A+1)
+			}
+			e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t\t_ea[0] = _acc\n\t\t\t\t_ea[1] = mrb.AotAryRef(_recv, _i)\n")
+			e.w("\t\t\t\tif _acc, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n", child)
+			e.w("\t\tif err == nil { r[%d] = _acc }\n", nx.A)
+			if argc == 0 {
+				finishFallback("nil", false)
+			} else {
+				finishFallback(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1), false)
+			}
 		}
 		return true
 
 	case argc == 0 && symName == "times":
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 1)
+		var tb *typedBlockLoop
+		if canInline {
+			tb = e.analyzeTypedBlockLoop(childUnit, 1, bkUnknown)
+		}
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		e.w("\tif r[%d].Type() == oruby.MrbTTInteger && mrb.AotCoreOK(oruby.AotCoreIntTimes, r[%d]) {\n", nx.A, nx.A)
-		e.w("\t\t_n := aotInt(r[%d])\n\t\tvar _ea [1]oruby.Value\n", nx.A)
-		e.w("\t\tfor _i := int64(0); _i < _n; _i++ {\n")
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
-		e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n", child)
-		finish("nil")
+		e.w("\t\t_n := aotInt(r[%d])\n", nx.A)
+		if canInline {
+			if tb != nil {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := int64(0)\n\t\t_typedDone := false\n")
+				emitTypedSetup(tb, site, nil, nil)
+				e.w("\t\t\tfor _i := int64(0); _i < _n; _i++ {\n")
+				e.w("\t\t\t\tif mrb.AotHookPending() { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				if tb.m1 > 0 {
+					e.emitTypedBlockBody(tb, site, []string{"_i"}, "", deoptLbl)
+				} else {
+					e.emitTypedBlockBody(tb, site, nil, "", deoptLbl)
+				}
+				e.w("\t\t\t}\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n", deoptLbl)
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t}\n")
+				e.w("\t\tif !_typedDone {\n")
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _ti; _i < _n; _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					if m1 > 0 {
+						e.w("\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					} else {
+						e.emitInlinedBlock(site, childUnit, 0, hasEnter, nil, "", loopLabel, nl, hb)
+					}
+					e.w("\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+				e.w("\t\t}\n")
+			} else {
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := int64(0); _i < _n; _i++ {\n")
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					if m1 > 0 {
+						e.w("\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					} else {
+						e.emitInlinedBlock(site, childUnit, 0, hasEnter, nil, "", loopLabel, nl, hb)
+					}
+					e.w("\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+			}
+			finishFallback("nil", true)
+		} else {
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := int64(0); _i < _n; _i++ {\n")
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
+			e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n", child)
+			finishFallback("nil", false)
+		}
 		return true
 
 	case argc == 1 && (symName == "upto" || symName == "downto"):
 		slot := "oruby.AotCoreIntUpto"
-		cmp, inc, bound := "<=", "_i++", "aotInt(r[%d])"
-		_ = bound
+		cmp, inc := "<=", "_i++"
 		if symName == "downto" {
 			slot = "oruby.AotCoreIntDownto"
 			cmp, inc = ">=", "_i--"
 		}
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 1)
+		var tb *typedBlockLoop
+		if canInline {
+			tb = e.analyzeTypedBlockLoop(childUnit, 1, bkUnknown)
+		}
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		e.w("\tif r[%d].Type() == oruby.MrbTTInteger && r[%d].Type() == oruby.MrbTTInteger && mrb.AotCoreOK(%s, r[%d]) {\n", nx.A, nx.A+1, slot, nx.A)
-		e.w("\t\t_beg, _lim := aotInt(r[%d]), aotInt(r[%d])\n\t\tvar _ea [1]oruby.Value\n", nx.A, nx.A+1)
-		e.w("\t\tfor _i := _beg; _i %s _lim; %s {\n", cmp, inc)
-		e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
-		e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
-		e.w("\t\t\tif _i == _lim { break }\n\t\t}\n")
-		finish(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1))
+		e.w("\t\t_beg, _lim := aotInt(r[%d]), aotInt(r[%d])\n", nx.A, nx.A+1)
+		if canInline {
+			if tb != nil {
+				site := e.inlineSiteSeq
+				e.inlineSiteSeq++
+				deoptLbl := fmt.Sprintf("TB_deopt_%d", site)
+				e.w("\t\t_ti := _beg\n\t\t_typedDone := false\n")
+				emitTypedSetup(tb, site, nil, nil)
+				e.w("\t\t\tfor _i := _beg; _i %s _lim; %s {\n", cmp, inc)
+				e.w("\t\t\t\tif mrb.AotHookPending() { _ti = _i; goto %s }\n", deoptLbl)
+				for _, u := range tb.writtenUpvars {
+					e.w("\t\t\t\t_snap%d = _uv%d\n", u, u)
+				}
+				if tb.m1 > 0 {
+					e.emitTypedBlockBody(tb, site, []string{"_i"}, "", deoptLbl)
+				} else {
+					e.emitTypedBlockBody(tb, site, nil, "", deoptLbl)
+				}
+				e.w("\t\t\t\tif _i == _lim { break }\n\t\t\t}\n")
+				emitTypedFlush(tb, "_uv")
+				e.w("\t\t\t_typedDone = true\n")
+				e.w("\t\t%s:\n\t\t\tif !_typedDone {\n", deoptLbl)
+				emitTypedFlush(tb, "_snap")
+				e.w("\t\t\t}\n\t\t}\n")
+				e.w("\t\tif !_typedDone {\n")
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _ti; _i %s _lim; %s {\n", cmp, inc)
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					if m1 > 0 {
+						e.w("\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					} else {
+						e.emitInlinedBlock(site, childUnit, 0, hasEnter, nil, "", loopLabel, nl, hb)
+					}
+					e.w("\t\t\tif _i == _lim { break }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+				e.w("\t\t}\n")
+			} else {
+				hasBreak := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+					e.w("\t\tfor _i := _beg; _i %s _lim; %s {\n", cmp, inc)
+					e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+					if m1 > 0 {
+						e.w("\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+						e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+					} else {
+						e.emitInlinedBlock(site, childUnit, 0, hasEnter, nil, "", loopLabel, nl, hb)
+					}
+					e.w("\t\t\tif _i == _lim { break }\n\t\t}\n")
+				})
+				if hasBreak {
+					e.w("\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+				}
+			}
+			finishFallback(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1), true)
+		} else {
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tfor _i := _beg; _i %s _lim; %s {\n", cmp, inc)
+			e.w("\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
+			e.w("\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\tbreak\n\t\t\t}\n", child)
+			e.w("\t\t\tif _i == _lim { break }\n\t\t}\n")
+			finishFallback(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1), false)
+		}
 		return true
 
 	case (argc == 1 || argc == 2) && symName == "step":
-		e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		m1, hasEnter, canInline := e.canInlineLoopBlock(childUnit, 1)
+		if !canInline {
+			e.w("\tenv.AotBlockCallBegin(%d)\n", ins.B)
+		}
 		if argc == 1 {
 			e.w("\tif r[%d].Type() == oruby.MrbTTInteger && r[%d].Type() == oruby.MrbTTInteger && mrb.AotCoreOK(oruby.AotCoreIntStep, r[%d]) {\n", nx.A, nx.A+1, nx.A)
 			e.w("\t\t_beg, _lim, _step := aotInt(r[%d]), aotInt(r[%d]), int64(1)\n", nx.A, nx.A+1)
@@ -2478,20 +3247,59 @@ func (e *unitEmitter) emitBlockLoopPeephole(idx int, ins, nx Instruction, child 
 			e.w("\tif r[%d].Type() == oruby.MrbTTInteger && r[%d].Type() == oruby.MrbTTInteger && r[%d].Type() == oruby.MrbTTInteger && aotInt(r[%d]) != 0 && mrb.AotCoreOK(oruby.AotCoreIntStep, r[%d]) {\n", nx.A, nx.A+1, nx.A+2, nx.A+2, nx.A)
 			e.w("\t\t_beg, _lim, _step := aotInt(r[%d]), aotInt(r[%d]), aotInt(r[%d])\n", nx.A, nx.A+1, nx.A+2)
 		}
-		e.w("\t\tvar _ea [1]oruby.Value\n\t\tif _step > 0 {\n\t\t\tfor _i := _beg; _i <= _lim; {\n")
-		e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
-		e.w("\t\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\t\tbreak\n\t\t\t\t}\n", child)
-		e.w("\t\t\t\tif _i > (1<<63-1)-_step { break }\n\t\t\t\t_i += _step\n\t\t\t}\n")
-		e.w("\t\t} else {\n\t\t\tfor _i := _beg; _i >= _lim; {\n")
-		e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
-		e.w("\t\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
-		e.w("\t\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\t\tbreak\n\t\t\t\t}\n", child)
-		e.w("\t\t\t\tif _i < (-1<<63)-_step { break }\n\t\t\t\t_i += _step\n\t\t\t}\n\t\t}\n")
-		if argc == 1 {
-			finish(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1))
+		if canInline {
+			e.w("\t\tif _step > 0 {\n")
+			hasBreakPos := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+				e.w("\t\t\tfor _i := _beg; _i <= _lim; {\n")
+				e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+				if m1 > 0 {
+					e.w("\t\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+				} else {
+					e.emitInlinedBlock(site, childUnit, 0, hasEnter, nil, "", loopLabel, nl, hb)
+				}
+				e.w("\t\t\t\tif _i > (1<<63-1)-_step { break }\n\t\t\t\t_i += _step\n\t\t\t}\n")
+			})
+			if hasBreakPos {
+				e.w("\t\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+			}
+			e.w("\t\t} else {\n")
+			hasBreakNeg := wrapInlinedLoop(func(site int, loopLabel string, nl, hb *bool) {
+				e.w("\t\t\tfor _i := _beg; _i >= _lim; {\n")
+				e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+				if m1 > 0 {
+					e.w("\t\t\t\t_y0 := oruby.AotFixnum(_i)\n")
+					e.emitInlinedBlock(site, childUnit, m1, hasEnter, []string{"_y0"}, "", loopLabel, nl, hb)
+				} else {
+					e.emitInlinedBlock(site, childUnit, 0, hasEnter, nil, "", loopLabel, nl, hb)
+				}
+				e.w("\t\t\t\tif _i < (-1<<63)-_step { break }\n\t\t\t\t_i += _step\n\t\t\t}\n")
+			})
+			if hasBreakNeg {
+				e.w("\t\t\tif err == nil && _broke { r[%d] = _breakVal }\n", nx.A)
+			}
+			e.w("\t\t}\n")
+			if argc == 1 {
+				finishFallback(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1), true)
+			} else {
+				finishFallback(fmt.Sprintf("[]oruby.Value{r[%d], r[%d]}", nx.A+1, nx.A+2), true)
+			}
 		} else {
-			finish(fmt.Sprintf("[]oruby.Value{r[%d], r[%d]}", nx.A+1, nx.A+2))
+			e.w("\t\tvar _ea [1]oruby.Value\n\t\tif _step > 0 {\n\t\t\tfor _i := _beg; _i <= _lim; {\n")
+			e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
+			e.w("\t\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\t\tbreak\n\t\t\t\t}\n", child)
+			e.w("\t\t\t\tif _i > (1<<63-1)-_step { break }\n\t\t\t\t_i += _step\n\t\t\t}\n")
+			e.w("\t\t} else {\n\t\t\tfor _i := _beg; _i >= _lim; {\n")
+			e.w("\t\t\t\tif mrb.AotNeedBackEdge(_ai) { if mrb.AotBackEdge(_ai, env) { err = mrb.AotErr(); break } }\n")
+			e.w("\t\t\t\t_ea[0] = oruby.AotFixnum(_i)\n")
+			e.w("\t\t\t\tif _, err = %s(mrb, self, _ea[:], mrb.NilValue(), cx, env); err != nil {\n\t\t\t\t\tbreak\n\t\t\t\t}\n", child)
+			e.w("\t\t\t\tif _i < (-1<<63)-_step { break }\n\t\t\t\t_i += _step\n\t\t\t}\n\t\t}\n")
+			if argc == 1 {
+				finishFallback(fmt.Sprintf("[]oruby.Value{r[%d]}", nx.A+1), false)
+			} else {
+				finishFallback(fmt.Sprintf("[]oruby.Value{r[%d], r[%d]}", nx.A+1, nx.A+2), false)
+			}
 		}
 		return true
 	}
@@ -2633,7 +3441,11 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 			e.ret(idx, e.reg(a))
 		}
 	case OpBREAK:
-		if e.inf.kind == kindBlock && e.inf.parent != nil {
+		if e.inline {
+			*e.inlineNeedLoopLabel = true
+			*e.inlineHasBreak = true
+			e.w("\t_breakVal = r[%d]\n\t_broke = true\n\tbreak %s\n", a, e.inlineLoopLabel)
+		} else if e.inf.kind == kindBlock && e.inf.parent != nil {
 			e.w("\terr = mrb.AotBreak(r[%d], up, %d)\n\tgoto %s\n", a, e.inf.childIdx, e.exc(idx))
 		} else {
 			e.ret(idx, e.reg(a))
@@ -2789,9 +3601,13 @@ func (e *unitEmitter) emitIns(idx int, ins Instruction) error {
 		}
 
 	case OpGETUPVAR:
-		e.w("\tr[%d] = %s.R[%d]\n\tmrb.AotProtect(r[%d])\n", a, e.upEnv(int(ins.C)), ins.B, a)
+		if e.inline && ins.C == 0 && e.inlineReadOnlyUp0[uint32(ins.B)] {
+			e.w("\tr[%d] = %s.R[%d]\n", a, e.upEnv(int(ins.C)), ins.B)
+		} else {
+			e.w("\tr[%d] = %s.R[%d]\n\tmrb.AotProtect(r[%d])\n", a, e.upEnv(int(ins.C)), ins.B, a)
+		}
 	case OpSETUPVAR:
-		e.w("\t%s.R[%d] = r[%d]\n\tmrb.AotWB(%s)\n", e.upEnv(int(ins.C)), ins.B, a, e.upEnv(int(ins.C)))
+		e.w("\t%s.R[%d] = r[%d]\n\tmrb.AotWBVal(%s, r[%d])\n", e.upEnv(int(ins.C)), ins.B, a, e.upEnv(int(ins.C)), a)
 
 	case OpARRAY:
 		var list []string
@@ -2950,6 +3766,9 @@ func (e *unitEmitter) emitPendingDispatch(idx int) {
 }
 
 func (e *unitEmitter) emitEnter(idx int, ins Instruction) {
+	if e.inline {
+		return
+	}
 	a := ins.A
 	m1 := aspecReq(a)
 	if e.fixed >= 0 {
@@ -3119,7 +3938,19 @@ func (e *unitEmitter) emitSend(idx int, ins Instruction) {
 	}
 
 	generic := func(indent string) {
+		icOwner := e.icOwner
+		if icOwner == nil {
+			icOwner = e
+		}
 		switch {
+		case !fcall && splat == "" && kw == "" && !hasBlock && n == 0:
+			icIdx := icOwner.icCount
+			icOwner.icCount++
+			e.w("%sr[%d], err = mrb.AotCall0IC(self, %s, %s, false, &_ic%d)\n", indent, a, recv, symVar, icIdx)
+		case !fcall && splat == "" && kw == "" && !hasBlock && n == 1:
+			icIdx := icOwner.icCount
+			icOwner.icCount++
+			e.w("%sr[%d], err = mrb.AotCall1IC(self, %s, %s, %s, false, &_ic%d)\n", indent, a, recv, symVar, list[0], icIdx)
 		case splat == "" && kw == "" && !hasBlock && n == 0:
 			e.w("%sr[%d], err = mrb.AotCall0(self, %s, %s, %v)\n", indent, a, recv, symVar, fcall)
 		case splat == "" && kw == "" && !hasBlock && n == 1:

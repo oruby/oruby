@@ -172,33 +172,34 @@ var (
 )
 
 type aotState struct {
-	breakClass      RClass
-	returnClass     RClass
-	symVal          MrbSym
-	symTag          MrbSym
-	symIdx          MrbSym
-	symDispatch     MrbSym
-	symSend         MrbSym // send, __send__, public_send: see aotSendFamily
-	symSend2        MrbSym
-	symPubSend      MrbSym
-	sigVals         map[aotSigKey]Value
-	symCall         MrbSym
-	topCx           *AotCtx
-	blocks          map[int64]*aotBlockData
-	nextBlock       int64
-	trampIdx        int
-	methods         []*aotMethod
-	depth           int
-	intDisabled     int
-	envCallbackPtr  unsafe.Pointer
-	attrReaderPtr   unsafe.Pointer
-	attrWriterPtr   unsafe.Pointer
-	structRefPtr    unsafe.Pointer
-	dataRefPtr      unsafe.Pointer
-	argBuf          [aotMaxDirectDepth + 2][2]Value
-	intrinsics      [aotIntrinsicCount]aotIntrinsicSlot
-	coreIntrinsics  [aotCoreCount]aotIntrinsicSlot
-	compiledMethods []C.mrb_method_t
+	breakClass        RClass
+	returnClass       RClass
+	symVal            MrbSym
+	symTag            MrbSym
+	symIdx            MrbSym
+	symDispatch       MrbSym
+	symSend           MrbSym // send, __send__, public_send: see aotSendFamily
+	symSend2          MrbSym
+	symPubSend        MrbSym
+	sigVals           map[aotSigKey]Value
+	symCall           MrbSym
+	topCx             *AotCtx
+	blocks            map[int64]*aotBlockData
+	nextBlock         int64
+	trampIdx          int
+	methods           []*aotMethod
+	depth             int
+	intDisabled       int
+	envCallbackPtr    unsafe.Pointer
+	attrReaderPtr     unsafe.Pointer
+	attrWriterPtr     unsafe.Pointer
+	structRefPtr      unsafe.Pointer
+	dataRefPtr        unsafe.Pointer
+	dataDirectRefPtrs [4]unsafe.Pointer
+	argBuf            [aotMaxDirectDepth + 2][2]Value
+	intrinsics        [aotIntrinsicCount]aotIntrinsicSlot
+	coreIntrinsics    [aotCoreCount]aotIntrinsicSlot
+	compiledMethods   []C.mrb_method_t
 }
 
 type aotMethod struct {
@@ -242,7 +243,7 @@ func (mrb *MrbState) AotInit() {
 	st.envCallbackPtr = C._aot_env_callback_ptr()
 	st.attrReaderPtr = C._aot_attr_reader_ptr()
 	st.attrWriterPtr = C._aot_attr_writer_ptr()
-	C._aot_struct_data_ref_ptrs(mrb.p, &st.structRefPtr, &st.dataRefPtr)
+	C._aot_struct_data_ref_ptrs(mrb.p, &st.structRefPtr, &st.dataRefPtr, &st.dataDirectRefPtrs[0])
 	mrb.aot = st
 	st.trampIdx = mrb.registerMrbFuncT(mrb.aotBlockTrampoline)
 	mrb.aotInitCoreIntrinsics(st)
@@ -1069,10 +1070,31 @@ func (mrb *MrbState) AotBackEdge(ai int32, env *AotEnv) bool {
 	return false
 }
 
-// AotWB runs GC write barrier for env register file
+//go:noinline
+func (mrb *MrbState) aotWBSlow(ary Value) {
+	C._aot_write_barrier(mrb.p, ary.v)
+}
+
+// AotWB runs GC write barrier for env register file when env.Ary is black.
 func (mrb *MrbState) AotWB(env *AotEnv) {
-	if env != nil {
-		C._aot_write_barrier(mrb.p, env.Ary.v)
+	if env == nil || env.Ary.Pointer() <= 65536 {
+		return
+	}
+	up := aotObjPtr(env.Ary)
+	if ((*(*uint32)(unsafe.Add(up, 8))) & (7 << 8)) == (4 << 8) { // GC_BLACK
+		mrb.aotWBSlow(env.Ary)
+	}
+}
+
+// AotWBVal runs GC write barrier for env register file only when v is a heap
+// object and env.Ary is black. Immediate values skip the check entirely.
+func (mrb *MrbState) AotWBVal(env *AotEnv, v Value) {
+	if v.v.tt <= C.MRB_TT_CPTR || env == nil || env.Ary.Pointer() <= 65536 {
+		return
+	}
+	up := aotObjPtr(env.Ary)
+	if ((*(*uint32)(unsafe.Add(up, 8))) & (7 << 8)) == (4 << 8) { // GC_BLACK
+		mrb.aotWBSlow(env.Ary)
 	}
 }
 
@@ -1224,7 +1246,7 @@ func (mrb *MrbState) aotDirect(recv Value, mid MrbSym, args []Value, blk Value, 
 	if blk.v.tt != C.MRB_TT_FALSE && blk.v.tt != C.MRB_TT_PROC {
 		return nilValue, nil, false // needs to_proc conversion
 	}
-	idx, owner, fastVal, hit := mrb.aotMethodIdxFromCache(recv, mid, fcall)
+	idx, owner, fastVal, _, _, hit := mrb.aotMethodIdxFromCache(recv, mid, fcall)
 	if !hit {
 		idx, owner = mrb.aotLookupCompiledSlow(recv, mid, fcall)
 	}
@@ -1757,11 +1779,10 @@ func (v Value) AotIsNil() bool {
 	return v.v.tt == C.MRB_TT_FALSE && *(*int64)(unsafe.Pointer(&v.v)) == 0
 }
 
-// AotProtect protects heap value in GC arena
+// AotProtect protects heap value in GC arena in pure Go (zero cgo unless
+// the arena needs to grow).
 func (mrb *MrbState) AotProtect(v Value) {
-	if v.v.tt > C.MRB_TT_CPTR {
-		C.mrb_gc_protect(mrb.p, v.v)
-	}
+	mrb.aotProtect(v)
 }
 
 // AotIsPlainArray returns true if v is an instance of Array (not subclass)

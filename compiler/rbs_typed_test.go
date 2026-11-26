@@ -49,6 +49,10 @@ class Calc
     x + y
   end
 end
+#: (Integer, Integer) -> Integer
+def scale_arr!(a, k)
+  a[0]
+end
 `
 	ienv := compiler.ExtractInlineRBS(inlineSrc, "app.rb")
 	if sig := ienv.LookupMethod("", "compound", false); sig == nil || len(sig.Params) != 2 || sig.Params[0] != compiler.TypeInt64 || sig.Params[1] != compiler.TypeFloat64 || sig.Return != compiler.TypeFloat64 {
@@ -56,6 +60,9 @@ end
 	}
 	if sig := ienv.LookupMethod("Calc", "add", true); sig == nil || len(sig.Params) != 2 || sig.Params[0] != compiler.TypeFloat64 || sig.Return != compiler.TypeFloat64 {
 		t.Fatalf("inline Calc.add sig = %+v", sig)
+	}
+	if sig := ienv.LookupMethod("", "scale_arr!", false); sig == nil || len(sig.Params) != 2 || sig.Params[0] != compiler.TypeInt64 || sig.Params[1] != compiler.TypeInt64 || sig.Return != compiler.TypeInt64 {
+		t.Fatalf("inline scale_arr! sig = %+v", sig)
 	}
 }
 
@@ -116,6 +123,11 @@ class Point
   def dist: () -> Float
   def sum_dist: (Integer n) -> Float
   def scale!: (Float f) -> Float
+end
+
+class Counter
+  @n: Integer
+  def bump_n: (Integer times) -> Integer
 end
 `
 	rubySrc := `
@@ -223,6 +235,21 @@ class Point
     @x = @x * f
     @y = @y * f
     @x + @y
+  end
+end
+
+class Counter
+  attr_reader :n
+  def initialize(n)
+    @n = n
+  end
+  def bump_n(times)
+    i = 0
+    while i < times
+      @n += 1
+      i += 1
+    end
+    @n
   end
 end
 
@@ -434,6 +461,12 @@ raise "monkey-patched helper_sq" unless dist_sq(3.0, 4.0) == 70.0
 Calc.define_singleton_method(:mix) { |n, b| b + n.to_f * 100.0 }
 raise "monkey-patched Calc.mix" unless (call_calc_mix(4, 1.4) - (401.4 + 4.0)).abs < 1e-9
 
+# 12. Verify transactional @ivar promotion in Counter#bump_n (no double-mutation on mid-loop overflow)
+c = Counter.new(0)
+raise "bump_n normal" unless c.bump_n(10) == 10 && c.n == 10
+c2 = Counter.new(9223372036854775805)
+raise "bump_n overflow" unless c2.bump_n(5) == 9223372036854775810 && c2.n == 9223372036854775810
+
 puts "ALL_TYPED_AOT_OK"
 `
 
@@ -491,6 +524,8 @@ puts "ALL_TYPED_AOT_OK"
 		"AotCoreOK(oruby.AotCoreArySum",
 		"AotCoreOK(oruby.AotCoreAryInject",
 		"AotShapedBase(",
+		"AotShapedBaseMutable(",
+		"AotShapedWriteUnchecked(",
 		"AotArySlice(",
 		"AotArySliceMutable(",
 		"AotAryNewCapa(",

@@ -695,3 +695,210 @@ many lookups: 332833500`
 		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+func TestAOTInlinedBlockLoopsAndIC(t *testing.T) {
+	src := `
+def ret_in_block(arr)
+  arr.each { |x| return x * 10 if x == 3 }
+  :not_found
+end
+
+def ret_in_times(n)
+  n.times { |i| return i + 100 if i == 2 }
+  :none
+end
+
+s_next = 0
+1.upto(6) { |i| next if i.even?; s_next += i }
+puts "next: #{s_next}"
+
+b1 = [1, 2, 3, 4].each { |x| break x * 20 if x == 3 }
+b2 = [1, 2, 3, 4].map { |x| break :stopped if x == 2; x + 1 }
+b3 = [1, 2, 3, 4].select { |x| break :sel_stop if x == 3; x.odd? }
+b4 = 5.times { |i| break i + 50 if i == 3 }
+b5 = 10.downto(1) { |i| break i * 2 if i == 7 }
+b6 = 1.step(10, 2) { |i| break i + 1 if i == 5 }
+b7 = (1..5).each { |i| break i * 3 if i == 4 }
+puts "breaks: #{[b1, b2, b3, b4, b5, b6, b7].inspect}"
+
+puts "returns: #{[ret_in_block([1, 2, 3, 4]), ret_in_block([1, 2]), ret_in_times(5), ret_in_times(1)].inspect}"
+
+exc_msg = begin
+  [1, 2, 3].map { |x| raise "boom_#{x}" if x == 2; x }
+rescue => e
+  e.message
+end
+puts "exc: #{exc_msg}"
+
+mut = [1, 2, 3]
+seen = []
+mut.each { |x| seen << x; mut << x + 10 if x < 3 }
+puts "mut_each: #{seen.inspect}"
+
+class Integer
+  alias_method :orig_times, :times
+  def times(&blk); :patched_times; end
+end
+puts "patched_times: #{3.times { }.inspect}"
+class Integer
+  alias_method :times, :orig_times
+end
+t_restored = 0
+3.times { |i| t_restored += i }
+puts "restored_times: #{t_restored}"
+
+class Array
+  alias_method :orig_map, :map
+  def map(&blk); [:patched_map]; end
+end
+puts "patched_map: #{[1, 2].map { |x| x }.inspect}"
+class Array
+  alias_method :map, :orig_map
+end
+puts "restored_map: #{[1, 2].map { |x| x * 2 }.inspect}"
+
+class Box
+  attr_accessor :v
+  def initialize(v); @v = v; end
+  def add_extra; @extra = 99; end
+end
+SP = Struct.new(:a, :b)
+DP = Data.define(:a, :b)
+
+box = Box.new(10)
+sp = SP.new(1, 2)
+dp = DP.new(3, 4)
+sum_ic = 0
+5.times do |i|
+  box.v = i
+  box.add_extra if i == 2
+  sum_ic += box.v + sp.a + dp.b
+end
+puts "ic_loop: #{sum_ic}"
+
+fbox = Box.new(1).freeze
+frozen_err = begin
+  fbox.v = 2
+  :ok
+rescue => e
+  e.class
+end
+puts "frozen_writer: #{frozen_err}"
+
+Box.define_method(:v) { 1000 }
+SP.define_method(:a) { 2000 }
+DP.define_method(:b) { 3000 }
+puts "ic_patched: #{box.v + sp.a + dp.b}"
+
+module BoxRef
+  refine Box do
+    def v; 777; end
+  end
+end
+using BoxRef
+puts "ic_refined: #{box.v}"
+`
+	want := strings.Join([]string{
+		`next: 9`,
+		`breaks: [60, :stopped, :sel_stop, 53, 14, 6, 12]`,
+		`returns: [30, :not_found, 102, :none]`,
+		`exc: boom_2`,
+		`mut_each: [1, 2, 3, 11, 12]`,
+		`patched_times: :patched_times`,
+		`restored_times: 3`,
+		`patched_map: [:patched_map]`,
+		`restored_map: [2, 4]`,
+		`ic_loop: 35`,
+		`frozen_writer: FrozenError`,
+		`ic_patched: 6000`,
+		`ic_refined: 777`,
+	}, "\n")
+	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestAOTTypedBlockLoopsAndDeopt(t *testing.T) {
+	src := `
+require 'timeout'
+
+#: (Array[Integer], Integer) -> Integer
+def scale_arr!(a, k)
+  n = a.length
+  i = 0
+  s = 0
+  while i < n
+    v = a[i] * k
+    a[i] = v
+    s += v
+    i += 1
+  end
+  s
+end
+
+ia = [1, 2, 3, 4]
+puts "scale_arr!: #{scale_arr!(ia, 3)} #{ia.inspect}"
+
+big_base = 9223372036854775805
+m_ov = [1, 2, 5, 10].map { |x| big_base + x }
+puts "map_ov: #{m_ov.inspect}"
+
+s_ov = [big_base, 10, 20].sum { |x| x + 1 }
+puts "sum_ov: #{s_ov}"
+
+inj_ov = [10, 20].inject(big_base) { |acc, x| acc + x }
+puts "inject_ov: #{inj_ov}"
+
+ts_ov = big_base
+4.times { |i| ts_ov += i }
+puts "times_ov: #{ts_ov}"
+
+up_ov = big_base
+1.upto(4) { |i| up_ov += i }
+puts "upto_ov: #{up_ov}"
+
+het_map = [1, 2, "ab", 4].map { |x| x * 2 }
+puts "het_map: #{het_map.inspect}"
+
+het_sum = [1, 2, 3.5, 4].sum { |x| x + 1 }
+puts "het_sum: #{het_sum}"
+
+class Box
+  attr_accessor :v
+  def initialize(v); @v = v; end
+end
+bx = Box.new(10)
+acc_sum = 0
+4.times do |i|
+  bx.v = 1.5 if i == 2
+  acc_sum += bx.v + i
+end
+puts "acc_deopt: #{acc_sum}"
+
+timed_out = begin
+  Timeout.timeout(0.02) do
+    s = 0
+    1_000_000_000.times { |i| s += i }
+    s
+  end
+rescue Timeout::Error
+  :timed_out
+end
+puts "timeout_times: #{timed_out}"
+`
+	want := strings.Join([]string{
+		`scale_arr!: 30 [3, 6, 9, 12]`,
+		`map_ov: [9223372036854775806, 9223372036854775807, 9223372036854775810, 9223372036854775815]`,
+		`sum_ov: 9223372036854775838`,
+		`inject_ov: 9223372036854775835`,
+		`times_ov: 9223372036854775811`,
+		`upto_ov: 9223372036854775815`,
+		`het_map: [2, 4, "abab", 8]`,
+		`het_sum: 14.5`,
+		`acc_deopt: 29.0`,
+		`timeout_times: timed_out`,
+	}, "\n")
+	if got := strings.TrimSpace(aotRun(t, src, 0)); got != want {
+		t.Fatalf("output differs\n got:\n%s\nwant:\n%s", got, want)
+	}
+}

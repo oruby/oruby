@@ -362,7 +362,7 @@ var (
 	reRBSFuncType    = regexp.MustCompile(`^\(([^)]*)\)\s*->\s*([^#|]+?)(?:\s*$|\s*\|)`)
 	reRBSNullaryType = regexp.MustCompile(`^->\s*([^#|]+?)(?:\s*$|\s*\|)`)
 	reRBInlineSig    = regexp.MustCompile(`^\s*#(?::|\s*@rbs)\s*(.+)$`)
-	reRubyDefLine    = regexp.MustCompile(`^\s*def\s+(self\.)?([A-Za-z_][A-Za-z0-9_]*[?!=]?)\b`)
+	reRubyDefLine    = regexp.MustCompile(`^\s*def\s+(self\.)?([A-Za-z_][A-Za-z0-9_]*[?!=]?)(?:\s|\(|$|;)`)
 	reRubyEndLine    = regexp.MustCompile(`^\s*end\b`)
 	reRBSInlineParam = regexp.MustCompile(`^\s*#\s*@rbs\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)$`)
 	reRBSInlineRet   = regexp.MustCompile(`^\s*#\s*@rbs\s+return\s*:\s*(.+)$`)

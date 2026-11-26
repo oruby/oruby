@@ -1025,10 +1025,11 @@ _aot_attr_writer_ptr(void)
 }
 
 static inline void
-_aot_struct_data_ref_ptrs(mrb_state *mrb, void **struct_fn, void **data_fn)
+_aot_struct_data_ref_ptrs(mrb_state *mrb, void **struct_fn, void **data_fn, void **data_direct)
 {
   *struct_fn = NULL;
   *data_fn = NULL;
+  for (int i = 0; i < 4; i++) data_direct[i] = NULL;
   int ai = mrb_gc_arena_save(mrb);
   mrb_sym mid = mrb_intern_lit(mrb, "_a");
   if (mrb_class_defined_id(mrb, MRB_SYM(Struct))) {
@@ -1045,10 +1046,25 @@ _aot_struct_data_ref_ptrs(mrb_state *mrb, void **struct_fn, void **data_fn)
   }
   if (mrb_class_defined_id(mrb, MRB_SYM(Data))) {
     struct RClass *dc = mrb_class_get_id(mrb, MRB_SYM(Data));
-    mrb_value sub = mrb_funcall_id(mrb, mrb_obj_value(dc), MRB_SYM(define), 1, mrb_symbol_value(mid));
+    mrb_value syms[5] = {
+      mrb_symbol_value(mid),
+      mrb_symbol_value(mrb_intern_lit(mrb, "_b")),
+      mrb_symbol_value(mrb_intern_lit(mrb, "_c")),
+      mrb_symbol_value(mrb_intern_lit(mrb, "_d")),
+      mrb_symbol_value(mrb_intern_lit(mrb, "_e"))
+    };
+    mrb_value sub = mrb_funcall_argv(mrb, mrb_obj_value(dc), MRB_SYM(define), 5, syms);
     if (mrb->exc == NULL && mrb_class_p(sub)) {
       struct RClass *c = mrb_class_ptr(sub);
-      mrb_method_t m = mrb_vm_find_method(mrb, c, &c, mid);
+      for (int i = 0; i < 4; i++) {
+        struct RClass *tc = c;
+        mrb_method_t m = mrb_vm_find_method(mrb, tc, &tc, mrb_symbol(syms[i]));
+        if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_FUNC_P(m)) {
+          data_direct[i] = (void*)MRB_METHOD_FUNC(m);
+        }
+      }
+      struct RClass *tc = c;
+      mrb_method_t m = mrb_vm_find_method(mrb, tc, &tc, mrb_symbol(syms[4]));
       if (!MRB_METHOD_UNDEF_P(m) && MRB_METHOD_PROC_P(m) && MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m))) {
         *data_fn = (void*)MRB_PROC_CFUNC(MRB_METHOD_PROC(m));
       }

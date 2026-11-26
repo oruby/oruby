@@ -295,6 +295,48 @@ static mrb_bool p_enum_blk0(mrb_state *mrb, mrb_value self, mrb_int argc, const 
   return argc == 0 && mrb_proc_p(blk) && root_fiber(mrb) && ary_plain_each(mrb, self);
 }
 
+static mrb_bool p_int_times(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 0 && mrb_proc_p(blk) && root_fiber(mrb) && mrb_fixnum_p(self);
+}
+static mrb_value d_int_times(mrb_state *mrb, mrb_value self) {
+  mrb_value blk = cur_blk(mrb);
+  mrb_int n = mrb_integer(self);
+  int ai = mrb_gc_arena_save(mrb);
+  for (mrb_int i = 0; i < n; i++) {
+    mrb_yield(mrb, blk, mrb_fixnum_value(i));
+    if ((i & 63) == 63) mrb_gc_arena_restore(mrb, ai);
+  }
+  return self;
+}
+
+static mrb_bool p_int_upto_downto(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
+  return argc == 1 && mrb_proc_p(blk) && root_fiber(mrb) && mrb_fixnum_p(self) && mrb_fixnum_p(argv[0]);
+}
+static mrb_value d_int_upto(mrb_state *mrb, mrb_value self) {
+  mrb_value blk = cur_blk(mrb);
+  mrb_int beg = mrb_integer(self);
+  mrb_int lim = mrb_integer(mrb_get_argv(mrb)[0]);
+  int ai = mrb_gc_arena_save(mrb);
+  for (mrb_int i = beg; i <= lim; i++) {
+    mrb_yield(mrb, blk, mrb_fixnum_value(i));
+    if ((i & 63) == 63) mrb_gc_arena_restore(mrb, ai);
+    if (i == lim) break;
+  }
+  return self;
+}
+static mrb_value d_int_downto(mrb_state *mrb, mrb_value self) {
+  mrb_value blk = cur_blk(mrb);
+  mrb_int beg = mrb_integer(self);
+  mrb_int lim = mrb_integer(mrb_get_argv(mrb)[0]);
+  int ai = mrb_gc_arena_save(mrb);
+  for (mrb_int i = beg; i >= lim; i--) {
+    mrb_yield(mrb, blk, mrb_fixnum_value(i));
+    if ((i & 63) == 63) mrb_gc_arena_restore(mrb, ai);
+    if (i == lim) break;
+  }
+  return self;
+}
+
 static mrb_value d_ary_each(mrb_state *mrb, mrb_value self) {
   mrb_value blk = cur_blk(mrb);
   mrb_sym sym = blk_sym(blk);
@@ -459,37 +501,55 @@ static mrb_value d_ary_inject(mrb_state *mrb, mrb_value self) {
   return memo;
 }
 
-/* Array#sum: MRI's (array.c ary_sum) for Integers and Floats without a block:
-   Integers exactly, Floats by Kahan-Babuska summation, anything else by + */
+/* Array#sum: MRI's (array.c ary_sum) for Integers and Floats (with or without
+   a block): Integers exactly, Floats by Kahan-Babuska summation, else + */
 static mrb_bool p_ary_sum(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value *argv, mrb_value blk) {
-  if (!mrb_nil_p(blk) || argc > 1) return FALSE;
+  if (argc > 1) return FALSE;
+  if (!mrb_nil_p(blk) && !(mrb_proc_p(blk) && root_fiber(mrb) && ary_plain_each(mrb, self))) return FALSE;
   return argc == 0 || mrb_integer_p(argv[0]) || mrb_float_p(argv[0]);
 }
 static mrb_value d_ary_sum(mrb_state *mrb, mrb_value self) {
   mrb_value v = mrb_get_argc(mrb) == 1 ? mrb_get_argv(mrb)[0] : mrb_fixnum_value(0);
-  mrb_int i = 0, len = RARRAY_LEN(self);
+  mrb_value blk = cur_blk(mrb);
+  mrb_bool has_blk = mrb_proc_p(blk);
+  mrb_sym sym = has_blk ? blk_sym(blk) : 0;
+  mrb_int i = 0;
+  mrb_bool have_e = FALSE;
+  mrb_value cur_e = mrb_nil_value();
+  int ai = mrb_gc_arena_save(mrb);
   /* Integers */
   if (mrb_integer_p(v) && !(mrb->bop_redefined & (1u << MRB_BOP_ADD))) {
     mrb_int n = mrb_integer(v);
-    for (; i < len; i++) {
-      mrb_value e = RARRAY_PTR(self)[i];
+    for (; i < RARRAY_LEN(self); i++) {
+      mrb_value e = has_blk ? yield1(mrb, blk, sym, RARRAY_PTR(self)[i]) : RARRAY_PTR(self)[i];
       mrb_int r;
-      if (!mrb_integer_p(e) || mrb_int_add_overflow(n, mrb_integer(e), &r)) break;
+      if (!mrb_integer_p(e) || mrb_int_add_overflow(n, mrb_integer(e), &r)) {
+        cur_e = e;
+        have_e = TRUE;
+        break;
+      }
       n = r;
+      if (has_blk && (i & 63) == 63) mrb_gc_arena_restore(mrb, ai);
     }
     v = mrb_fixnum_value(n);
   }
   /* Floats (and the Integers among them) */
-  if (i < len && (mrb_float_p(v) || mrb_float_p(RARRAY_PTR(self)[i])) &&
+  if (i < RARRAY_LEN(self) && !have_e) {
+    cur_e = has_blk ? yield1(mrb, blk, sym, RARRAY_PTR(self)[i]) : RARRAY_PTR(self)[i];
+    have_e = TRUE;
+  }
+  if (i < RARRAY_LEN(self) && (mrb_float_p(v) || mrb_float_p(cur_e)) &&
       !(mrb->bop_redefined & (1u << MRB_BOP_ADD)) && !(mrb->bop_redefined & MRB_BOP_FLOAT(MRB_BOP_ADD))) {
     double f = mrb_float_p(v) ? mrb_float(v) : (double)mrb_integer(v), c = 0.0;
     if (mrb_integer_p(v) || mrb_float_p(v)) {
-      for (; i < len; i++) {
-        mrb_value e = RARRAY_PTR(self)[i];
+      for (; i < RARRAY_LEN(self); i++) {
+        mrb_value e;
+        if (have_e) { e = cur_e; have_e = FALSE; }
+        else e = has_blk ? yield1(mrb, blk, sym, RARRAY_PTR(self)[i]) : RARRAY_PTR(self)[i];
         double x;
         if (mrb_float_p(e)) x = mrb_float(e);
         else if (mrb_integer_p(e)) x = (double)mrb_integer(e);
-        else break;
+        else { cur_e = e; have_e = TRUE; break; }
         if (isnan(f)) continue;
         if (isnan(x)) { f = x; continue; }
         if (isinf(x)) {
@@ -502,15 +562,22 @@ static mrb_value d_ary_sum(mrb_state *mrb, mrb_value self) {
         if (fabs(f) >= fabs(x)) c += ((f - t) + x);
         else c += ((x - t) + f);
         f = t;
+        if (has_blk && (i & 63) == 63) mrb_gc_arena_restore(mrb, ai);
       }
       f += c;
       v = mrb_float_value(mrb, f);
     }
   }
   /* the rest */
-  for (; i < len; i++) {
-    mrb_value e = RARRAY_PTR(self)[i];
+  for (; i < RARRAY_LEN(self); i++) {
+    mrb_value e;
+    if (have_e) { e = cur_e; have_e = FALSE; }
+    else e = has_blk ? yield1(mrb, blk, sym, RARRAY_PTR(self)[i]) : RARRAY_PTR(self)[i];
     v = mrb_funcall_argv(mrb, v, MRB_OPSYM(add), 1, &e);
+    if (has_blk && (i & 63) == 63) {
+      mrb_gc_arena_restore(mrb, ai);
+      mrb_gc_protect(mrb, v);
+    }
   }
   return v;
 }
@@ -1295,6 +1362,9 @@ static const fast_def fast_defs[] = {
   {"Integer", 0, "zero?", p_fixnum_self, d_int_zero_p, -1},
   {"Integer", 0, "pred", p_fixnum_self, d_int_pred, -1},
   {"Integer", 0, "-@", p_fixnum_self, d_int_uminus, -1},
+  {"Integer", 0, "times", p_int_times, d_int_times, -1},
+  {"Integer", 0, "upto", p_int_upto_downto, d_int_upto, -1},
+  {"Integer", 0, "downto", p_int_upto_downto, d_int_downto, -1},
   /* Float */
   {"Float", 0, "%", p_flo_mod, NULL, -1},
   {"Float", 0, "**", p_flo_pow, NULL, -1},

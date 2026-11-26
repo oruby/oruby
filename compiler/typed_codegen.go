@@ -93,8 +93,33 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 	hoistIvars := !plan.HasCalls && len(plan.Ivars) > 0
 	hoistAry := !plan.HasCalls && useV
 	ivarSlot := make(map[string]string, len(plan.Ivars))
+	ivarLocal := make(map[string]string, len(plan.Ivars))
+	ivarDirty := make(map[string]string, len(plan.Ivars))
 	for i, iv := range plan.Ivars {
 		ivarSlot[iv] = fmt.Sprintf("_ix%d", i)
+		ivarLocal[iv] = fmt.Sprintf("_iv%d", i)
+		ivarDirty[iv] = fmt.Sprintf("_ivd%d", i)
+	}
+	emitFlushIvars := func(dst *bytes.Buffer) {
+		if !hoistIvars || !plan.HasIvarWrites {
+			return
+		}
+		for _, iv := range plan.Ivars {
+			if !plan.IvarsWritten[iv] {
+				continue
+			}
+			ivType := g.opts.RBS.LookupIvar(inf.className, iv)
+			var valExpr string
+			switch ivType {
+			case TypeInt64:
+				valExpr = fmt.Sprintf("oruby.AotFixnum(%s)", ivarLocal[iv])
+			case TypeFloat64:
+				valExpr = fmt.Sprintf("mrb.AotFloatValue(%s)", ivarLocal[iv])
+			case TypeBool:
+				valExpr = fmt.Sprintf("mrb.BoolValue(%s)", ivarLocal[iv])
+			}
+			fmt.Fprintf(dst, "\tif %s { mrb.AotShapedWriteUnchecked(_svals, %s, %s) }\n", ivarDirty[iv], ivarSlot[iv], valExpr)
+		}
 	}
 
 	for idx := 0; idx < len(unit.Instructions); idx++ {
@@ -174,18 +199,7 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 			ivName := unit.Syms[ins.B]
 			ivType := g.opts.RBS.LookupIvar(inf.className, ivName)
 			if hoistIvars {
-				ix := ivarSlot[ivName]
-				switch ivType {
-				case TypeInt64:
-					useI = true
-					fmt.Fprintf(&body, "\tif _iv := mrb.AotShapedRead(_svals, %s); _iv.Type() == oruby.MrbTTInteger { ri[%d] = aotInt(_iv) } else { %s }\n", ix, ins.A, bail)
-				case TypeFloat64:
-					useF = true
-					fmt.Fprintf(&body, "\tif _iv := mrb.AotShapedRead(_svals, %s); _iv.Type() == oruby.MrbTTFloat { rf[%d] = oruby.AotFloat(_iv) } else { %s }\n", ix, ins.A, bail)
-				case TypeBool:
-					useB = true
-					fmt.Fprintf(&body, "\tif _iv := mrb.AotShapedRead(_svals, %s); _iv.Type() == oruby.MrbTTTrue || (_iv.Type() == oruby.MrbTTFalse && !_iv.IsNil()) { rb[%d] = _iv.Type() == oruby.MrbTTTrue } else { %s }\n", ix, ins.A, bail)
-				}
+				fmt.Fprintf(&body, "\t%s = %s\n", regExpr(ins.A, ivType), ivarLocal[ivName])
 			} else {
 				symVar := g.internSym(ivName)
 				switch ivType {
@@ -204,18 +218,7 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 			ivName := unit.Syms[ins.B]
 			ivType := g.opts.RBS.LookupIvar(inf.className, ivName)
 			if hoistIvars {
-				ix := ivarSlot[ivName]
-				switch ivType {
-				case TypeInt64:
-					useI = true
-					fmt.Fprintf(&body, "\tif !mrb.AotShapedWriteImm(self, _svals, %s, oruby.AotFixnum(ri[%d])) { %s }\n", ix, ins.A, bail)
-				case TypeFloat64:
-					useF = true
-					fmt.Fprintf(&body, "\tif !mrb.AotShapedWriteImm(self, _svals, %s, mrb.AotFloatValue(rf[%d])) { %s }\n", ix, ins.A, bail)
-				case TypeBool:
-					useB = true
-					fmt.Fprintf(&body, "\tif !mrb.AotShapedWriteImm(self, _svals, %s, mrb.BoolValue(rb[%d])) { %s }\n", ix, ins.A, bail)
-				}
+				fmt.Fprintf(&body, "\t%s = %s\n\t%s = true\n", ivarLocal[ivName], regExpr(ins.A, ivType), ivarDirty[ivName])
 			} else {
 				symVar := g.internSym(ivName)
 				switch ivType {
@@ -557,6 +560,7 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 			fmt.Fprintf(&body, "\tif %s, _ok = %s_typed(%s); !_ok {\n\t\t%s\n\t}\n",
 				regExpr(ins.A, cplan.Return), targetFn, strings.Join(args, ", "), bail)
 		case OpRETURN:
+			emitFlushIvars(&body)
 			fmt.Fprintf(&body, "\treturn %s, true\n", regExpr(ins.A, plan.Return))
 			hasReturn = true
 		}
@@ -598,14 +602,36 @@ func (g *CodeGen) emitTypedSpecializedUnit(b *bytes.Buffer, plan *TypedPlan) {
 		b.WriteString("\tvar _ok bool\n\t_ = _ok\n")
 	}
 	if hoistIvars {
-		b.WriteString(fmt.Sprintf("\t_svals, _sshape, _sok := mrb.AotShapedBase(self)\n\tif !_sok { return %s, false }\n", retZero))
+		baseFn := "AotShapedBase"
+		if plan.HasIvarWrites {
+			baseFn = "AotShapedBaseMutable"
+		}
+		b.WriteString(fmt.Sprintf("\t_svals, _sshape, _sok := mrb.%s(self)\n\tif !_sok { return %s, false }\n", baseFn, retZero))
 		for i, iv := range plan.Ivars {
 			symVar := g.internSym(iv)
 			fmt.Fprintf(b, "\t_ix%d := mrb.AotShapedSlot(_sshape, %s)\n\tif _ix%d < 0 { return %s, false }\n", i, symVar, i, retZero)
+			ivType := g.opts.RBS.LookupIvar(inf.className, iv)
+			fmt.Fprintf(b, "\tvar _iv%d %s\n", i, ivType.GoType())
+			if plan.IvarsRead[iv] {
+				switch ivType {
+				case TypeInt64:
+					fmt.Fprintf(b, "\tif _v := mrb.AotShapedRead(_svals, _ix%d); _v.Type() == oruby.MrbTTInteger { _iv%d = aotInt(_v) } else { return %s, false }\n", i, i, retZero)
+				case TypeFloat64:
+					fmt.Fprintf(b, "\tif _v := mrb.AotShapedRead(_svals, _ix%d); _v.Type() == oruby.MrbTTFloat { _iv%d = oruby.AotFloat(_v) } else { return %s, false }\n", i, i, retZero)
+				case TypeBool:
+					fmt.Fprintf(b, "\tif _v := mrb.AotShapedRead(_svals, _ix%d); _v.Type() == oruby.MrbTTTrue || (_v.Type() == oruby.MrbTTFalse && !_v.IsNil()) { _iv%d = _v.Type() == oruby.MrbTTTrue } else { return %s, false }\n", i, i, retZero)
+				}
+			} else {
+				fmt.Fprintf(b, "\t_ = _iv%d\n", i)
+			}
+			if plan.IvarsWritten[iv] {
+				fmt.Fprintf(b, "\tvar _ivd%d bool\n", i)
+			}
 		}
 	}
 	b.Write(body.Bytes())
 	if !hasReturn {
+		emitFlushIvars(b)
 		fmt.Fprintf(b, "\treturn %s, true\n", retZero)
 	}
 	b.WriteString("}\n\n")
