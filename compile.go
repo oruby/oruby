@@ -3,6 +3,7 @@ package oruby
 // #include "go-mrb.h"
 import "C"
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -531,6 +532,38 @@ func (mrb *MrbState) LoadBytesCxt(buf []byte, context *MrbCcontext) (Value, erro
 	}
 	v := Value{result}
 	return mrb.protectedResult(v, status)
+}
+
+// CompileBytesToIrep preprocesses and compiles Ruby source bytes into RITE
+// bytecode (with debug info) without executing it. Returns (nil, false) if
+// the source has parse/codegen errors so callers can fall back to the
+// standard LoadBytesCxt error/retry path.
+func (mrb *MrbState) CompileBytesToIrep(buf []byte, filename string) ([]byte, bool) {
+	c := mrb.MrbCcontextNew()
+	defer c.Free()
+	c.Filename(filename)
+	c.SetNoExec(true)
+	c.SetCaptureErrors(true)
+
+	p, err := mrb.ParseString(string(buf), c)
+	if err != nil {
+		return nil, false
+	}
+	defer p.Free()
+	if p.NErr() > 0 {
+		return nil, false
+	}
+	proc, err := mrb.GenerateCode(p)
+	if err != nil {
+		mrb.ExcClear()
+		return nil, false
+	}
+	var out bytes.Buffer
+	if _, err := mrb.DumpIrep(proc.IRep(), MrbDumpDebugInfo, &out); err != nil {
+		mrb.ExcClear()
+		return nil, false
+	}
+	return out.Bytes(), true
 }
 
 // LoadBytesWrapped compiles Ruby source and runs it with self in klass's scope.

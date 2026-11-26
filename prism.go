@@ -116,6 +116,16 @@ func SetFrozenStringLiteral(frozen bool) {
 	updateCompilerLiteralOptions()
 }
 
+// PreprocessCacheSalt encodes preprocessor options that affect generated
+// bytecode, for use in disk bytecode cache keys.
+func PreprocessCacheSalt() string {
+	d := "0"
+	if debugFrozenStringLiterals.Load() {
+		d = "1"
+	}
+	return strconv.Itoa(int(atomic.LoadInt32(&frozenStringDefault))) + ":" + d
+}
+
 func updateCompilerLiteralOptions() {
 	var options C.int
 	if atomic.LoadInt32(&frozenStringDefault) >= 0 {

@@ -1,6 +1,7 @@
 package load
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -294,13 +296,63 @@ func coverageActive(mrb *oruby.MrbState) bool {
 	return mrb.RespondTo(cov.Value(), mrb.Intern("__oruby_instrument"))
 }
 
+func diskBytecodeCacheDir() string {
+	dir := os.Getenv("ORUBY_CACHE_DIR")
+	switch dir {
+	case "", "0", "false":
+		return ""
+	case "1", "true":
+		base, err := os.UserCacheDir()
+		if err != nil || base == "" {
+			base = os.TempDir()
+		}
+		return filepath.Join(base, "oruby", "bytecode")
+	default:
+		return dir
+	}
+}
+
+func diskCacheKeyPath(cacheDir, realSlash string, size, mtimeNano int64) string {
+	key := "oruby-bc-v1\x00" + oruby.RubyVersion + "\x00" + oruby.PreprocessCacheSalt() +
+		"\x00" + realSlash + "\x00" + strconv.FormatInt(size, 10) + "\x00" + strconv.FormatInt(mtimeNano, 10)
+	sum := sha256.Sum256([]byte(key))
+	hex := fmt.Sprintf("%x", sum)
+	return filepath.Join(cacheDir, hex[:2], hex+".mrb")
+}
+
+func writeCacheFileAtomic(path string, data []byte) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	f, err := os.CreateTemp(dir, ".tmp-*.mrb")
+	if err != nil {
+		return
+	}
+	tmpName := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+	}
+}
+
 func doLoad(mrb *oruby.MrbState, fullName string) error {
 	if entry, orb, ok := mrb.OrbLookupVirtual(fullName); ok {
 		_, err := mrb.ExecuteOrbEntry(orb, entry, nil)
 		return err
 	}
 
-	if filepath.Ext(fullName) == ".rb" && !coverageActive(mrb) {
+	var cachePath string
+	isRb := filepath.Ext(fullName) == ".rb" && !coverageActive(mrb)
+	if isRb {
 		realSlash := filepath.ToSlash(realpathOf(fullName))
 		if loaded, err := tryLoadFromStdlibCache(mrb, getStdlibOrbCache(), fullName, realSlash); loaded {
 			return err
@@ -308,6 +360,19 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 		if prefix := getRubyLibPrefixSlash(); prefix != "" && strings.HasPrefix(realSlash, prefix) {
 			if loaded, err := tryLoadFromStdlibCache(mrb, getStdlibExtraOrbCache(), fullName, realSlash); loaded {
 				return err
+			}
+		}
+		if cacheDir := diskBytecodeCacheDir(); cacheDir != "" {
+			if fi, err := os.Stat(fullName); err == nil && !fi.IsDir() {
+				cachePath = diskCacheKeyPath(cacheDir, realSlash, fi.Size(), fi.ModTime().UnixNano())
+				if cached, err := os.ReadFile(cachePath); err == nil && oruby.IsRiteBinary(cached) {
+					cxt := mrb.MrbCcontextNew()
+					defer cxt.Free()
+					cxt.Filename(fullName)
+					cxt.SetCaptureErrors(true)
+					_, err = mrb.LoadIrepCxt(cached, cxt)
+					return err
+				}
 			}
 		}
 	}
@@ -347,6 +412,13 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 	}
 	if src, ok := coverageSource(mrb, fullName); ok {
 		data = src
+	}
+	if cachePath != "" {
+		if irep, ok := mrb.CompileBytesToIrep(data, fullName); ok {
+			writeCacheFileAtomic(cachePath, irep)
+			_, err = mrb.LoadIrepCxt(irep, cxt)
+			return err
+		}
 	}
 	_, err = mrb.LoadBytesCxt(data, cxt)
 	if err != nil {

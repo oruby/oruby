@@ -2,10 +2,13 @@ package load
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/oruby/oruby"
 )
@@ -357,5 +360,108 @@ func TestRequireAndLoadOrbBundle(t *testing.T) {
 	want := `[true, false, false, true, 2, "[acct]"]`
 	if s := mrb.String(mrb.Call(got, "inspect")); s != want {
 		t.Fatalf("got %s, want %s", s, want)
+	}
+}
+
+func TestDiskBytecodeCache(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	t.Setenv("ORUBY_CACHE_DIR", cacheDir)
+
+	scriptPath := filepath.Join(dir, "cached_mod.rb")
+	if err := os.WriteFile(scriptPath, []byte("def cached_val; 42; end\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Cold load -> populates cache
+	mrb1, err := oruby.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := mrb1.Eval(`require ` + strconv.Quote(scriptPath) + `; cached_val`)
+	if err != nil {
+		mrb1.Close()
+		t.Fatalf("cold load failed: %v", err)
+	}
+	got1 := v.Int()
+	mrb1.Close()
+	if got1 != 42 {
+		t.Fatalf("cold load got %d, want 42", got1)
+	}
+
+	var mrbCount int
+	_ = filepath.WalkDir(cacheDir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(d.Name(), ".mrb") {
+			mrbCount++
+		}
+		return nil
+	})
+	if mrbCount == 0 {
+		t.Fatalf("expected .mrb cache file in %s", cacheDir)
+	}
+
+	// 2. Warm load -> cache hit
+	mrb2, err := oruby.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err = mrb2.Eval(`require ` + strconv.Quote(scriptPath) + `; cached_val`)
+	if err != nil {
+		mrb2.Close()
+		t.Fatalf("warm load failed: %v", err)
+	}
+	got2 := v.Int()
+	mrb2.Close()
+	if got2 != 42 {
+		t.Fatalf("warm load got %d, want 42", got2)
+	}
+
+	// 3. Modified file + bumped mtime -> invalidates cache
+	if err := os.WriteFile(scriptPath, []byte("def cached_val; 99; end\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(scriptPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	mrb3, err := oruby.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err = mrb3.Eval(`require ` + strconv.Quote(scriptPath) + `; cached_val`)
+	if err != nil {
+		mrb3.Close()
+		t.Fatalf("modified load failed: %v", err)
+	}
+	got3 := v.Int()
+	mrb3.Close()
+	if got3 != 99 {
+		t.Fatalf("modified load got %d, want 99", got3)
+	}
+
+	// 4. Syntax error -> raises SyntaxError without corrupting cache
+	badPath := filepath.Join(dir, "broken.rb")
+	if err := os.WriteFile(badPath, []byte("def broken(\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mrb4, err := oruby.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mrb4.Close()
+	_, err = mrb4.Eval(`begin; require ` + strconv.Quote(badPath) + `; :no_err; rescue SyntaxError => e; e.class.name; end`)
+	if err != nil {
+		t.Fatalf("syntax error test failed: %v", err)
+	}
+	if err := os.WriteFile(badPath, []byte("def broken; :fixed; end\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(badPath, future, future)
+	v, err = mrb4.Eval(`require ` + strconv.Quote(badPath) + `; broken`)
+	if err != nil {
+		t.Fatalf("fixed load failed: %v", err)
+	}
+	if mrb4.String(v) != "fixed" {
+		t.Fatalf("fixed load got %q, want fixed", mrb4.String(v))
 	}
 }
