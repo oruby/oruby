@@ -69,8 +69,53 @@ func init() {
 		kernel.DefineClassMethod("__oruby_autoload_registered", autoloadRegistered, mrb.ArgsReq(3))
 		kernel.DefineClassMethod("__oruby_autoload_other_thread?", autoloadOtherThread, mrb.ArgsReq(1))
 		kernel.DefineClassMethod("__oruby_autoload_wait", autoloadWait, mrb.ArgsReq(1))
+		kernel.DefineClassMethod("__oruby_install_rubygems_fast_require", installRubyGemsFastRequire, mrb.ArgsNone())
 		return newLoadState()
 	})
+	oruby.AfterLoad("rubygems", "Kernel.__oruby_install_rubygems_fast_require")
+}
+
+func installRubyGemsFastRequire(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	kernel := mrb.KernelModule()
+	mrb.AliasMethod(kernel, mrb.Intern("__oruby_rubygems_require"), oruby.Sym_require)
+	mrb.DefineModuleFunction(kernel, "require", rubygemsFastRequire, mrb.ArgsReq(1))
+	return mrb.NilValue()
+}
+
+func rubygemsFastRequire(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	arg := mrb.GetArgsFirst()
+	if b, ok := mrb.AotStringBytes(arg); ok && mrb.ClassDefined("Gem") {
+		path := string(b)
+		gemMod := mrb.ModuleGet("Gem")
+		if !mrb.IVGet(gemMod, mrb.Intern("@discover_gems_on_require")).Bool() {
+			return doRequire(mrb, path)
+		}
+		defMap := mrb.IVGet(gemMod, mrb.Intern("@path_to_default_spec_map"))
+		lazyMap := mrb.IVGet(gemMod, mrb.Intern("@__oruby_lazy_default_map"))
+		inDef := (defMap.Type() == oruby.MrbTTHash && mrb.HashKeyP(defMap, arg)) ||
+			(lazyMap.Type() == oruby.MrbTTHash && mrb.HashKeyP(lazyMap, arg))
+		if !inDef {
+			specCls := mrb.ConstGet(gemMod, mrb.Intern("Specification"))
+			unres := mrb.IVGet(specCls, mrb.Intern("@unresolved_deps"))
+			if unres.Type() != oruby.MrbTTHash || mrb.HashSize(unres) == 0 {
+				res := doRequire(mrb, path)
+				exc := mrb.Exc()
+				if exc == nil {
+					return res
+				}
+				if mrb.ObjIsKindOf(exc.Value(), mrb.ClassGet("LoadError")) {
+					mrb.ExcClear()
+				} else {
+					return res
+				}
+			}
+		}
+	}
+	res, err := mrb.Funcall(self, mrb.Intern("__oruby_rubygems_require"), arg)
+	if err != nil {
+		return mrb.RaiseError(err)
+	}
+	return res
 }
 
 // dlexts are the C extension suffixes searched for (MRI's DLEXT)

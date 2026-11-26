@@ -43,7 +43,7 @@ func LoadRuby(mrb *oruby.MrbState, name string, src []byte) {
 	if orb := getPrecompiledOrb(); orb != nil {
 		sum := fmt.Sprintf("%x", sha256.Sum256(src))
 		if e, ok := orb.Lookup(sum); ok {
-			if _, err := mrb.LoadIrepCxt(orb.EntryData(e), c); err == nil {
+			if _, err := mrb.LoadStaticIrepCxt(orb.EntryData(e), c); err == nil {
 				return
 			}
 			mrb.ExcClear()

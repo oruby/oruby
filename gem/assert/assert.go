@@ -10,7 +10,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("assert", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("assert", func(mrb *oruby.MrbState) interface{} {
 		mrb.DefineMethodFunc(mrb.KernelModule(), "_str_match?", regexp.MatchString)
 
 		mrbtest := mrb.DefineModule("Mrbtest")

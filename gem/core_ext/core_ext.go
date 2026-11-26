@@ -251,7 +251,7 @@ func init() {
 			c.InternalFilename("<internal:core_ext/" + ent.name + ">")
 			var err error
 			if ent.mrbBytes != nil {
-				_, err = mrb.LoadIrepCxt(ent.mrbBytes, c)
+				_, err = mrb.LoadStaticIrepCxt(ent.mrbBytes, c)
 			} else {
 				_, err = mrb.LoadBytesCxt(ent.rbBytes, c)
 			}

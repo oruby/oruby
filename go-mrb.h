@@ -697,6 +697,18 @@ _mrb_load_irep_buf_cxt(mrb_state *mrb, const void *buffer, size_t length, mrb_cc
 }
 
 static mrb_value
+_go_mrb_load_static_irep_body(mrb_state *mrb, void *data) {
+  _go_mrb_load_irep_data *load = (_go_mrb_load_irep_data *)data;
+  return mrb_load_irep_cxt(mrb, (const uint8_t *)load->buffer, load->context);
+}
+
+static int
+_mrb_load_irep_cxt(mrb_state *mrb, const uint8_t *bin, mrb_ccontext *context, mrb_value *result) {
+  _go_mrb_load_irep_data load = { bin, 0, context };
+  return _go_mrb_protect(mrb, _go_mrb_load_static_irep_body, &load, result);
+}
+
+static mrb_value
 _go_mrb_load_irep_body_no_context(mrb_state *mrb, void *data) {
   _go_mrb_load_irep_data *load = (_go_mrb_load_irep_data *)data;
   return mrb_load_irep_buf(mrb, load->buffer, load->length);

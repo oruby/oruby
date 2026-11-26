@@ -213,6 +213,22 @@ func (mrb *MrbState) LoadIrepCxt(buffer []byte, context *MrbCcontext) (Value, er
 	return mrb.protectedResult(v, status)
 }
 
+// LoadStaticIrepCxt loads compiled bytecode directly from static/immortal
+// memory (such as //go:embed slices) without copying into the mruby heap.
+func (mrb *MrbState) LoadStaticIrepCxt(buffer []byte, context *MrbCcontext) (Value, error) {
+	if len(buffer) == 0 {
+		return mrb.LoadIrepCxt(nil, context)
+	}
+	var cxtPtr *C.struct_mrb_ccontext
+	if context != nil {
+		cxtPtr = context.p
+	}
+	var result C.mrb_value
+	status := C._mrb_load_irep_cxt(mrb.p, (*C.uint8_t)(unsafe.Pointer(&buffer[0])), cxtPtr, &result)
+	runtime.KeepAlive(buffer)
+	return mrb.protectedResult(Value{result}, status)
+}
+
 // LoadIrepBuf for context
 func (c *MrbCcontext) LoadIrepBuf(buffer []byte) (Value, error) {
 	return c.mrb.LoadIrepCxt(buffer, c)

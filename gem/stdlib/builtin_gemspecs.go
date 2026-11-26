@@ -18,12 +18,14 @@ type defaultSpecMeta struct {
 type defaultSpecsManifest struct {
 	DefaultSpecsPrefix string                     `json:"default_specs_prefix"`
 	DefaultSpecs       map[string]defaultSpecMeta `json:"default_specs"`
+	DefaultSpecPaths   map[string]string          `json:"default_spec_paths"`
 }
 
 type defaultSpecsOrbCache struct {
-	orb         *oruby.OrbFile
-	prefixSlash string
-	files       map[string]defaultSpecMeta
+	orb              *oruby.OrbFile
+	prefixSlash      string
+	files            map[string]defaultSpecMeta
+	defaultSpecPaths map[string]string
 }
 
 var (
@@ -60,9 +62,10 @@ func getDefaultSpecsOrbCache() *defaultSpecsOrbCache {
 			return
 		}
 		defaultSpecsCacheVal = &defaultSpecsOrbCache{
-			orb:         orb,
-			prefixSlash: strings.TrimSuffix(manifest.DefaultSpecsPrefix, "/") + "/",
-			files:       manifest.DefaultSpecs,
+			orb:              orb,
+			prefixSlash:      strings.TrimSuffix(manifest.DefaultSpecsPrefix, "/") + "/",
+			files:            manifest.DefaultSpecs,
+			defaultSpecPaths: manifest.DefaultSpecPaths,
 		}
 	})
 	return defaultSpecsCacheVal
@@ -177,6 +180,35 @@ func initRubyGemsDefaults(mrb *oruby.MrbState) any {
 		}
 		return v
 	}, mrb.ArgsReq(1))
+	gemMod.DefineClassMethod("__oruby_populate_lazy_defaults", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		cache := getDefaultSpecsOrbCache()
+		if cache == nil || len(cache.defaultSpecPaths) == 0 {
+			return mrb.FalseValue()
+		}
+		allBuiltin := oruby.BuiltinGemSpecs()
+		lazyMap := mrb.HashNewCapa(len(cache.defaultSpecPaths) + len(allBuiltin)*2)
+		for pathKey, specFile := range cache.defaultSpecPaths {
+			mrb.HashSet(lazyMap.Value(), mrb.StrNew(pathKey), mrb.StrNew(cache.prefixSlash+specFile))
+		}
+		for _, sp := range allBuiltin {
+			if sp.Feature != "" && !mrb.GemAvailable(sp.Feature) {
+				continue
+			}
+			target := mrb.StrNew("builtin:" + sp.Name)
+			for _, f := range sp.Files {
+				rel := strings.TrimPrefix(f, "lib/")
+				if _, exists := cache.defaultSpecPaths[rel]; exists {
+					continue
+				}
+				mrb.HashSet(lazyMap.Value(), mrb.StrNew(rel), target)
+				if strings.HasSuffix(rel, ".rb") {
+					mrb.HashSet(lazyMap.Value(), mrb.StrNew(strings.TrimSuffix(rel, ".rb")), target)
+				}
+			}
+		}
+		_ = mrb.IVSet(gemMod, mrb.Intern("@__oruby_lazy_default_map"), lazyMap.Value())
+		return mrb.TrueValue()
+	}, mrb.ArgsNone())
 
 	rb.LoadRuby(mrb, "<internal:rubygems/defaults/oruby>", []byte(`
 module ORubyDefaultGemSpecs
@@ -192,6 +224,17 @@ module ORubyDefaultGemSpecs
       end
     end
     super
+  end
+
+  def __oruby_materialize_default(target)
+    spec = if target.start_with?("builtin:")
+      name = target.byteslice(8, target.bytesize - 8)
+      __oruby_builtin_specs.find { |s| s.name == name }
+    else
+      Gem::Specification.load(target)
+    end
+    Gem.register_default_spec(spec) if spec
+    spec
   end
 
   def __oruby_builtin_specs
@@ -222,6 +265,7 @@ module ORubyDefaultGemSpecs
   end
 
   def load_defaults
+    return if Gem.__oruby_populate_lazy_defaults
     super
     __oruby_builtin_specs.each do |spec|
       Gem.register_default_spec(spec)
@@ -262,6 +306,25 @@ module ORubyFastRegisterDefaultSpec
       base = file.end_with?(".rb") ? file.byteslice(0, file.bytesize - 3) : file.sub(suffix_regexp, "")
       @path_to_default_spec_map[base] = spec
     end
+  end
+
+  def find_default_spec(path)
+    spec = @path_to_default_spec_map[path]
+    return spec if spec
+    if @__oruby_lazy_default_map && (target = @__oruby_lazy_default_map.delete(path))
+      return Gem::Specification.__oruby_materialize_default(target)
+    end
+    nil
+  end
+
+  def find_unresolved_default_spec(path)
+    default_spec = find_default_spec(path)
+    default_spec if default_spec && loaded_specs[default_spec.name] != default_spec
+  end
+
+  def clear_default_specs
+    @__oruby_lazy_default_map&.clear
+    super
   end
 end
 

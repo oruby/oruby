@@ -16,7 +16,7 @@ import (
 	"github.com/oruby/oruby"
 )
 
-func compileToMrb(mrb *oruby.MrbState, src []byte, filename string) ([]byte, error) {
+func compileToMrb(mrb *oruby.MrbState, src []byte, filename string, flags uint8) ([]byte, error) {
 	c := mrb.MrbCcontextNew()
 	defer c.Free()
 	c.Filename(filename)
@@ -44,7 +44,7 @@ func compileToMrb(mrb *oruby.MrbState, src []byte, filename string) ([]byte, err
 	}
 
 	var buf bytes.Buffer
-	if _, err := mrb.DumpIrep(proc.IRep(), oruby.MrbDumpDebugInfo, &buf); err != nil {
+	if _, err := mrb.DumpIrep(proc.IRep(), flags, &buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -75,7 +75,7 @@ func buildCoreExtOrb(mrb *oruby.MrbState) error {
 		if len(data) == 0 {
 			continue
 		}
-		mrbBytes, err := compileToMrb(mrb, data, "<internal:core_ext/"+name+">")
+		mrbBytes, err := compileToMrb(mrb, data, "<internal:core_ext/"+name+">", oruby.MrbDumpDebugInfo|oruby.MrbDumpStatic)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -143,7 +143,7 @@ func buildRbOrb(mrb *oruby.MrbState) error {
 			continue
 		}
 		seen[sum] = true
-		mrbBytes, err := compileToMrb(mrb, data, "<internal:"+filepath.Base(p)+">")
+		mrbBytes, err := compileToMrb(mrb, data, "<internal:"+filepath.Base(p)+">", oruby.MrbDumpDebugInfo|oruby.MrbDumpStatic)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -164,6 +164,81 @@ type stdlibManifest struct {
 	Files              map[string]stdlibFileMeta `json:"files"`
 	DefaultSpecsPrefix string                    `json:"default_specs_prefix,omitempty"`
 	DefaultSpecs       map[string]stdlibFileMeta `json:"default_specs,omitempty"`
+	DefaultSpecPaths   map[string]string         `json:"default_spec_paths,omitempty"`
+}
+
+func extractDefaultSpecPaths(specMrb *oruby.MrbState, data []byte, fullPath, specName string, out map[string]string) {
+	c := specMrb.MrbCcontextNew()
+	defer c.Free()
+	c.Filename(fullPath)
+	c.SetCaptureErrors(true)
+	v, err := specMrb.LoadBytesCxt(data, c)
+	if err != nil || v.IsNil() {
+		specMrb.ExcClear()
+		return
+	}
+	rpVal, err1 := specMrb.Funcall(v, specMrb.Intern("require_paths"))
+	flVal, err2 := specMrb.Funcall(v, specMrb.Intern("files"))
+	if err1 != nil || err2 != nil {
+		specMrb.ExcClear()
+		return
+	}
+	var reqPaths, files []string
+	if rpElems, ok := specMrb.AotArySlice(rpVal); ok {
+		for _, el := range rpElems {
+			if b, sok := specMrb.AotStringBytes(el); sok {
+				reqPaths = append(reqPaths, string(b)+"/")
+			}
+		}
+	}
+	if flElems, ok := specMrb.AotArySlice(flVal); ok {
+		for _, el := range flElems {
+			if b, sok := specMrb.AotStringBytes(el); sok {
+				files = append(files, string(b))
+			}
+		}
+	}
+	newFormat := false
+	for _, rp := range reqPaths {
+		for _, f := range files {
+			if strings.HasPrefix(f, rp) {
+				newFormat = true
+				break
+			}
+		}
+		if newFormat {
+			break
+		}
+	}
+	for _, f := range files {
+		if newFormat {
+			matched := false
+			for _, rp := range reqPaths {
+				if strings.HasPrefix(f, rp) {
+					f = f[len(rp):]
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				if strings.Contains(f, "/") || !(strings.HasSuffix(f, ".bundle") || strings.HasSuffix(f, ".so") || strings.HasSuffix(f, ".dll")) {
+					continue
+				}
+			}
+		}
+		if strings.HasPrefix(f, "rubygems/") {
+			continue
+		}
+		out[f] = specName
+		base := f
+		for _, ext := range []string{".rb", ".bundle", ".so", ".dll"} {
+			if strings.HasSuffix(base, ext) {
+				base = base[:len(base)-len(ext)]
+				break
+			}
+		}
+		out[base] = specName
+	}
 }
 
 func buildStdlibOrb(mrb *oruby.MrbState, dir, outPath string) error {
@@ -214,7 +289,7 @@ func buildStdlibOrb(mrb *oruby.MrbState, dir, outPath string) error {
 		if err != nil {
 			return err
 		}
-		mrbBytes, err := compileToMrb(mrb, data, fullPath)
+		mrbBytes, err := compileToMrb(mrb, data, fullPath, oruby.MrbDumpDebugInfo)
 		if err != nil {
 			return fmt.Errorf("%s: %w", rel, err)
 		}
@@ -246,13 +321,30 @@ func buildStdlibOrb(mrb *oruby.MrbState, dir, outPath string) error {
 		sort.Strings(specNames)
 		manifest.DefaultSpecsPrefix = filepath.ToSlash(realSpecDir)
 		manifest.DefaultSpecs = make(map[string]stdlibFileMeta, len(specNames))
+		manifest.DefaultSpecPaths = make(map[string]string, len(specNames)*4)
+		specMrb, serr := oruby.NewCore()
+		if serr == nil {
+			defer specMrb.Close()
+			_, _ = specMrb.LoadString(`
+module Gem
+  class Specification
+    attr_accessor :require_paths, :files
+    def initialize
+      @require_paths = ["lib"]
+      @files = []
+      yield self if block_given?
+    end
+    def method_missing(*); nil; end
+  end
+end`)
+		}
 		for _, name := range specNames {
 			fullSpecPath := filepath.Join(realSpecDir, name)
 			data, err := os.ReadFile(fullSpecPath)
 			if err != nil {
 				return err
 			}
-			mrbBytes, err := compileToMrb(mrb, data, fullSpecPath)
+			mrbBytes, err := compileToMrb(mrb, data, fullSpecPath, oruby.MrbDumpDebugInfo)
 			if err != nil {
 				return fmt.Errorf("default_specs/%s: %w", name, err)
 			}
@@ -262,6 +354,9 @@ func buildStdlibOrb(mrb *oruby.MrbState, dir, outPath string) error {
 			manifest.DefaultSpecs[name] = stdlibFileMeta{
 				Size:   int64(len(data)),
 				SHA256: fmt.Sprintf("%x", sha256.Sum256(data)),
+			}
+			if specMrb != nil {
+				extractDefaultSpecPaths(specMrb, data, fullSpecPath, name, manifest.DefaultSpecPaths)
 			}
 		}
 	}
@@ -323,7 +418,7 @@ func buildStdlibExtraOrb(mrb *oruby.MrbState, dir, outPath string) error {
 		if err != nil {
 			continue
 		}
-		mrbBytes, err := compileToMrb(mrb, data, fullPath)
+		mrbBytes, err := compileToMrb(mrb, data, fullPath, oruby.MrbDumpDebugInfo)
 		if err != nil {
 			log.Printf("warning: skipped %s: %v", rel, err)
 			continue
