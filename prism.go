@@ -256,11 +256,49 @@ func rubySingleQuoted(s string) string {
 
 // hasBareIt: `it` as a word (a block's implicit parameter, ORB_IT_BLOCK)
 func hasBareIt(src []byte) bool {
-	ident := func(c byte) bool {
-		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+	return hasWord(src, "it")
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+
+func hasWord(src []byte, word string) bool {
+	w := len(word)
+	if w == 0 || len(src) < w {
+		return false
 	}
-	for i := 0; i+1 < len(src); i++ {
-		if src[i] == 'i' && src[i+1] == 't' && (i == 0 || !ident(src[i-1])) && (i+2 == len(src) || !ident(src[i+2])) {
+	for off := 0; off <= len(src)-w; {
+		i := bytes.Index(src[off:], []byte(word))
+		if i < 0 {
+			return false
+		}
+		idx := off + i
+		if (idx == 0 || !isIdentByte(src[idx-1])) && (idx+w == len(src) || !isIdentByte(src[idx+w])) {
+			return true
+		}
+		off = idx + 1
+	}
+	return false
+}
+
+func hasTwoSlashes(src []byte) bool {
+	i := bytes.IndexByte(src, '/')
+	return i >= 0 && bytes.IndexByte(src[i+1:], '/') >= 0
+}
+
+func hasBlockParamPipe(src []byte) bool {
+	singles := 0
+	for i := 0; i < len(src); i++ {
+		if src[i] != '|' {
+			continue
+		}
+		if i+1 < len(src) && src[i+1] == '|' {
+			i++
+			continue
+		}
+		singles++
+		if singles >= 2 {
 			return true
 		}
 	}
@@ -297,28 +335,30 @@ func mayNeedRewrite(src []byte, opts *PreprocessOptions) bool {
 	// eval'd code may forward anonymous parameters (ORB_ANON_ARG), or
 	// yield in a class body (ORB_INVALID_YIELD)
 	if opts != nil && opts.NoRegexpLiterals && (bytes.IndexByte(src, '*') >= 0 || bytes.IndexByte(src, '&') >= 0 ||
-		bytes.Contains(src, []byte("yield"))) {
+		hasWord(src, "yield")) {
 		return true
 	}
 	// a regexp literal (ORB_REGEXP_LITERAL)
 	if ((opts == nil || !opts.NoRegexpLiterals) || checkRegexpRanges(src) || bytes.IndexByte(src, 'o') >= 0 || bytes.IndexByte(src, '#') >= 0) &&
-		(bytes.IndexByte(src, '/') >= 0 || bytes.Contains(src, []byte("%r"))) {
+		(hasTwoSlashes(src) || bytes.Contains(src, []byte("%r"))) {
 		return true
 	}
 	// "=>" and ": ": a hash literal, whose duplicated keys MRI warns about (ORB_PARSE_WARN)
-	if hasArrayKwHash(src) || hasBareIt(src) ||
+	if hasArrayKwHash(src) || hasBareIt(src) || hasBlockParamPipe(src) ||
 		bytes.Contains(src, []byte("=>")) || bytes.Contains(src, []byte(": ")) {
 		return true
 	}
-	// "**": **obj (ORB_KWSPLAT)
-	// "|", "->": block and lambda parameters (ORB_BLOCK_PARAMS)
-	// "when", "defined?": parse warnings (ORB_PARSE_WARN)
+	for _, k := range []string{"alias", "undef", "BEGIN", "END", "super", "lambda", "using", "when", "freeze"} {
+		if hasWord(src, k) {
+			return true
+		}
+	}
+	// "->": lambda parameters (ORB_BLOCK_PARAMS)
+	// "defined?": parse warnings (ORB_PARSE_WARN)
 	// ":\"", "%I": interpolated symbols (ORB_DSYM)
-	// "super": a bare super outside a def (ORB_ZSUPER_NODEF)
-	// "lambda": lambda(&x) (ORB_LAMBDA_BLOCK_ARG); "`", "%x": ORB_XSTRING_FROZEN;
-	// "using": f(&x) under refinements (ORB_REFINED_BLOCK_ARG)
-	for _, k := range []string{"|", "->", "**", "alias", "undef", "&.", "BEGIN", "END", "..", "||=", "&&=", "::", "super", "lambda", "`", "%x", "using",
-		"__ENCODING__", "frozen_string_literal", "freeze", "coding", "when", "defined?", ":\"", "%I"} {
+	// "`", "%x": ORB_XSTRING_FROZEN
+	for _, k := range []string{"->", "**", "&.", "..", "||=", "&&=", "::", "`", "%x",
+		"__ENCODING__", "frozen_string_literal", "coding", "defined?", ":\"", "%I"} {
 		if bytes.Contains(src, []byte(k)) {
 			return true
 		}

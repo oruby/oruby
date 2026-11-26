@@ -262,3 +262,34 @@ end
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestMayNeedRewrite(t *testing.T) {
+	shouldSkip := []string{
+		"1 + 2",
+		"x = a / b",
+		"a || b",
+		"a | b",
+		"aliases = undefined_superclass",
+		"# appending whenever",
+	}
+	for _, s := range shouldSkip {
+		if mayNeedRewrite([]byte(s), nil) {
+			t.Errorf("mayNeedRewrite(%q) = true, want false", s)
+		}
+	}
+
+	shouldScan := []string{
+		"/foo/",
+		"a.each { |x| x }",
+		"alias foo bar",
+		"END { 1 }",
+		`"a".freeze`,
+		"# encoding: utf-8",
+		"A::B",
+	}
+	for _, s := range shouldScan {
+		if !mayNeedRewrite([]byte(s), nil) {
+			t.Errorf("mayNeedRewrite(%q) = false, want true", s)
+		}
+	}
+}

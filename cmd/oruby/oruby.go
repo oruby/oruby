@@ -433,6 +433,8 @@ func usage() {
   --enable/--disable=feature  enable or disable features (gems, frozen-string-literal, rubyopt, all)
   --copyright     print the copyright
   --version       print the version
+Environment:
+  ORUBY_CACHE_DIR  bytecode cache dir for required .rb files (1 for user cache dir)
 `, progName())
 }
 

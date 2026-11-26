@@ -11,6 +11,8 @@ make
 
 `make` also builds `bin/oruby`, `bin/orbi` and `bin/orubyc`, which run in-tree with the vendored RubyGems and Bundler in `lib/oruby` (see `lib/oruby/README.md`). `make install PREFIX=/usr/local` installs the tools and that library tree.
 
+Set `ORUBY_CACHE_DIR=1` (or a directory path) to enable the opt-in disk bytecode cache for required `.rb` files.
+
 Windows is still unsupported, but iti is on the way. You should use ```mingw32-make```.
 
 ## Docs
