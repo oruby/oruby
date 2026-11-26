@@ -37,6 +37,13 @@ func getPrecompiledOrb() *oruby.OrbFile {
 // LoadRuby evaluates embedded Ruby glue code of a gem. Errors are fatal:
 // the source is part of the binary.
 func LoadRuby(mrb *oruby.MrbState, name string, src []byte) {
+	if err := LoadRubyE(mrb, name, src); err != nil {
+		panic(fmt.Sprintf("%s: %v", name, err))
+	}
+}
+
+// LoadRubyE evaluates embedded Ruby glue code of a gem and returns any error.
+func LoadRubyE(mrb *oruby.MrbState, name string, src []byte) error {
 	c := mrb.MrbCcontextNew()
 	defer c.Free()
 	c.InternalFilename(name)
@@ -44,14 +51,13 @@ func LoadRuby(mrb *oruby.MrbState, name string, src []byte) {
 		sum := fmt.Sprintf("%x", sha256.Sum256(src))
 		if e, ok := orb.Lookup(sum); ok {
 			if _, err := mrb.LoadStaticIrepCxt(orb.EntryData(e), c); err == nil {
-				return
+				return nil
 			}
 			mrb.ExcClear()
 		}
 	}
-	if _, err := mrb.LoadBytesCxt(src, c); err != nil {
-		panic(fmt.Sprintf("%s: %v", name, err))
-	}
+	_, err := mrb.LoadBytesCxt(src, c)
+	return err
 }
 
 // DataClass makes instances of c carry Go data (see Get/Set)

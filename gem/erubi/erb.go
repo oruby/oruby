@@ -13,7 +13,7 @@ import (
 var erbRuby []byte
 
 func init() {
-	oruby.Gem("erb", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("erb", func(mrb *oruby.MrbState) interface{} {
 		erb := mrb.DefineClass("ERB", mrb.ObjectClass())
 		erb.DefineClassMethod("version", erbVersion, mrb.ArgsNone())
 		erb.DefineMethod("initialize", erbInit, mrb.ArgsArg(1, 3))

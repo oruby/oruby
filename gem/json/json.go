@@ -44,7 +44,7 @@ type genError struct {
 func (e *genError) Error() string { return e.err.Error() }
 
 func init() {
-	oruby.Gem("json", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("json", func(mrb *oruby.MrbState) interface{} {
 		jsonModule := mrb.DefineModule("JSON")
 		mrb.ConstSet(jsonModule, mrb.Intern("VERSION"), mrb.StrNew("2.10.2"))
 		mrb.ConstSet(jsonModule, mrb.Intern("NaN"), mrb.FloatValue(math.NaN()))

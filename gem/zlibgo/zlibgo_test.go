@@ -72,6 +72,7 @@ func testZlibGo(t *testing.T, src string) {
 	t.Helper()
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
+	mrb.Require("zlibgo")
 	got, err := mrb.Eval(src)
 	if err != nil {
 		t.Fatal(err)

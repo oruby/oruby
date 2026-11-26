@@ -99,37 +99,34 @@ func buildCoreExtOrb(mrb *oruby.MrbState) error {
 }
 
 func buildRbOrb(mrb *oruby.MrbState) error {
-	patterns := []string{
-		"gem/io/*.rb",
-		"gem/io/popen/*.rb",
-		"gem/regexp/*.rb",
-		"gem/time/*.rb",
-		"gem/env/*.rb",
-		"gem/transcode/*.rb",
-		"gem/signal/*.rb",
-		"gem/process/*.rb",
-		"gem/erubi/erb.rb",
-		"gem/zlibgo/zlibgo.rb",
-		"gem/stdlib/ruby/*.rb",
-		"gem/uri/*.rb",
-		"gem/socket/*.rb",
-		"gem/date/*.rb",
-		"gem/digest/*.rb",
-		"gem/nethttp/*.rb",
-		"gem/etc/*.rb",
-		"gem/zlib/*.rb",
-		"gem/ffi/*.rb",
-		"gem/coverage/*.rb",
-	}
 	var paths []string
-	for _, pat := range patterns {
-		matches, err := filepath.Glob(pat)
-		if err != nil {
-			return err
+	err := filepath.WalkDir("gem", func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
 		}
-		paths = append(paths, matches...)
+		slash := filepath.ToSlash(p)
+		if d.IsDir() {
+			if slash == "gem/core_ext" || slash == "gem/capi" || d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(slash, ".rb") || strings.HasSuffix(slash, "_test.rb") {
+			return nil
+		}
+		paths = append(paths, p)
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	sort.Strings(paths)
+
+	drbSiblings := strings.NewReplacer(
+		"require_relative 'drb'", "require 'drb/drb'",
+		"require_relative 'eq'", "require 'drb/eq'",
+		"require_relative 'version'", "require 'drb/version'",
+	)
 
 	builder := oruby.NewOrbBuilder(oruby.OrbHdrDebugInfo)
 	seen := make(map[string]bool)
@@ -137,6 +134,10 @@ func buildRbOrb(mrb *oruby.MrbState) error {
 		data, err := os.ReadFile(p)
 		if err != nil || len(data) == 0 {
 			continue
+		}
+		slash := filepath.ToSlash(p)
+		if strings.HasPrefix(slash, "gem/stdlib/ruby/drb/") {
+			data = []byte(drbSiblings.Replace(string(data)))
 		}
 		sum := fmt.Sprintf("%x", sha256.Sum256(data))
 		if seen[sum] {
@@ -380,40 +381,68 @@ func buildStdlibExtraOrb(mrb *oruby.MrbState, dir, outPath string) error {
 	if err != nil {
 		realDir = absDir
 	}
+	rootDir := filepath.Dir(realDir)
+	verName := filepath.Base(realDir)
+
 	var rels []string
 	err = filepath.WalkDir(realDir, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
-		rel, rerr := filepath.Rel(realDir, p)
+		relFromDir, rerr := filepath.Rel(realDir, p)
 		if rerr != nil {
 			return rerr
 		}
-		slash := filepath.ToSlash(rel)
+		slashDir := filepath.ToSlash(relFromDir)
 		if d.IsDir() {
-			if slash == "rubygems" || strings.Contains(slash, "-darwin") || strings.Contains(slash, "-linux") {
+			if slashDir == "rubygems" || strings.Contains(slashDir, "-darwin") || strings.Contains(slashDir, "-linux") {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if slash == "rubygems.rb" || !strings.HasSuffix(slash, ".rb") {
+		if slashDir == "rubygems.rb" || !strings.HasSuffix(slashDir, ".rb") {
 			return nil
 		}
-		rels = append(rels, slash)
+		rel, rerr := filepath.Rel(rootDir, p)
+		if rerr != nil {
+			return rerr
+		}
+		rels = append(rels, filepath.ToSlash(rel))
 		return nil
 	})
 	if err != nil {
 		return err
 	}
+
+	bundledGemsDir := filepath.Join(rootDir, "gems", verName, "gems")
+	if st, serr := os.Stat(bundledGemsDir); serr == nil && st.IsDir() {
+		err = filepath.WalkDir(bundledGemsDir, func(p string, d fs.DirEntry, werr error) error {
+			if werr != nil {
+				return werr
+			}
+			if d.IsDir() || !strings.HasSuffix(d.Name(), ".rb") {
+				return nil
+			}
+			rel, rerr := filepath.Rel(rootDir, p)
+			if rerr != nil {
+				return rerr
+			}
+			rels = append(rels, filepath.ToSlash(rel))
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
 	sort.Strings(rels)
 
 	builder := oruby.NewOrbBuilder(oruby.OrbHdrDebugInfo)
 	manifest := stdlibManifest{
-		Prefix: filepath.ToSlash(realDir),
+		Prefix: filepath.ToSlash(rootDir),
 		Files:  make(map[string]stdlibFileMeta, len(rels)),
 	}
 	for _, rel := range rels {
-		fullPath := filepath.Join(realDir, filepath.FromSlash(rel))
+		fullPath := filepath.Join(rootDir, filepath.FromSlash(rel))
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			continue

@@ -206,17 +206,28 @@ type stdlibOrbCache struct {
 }
 
 var (
-	stdlibCacheOnce      sync.Once
-	stdlibCacheVal       *stdlibOrbCache
-	stdlibExtraCacheOnce sync.Once
-	stdlibExtraCacheVal  *stdlibOrbCache
+	stdlibCacheOnce       sync.Once
+	stdlibCacheVal        *stdlibOrbCache
+	stdlibExtraCacheOnce  sync.Once
+	stdlibExtraCacheVal   *stdlibOrbCache
+	rubyLibPrefixOnce     sync.Once
+	rubyLibPrefixSlashVal string
 )
 
-func parseStdlibOrbCache(orb *oruby.OrbFile) *stdlibOrbCache {
+func getRubyLibPrefixSlash() string {
+	rubyLibPrefixOnce.Do(func() {
+		realLib := filepath.ToSlash(realpathOf(expandPath(oruby.RubyLibPrefix())))
+		if realLib != "" {
+			rubyLibPrefixSlashVal = strings.TrimSuffix(realLib, "/") + "/"
+		}
+	})
+	return rubyLibPrefixSlashVal
+}
+
+func parseStdlibOrbCache(orb *oruby.OrbFile, expectedDir string) *stdlibOrbCache {
 	if orb == nil {
 		return nil
 	}
-	libDir := filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion)
 	me, ok := orb.Lookup("_manifest.json")
 	if !ok {
 		return nil
@@ -225,7 +236,7 @@ func parseStdlibOrbCache(orb *oruby.OrbFile) *stdlibOrbCache {
 	if err := json.Unmarshal(orb.EntryData(me), &manifest); err != nil {
 		return nil
 	}
-	realLib := filepath.ToSlash(realpathOf(expandPath(libDir)))
+	realLib := filepath.ToSlash(realpathOf(expandPath(expectedDir)))
 	if manifest.Prefix == "" || manifest.Prefix != realLib {
 		return nil
 	}
@@ -238,14 +249,14 @@ func parseStdlibOrbCache(orb *oruby.OrbFile) *stdlibOrbCache {
 
 func getStdlibOrbCache() *stdlibOrbCache {
 	stdlibCacheOnce.Do(func() {
-		stdlibCacheVal = parseStdlibOrbCache(oruby.StdlibOrb())
+		stdlibCacheVal = parseStdlibOrbCache(oruby.StdlibOrb(), filepath.Join(oruby.RubyLibPrefix(), oruby.RubyVersion))
 	})
 	return stdlibCacheVal
 }
 
 func getStdlibExtraOrbCache() *stdlibOrbCache {
 	stdlibExtraCacheOnce.Do(func() {
-		stdlibExtraCacheVal = parseStdlibOrbCache(oruby.StdlibExtraOrb())
+		stdlibExtraCacheVal = parseStdlibOrbCache(oruby.StdlibExtraOrb(), oruby.RubyLibPrefix())
 	})
 	return stdlibExtraCacheVal
 }
@@ -294,7 +305,7 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 		if loaded, err := tryLoadFromStdlibCache(mrb, getStdlibOrbCache(), fullName, realSlash); loaded {
 			return err
 		}
-		if cache := getStdlibOrbCache(); cache != nil && strings.HasPrefix(realSlash, cache.prefixSlash) {
+		if prefix := getRubyLibPrefixSlash(); prefix != "" && strings.HasPrefix(realSlash, prefix) {
 			if loaded, err := tryLoadFromStdlibCache(mrb, getStdlibExtraOrbCache(), fullName, realSlash); loaded {
 				return err
 			}

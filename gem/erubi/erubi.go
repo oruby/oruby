@@ -15,7 +15,7 @@ const (
 )
 
 func init() {
-	oruby.Gem("erubi", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("erubi", func(mrb *oruby.MrbState) interface{} {
 		erubi := mrb.DefineModule("Erubi")
 		erubi.Const("VERSION", Version)
 		erubi.Const("RANGE_ALL", mrb.RangeNew(mrb.FixnumValue(0), mrb.FixnumValue(-1), true))

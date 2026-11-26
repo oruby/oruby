@@ -9,7 +9,7 @@ import (
 //import "reflect"
 
 func init() {
-	oruby.Gem("database", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("database", func(mrb *oruby.MrbState) interface{} {
 		db := mrb.DefineModule("Database")
 
 		mrb.DefineModuleFunc(db, "open", sql.Open)

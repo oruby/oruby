@@ -31,6 +31,7 @@ import (
 
 	"github.com/oruby/oruby"
 	"github.com/oruby/oruby/gem/capi"
+	"github.com/oruby/oruby/gem/rb"
 )
 
 //go:embed lib
@@ -53,10 +54,7 @@ func init() {
 		}
 		name := strings.TrimSuffix(strings.TrimPrefix(path, "lib/"), ".rb")
 		oruby.LazyGem(name, func(mrb *oruby.MrbState) interface{} {
-			c := mrb.MrbCcontextNew()
-			defer c.Free()
-			c.Filename("<internal:" + name + ".rb>")
-			if _, err := mrb.LoadBytesCxt(src, c); err != nil {
+			if err := rb.LoadRubyE(mrb, "<internal:"+name+".rb>", src); err != nil {
 				return &oruby.InitError{Err: err}
 			}
 			return nil

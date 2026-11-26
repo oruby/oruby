@@ -11,6 +11,7 @@ func assert(t *testing.T, desc, code string) {
 
 	mrb, _ := oruby.New()
 	defer mrb.Close()
+	mrb.Require("json")
 
 	result, err := mrb.Eval(code)
 	if err != nil {
@@ -64,6 +65,7 @@ func TestStateAndStdlibCompat(t *testing.T) {
 func TestJSONNestingAndAllowNaN(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
+	mrb.Require("json")
 
 	_, err := mrb.Eval(`
 		# Self-referential array must raise JSON::NestingError, not stack-overflow

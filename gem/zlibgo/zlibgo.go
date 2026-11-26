@@ -23,7 +23,7 @@ import (
 var zlibRb []byte
 
 func init() {
-	oruby.Gem("zlibgo", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("zlibgo", func(mrb *oruby.MrbState) interface{} {
 		mod := mrb.DefineModule("ZlibGo")
 		mod.DefineClassMethod("__adler32", zlibAdler32, mrb.ArgsReq(2))
 		mod.DefineClassMethod("__crc32", zlibCrc32, mrb.ArgsReq(2))

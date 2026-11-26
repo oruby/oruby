@@ -28,6 +28,7 @@ func checkOutput(t *testing.T, input, binding, src, result string) {
 func checkOutputE(t *testing.T, e *Engine, input, binding, src, result string) (*oruby.MrbState, func()) {
 	t.Helper()
 	mrb := oruby.MrbOpen()
+	mrb.Require("erubi")
 
 	err := e.Init(input)
 	if err != nil {
@@ -118,6 +119,7 @@ func TestERBResultWithBinding(t *testing.T) {
 func TestERBOptionsAndRun(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
+	mrb.Require("erb")
 	got, err := mrb.Eval(`
     template = ERB.new("hello", eoutvar: "_output")
     template.src.include?("_output") && template.result == "hello"
@@ -180,6 +182,7 @@ func TestERBBindingHashSupport(t *testing.T) {
 func TestERBEscape(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
+	mrb.Require("erb")
 	got, err := mrb.Eval(`
     ERB::Escape.html_escape(%(<a href="x&y">'z'</a>)) == "&lt;a href=&quot;x&amp;y&quot;&gt;&#39;z&#39;&lt;/a&gt;" &&
       ERB::Util.h("a < b") == "a &lt; b" &&
@@ -195,6 +198,7 @@ func TestERBEscape(t *testing.T) {
 func TestERBHashLocals(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()
+	mrb.Require("erb")
 	got, err := mrb.Eval(`
     $erb_expected = Object.new
     template = ERB.new("<%= item.equal?($erb_expected) %>:<%= value %>")

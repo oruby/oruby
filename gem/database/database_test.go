@@ -11,6 +11,7 @@ import (
 
 func setup() (*oruby.MrbState, func()) {
 	mrb, _ := oruby.New()
+	mrb.Require("database")
 
 	_ = os.Remove("testdata/foo.db")
 
@@ -22,6 +23,7 @@ func assert(t *testing.T, desc, code string) {
 
 	mrb, _ := oruby.New()
 	defer mrb.Close()
+	mrb.Require("database")
 
 	result, err := mrb.Eval(code)
 	if err != nil {

@@ -15,7 +15,7 @@ import (
 )
 
 func init() {
-	oruby.Gem("http", func(mrb *oruby.MrbState) interface{} {
+	oruby.LazyGem("http", func(mrb *oruby.MrbState) interface{} {
 		httpMod := mrb.DefineModule("HTTP")
 
 		// Module methods

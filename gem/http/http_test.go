@@ -18,6 +18,7 @@ func TestHTTPServer_Basic(t *testing.T) {
 		t.Fatalf("failed to create mrb: %v", err)
 	}
 	defer mrb.Close()
+	mrb.Require("http")
 
 	script := `
 		$server = HTTP::Server.new("127.0.0.1:0")
@@ -94,6 +95,7 @@ func TestHTTPServer_MountStatic(t *testing.T) {
 		t.Fatalf("failed to create mrb: %v", err)
 	}
 	defer mrb.Close()
+	mrb.Require("http")
 
 	tmpDir, err := os.MkdirTemp("", "oruby-http-test-*")
 	if err != nil {
@@ -139,6 +141,7 @@ func TestHTTPClient(t *testing.T) {
 		t.Fatalf("failed to create mrb: %v", err)
 	}
 	defer mrb.Close()
+	mrb.Require("http")
 
 	script := `
 		$srv = HTTP::Server.new("127.0.0.1:0")
