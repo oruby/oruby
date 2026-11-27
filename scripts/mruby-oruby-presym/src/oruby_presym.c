@@ -101,6 +101,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@__ns_cache");
   (void)mrb_intern_lit(mrb, "@__oruby_fstr");
   (void)mrb_intern_lit(mrb, "@__oruby_keep_script_lines");
+  (void)mrb_intern_lit(mrb, "@__oruby_lazy_default_map");
   (void)mrb_intern_lit(mrb, "@__oruby_method");
   (void)mrb_intern_lit(mrb, "@__oruby_path");
   (void)mrb_intern_lit(mrb, "@__oruby_site");
@@ -132,6 +133,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@allow_duplicate_key");
   (void)mrb_intern_lit(mrb, "@allow_nan");
   (void)mrb_intern_lit(mrb, "@app");
+  (void)mrb_intern_lit(mrb, "@argv0");
   (void)mrb_intern_lit(mrb, "@array_nl");
   (void)mrb_intern_lit(mrb, "@as_json");
   (void)mrb_intern_lit(mrb, "@ascii_compatible");
@@ -154,6 +156,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@default_internal");
   (void)mrb_intern_lit(mrb, "@default_options");
   (void)mrb_intern_lit(mrb, "@depth");
+  (void)mrb_intern_lit(mrb, "@discover_gems_on_require");
   (void)mrb_intern_lit(mrb, "@dstaddr");
   (void)mrb_intern_lit(mrb, "@encoder_for_put_copy_data");
   (void)mrb_intern_lit(mrb, "@encoding");
@@ -165,6 +168,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@file");
   (void)mrb_intern_lit(mrb, "@filename");
   (void)mrb_intern_lit(mrb, "@flags");
+  (void)mrb_intern_lit(mrb, "@gem_prelude_index");
   (void)mrb_intern_lit(mrb, "@ifindex");
   (void)mrb_intern_lit(mrb, "@indent");
   (void)mrb_intern_lit(mrb, "@internal_encoding");
@@ -188,6 +192,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@options");
   (void)mrb_intern_lit(mrb, "@parse_options");
   (void)mrb_intern_lit(mrb, "@path");
+  (void)mrb_intern_lit(mrb, "@path_to_default_spec_map");
   (void)mrb_intern_lit(mrb, "@pos");
   (void)mrb_intern_lit(mrb, "@public_key");
   (void)mrb_intern_lit(mrb, "@racc_error_status");
@@ -217,6 +222,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@tmp_path");
   (void)mrb_intern_lit(mrb, "@tstack");
   (void)mrb_intern_lit(mrb, "@unlinked");
+  (void)mrb_intern_lit(mrb, "@unresolved_deps");
   (void)mrb_intern_lit(mrb, "@unused_bits");
   (void)mrb_intern_lit(mrb, "@vstack");
   (void)mrb_intern_lit(mrb, "@yydebug");
@@ -283,6 +289,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "CLOCK_UPTIME_RAW");
   (void)mrb_intern_lit(mrb, "CLOCK_UPTIME_RAW_APPROX");
   (void)mrb_intern_lit(mrb, "CLOEXEC");
+  (void)mrb_intern_lit(mrb, "CONFIG");
   (void)mrb_intern_lit(mrb, "CONTEXT_SPECIFIC");
   (void)mrb_intern_lit(mrb, "COPYRIGHT");
   (void)mrb_intern_lit(mrb, "CPU");
@@ -290,6 +297,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "CREAT");
   (void)mrb_intern_lit(mrb, "CRL");
   (void)mrb_intern_lit(mrb, "CRLError");
+  (void)mrb_intern_lit(mrb, "CROSS_COMPILING");
   (void)mrb_intern_lit(mrb, "CSS");
   (void)mrb_intern_lit(mrb, "Certificate");
   (void)mrb_intern_lit(mrb, "CertificateError");
@@ -324,6 +332,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "Database");
   (void)mrb_intern_lit(mrb, "Date");
   (void)mrb_intern_lit(mrb, "DepthError");
+  (void)mrb_intern_lit(mrb, "DidYouMean");
   (void)mrb_intern_lit(mrb, "Digest");
   (void)mrb_intern_lit(mrb, "Dir");
   (void)mrb_intern_lit(mrb, "DisallowedClass");
@@ -453,6 +462,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "LoadError");
   (void)mrb_intern_lit(mrb, "Location");
   (void)mrb_intern_lit(mrb, "MAJOR_VERSION");
+  (void)mrb_intern_lit(mrb, "MAKEFILE_CONFIG");
   (void)mrb_intern_lit(mrb, "MINOR_VERSION");
   (void)mrb_intern_lit(mrb, "MTState");
   (void)mrb_intern_lit(mrb, "MULTILINE");
@@ -508,6 +518,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "OpenURI");
   (void)mrb_intern_lit(mrb, "OverflowError");
   (void)mrb_intern_lit(mrb, "Ox");
+  (void)mrb_intern_lit(mrb, "PAGE_SIZE");
   (void)mrb_intern_lit(mrb, "PATH_SEPARATOR");
   (void)mrb_intern_lit(mrb, "PG");
   (void)mrb_intern_lit(mrb, "PIPE");
@@ -572,6 +583,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "Random");
   (void)mrb_intern_lit(mrb, "Range");
   (void)mrb_intern_lit(mrb, "Rational");
+  (void)mrb_intern_lit(mrb, "RbConfig");
   (void)mrb_intern_lit(mrb, "RbNaCl");
   (void)mrb_intern_lit(mrb, "Reader");
   (void)mrb_intern_lit(mrb, "Redcarpet");
@@ -628,6 +640,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "SizedQueue");
   (void)mrb_intern_lit(mrb, "Snappy");
   (void)mrb_intern_lit(mrb, "Socket");
+  (void)mrb_intern_lit(mrb, "Specification");
   (void)mrb_intern_lit(mrb, "StackError");
   (void)mrb_intern_lit(mrb, "StandardError");
   (void)mrb_intern_lit(mrb, "Stat");
@@ -656,6 +669,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "T61STRING");
   (void)mrb_intern_lit(mrb, "TEXT_END");
   (void)mrb_intern_lit(mrb, "TLSSocket");
+  (void)mrb_intern_lit(mrb, "TOPDIR");
   (void)mrb_intern_lit(mrb, "TRUNC");
   (void)mrb_intern_lit(mrb, "Tagged");
   (void)mrb_intern_lit(mrb, "Tempfile");
@@ -936,6 +950,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_inspect_part");
   (void)mrb_intern_lit(mrb, "__oruby_inspect_symbol_quote?");
   (void)mrb_intern_lit(mrb, "__oruby_install_defaults__");
+  (void)mrb_intern_lit(mrb, "__oruby_install_rubygems_fast_require");
   (void)mrb_intern_lit(mrb, "__oruby_instrument");
   (void)mrb_intern_lit(mrb, "__oruby_intern_enc");
   (void)mrb_intern_lit(mrb, "__oruby_interrupt");
@@ -956,6 +971,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_list__");
   (void)mrb_intern_lit(mrb, "__oruby_literal_freeze");
   (void)mrb_intern_lit(mrb, "__oruby_load");
+  (void)mrb_intern_lit(mrb, "__oruby_load_gemspec");
   (void)mrb_intern_lit(mrb, "__oruby_load_wrapper");
   (void)mrb_intern_lit(mrb, "__oruby_lookup_class");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
@@ -987,6 +1003,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_popen_duplex?");
   (void)mrb_intern_lit(mrb, "__oruby_popen_pid");
   (void)mrb_intern_lit(mrb, "__oruby_popen_start");
+  (void)mrb_intern_lit(mrb, "__oruby_populate_lazy_defaults");
   (void)mrb_intern_lit(mrb, "__oruby_post");
   (void)mrb_intern_lit(mrb, "__oruby_prism_errors");
   (void)mrb_intern_lit(mrb, "__oruby_prism_nodes");
@@ -1014,6 +1031,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_root_fiber");
   (void)mrb_intern_lit(mrb, "__oruby_rpos");
   (void)mrb_intern_lit(mrb, "__oruby_ruby2_keywords");
+  (void)mrb_intern_lit(mrb, "__oruby_rubygems_require");
   (void)mrb_intern_lit(mrb, "__oruby_scan");
   (void)mrb_intern_lit(mrb, "__oruby_sched");
   (void)mrb_intern_lit(mrb, "__oruby_scheduler_flag");
@@ -1148,11 +1166,15 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__xpath");
   (void)mrb_intern_lit(mrb, "__xpath_for");
   (void)mrb_intern_lit(mrb, "_a");
+  (void)mrb_intern_lit(mrb, "_b");
   (void)mrb_intern_lit(mrb, "_binread");
   (void)mrb_intern_lit(mrb, "_binwrite");
+  (void)mrb_intern_lit(mrb, "_c");
   (void)mrb_intern_lit(mrb, "_caller_receiver");
   (void)mrb_intern_lit(mrb, "_close");
+  (void)mrb_intern_lit(mrb, "_d");
   (void)mrb_intern_lit(mrb, "_dump");
+  (void)mrb_intern_lit(mrb, "_e");
   (void)mrb_intern_lit(mrb, "_fork");
   (void)mrb_intern_lit(mrb, "_get_cmd");
   (void)mrb_intern_lit(mrb, "_klass");
@@ -1465,6 +1487,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "dev_major");
   (void)mrb_intern_lit(mrb, "dev_minor");
   (void)mrb_intern_lit(mrb, "dh_compute_key");
+  (void)mrb_intern_lit(mrb, "did_you_mean");
   (void)mrb_intern_lit(mrb, "digest");
   (void)mrb_intern_lit(mrb, "digest_length");
   (void)mrb_intern_lit(mrb, "digest_size");
@@ -1599,6 +1622,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "file?");
   (void)mrb_intern_lit(mrb, "filename");
   (void)mrb_intern_lit(mrb, "fileno");
+  (void)mrb_intern_lit(mrb, "files");
   (void)mrb_intern_lit(mrb, "final");
   (void)mrb_intern_lit(mrb, "find");
   (void)mrb_intern_lit(mrb, "find_function");
@@ -2168,6 +2192,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "replace");
   (void)mrb_intern_lit(mrb, "req");
   (void)mrb_intern_lit(mrb, "require");
+  (void)mrb_intern_lit(mrb, "require_paths");
   (void)mrb_intern_lit(mrb, "require_relative");
   (void)mrb_intern_lit(mrb, "reset");
   (void)mrb_intern_lit(mrb, "reset!");
@@ -2204,6 +2229,9 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "rpartition");
   (void)mrb_intern_lit(mrb, "rstrip");
   (void)mrb_intern_lit(mrb, "rstrip!");
+  (void)mrb_intern_lit(mrb, "ruby");
+  (void)mrb_intern_lit(mrb, "ruby_install_name");
+  (void)mrb_intern_lit(mrb, "rubygems");
   (void)mrb_intern_lit(mrb, "run");
   (void)mrb_intern_lit(mrb, "running?");
   (void)mrb_intern_lit(mrb, "rw");
