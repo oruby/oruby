@@ -502,6 +502,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "NodeSet");
   (void)mrb_intern_lit(mrb, "Nodes");
   (void)mrb_intern_lit(mrb, "Nokogiri");
+  (void)mrb_intern_lit(mrb, "NotImplementedError");
   (void)mrb_intern_lit(mrb, "Numeric");
   (void)mrb_intern_lit(mrb, "OBJECT");
   (void)mrb_intern_lit(mrb, "OCTET_STRING");
@@ -959,6 +960,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_io_enum");
   (void)mrb_intern_lit(mrb, "__oruby_io_print");
   (void)mrb_intern_lit(mrb, "__oruby_io_puts");
+  (void)mrb_intern_lit(mrb, "__oruby_ioctl");
   (void)mrb_intern_lit(mrb, "__oruby_it");
   (void)mrb_intern_lit(mrb, "__oruby_items");
   (void)mrb_intern_lit(mrb, "__oruby_join");
@@ -974,6 +976,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_load");
   (void)mrb_intern_lit(mrb, "__oruby_load_gemspec");
   (void)mrb_intern_lit(mrb, "__oruby_load_wrapper");
+  (void)mrb_intern_lit(mrb, "__oruby_locale_charmap");
   (void)mrb_intern_lit(mrb, "__oruby_lookup_class");
   (void)mrb_intern_lit(mrb, "__oruby_main__");
   (void)mrb_intern_lit(mrb, "__oruby_main_binding");

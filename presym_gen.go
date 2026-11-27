@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "8ca8203ebb208bcc"
+const presymTable = "9b362703fe445aa7"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -756,6 +756,7 @@ const (
 	Sym_NodeSet                                 MrbSym = C.MRB_SYM__NodeSet                                 // "NodeSet"
 	Sym_Nodes                                   MrbSym = C.MRB_SYM__Nodes                                   // "Nodes"
 	Sym_Nokogiri                                MrbSym = C.MRB_SYM__Nokogiri                                // "Nokogiri"
+	Sym_NotImplementedError                     MrbSym = C.MRB_SYM__NotImplementedError                     // "NotImplementedError"
 	Sym_Numeric                                 MrbSym = C.MRB_SYM__Numeric                                 // "Numeric"
 	Sym_OBJECT                                  MrbSym = C.MRB_SYM__OBJECT                                  // "OBJECT"
 	Sym_OCTET_STRING                            MrbSym = C.MRB_SYM__OCTET_STRING                            // "OCTET_STRING"
@@ -1196,6 +1197,7 @@ const (
 	Sym___oruby_io_enum                         MrbSym = C.MRB_SYM____oruby_io_enum                         // "__oruby_io_enum"
 	Sym___oruby_io_print                        MrbSym = C.MRB_SYM____oruby_io_print                        // "__oruby_io_print"
 	Sym___oruby_io_puts                         MrbSym = C.MRB_SYM____oruby_io_puts                         // "__oruby_io_puts"
+	Sym___oruby_ioctl                           MrbSym = C.MRB_SYM____oruby_ioctl                           // "__oruby_ioctl"
 	Sym___oruby_it                              MrbSym = C.MRB_SYM____oruby_it                              // "__oruby_it"
 	Sym___oruby_items                           MrbSym = C.MRB_SYM____oruby_items                           // "__oruby_items"
 	Sym___oruby_join                            MrbSym = C.MRB_SYM____oruby_join                            // "__oruby_join"
@@ -1211,6 +1213,7 @@ const (
 	Sym___oruby_load                            MrbSym = C.MRB_SYM____oruby_load                            // "__oruby_load"
 	Sym___oruby_load_gemspec                    MrbSym = C.MRB_SYM____oruby_load_gemspec                    // "__oruby_load_gemspec"
 	Sym___oruby_load_wrapper                    MrbSym = C.MRB_SYM____oruby_load_wrapper                    // "__oruby_load_wrapper"
+	Sym___oruby_locale_charmap                  MrbSym = C.MRB_SYM____oruby_locale_charmap                  // "__oruby_locale_charmap"
 	Sym___oruby_lookup_class                    MrbSym = C.MRB_SYM____oruby_lookup_class                    // "__oruby_lookup_class"
 	Sym___oruby_main__                          MrbSym = C.MRB_SYM____oruby_main__                          // "__oruby_main__"
 	Sym___oruby_main_binding                    MrbSym = C.MRB_SYM____oruby_main_binding                    // "__oruby_main_binding"

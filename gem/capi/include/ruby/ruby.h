@@ -754,6 +754,27 @@ VALUE rb_io_write(VALUE, VALUE);
 VALUE rb_io_puts(int, const VALUE *, VALUE);
 VALUE rb_p(VALUE);
 RUBY_EXTERN VALUE rb_stdout, rb_stderr, rb_stdin, rb_fs, rb_output_fs, rb_rs, rb_default_rs, rb_output_rs;
+/* Ruby assigns $stdout and the like: an extension reads them live */
+#ifndef ORUBY_CAPI_IMPL
+# define rb_stdin (rb_gv_get("$stdin"))
+# define rb_stdout (rb_gv_get("$stdout"))
+# define rb_stderr (rb_gv_get("$stderr"))
+# define rb_defout (rb_gv_get("$stdout"))
+# define rb_fs (rb_gv_get("$;"))
+# define rb_rs (rb_gv_get("$/"))
+# define rb_output_rs (rb_gv_get("$\\"))
+# define rb_output_fs (rb_gv_get("$,"))
+#endif
+typedef VALUE rb_gvar_getter_t(ID, VALUE *);
+typedef void rb_gvar_setter_t(VALUE, ID, VALUE *);
+typedef void rb_gvar_marker_t(VALUE *);
+void rb_define_hooked_variable(const char *, VALUE *, rb_gvar_getter_t *, rb_gvar_setter_t *);
+void rb_define_virtual_variable(const char *, rb_gvar_getter_t *, rb_gvar_setter_t *);
+void rb_define_variable(const char *, VALUE *);
+void rb_define_readonly_variable(const char *, const VALUE *);
+VALUE rb_f_global_variables(void);
+VALUE rb_lastline_get(void);
+void rb_lastline_set(VALUE);
 void rb_ext_ractor_safe(bool);
 #define RB_EXT_RACTOR_SAFE(f) rb_ext_ractor_safe(f)
 
@@ -1196,5 +1217,7 @@ NORETURN(void rb_iter_break_value(VALUE));
 const char *rb_sourcefile(void);
 int rb_sourceline(void);
 double ruby_strtod(const char *, char **);
+
+#include "ruby/st.h"
 
 #endif /* ORUBY_CAPI_RUBY_H */

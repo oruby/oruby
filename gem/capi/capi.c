@@ -2821,11 +2821,13 @@ int ruby_vm_destruct(ruby_vm_t *vm) { (void)vm; return 0; }
 
 /* The state is closing: what the C API holds of it goes, so that another
    state can bind it (an extension's Init runs again there). */
+static void capi_gvars_reset(void);
 static void capi_unbind(mrb_state *mrb) {
   if (mrb != M) return;
   pthread_mutex_lock(&roots_lock);
   nroots = 0;
   pthread_mutex_unlock(&roots_lock);
+  capi_gvars_reset();
   errinfo = Qnil;
   jump_exc = mrb_nil_value();
   errinfo_registered = 0;
@@ -3809,4 +3811,412 @@ VALUE rb_int_parse_cstr(const char *str, ssize_t len, char **endp, size_t *ndigi
   VALUE res = rb_cstr_to_inum(buf, base, 0);
   free(buf);
   return res;
+}
+
+/* ------------------------------------------------------------------ */
+/* ruby/st.h: MRI's table, chained bins and an insertion-order list    */
+
+#include "ruby/st.h"
+
+static int st_strcmp_i(st_data_t a, st_data_t b) { return strcmp((const char *)a, (const char *)b); }
+static st_index_t st_strhash_i(st_data_t a) { return st_hash((const char *)a, strlen((const char *)a), 0); }
+static int st_strcasecmp_i(st_data_t a, st_data_t b) { return strcasecmp((const char *)a, (const char *)b); }
+static st_index_t st_strcasehash_i(st_data_t a) {
+  st_index_t h = 5381;
+  for (const unsigned char *p = (const unsigned char *)a; *p; p++) h = h * 33 + (st_index_t)tolower(*p);
+  return h;
+}
+int st_numcmp(st_data_t a, st_data_t b) { return a != b; }
+st_index_t st_numhash(st_data_t n) { return (st_index_t)((n >> 3) ^ (n << 7) ^ (n >> 17)); }
+static const struct st_hash_type st_type_num = {st_numcmp, st_numhash};
+static const struct st_hash_type st_type_str = {st_strcmp_i, st_strhash_i};
+static const struct st_hash_type st_type_strcase = {st_strcasecmp_i, st_strcasehash_i};
+
+st_table *st_init_table_with_size(const struct st_hash_type *type, st_index_t size) {
+  st_index_t n = 16;
+  while (n < size) n <<= 1;
+  st_table *t = (st_table *)calloc(1, sizeof(st_table));
+  t->type = type;
+  t->num_bins = n;
+  t->bins = (st_table_entry **)calloc((size_t)n, sizeof(st_table_entry *));
+  return t;
+}
+st_table *st_init_table(const struct st_hash_type *type) { return st_init_table_with_size(type, 0); }
+st_table *st_init_numtable(void) { return st_init_table(&st_type_num); }
+st_table *st_init_numtable_with_size(st_index_t size) { return st_init_table_with_size(&st_type_num, size); }
+st_table *st_init_strtable(void) { return st_init_table(&st_type_str); }
+st_table *st_init_strtable_with_size(st_index_t size) { return st_init_table_with_size(&st_type_str, size); }
+st_table *st_init_strcasetable(void) { return st_init_table(&st_type_strcase); }
+st_table *st_init_strcasetable_with_size(st_index_t size) { return st_init_table_with_size(&st_type_strcase, size); }
+
+static st_table_entry *st_find(st_table *t, st_data_t key, st_index_t hash) {
+  for (st_table_entry *e = t->bins[hash % t->num_bins]; e; e = e->next)
+    if (e->hash == hash && (e->key == key || t->type->compare(e->key, key) == 0)) return e;
+  return NULL;
+}
+static void st_rehash(st_table *t) {
+  st_index_t n = t->num_bins * 2;
+  free(t->bins);
+  t->bins = (st_table_entry **)calloc((size_t)n, sizeof(st_table_entry *));
+  t->num_bins = n;
+  for (st_table_entry *e = t->head; e; e = e->fore) {
+    st_table_entry **b = &t->bins[e->hash % n];
+    e->next = *b;
+    *b = e;
+  }
+}
+static void st_add(st_table *t, st_data_t key, st_data_t val, st_index_t hash) {
+  if (t->num_entries >= t->num_bins * 2) st_rehash(t);
+  st_table_entry *e = (st_table_entry *)calloc(1, sizeof(st_table_entry));
+  e->hash = hash; e->key = key; e->record = val;
+  st_table_entry **b = &t->bins[hash % t->num_bins];
+  e->next = *b;
+  *b = e;
+  e->back = t->tail;
+  if (t->tail) t->tail->fore = e; else t->head = e;
+  t->tail = e;
+  t->num_entries++;
+}
+static void st_unlink(st_table *t, st_table_entry *e) {
+  for (st_table_entry **p = &t->bins[e->hash % t->num_bins]; *p; p = &(*p)->next)
+    if (*p == e) { *p = e->next; break; }
+  if (e->back) e->back->fore = e->fore; else t->head = e->fore;
+  if (e->fore) e->fore->back = e->back; else t->tail = e->back;
+  t->num_entries--;
+}
+int st_lookup(st_table *t, st_data_t key, st_data_t *value) {
+  st_table_entry *e = st_find(t, key, t->type->hash(key));
+  if (!e) return 0;
+  if (value) *value = e->record;
+  return 1;
+}
+int st_get_key(st_table *t, st_data_t key, st_data_t *result) {
+  st_table_entry *e = st_find(t, key, t->type->hash(key));
+  if (!e) return 0;
+  if (result) *result = e->key;
+  return 1;
+}
+int st_insert(st_table *t, st_data_t key, st_data_t val) {
+  st_index_t h = t->type->hash(key);
+  st_table_entry *e = st_find(t, key, h);
+  if (e) { e->record = val; return 1; }
+  st_add(t, key, val, h);
+  return 0;
+}
+int st_insert2(st_table *t, st_data_t key, st_data_t val, st_data_t (*func)(st_data_t)) {
+  st_index_t h = t->type->hash(key);
+  st_table_entry *e = st_find(t, key, h);
+  if (e) { e->record = val; return 1; }
+  st_add(t, func(key), val, h);
+  return 0;
+}
+void st_add_direct(st_table *t, st_data_t key, st_data_t val) { st_add(t, key, val, t->type->hash(key)); }
+int st_delete(st_table *t, st_data_t *key, st_data_t *value) {
+  st_table_entry *e = st_find(t, *key, t->type->hash(*key));
+  if (!e) { if (value) *value = 0; return 0; }
+  *key = e->key;
+  if (value) *value = e->record;
+  st_unlink(t, e);
+  free(e);
+  return 1;
+}
+int st_foreach(st_table *t, int (*fn)(st_data_t, st_data_t, st_data_t), st_data_t arg) {
+  for (st_table_entry *e = t->head, *next; e; e = next) {
+    next = e->fore;
+    switch (fn(e->key, e->record, arg)) {
+    case ST_STOP: return 0;
+    case ST_DELETE: st_unlink(t, e); free(e); break;
+    default: break;
+    }
+  }
+  return 0;
+}
+void st_clear(st_table *t) {
+  for (st_table_entry *e = t->head, *next; e; e = next) { next = e->fore; free(e); }
+  memset(t->bins, 0, (size_t)t->num_bins * sizeof(st_table_entry *));
+  t->head = t->tail = NULL;
+  t->num_entries = 0;
+}
+void st_free_table(st_table *t) {
+  st_clear(t);
+  free(t->bins);
+  free(t);
+}
+st_table *st_copy(st_table *old) {
+  st_table *t = st_init_table_with_size(old->type, old->num_entries);
+  for (st_table_entry *e = old->head; e; e = e->fore) st_add(t, e->key, e->record, e->hash);
+  return t;
+}
+
+/* ------------------------------------------------------------------ */
+/* global variables defined in C (ruby/ruby.h)                         */
+
+#define CAPI_NGVARS 50
+static struct capi_gvar {
+  mrb_sym sym;
+  VALUE *var;
+  rb_gvar_getter_t *getter;
+  rb_gvar_setter_t *setter;
+  int readonly, registered, is_virtual;
+} capi_gvars[CAPI_NGVARS];
+static int ncapi_gvars;
+static void capi_gvars_reset(void) { memset(capi_gvars, 0, sizeof(capi_gvars)); ncapi_gvars = 0; }
+
+static mrb_value capi_gvar_get(int i) {
+  struct capi_gvar *g = &capi_gvars[i];
+  if (g->getter) return MV(g->getter((ID)g->sym, g->var));
+  if (g->is_virtual) return mrb_false_value();
+  return g->var ? MV(*g->var) : mrb_nil_value();
+}
+static void capi_gvar_set(int i, mrb_value v) {
+  struct capi_gvar *g = &capi_gvars[i];
+  if (g->setter) { g->setter(V(v), (ID)g->sym, g->var); return; }
+  if (g->readonly || !g->var) rb_raise(rb_eNameError, "%s is a read-only variable", mrb_sym_name(M, g->sym));
+  *g->var = V(v);
+}
+#define CAPI_GVAR_SLOT(n) \
+  static mrb_value capi_gv_get_##n(mrb_state *mrb) { (void)mrb; return capi_gvar_get(n); } \
+  static void capi_gv_set_##n(mrb_state *mrb, mrb_value v) { (void)mrb; capi_gvar_set(n, v); }
+#define CAPI_GVAR_SLOTS_8(b) \
+  CAPI_GVAR_SLOT(b##0) CAPI_GVAR_SLOT(b##1) CAPI_GVAR_SLOT(b##2) CAPI_GVAR_SLOT(b##3) \
+  CAPI_GVAR_SLOT(b##4) CAPI_GVAR_SLOT(b##5) CAPI_GVAR_SLOT(b##6) CAPI_GVAR_SLOT(b##7)
+CAPI_GVAR_SLOT(0) CAPI_GVAR_SLOT(1) CAPI_GVAR_SLOT(2) CAPI_GVAR_SLOT(3)
+CAPI_GVAR_SLOT(4) CAPI_GVAR_SLOT(5) CAPI_GVAR_SLOT(6) CAPI_GVAR_SLOT(7)
+CAPI_GVAR_SLOT(8) CAPI_GVAR_SLOT(9)
+CAPI_GVAR_SLOTS_8(1) CAPI_GVAR_SLOTS_8(2) CAPI_GVAR_SLOTS_8(3) CAPI_GVAR_SLOTS_8(4) CAPI_GVAR_SLOTS_8(5)
+#define CAPI_GVAR_FN(n) {capi_gv_get_##n, capi_gv_set_##n},
+#define CAPI_GVAR_FNS_8(b) \
+  CAPI_GVAR_FN(b##0) CAPI_GVAR_FN(b##1) CAPI_GVAR_FN(b##2) CAPI_GVAR_FN(b##3) \
+  CAPI_GVAR_FN(b##4) CAPI_GVAR_FN(b##5) CAPI_GVAR_FN(b##6) CAPI_GVAR_FN(b##7)
+static const struct { mrb_value (*get)(mrb_state *); void (*set)(mrb_state *, mrb_value); } capi_gvar_fns[] = {
+  CAPI_GVAR_FN(0) CAPI_GVAR_FN(1) CAPI_GVAR_FN(2) CAPI_GVAR_FN(3) CAPI_GVAR_FN(4)
+  CAPI_GVAR_FN(5) CAPI_GVAR_FN(6) CAPI_GVAR_FN(7) CAPI_GVAR_FN(8) CAPI_GVAR_FN(9)
+  CAPI_GVAR_FNS_8(1) CAPI_GVAR_FNS_8(2) CAPI_GVAR_FNS_8(3) CAPI_GVAR_FNS_8(4) CAPI_GVAR_FNS_8(5)
+};
+
+static void capi_define_gvar(const char *name, VALUE *var, rb_gvar_getter_t *getter, rb_gvar_setter_t *setter,
+                             int readonly, int is_virtual) {
+  mrb_sym sym = gvar_sym(name);
+  int i;
+  for (i = 0; i < ncapi_gvars; i++) if (capi_gvars[i].sym == sym) break;
+  if (i == ncapi_gvars) {
+    if (ncapi_gvars >= CAPI_NGVARS) rb_raise(rb_eRuntimeError, "too many C global variables");
+    ncapi_gvars++;
+  }
+  struct capi_gvar *g = &capi_gvars[i];
+  g->sym = sym; g->var = var; g->getter = getter; g->setter = setter;
+  g->readonly = readonly; g->is_virtual = is_virtual;
+  if (var && !g->registered) { rb_gc_register_address(var); g->registered = 1; }
+  mrb_gv_define_virtual(M, sym, capi_gvar_fns[i].get, capi_gvar_fns[i].set);
+}
+void rb_define_hooked_variable(const char *name, VALUE *var, rb_gvar_getter_t *getter, rb_gvar_setter_t *setter) {
+  capi_define_gvar(name, var, getter, setter, 0, 0);
+}
+void rb_define_virtual_variable(const char *name, rb_gvar_getter_t *getter, rb_gvar_setter_t *setter) {
+  capi_define_gvar(name, NULL, getter, setter, setter == NULL, 1);
+}
+void rb_define_variable(const char *name, VALUE *var) { capi_define_gvar(name, var, NULL, NULL, 0, 0); }
+void rb_define_readonly_variable(const char *name, const VALUE *var) {
+  capi_define_gvar(name, (VALUE *)var, NULL, NULL, 1, 0);
+}
+VALUE rb_f_global_variables(void) { return V(call0(kernel(), "global_variables")); }
+VALUE rb_lastline_get(void) { return V(mrb_gv_get(M, SYM("$_"))); }
+void rb_lastline_set(VALUE v) { mrb_gv_set(M, SYM("$_"), MV(v)); }
+
+/* ------------------------------------------------------------------ */
+/* ruby/debug.h: TracePoint                                            */
+
+#include "ruby/debug.h"
+
+struct capi_tp { void (*fn)(VALUE, void *); void *data; };
+static VALUE capi_tp_block(VALUE tp, VALUE cb, int argc, const VALUE *argv, VALUE blk) {
+  (void)argc; (void)argv; (void)blk;
+  struct capi_tp *t = (struct capi_tp *)(*rb_capi_data_ptr_ref(cb));
+  t->fn(tp, t->data);
+  return Qnil;
+}
+VALUE rb_tracepoint_new(VALUE target_thread, rb_event_flag_t events, void (*func)(VALUE, void *), void *data) {
+  static const struct { rb_event_flag_t bit; const char *name; } evs[] = {
+    {RUBY_EVENT_LINE, "line"}, {RUBY_EVENT_CLASS, "class"}, {RUBY_EVENT_END, "end"},
+    {RUBY_EVENT_CALL, "call"}, {RUBY_EVENT_RETURN, "return"}, {RUBY_EVENT_C_CALL, "c_call"},
+    {RUBY_EVENT_C_RETURN, "c_return"}, {RUBY_EVENT_RAISE, "raise"}, {RUBY_EVENT_B_CALL, "b_call"},
+    {RUBY_EVENT_B_RETURN, "b_return"}, {RUBY_EVENT_THREAD_BEGIN, "thread_begin"},
+    {RUBY_EVENT_THREAD_END, "thread_end"}, {RUBY_EVENT_FIBER_SWITCH, "fiber_switch"},
+    {RUBY_EVENT_SCRIPT_COMPILED, "script_compiled"}, {RUBY_EVENT_RESCUE, "rescue"},
+  };
+  (void)target_thread;
+  VALUE syms[16];
+  int n = 0;
+  for (size_t i = 0; i < sizeof(evs) / sizeof(evs[0]); i++)
+    if (events & evs[i].bit) syms[n++] = ID2SYM(rb_intern(evs[i].name));
+  struct capi_tp *t = (struct capi_tp *)malloc(sizeof(struct capi_tp));
+  t->fn = func; t->data = data;
+  VALUE box = rb_data_object_wrap(rb_cObject, t, NULL, free);
+  VALUE blk = rb_proc_new(capi_tp_block, box);
+  return send_kw(MV(named("TracePoint")), SYM("new"), n, syms, MV(blk), 0, 0);
+}
+VALUE rb_tracepoint_enable(VALUE tp) { call0(MV(tp), "enable"); return Qnil; }
+VALUE rb_tracepoint_disable(VALUE tp) { call0(MV(tp), "disable"); return Qnil; }
+VALUE rb_tracepoint_enabled_p(VALUE tp) { return B(mrb_test(call0(MV(tp), "enabled?"))); }
+
+/* ------------------------------------------------------------------ */
+/* ruby/digest.h: a plugin's metadata, run by Digest::Base             */
+
+#include "ruby/digest.h"
+
+static const char digest_ruby[] =
+  "module Digest\n"
+  "  class Base\n"
+  "    module CAPIPlugin\n"
+  "      def initialize(*a)\n"
+  "        meta = ORubyCAPI.__digest_meta(self.class)\n"
+  "        return super unless meta\n"
+  "        @__capi_meta = meta\n"
+  "        @__capi_ctx = ORubyCAPI.__digest_ctx_new(meta)\n"
+  "        self\n"
+  "      end\n"
+  "      def initialize_copy(o)\n"
+  "        m = o.instance_variable_get(:@__capi_meta)\n"
+  "        return super unless m\n"
+  "        @__capi_meta = m\n"
+  "        @__capi_ctx = ORubyCAPI.__digest_ctx_copy(m, o.instance_variable_get(:@__capi_ctx))\n"
+  "        self\n"
+  "      end\n"
+  "      def update(s)\n"
+  "        return super unless @__capi_meta\n"
+  "        ORubyCAPI.__digest_update(@__capi_meta, @__capi_ctx, Digest.__str(s))\n"
+  "        self\n"
+  "      end\n"
+  "      def <<(s) = update(s)\n"
+  "      def finish\n"
+  "        return super unless @__capi_meta\n"
+  "        ORubyCAPI.__digest_finish(@__capi_meta, @__capi_ctx)\n"
+  "      end\n"
+  "      def reset\n"
+  "        return super unless @__capi_meta\n"
+  "        @__capi_ctx = ORubyCAPI.__digest_ctx_new(@__capi_meta)\n"
+  "        self\n"
+  "      end\n"
+  "      def digest_length\n"
+  "        return super unless @__capi_meta\n"
+  "        ORubyCAPI.__digest_len(@__capi_meta, 0)\n"
+  "      end\n"
+  "      def block_length\n"
+  "        return super unless @__capi_meta\n"
+  "        ORubyCAPI.__digest_len(@__capi_meta, 1)\n"
+  "      end\n"
+  "    end\n"
+  "    prepend CAPIPlugin\n"
+  "  end\n"
+  "end\n";
+
+static rb_digest_metadata_t *digest_md(VALUE meta) { return (rb_digest_metadata_t *)(*rb_capi_data_ptr_ref(meta)); }
+static VALUE digest_ctx_wrap(void *ctx) { return rb_data_object_wrap(rb_cObject, ctx, NULL, free); }
+static VALUE digest_meta_m(VALUE self, VALUE klass) {
+  for (struct RClass *k = CLS(klass); k; k = k->super) {
+    mrb_value v = mrb_iv_get(M, mrb_obj_value(k), SYM("metadata"));
+    if (!mrb_nil_p(v)) return V(v);
+  }
+  return Qnil;
+}
+static VALUE digest_ctx_new_m(VALUE self, VALUE meta) {
+  rb_digest_metadata_t *md = digest_md(meta);
+  void *ctx = calloc(1, md->ctx_size);
+  if (!md->init_func(ctx)) { free(ctx); rb_raise(rb_eRuntimeError, "Digest initialization failed."); }
+  return digest_ctx_wrap(ctx);
+}
+static VALUE digest_ctx_copy_m(VALUE self, VALUE meta, VALUE ctx) {
+  rb_digest_metadata_t *md = digest_md(meta);
+  void *c = malloc(md->ctx_size);
+  memcpy(c, (*rb_capi_data_ptr_ref(ctx)), md->ctx_size);
+  return digest_ctx_wrap(c);
+}
+static VALUE digest_update_m(VALUE self, VALUE meta, VALUE ctx, VALUE str) {
+  digest_md(meta)->update_func((*rb_capi_data_ptr_ref(ctx)), (unsigned char *)RSTRING_PTR(MV(str)), (size_t)RSTRING_LEN(MV(str)));
+  return Qnil;
+}
+static VALUE digest_finish_m(VALUE self, VALUE meta, VALUE ctx) {
+  rb_digest_metadata_t *md = digest_md(meta);
+  unsigned char *buf = (unsigned char *)calloc(1, md->digest_len ? md->digest_len : 1);
+  if (!md->finish_func((*rb_capi_data_ptr_ref(ctx)), buf)) { free(buf); rb_raise(rb_eRuntimeError, "Digest finish failed."); }
+  VALUE s = rb_str_new((const char *)buf, (long)md->digest_len);
+  free(buf);
+  return force_enc(s, "ASCII-8BIT");
+}
+static VALUE digest_len_m(VALUE self, VALUE meta, VALUE which) {
+  rb_digest_metadata_t *md = digest_md(meta);
+  return SIZET2NUM(FIX2INT(which) ? md->block_len : md->digest_len);
+}
+VALUE rb_digest_make_metadata(const rb_digest_metadata_t *meta) {
+  return rb_data_object_wrap(rb_cObject, (void *)meta, NULL, NULL);
+}
+VALUE rb_digest_namespace(void) {
+  static unsigned digest_gen;
+  rb_require("digest");
+  if (digest_gen != rb_capi_generation) {
+    digest_gen = rb_capi_generation;
+    VALUE capi = named("ORubyCAPI");
+    rb_define_singleton_method(capi, "__digest_meta", digest_meta_m, 1);
+    rb_define_singleton_method(capi, "__digest_ctx_new", digest_ctx_new_m, 1);
+    rb_define_singleton_method(capi, "__digest_ctx_copy", digest_ctx_copy_m, 2);
+    rb_define_singleton_method(capi, "__digest_update", digest_update_m, 3);
+    rb_define_singleton_method(capi, "__digest_finish", digest_finish_m, 2);
+    rb_define_singleton_method(capi, "__digest_len", digest_len_m, 2);
+    mrb_load_string(M, digest_ruby);
+    if (M->exc) { M->exc = NULL; }
+  }
+  return named("Digest");
+}
+
+/* ------------------------------------------------------------------ */
+/* ruby/debug.h: the debug inspector, frame k is the k-th caller of    */
+/* the C function that opened it (frame 0 is that function)            */
+
+struct rb_debug_inspector_struct { long idx; mrb_value locs; };
+
+static mrb_callinfo *dbg_ci(const rb_debug_inspector_t *dc, long i) {
+  mrb_callinfo *c = M->c->cibase + dc->idx - i;
+  return c < M->c->cibase ? M->c->cibase : c;
+}
+VALUE rb_debug_inspector_open(rb_debug_inspector_func_t func, void *data) {
+  struct rb_debug_inspector_struct dc;
+  dc.idx = M->c->ci - M->c->cibase;
+  dc.locs = call1(kernel(), "caller_locations", mrb_int_value(M, 0));
+  mrb_gc_register(M, dc.locs);
+  VALUE r = func(&dc, data);
+  mrb_gc_unregister(M, dc.locs);
+  return r;
+}
+VALUE rb_debug_inspector_backtrace_locations(const rb_debug_inspector_t *dc) { return V(dc->locs); }
+VALUE rb_debug_inspector_frame_self_get(const rb_debug_inspector_t *dc, long i) { return V(dbg_ci(dc, i)->stack[0]); }
+VALUE rb_debug_inspector_frame_class_get(const rb_debug_inspector_t *dc, long i) {
+  mrb_callinfo *ci = dbg_ci(dc, i);
+  struct RClass *tc = ci->u.target_class ? ci->u.target_class : mrb_class(M, ci->stack[0]);
+  if (tc && tc->tt == MRB_TT_ICLASS) tc = tc->c;
+  return tc ? (VALUE)tc : Qnil;
+}
+VALUE rb_debug_inspector_frame_binding_get(const rb_debug_inspector_t *dc, long i) {
+  mrb_callinfo *ci = dbg_ci(dc, i);
+  if (!ci->proc || MRB_PROC_CFUNC_P(ci->proc)) return Qnil;
+  struct REnv *env = mrb_vm_ci_env_reify(M, M->c, ci);
+  mrb_value b = mrb_binding_new(M, ci->proc, ci->stack[0], env);
+  mrb_value loc = mrb_ary_ref(M, dc->locs, (mrb_int)i);
+  if (!mrb_nil_p(loc))
+    mrb_iv_set(M, b, SYM("source_location"), mrb_assoc_new(M, call0(loc, "path"), call0(loc, "lineno")));
+  /* a frame the walk does not map to its location (a C method that
+     yields, say) has no binding of its own: nil, not another frame's */
+  if (!mrb_nil_p(loc)) {
+    mrb_value mn = call1(b, "eval", mrb_str_new_cstr(M, "__method__"));
+    mrb_value bl = call0(loc, "base_label");
+    if (mrb_symbol_p(mn) && (!mrb_string_p(bl) || strcmp(mrb_sym_name(M, mrb_symbol(mn)), mrb_str_to_cstr(M, bl)) != 0))
+      return Qnil;
+  }
+  return V(b);
+}
+VALUE rb_debug_inspector_frame_iseq_get(const rb_debug_inspector_t *dc, long i) {
+  mrb_callinfo *ci = dbg_ci(dc, i);
+  if (!ci->proc || MRB_PROC_CFUNC_P(ci->proc)) return Qnil;
+  VALUE c = named("RubyVM::InstructionSequence");
+  if (NIL_P(c)) return Qnil;
+  return V(call0(MV(c), "allocate"));
 }
