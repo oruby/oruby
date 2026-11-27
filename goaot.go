@@ -320,6 +320,14 @@ func aotObjPtr(v Value) unsafe.Pointer {
 	return *(*unsafe.Pointer)(unsafe.Pointer(&v.v))
 }
 
+// aotMethodCacheWay0 mirrors the C lookup in ORubyVMCompat.method_cache_groups.
+func aotMethodCacheWay0(cls *C.struct_RClass, mid C.mrb_sym) uint32 {
+	group := (uint32(mid) & (C.ORUBY_MC_GROUPS - 1)) * C.ORUBY_MC_GROUP_SIZE
+	key := (uintptr(unsafe.Pointer(cls)) >> 4) ^ uintptr(mid)
+	hash := uint32(key ^ (key << 2) ^ (key >> 2))
+	return group + 2*(hash&(C.ORUBY_MC_GROUP_SIZE/2-1))
+}
+
 // AotIntrinsicOK checks in pure Go (zero cgo calls) that calling the registered
 // intrinsic slot on recv will resolve to the exact original extension method
 // with no monkey-patching, singleton override, subclass, prepend, or refinement.
@@ -356,13 +364,12 @@ func (mrb *MrbState) AotIntrinsicOK(id AotIntrinsicID, recv Value) bool {
 		return false
 	}
 	// Verify mruby's 2-way method cache still maps (s.cls, s.mid) to s.method.
-	key := (uintptr(unsafe.Pointer(s.cls)) >> 4) ^ uintptr(s.mid)
-	h := uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)
-	mc0 := &mrb.p.cache[h*2]
+	way0 := aotMethodCacheWay0(s.cls, s.mid)
+	mc0 := &mrb.p.cache[way0]
 	if mc0.c == s.cls && mc0.mid == s.mid {
 		return mc0.m == s.method
 	}
-	mc1 := &mrb.p.cache[h*2+1]
+	mc1 := &mrb.p.cache[way0+1]
 	if mc1.c == s.cls && mc1.mid == s.mid {
 		return mc1.m == s.method
 	}
@@ -545,13 +552,12 @@ func (mrb *MrbState) AotCompiledMethodOK(recv Value, mid MrbSym, slot int) bool 
 		return false
 	}
 	cmid := C.mrb_sym(mid)
-	key := (uintptr(unsafe.Pointer(oc)) >> 4) ^ uintptr(cmid)
-	h := uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)
-	mc0 := &mrb.p.cache[h*2]
+	way0 := aotMethodCacheWay0(oc, cmid)
+	mc0 := &mrb.p.cache[way0]
 	if mc0.c == oc && mc0.mid == cmid {
 		return mc0.m == expected
 	}
-	mc1 := &mrb.p.cache[h*2+1]
+	mc1 := &mrb.p.cache[way0+1]
 	if mc1.c == oc && mc1.mid == cmid {
 		return mc1.m == expected
 	}

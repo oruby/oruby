@@ -3,6 +3,7 @@
 package io
 
 import (
+	"context"
 	"errors"
 	"os"
 	"runtime"
@@ -63,11 +64,41 @@ func fdOf(mrb *oruby.MrbState, self oruby.Value) (int, bool) {
 	return -1, false
 }
 
+// PollWakeFD returns a descriptor that becomes readable when the current Ruby
+// thread is interrupted or its context is canceled. Finish closes the pipe
+// and reports whether it consumed a wake notification, even if an application
+// descriptor was ready at the same time.
+func PollWakeFD(mrb *oruby.MrbState, ctx context.Context) (fd int, finish func() bool) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return -1, nil
+	}
+	wake := mrb.SignalWake()
+	stop, closed := make(chan struct{}), make(chan bool, 1)
+	go func() {
+		interrupted := true
+		select {
+		case <-wake:
+		case <-ctx.Done():
+		case <-stop:
+			interrupted = false
+		}
+		_ = w.Close()
+		closed <- interrupted
+	}()
+	return int(r.Fd()), func() bool {
+		close(stop)
+		interrupted := <-closed
+		_ = r.Close()
+		return interrupted
+	}
+}
+
 // __poll(read_fds, write_fds, err_fds, timeout_ms) -> [ready_r_idx, ready_w_idx, ready_e_idx] or nil
 //
 // A descriptor in more than one list is one poll entry (Darwin's poll
-// misses events of a descriptor listed twice). The wait goes in slices so a
-// signal or the deadline of a Timeout.timeout raises meanwhile.
+// misses events of a descriptor listed twice). A wake pipe lets a Ruby
+// interrupt end the wait. Polling still rechecks descriptors closed concurrently.
 func ioPoll(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs().Slice()
 	var fds []unix.PollFd
@@ -110,22 +141,38 @@ func ioPoll(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 				wait = left
 			}
 		}
-		var n int
-		var err error
-		mrb.Blocking(func() {
-			n, err = waitReady(fds, wait)
-		})
+		n, err := waitReady(fds, 0)
+		wasWoken := false
+		if err == nil && n == 0 && wait > 0 {
+			fd, finish := PollWakeFD(mrb, ctx)
+			pollFDs := fds
+			// A high pipe descriptor alone must not force the select(2)
+			// path to use poll(2), which has different exception semantics.
+			if fd >= 0 && fd < unix.FD_SETSIZE {
+				pollFDs = append(fds, unix.PollFd{Fd: int32(fd), Events: unix.POLLIN})
+				fds = pollFDs[:len(fds)]
+			}
+			mrb.Blocking(func() { n, err = waitReady(pollFDs, wait) })
+			if finish != nil {
+				wasWoken = finish()
+				if n > 0 && len(pollFDs) > len(fds) && pollFDs[len(fds)].Revents != 0 {
+					n--
+				}
+			}
+		}
 		if errors.Is(err, syscall.EBADF) {
 			return mrb.Raise(mrb.ClassGet("IOError"), "closed stream")
 		}
 		if err != nil && !errors.Is(err, syscall.EINTR) {
 			return mrb.RaiseError(err)
 		}
+		if wasWoken || err != nil || n == 0 {
+			if err := interrupted(mrb, ctx); err != nil {
+				return mrb.RaiseError(err)
+			}
+		}
 		if err == nil && n > 0 {
 			break
-		}
-		if err := interrupted(mrb, ctx); err != nil {
-			return mrb.RaiseError(err)
 		}
 		if err == nil && timeout >= 0 && !time.Now().Before(deadline) {
 			return mrb.NilValue()

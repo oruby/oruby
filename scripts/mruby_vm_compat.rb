@@ -530,7 +530,50 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       "          if (insn == OP_SEND || insn == OP_SEND0 || insn == OP_SENDB) {\n            exempt = (irep == &prepare_exec_strcat_irep);")
   end
 
+  # Group method cache sets by symbol so redefining a method only scans
+  # the group that could contain it. Within a group keep two-way lookup
+  # and hash the receiver class to spread entries across its sets.
+  def self.method_cache_groups(source)
+    replace(source, '/* clear method cache for a class */', <<~'C'.chomp)
+      static inline size_t
+      method_cache_group(mrb_sym mid)
+      {
+        return (mid & (ORUBY_MC_GROUPS - 1)) * ORUBY_MC_GROUP_SIZE;
+      }
+
+      /* clear method cache for a class */
+    C
+    replace(source, <<~'C', <<~'C')
+      static void
+      mc_clear_by_id(mrb_state *mrb, mrb_sym id)
+      {
+        struct mrb_cache_entry *mc = mrb->cache;
+
+        for (int i=0; i<MRB_METHOD_CACHE_SIZE; mc++,i++) {
+          if (mc->mid == id) mc->c = NULL;
+        }
+      }
+    C
+      static void
+      mc_clear_by_id(mrb_state *mrb, mrb_sym id)
+      {
+        struct mrb_cache_entry *mc = &mrb->cache[method_cache_group(id)];
+        for (size_t i = 0; i < ORUBY_MC_GROUP_SIZE; i++) {
+          if (mc[i].mid == id) mc[i].c = NULL;
+        }
+      }
+    C
+    replace(source, <<~'C'.gsub(/^/, "  "), <<~'C'.gsub(/^/, "  "))
+      int h = mrb_int_hash_func(mrb, ((intptr_t)oc >> 4) ^ mid) & (MRB_METHOD_CACHE_SIZE/2-1);
+      struct mrb_cache_entry *mc = &mrb->cache[h * 2];
+    C
+      size_t h = mrb_int_hash_func(mrb, ((intptr_t)oc >> 4) ^ mid) & (ORUBY_MC_GROUP_SIZE / 2 - 1);
+      struct mrb_cache_entry *mc = &mrb->cache[method_cache_group(mid) + h * 2];
+    C
+  end
+
   def self.const_names(source)
+    method_cache_groups(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <prism/internal/encoding.h>")
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     class_method_definitions(source)
@@ -950,7 +993,46 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
     metaclass_freeze(source)
   end
 
+  # A GIV lookup during GC used to probe long runs of deleted buckets,
+  # especially for Procs, which have no bit to record side-table membership.
+  # Keep the occupied count with this table and compact on insertion, where
+  # allocating a new bucket array is safe. GC deletion never allocates.
+  def self.giv_compaction(source)
+    replace(source, 'KHASH_DEFINE(giv, struct RBasic*, iv_tbl*, TRUE, giv_hash_func, giv_hash_equal)', <<~'C'.chomp)
+      KHASH_DEFINE(giv, struct RBasic*, iv_tbl*, TRUE, giv_hash_func, giv_hash_equal)
+
+      struct oruby_giv_table {
+        kh_giv_t hash; /* The pointer stored in mrb->giv. */
+        khint_t occupied; /* live plus deleted buckets */
+      };
+
+      static kh_giv_t*
+      giv_init(mrb_state *mrb)
+      {
+        struct oruby_giv_table *table = (struct oruby_giv_table*)mrb_calloc(mrb, 1, sizeof(*table));
+        kh_init_data(giv, mrb, &table->hash, KHASH_INITIAL_SIZE);
+        return &table->hash;
+      }
+    C
+    replace(source, "  kh_giv_t *h = mrb->giv;\n  khiter_t k = kh_put(giv, mrb, h, key);", <<~'C'.chomp.gsub(/^/, "  "))
+      kh_giv_t *h = mrb->giv;
+      struct oruby_giv_table *table = (struct oruby_giv_table*)h;
+      khint_t buckets = kh_n_buckets(h);
+      if (buckets && table->occupied >= buckets - buckets / 8 &&
+          kh_size(h) < khash_upper_bound(h)) {
+        kh_resize(giv, mrb, h, buckets);
+        table->occupied = kh_size(h);
+      }
+      int inserted;
+      khiter_t k = kh_put2(giv, mrb, h, key, &inserted);
+      if (kh_n_buckets(h) != buckets) table->occupied = kh_size(h);
+      else if (inserted == 1) ++table->occupied; /* previously empty */
+    C
+    replace(source, 'h = mrb->giv = kh_init(giv, mrb);', 'h = mrb->giv = giv_init(mrb);')
+  end
+
   def self.variable(source)
+    giv_compaction(source)
     replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include \"oruby-vm-compat.h\"")
     replace(source, "  mrb_funcall_argv(mrb, mrb_obj_value(c), MRB_SYM(const_added), 1, &name);", <<~'C'.chomp.gsub(/^/, "  "))
       mrb_value mod = mrb_obj_value(c);
@@ -1613,6 +1695,138 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       MRB_API mrb_sym
       mrb_intern(mrb_state *mrb, const char *name, size_t len)
     C
+    symbol_hash(source)
+  end
+
+  # A byte-sized delta between symbols in a bucket makes a large gap fall
+  # back to scanning unrelated symbols. Keep the actual predecessor index
+  # so even sparse buckets only visit their own entries.
+  def self.symbol_hash(source)
+    replace(source, 'struct mrb_sym_hash_table {', "#define ORUBY_SYMBOL_BUCKETS 1024\nstruct mrb_sym_hash_table {")
+    replace(source, "  uint8_t *symlink;         /* collision resolution chains */\n  mrb_sym buckets[256];     /* hash buckets */", <<~'C'.chomp.gsub(/^/, "  "))
+      mrb_sym *symlink;         /* previous index in this bucket, or zero */
+      mrb_sym buckets[ORUBY_SYMBOL_BUCKETS];
+    C
+    replace(source, <<~'C', <<~'C')
+      static mrb_sym
+      find_symbol_hash(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp, uint8_t slot)
+      {
+        mrb_sym i;
+        uint8_t hash;
+        struct mrb_sym_hash_table *ht = mrb->symhash;
+
+        hash = mrb_byte_hash((const uint8_t*)name, len);
+        if (hashp) *hashp = hash;
+
+        i = ht->buckets[hash];
+        if (i == 0) return 0;
+        for (;;) {
+          if (sym_check(mrb, name, len, i, slot)) {
+            return (i+MRB_PRESYM_MAX);
+          }
+          uint8_t diff = ht->symlink[i];
+          if (diff == 0xff) {
+            i -= 0xff;
+            while (i > 0) {
+              if (sym_check(mrb, name, len, i, slot)) {
+                return (i+MRB_PRESYM_MAX);
+              }
+              i--;
+            }
+            return 0;
+          }
+          if (diff == 0) return 0;
+          i -= diff;
+        }
+        return 0;
+      }
+    C
+      static inline uint32_t
+      symbol_bucket(const char *name, size_t len)
+      {
+        return mrb_byte_hash((const uint8_t*)name, len) & (ORUBY_SYMBOL_BUCKETS - 1);
+      }
+
+      static inline void
+      symbol_hash_link(struct mrb_sym_hash_table *ht, const char *name, size_t len, mrb_sym index)
+      {
+        uint32_t bucket = symbol_bucket(name, len);
+        ht->symlink[index] = ht->buckets[bucket];
+        ht->buckets[bucket] = index;
+      }
+
+      static mrb_sym
+      find_symbol_hash(mrb_state *mrb, const char *name, size_t len, uint8_t slot)
+      {
+        struct mrb_sym_hash_table *ht = mrb->symhash;
+        uint32_t bucket = symbol_bucket(name, len);
+        for (mrb_sym i = ht->buckets[bucket]; i != 0; i = ht->symlink[i]) {
+          if (sym_check(mrb, name, len, i, slot)) return i + MRB_PRESYM_MAX;
+        }
+        return 0;
+      }
+    C
+    replace(source, 'return find_symbol_hash(mrb, name, len, hashp, slot);',
+      'return find_symbol_hash(mrb, name, len, slot);')
+    replace(source, "    if (hashp) *hashp = mrb_byte_hash((const uint8_t*)name, len);\n", '')
+    replace(source, 'find_symbol_slot(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp, uint8_t slot)',
+      'find_symbol_slot(mrb_state *mrb, const char *name, size_t len, uint8_t slot)')
+    replace(source, 'find_symbol(mrb_state *mrb, const char *name, size_t len, uint8_t *hashp)',
+      'find_symbol(mrb_state *mrb, const char *name, size_t len)')
+    replace(source, 'find_symbol_slot(mrb, name, len, hashp, 0)', 'find_symbol_slot(mrb, name, len, 0)')
+    replace(source, "\n  sym = find_symbol_slot(mrb, name, len, NULL, slot);",
+      "\n  sym = find_symbol_slot(mrb, name, len, slot);")
+    replace(source, "\n    sym = find_symbol_slot(mrb, name, len, NULL, slot);",
+      "\n    sym = find_symbol_slot(mrb, name, len, slot);")
+    replace(source, 'find_symbol(mrb, name, len, NULL)', 'find_symbol(mrb, name, len)')
+    replace(source, 'ht->symlink = (uint8_t*)mrb_calloc(mrb, mrb->symcapa, sizeof(uint8_t));',
+      'ht->symlink = (mrb_sym*)mrb_calloc(mrb, mrb->symcapa, sizeof(mrb_sym));')
+    replace(source, 'ht->symlink = (uint8_t*)mrb_realloc(mrb, ht->symlink, symcapa);',
+      'ht->symlink = (mrb_sym*)mrb_realloc(mrb, ht->symlink, symcapa * sizeof(mrb_sym));')
+    replace(source, 'memset(ht->symlink, 0, mrb->symcapa);', 'memset(ht->symlink, 0, mrb->symcapa * sizeof(mrb_sym));')
+    replace(source, "    uint8_t hash;\n\n    /* Get name", "    /* Get name")
+    replace(source, <<~'C'.gsub(/^(?=.)/, "    "), <<~'C'.gsub(/^(?=.)/, "    "))
+      hash = mrb_byte_hash((const uint8_t*)name, len);
+
+      /* Build collision chain */
+      if (ht->buckets[hash] != 0) {
+        mrb_sym diff = i - ht->buckets[hash];
+        ht->symlink[i] = (diff > 0xff) ? 0xff : (uint8_t)diff;
+      }
+      else {
+        ht->symlink[i] = 0;
+      }
+      ht->buckets[hash] = i;
+    C
+      symbol_hash_link(ht, name, len, i);
+    C
+    replace(source, <<~'C'.gsub(/^(?=.)/, "  "), <<~'C'.gsub(/^(?=.)/, "  "))
+      uint8_t hash = mrb_byte_hash((const uint8_t*)name, len);
+
+      if (ht->buckets[hash]) {
+        mrb_sym i = sym - ht->buckets[hash];
+        if (i > 0xff)
+          ht->symlink[sym] = 0xff;
+        else
+          ht->symlink[sym] = i;
+      }
+      else {
+        ht->symlink[sym] = 0;
+      }
+      ht->buckets[hash] = sym;
+    C
+      symbol_hash_link(ht, name, len, sym);
+    C
+    replace(source, <<~'C'.gsub(/^/, "      "), <<~'C'.gsub(/^/, "      "))
+      uint8_t hash = mrb_byte_hash((const uint8_t*)name, len);
+      if (ht->buckets[hash] != 0) {
+        mrb_sym diff = i - ht->buckets[hash];
+        ht->symlink[i] = (diff > 0xff) ? 0xff : (uint8_t)diff;
+      }
+      ht->buckets[hash] = i;
+    C
+      symbol_hash_link(ht, name, len, i);
+    C
   end
 
   # the eval of a string in another encoding than UTF-8 (go-mrb.c
@@ -1712,6 +1926,17 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
 
   def self.gc(source)
     replace(source, '#include <mruby/khash.h>', "#include <mruby/khash.h>\n#include \"oruby-alloc-trace.h\"")
+    replace(source, "MRB_API mrb_bool\nmrb_object_dead_p(", <<~'C'.chomp)
+      /* A heap-walk callback already knows its argument belongs to the heap. */
+      mrb_bool
+      oruby_heap_slot_dead_p(mrb_state *mrb, struct RBasic *object)
+      {
+        return is_dead(&mrb->gc, object);
+      }
+
+      MRB_API mrb_bool
+      mrb_object_dead_p(
+    C
     replace(source, "  paint_partial_white(gc, &p->as.basic);\n  return &p->as.basic;", <<~'C'.chomp.gsub(/^/, "  "))
       paint_partial_white(gc, &p->as.basic);
       if (mrb_unlikely(mrb->kernel_module && (mrb->kernel_module->flags & ORUBY_TRACE_ACTIVE))) {
@@ -1764,7 +1989,10 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
   end
 
   def self.objectspace(source)
-    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/presym.h>")
+    replace(source, '#include <mruby.h>', "#include <mruby.h>\n#include <mruby/presym.h>\n#include \"oruby-vm-compat.h\"")
+    old = 'if (mrb_object_dead_p(mrb, obj)) {'
+    raise "ORubyVMCompat: expected two ObjectSpace heap callbacks" unless source.scan(old).size == 2
+    source.gsub!(old, 'if (oruby_heap_slot_dead_p(mrb, obj)) {')
     replace(source, '  struct RClass *target_module;',
       "  struct RClass *target_module;\n  struct RClass *attached_class;")
     replace(source, '  /* filter class kind if target module defined */', <<~'C'.chomp.gsub(/^/, "  "))

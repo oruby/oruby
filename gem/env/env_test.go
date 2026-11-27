@@ -41,6 +41,25 @@ func Test_envValues(t *testing.T) {
 	assert.Equal(t, values, extractEnv(1))
 }
 
+func TestEachPairSnapshotsValuesBeforeYielding(t *testing.T) {
+	const key = "ORUBY_EACH_PAIR_SNAPSHOT"
+	t.Setenv(key, "before")
+	mrb := oruby.MrbOpen()
+	defer mrb.Close()
+
+	result, err := mrb.Eval(`
+key = "ORUBY_EACH_PAIR_SNAPSHOT"
+seen = nil
+ENV.each_pair do |name, value|
+  ENV[key] = "after"
+  seen = value if name == key
+end
+seen
+`)
+	assert.NilError(t, err)
+	assert.Equal(t, result.String(), "before")
+}
+
 func Test_envHasValue(t *testing.T) {
 	mrb := oruby.MrbOpen()
 	defer mrb.Close()

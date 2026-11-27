@@ -118,6 +118,8 @@ module ObjectSpace
     end
 
     def __json_escape(str)
+      return '"' + str + '"' if str.ascii_only? && !str.match?(/["\\\x00-\x1f]/)
+
       out = +'"'
       str.each_char do |ch|
         case ch
@@ -140,7 +142,7 @@ module ObjectSpace
 
     def __dump_object_json(obj)
       tsym = __type_sym(obj)
-      type_name = tsym.to_s.sub(/^T_/, "")
+      type_name = tsym.to_s.delete_prefix("T_")
       parts = []
       addr = __obj_address(obj)
       parts << "\"address\":#{__json_escape(addr)}"

@@ -49,6 +49,7 @@ type decimal struct {
 }
 
 var (
+	bigOne  = big.NewInt(1)
 	bigTen  = big.NewInt(10)
 	bigZero = big.NewInt(0)
 )
@@ -68,14 +69,26 @@ func (d *decimal) normalize() {
 		return
 	}
 	q, r := new(big.Int), new(big.Int)
+	var removed int64
 	for {
 		q.QuoRem(d.coef, bigTen, r)
 		if r.Sign() != 0 {
 			break
 		}
 		d.coef.Set(q)
-		d.exp++
+		removed++
+		// Long zero suffixes (such as an exact quotient padded to the
+		// requested precision) would repeatedly divide a large integer.
+		// Convert once, then trim the rest of the suffix in one pass.
+		if removed == 8 && d.coef.BitLen() > 1024 {
+			digits := d.coef.String()
+			trimmed := strings.TrimRight(digits, "0")
+			d.coef.SetString(trimmed, 10)
+			removed += int64(len(digits) - len(trimmed))
+			break
+		}
 	}
+	d.exp = satAdd(d.exp, removed)
 }
 
 func (d *decimal) isZero() bool { return d.kind == kFinite && d.coef.Sign() == 0 }
@@ -301,6 +314,12 @@ func div(a, b *decimal, prec int64, mode int) *decimal {
 	if a.isZero() {
 		return zero(a.neg != b.neg)
 	}
+	exp := satAdd(a.exp, -b.exp)
+	if b.coef.Cmp(bigOne) == 0 {
+		// A normalized divisor with coefficient 1 is a signed power of
+		// ten. Adjust the exponent without constructing a scaled integer.
+		return roundSig(&decimal{kind: kFinite, neg: a.neg != b.neg, coef: a.coef, exp: exp}, prec, mode)
+	}
 	// scale numerator so quotient has prec+2 digits
 	shift := prec + 2 + int64(len(b.coef.String())) - int64(len(a.coef.String()))
 	if shift < 0 {
@@ -314,7 +333,7 @@ func div(a, b *decimal, prec int64, mode int) *decimal {
 		q.Add(q, big.NewInt(1))
 		shift++
 	}
-	res := newFinite(a.neg != b.neg, q, satAdd(satAdd(a.exp, -b.exp), -shift))
+	res := newFinite(a.neg != b.neg, q, satAdd(exp, -shift))
 	return roundSig(res, prec, mode)
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -47,6 +48,95 @@ func TestEval(t *testing.T) {
 	o, err := mrb.Eval(s)
 	ExpectNil(t, err, "Eval error: %v", err)
 	ExpectEql(t, mrb.Intf(o), 2)
+}
+
+func TestSymbolLookupAfterTableGrowth(t *testing.T) {
+	mrb := MrbOpen()
+	defer mrb.Close()
+
+	// Exercise both short and multi-byte packed name lengths, including NUL.
+	names := []string{"symbol_lookup_seed", "symbol\x00" + strings.Repeat("x", 128)}
+	symbols := []MrbSym{mrb.Intern(names[0]), mrb.Intern(names[1])}
+	for i := 0; i < 4096; i++ {
+		mrb.Intern(fmt.Sprintf("symbol_lookup_filler_%d", i))
+	}
+
+	for i, name := range names {
+		if got := mrb.InternCheck(name); got != symbols[i] {
+			t.Errorf("InternCheck(%q) = %d, want %d", name, got, symbols[i])
+		}
+		if got := mrb.Intern(name); got != symbols[i] {
+			t.Errorf("Intern(%q) = %d, want %d", name, got, symbols[i])
+		}
+	}
+}
+
+func TestMethodRedefinitionInvalidatesCachedInheritedMethods(t *testing.T) {
+	mrb := MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+class CacheParent
+  def cached_value = :original
+  def another_value = :other
+end
+receivers = Array.new(32) { Class.new(CacheParent).new }
+receivers.each do |receiver|
+  raise "original method" unless receiver.cached_value == :original
+  raise "other method" unless receiver.another_value == :other
+end
+class CacheParent
+  def cached_value = :replacement
+end
+receivers.each do |receiver|
+  raise "stale method" unless receiver.cached_value == :replacement
+  raise "other method" unless receiver.another_value == :other
+end
+`)
+	ExpectNilError(t, err)
+}
+
+func TestAotIntrinsicUsesVMMethodCache(t *testing.T) {
+	mrb := MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`class String; def intrinsic_cache_probe = true; end`)
+	ExpectNilError(t, err)
+	mid := mrb.Intern("intrinsic_cache_probe")
+	mrb.AotRegisterInstanceIntrinsic(AotIntrinsicFastBlank, mrb.ClassGet("String"), mid)
+	value := mrb.StrNew("probe")
+	if !mrb.AotIntrinsicOK(AotIntrinsicFastBlank, value) {
+		t.Fatal("Go did not find the method cached by the VM")
+	}
+
+	_, err = mrb.Eval(`class String; def intrinsic_cache_probe = false; end`)
+	ExpectNilError(t, err)
+	_, err = mrb.Funcall(value, mid)
+	ExpectNilError(t, err)
+	if mrb.AotIntrinsicOK(AotIntrinsicFastBlank, value) {
+		t.Fatal("the original method still passes the intrinsic guard after redefinition")
+	}
+}
+
+func TestProcInstanceVariablesSurviveSideTableCompaction(t *testing.T) {
+	mrb := MrbOpen()
+	defer mrb.Close()
+
+	_, err := mrb.Eval(`
+live = 32.times.map do |i|
+  p = proc {}
+  p.instance_variable_set(:@payload, [i])
+  p
+end
+20.times do
+  200.times { proc {}.instance_variable_set(:@temporary, true) }
+  GC.start
+  live.each_with_index do |p, i|
+    raise "lost Proc instance variable" unless p.instance_variable_get(:@payload) == [i]
+  end
+end
+`)
+	ExpectNilError(t, err)
 }
 
 func TestValueSimple(t *testing.T) {

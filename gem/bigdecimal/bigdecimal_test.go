@@ -61,6 +61,18 @@ raise "restored mode" unless BigDecimal.mode(BigDecimal::ROUND_MODE) == BigDecim
 `)
 }
 
+func TestBigDecimalExactDivisionAtHighPrecision(t *testing.T) {
+	evalBigDecimal(t, `
+require "bigdecimal"
+
+tiny = BigDecimal("1E-99999")
+raise "integer quotient" unless tiny.div(tiny) == 1
+raise "power of ten quotient" unless BigDecimal("1.2345E-99999").div(-tiny, 3) == BigDecimal("-1.23")
+half = tiny.div(BigDecimal("2"), 10000)
+raise "exact quotient" unless half == BigDecimal("5E-100000") && half.n_significant_digits == 1
+`)
+}
+
 func TestBigDecimalSpecialValuesAndLimit(t *testing.T) {
 	evalBigDecimal(t, `
 require "bigdecimal"

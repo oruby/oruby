@@ -1,4 +1,4 @@
-# ENV methods built on the Go accessors (__raw_keys, __raw_values, __raw_get, __raw_set, __raw_delete)
+# ENV methods built on the Go accessors.
 class << ENV
   include Enumerable
 
@@ -101,9 +101,8 @@ class << ENV
 
   def to_hash
     h = {}
-    __raw_keys.each do |k|
-      v = __raw_get(k)
-      h[__encode_str(k).freeze] = __encode_str(v) unless v.nil?
+    __raw_pairs.each do |k, v|
+      h[__encode_str(k).freeze] = __encode_str(v)
     end
     h
   end
@@ -118,9 +117,8 @@ class << ENV
 
   def each_pair
     return to_enum(:each_pair) { size } unless block_given?
-    __raw_keys.each do |k|
-      v = __raw_get(k)
-      yield __encode_str(k), __encode_str(v) unless v.nil?
+    __raw_pairs.each do |k, v|
+      yield __encode_str(k), __encode_str(v)
     end
     self
   end

@@ -690,6 +690,11 @@ class IO
     # --- Slice ----------------------------------------------------------------
 
     class Slice < Buffer
+      PARENT = 0
+      OFFSET = 1
+      LENGTH = 2
+      private_constant :PARENT, :OFFSET, :LENGTH
+
       class << self
         undef_method :for, :map, :string
       end
@@ -698,7 +703,7 @@ class IO
         raise TypeError, "wrong argument type #{parent.class} (expected IO::Buffer)" unless parent.is_a?(Buffer)
         _, _, psize = parent.__oruby_view
         offset, length = __oruby_bounds(offset, length, psize)
-        @sl = { parent: parent, offset: offset, length: length }
+        @sl = [parent, offset, length]
       end
 
       def initialize_copy(orig)
@@ -711,44 +716,38 @@ class IO
       end
 
       def source
-        @sl[:parent]
+        @sl[PARENT]
       end
 
       def size
-        @sl[:length]
+        @sl[LENGTH]
       end
 
       def __oruby_size
-        @sl[:length]
-      end
-
-      def __oruby_chain
-        chain = []
-        v = self
-        while v.is_a?(Slice)
-          chain << v
-          v = v.__oruby_sl[:parent]
-        end
-        [v, chain]
+        @sl[LENGTH]
       end
 
       def __oruby_root
-        __oruby_chain[0]
+        v = self
+        while v.is_a?(Slice)
+          v = v.__oruby_sl[PARENT]
+        end
+        v
       end
 
       def __oruby_resolve
-        root, chain = __oruby_chain
-        base = 0
-        avail = root.size
-        i = chain.size - 1
-        while i >= 0
-          sl = chain[i].__oruby_sl
-          return nil if sl[:offset] + sl[:length] > avail
-          base += sl[:offset]
-          avail = sl[:length]
-          i -= 1
+        parent, base, length = @sl
+        required = base + length
+        # At each step validate the whole child view against its immediate
+        # parent. This needs one walk and no temporary array of ancestors.
+        while parent.is_a?(Slice)
+          parent, offset, size = parent.__oruby_sl
+          return nil if required > size
+          base += offset
+          required = offset + size
         end
-        [root, base, avail]
+        return nil if required > parent.size
+        [parent, base, length]
       end
 
       def null?
@@ -757,10 +756,10 @@ class IO
 
       def readonly?
         return true if frozen?
-        v = @sl[:parent]
+        v = @sl[PARENT]
         while v.is_a?(Slice)
           return true if v.frozen?
-          v = v.__oruby_sl[:parent]
+          v = v.__oruby_sl[PARENT]
         end
         v.readonly?
       end
@@ -777,13 +776,13 @@ class IO
         __oruby_frozen_error if frozen?
         new_size = Buffer.__oruby_int(new_size)
         raise ArgumentError, "Size can't be negative!" if new_size < 0
-        parent = @sl[:parent]
+        parent, offset, = @sl
         pv = parent.__oruby_resolve
         raise InvalidatedError, "Buffer has been invalidated!" unless pv
         psize = pv[2]
-        raise InvalidatedError, "Buffer has been invalidated!" if @sl[:offset] > psize
-        raise ArgumentError, "Resized slice exceeds its source buffer!" if @sl[:offset] + new_size > psize
-        @sl[:length] = new_size
+        raise InvalidatedError, "Buffer has been invalidated!" if offset > psize
+        raise ArgumentError, "Resized slice exceeds its source buffer!" if offset + new_size > psize
+        @sl[LENGTH] = new_size
         self
       end
 
@@ -793,8 +792,8 @@ class IO
         amount = Buffer.__oruby_int(amount)
         raise ArgumentError, "Amount can't be negative!" if amount < 0
         raise ArgumentError, "Advance amount exceeds buffer size!" if amount > size
-        @sl[:offset] += amount
-        @sl[:length] -= amount
+        @sl[OFFSET] += amount
+        @sl[LENGTH] -= amount
         self
       end
     end

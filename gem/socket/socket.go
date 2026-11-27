@@ -6,6 +6,7 @@
 package socket
 
 import (
+	"context"
 	_ "embed"
 	"encoding/binary"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"unsafe"
 
 	"github.com/oruby/oruby"
+	rio "github.com/oruby/oruby/gem/io"
 	"github.com/oruby/oruby/gem/rb"
 	"golang.org/x/sys/unix"
 )
@@ -114,32 +116,58 @@ func waitFd(mrb *oruby.MrbState, fd int, write bool) error {
 		ev = unix.POLLOUT
 	}
 	ctx := mrb.GoContext()
-	fds := []unix.PollFd{{Fd: int32(fd), Events: ev}}
 	for {
-		var n int
-		var err error
-		mrb.Blocking(func() {
-			n, err = unix.Poll(fds, 100)
-		})
+		events, interrupted, err := pollSocket(mrb, unix.PollFd{Fd: int32(fd), Events: ev}, ctx)
 		if err != nil && !errors.Is(err, syscall.EINTR) {
 			return err
 		}
-		if err == nil && n > 0 {
-			if fds[0].Revents&unix.POLLNVAL != 0 {
-				return syscall.EBADF
-			}
-			return nil
-		}
-		if err := mrb.CheckSignals(); err != nil {
-			return err
-		}
-		if ctx.Err() != nil {
-			if err := mrb.ContextErr(ctx); err != nil {
+		if interrupted || err != nil || events == 0 {
+			if err := mrb.CheckSignals(); err != nil {
 				return err
 			}
-			return oruby.ERuntimeError("interrupted")
+			if ctx.Err() != nil {
+				if err := mrb.ContextErr(ctx); err != nil {
+					return err
+				}
+				return oruby.ERuntimeError("interrupted")
+			}
+		}
+		if err != nil {
+			continue
+		}
+		if events&unix.POLLNVAL != 0 {
+			return syscall.EBADF
+		}
+		if events != 0 {
+			return nil
 		}
 	}
+}
+
+// pollSocket lets a Ruby interrupt wake the kernel wait immediately. A
+// separate pipe per wait keeps concurrent waits and their wakeups independent.
+func pollSocket(mrb *oruby.MrbState, socket unix.PollFd, ctx context.Context) (int16, bool, error) {
+	var err error
+	fd, finish := rio.PollWakeFD(mrb, ctx)
+	if finish == nil {
+		// Keep waiting for the socket even when the process is out of FDs.
+		fds := [1]unix.PollFd{socket}
+		mrb.Blocking(func() { _, err = unix.Poll(fds[:], 100) })
+		return fds[0].Revents, false, err
+	}
+	fds := [2]unix.PollFd{socket, {Fd: int32(fd), Events: unix.POLLIN}}
+	mrb.Blocking(func() {
+		for {
+			var n int
+			// Some kernels don't wake poll when another thread closes
+			// the socket. Recheck the descriptor at the old interval.
+			n, err = unix.Poll(fds[:], 100)
+			if n != 0 || err != nil {
+				return
+			}
+		}
+	})
+	return fds[0].Revents, finish(), err
 }
 
 func isAgain(err error) bool {
@@ -757,8 +785,8 @@ func sysGetaddrinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 			var cn string
 			mrb.Blocking(func() {
 				addrs, err = net.DefaultResolver.LookupIPAddr(ctx, host)
-				if err == nil && len(addrs) > 0 {
-					cn, _ = net.LookupCNAME(host)
+				if err == nil && len(addrs) > 0 && flags&aiCanonname != 0 {
+					cn, _ = net.DefaultResolver.LookupCNAME(ctx, host)
 				}
 			})
 			if err != nil || len(addrs) == 0 {

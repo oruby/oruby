@@ -18,6 +18,7 @@ func init() {
 		env, _ := mrb.ObjectClass().New()
 		mrb.DefineSingletonMethod(env, "__raw_values", envValues, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "__raw_keys", envKeys, mrb.ArgsNone())
+		mrb.DefineSingletonMethod(env, "__raw_pairs", envPairs, mrb.ArgsNone())
 		mrb.DefineSingletonMethod(env, "__raw_get", envGetKey, mrb.ArgsReq(1))
 		mrb.DefineSingletonMethod(env, "__raw_set", envSetKey, mrb.ArgsReq(2))
 		mrb.DefineSingletonMethod(env, "__raw_delete", envDelete, mrb.ArgsReq(1))
@@ -50,6 +51,20 @@ func envKeys(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	for _, s := range env {
 		kv := strings.SplitN(s, "=", 2)
 		ret.PushString(kv[0])
+	}
+	return ret
+}
+
+func envPairs(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+	env := sysEnviron()
+	ret := mrb.AryNewCapa(len(env))
+	arena := mrb.GCArenaSave()
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			ret.Push(mrb.AryNewFromValues(mrb.StrNew(key), mrb.StrNew(value)))
+			mrb.GCArenaRestore(arena)
+		}
 	}
 	return ret
 }

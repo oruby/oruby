@@ -35,6 +35,12 @@ oruby_chilled_mutation(mrb_state *mrb, struct RBasic *obj)
 #define ORUBY_MISSING_PROTECTED (1u << 6)
 #define ORUBY_MISSING_VISIBILITY (ORUBY_MISSING_PRIVATE | ORUBY_MISSING_PROTECTED)
 
+/* Cache set layout shared by class.c and the zero-cgo Go AOT probes. */
+#ifndef MRB_NO_METHOD_CACHE
+#define ORUBY_MC_GROUPS (MRB_METHOD_CACHE_SIZE >= 1024 ? 16 : 1)
+#define ORUBY_MC_GROUP_SIZE (MRB_METHOD_CACHE_SIZE / ORUBY_MC_GROUPS)
+#endif
+
 /* A method-table entry that changes the visibility of an inherited method. */
 #define ORUBY_METHOD_VISIBILITY_ONLY (1u << 27)
 void oruby_set_inherited_visibility(mrb_state *, struct RClass *, mrb_sym, uint32_t);
@@ -63,6 +69,9 @@ uint8_t oruby_sym_slot_of(mrb_state *, mrb_sym);
 extern _Thread_local uint8_t oruby_load_sym_slot;
 void oruby_eval_source_encoding_set(const char *src, size_t len, const char *encoding_name);
 const char *oruby_eval_source_encoding_take(const char *src, size_t len);
+
+/* Liveness check for a callback already walking the heap. */
+mrb_bool oruby_heap_slot_dead_p(mrb_state *, struct RBasic *);
 
 /* GC hooks for the Ruby C API layer (gem/capi; gc.c, capi_gc_hooks) */
 struct RData;

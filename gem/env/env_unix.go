@@ -7,15 +7,11 @@ package env
 
 extern char **environ;
 
-static int env_count(void) {
-	if (!environ) return 0;
+static char **env_entries(int *count) {
 	int n = 0;
-	while (environ[n]) n++;
-	return n;
-}
-
-static const char *env_at(int i) {
-	return environ[i];
+	if (environ) while (environ[n]) n++;
+	*count = n;
+	return environ;
 }
 */
 import "C"
@@ -34,14 +30,20 @@ func sysEnviron() []string {
 	envMu.RLock()
 	defer envMu.RUnlock()
 
-	n := int(C.env_count())
-	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		if p := C.env_at(C.int(i)); p != nil {
-			out = append(out, C.GoString(p))
-		}
+	entries := envEntries()
+	out := make([]string, len(entries))
+	for i, entry := range entries {
+		out[i] = C.GoString(entry)
 	}
 	return out
+}
+
+// envEntries is a view of libc's environ, valid while envMu is held and no
+// environment mutation is in progress.
+func envEntries() []*C.char {
+	var n C.int
+	entries := C.env_entries(&n)
+	return unsafe.Slice(entries, int(n))
 }
 
 func sysLookupEnv(key string) (string, bool) {
@@ -99,14 +101,12 @@ func sysClearenv() {
 	envMu.Lock()
 	defer envMu.Unlock()
 
-	n := int(C.env_count())
-	keys := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		if p := C.env_at(C.int(i)); p != nil {
-			s := C.GoString(p)
-			if eq := strings.IndexByte(s, '='); eq > 0 {
-				keys = append(keys, s[:eq])
-			}
+	entries := envEntries()
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		s := C.GoString(entry)
+		if eq := strings.IndexByte(s, '='); eq > 0 {
+			keys = append(keys, s[:eq])
 		}
 	}
 	for _, k := range keys {

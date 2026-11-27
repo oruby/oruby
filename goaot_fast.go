@@ -76,12 +76,11 @@ func (mrb *MrbState) aotInitCoreIntrinsics(st *aotState) {
 		if !bool(found) {
 			return
 		}
-		key := (uintptr(unsafe.Pointer(cls)) >> 4) ^ uintptr(mid)
 		st.coreIntrinsics[id] = aotIntrinsicSlot{
 			cls:    cls,
 			mid:    mid,
 			method: m,
-			way0:   (uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)) * 2,
+			way0:   aotMethodCacheWay0(cls, mid),
 		}
 	}
 
@@ -177,13 +176,12 @@ func (mrb *MrbState) aotCacheMatch(cls *C.struct_RClass, mid C.mrb_sym, expected
 	if (mrb.p.refined_mids[0] | mrb.p.refined_mids[1] | mrb.p.refined_mids[2] | mrb.p.refined_mids[3]) != 0 {
 		return false
 	}
-	key := (uintptr(unsafe.Pointer(cls)) >> 4) ^ uintptr(mid)
-	h := uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)
-	mc0 := &mrb.p.cache[h*2]
+	way0 := aotMethodCacheWay0(cls, mid)
+	mc0 := &mrb.p.cache[way0]
 	if mc0.c == cls && mc0.mid == mid {
 		return mc0.m == expected
 	}
-	mc1 := &mrb.p.cache[h*2+1]
+	mc1 := &mrb.p.cache[way0+1]
 	if mc1.c == cls && mc1.mid == mid {
 		return mc1.m == expected
 	}
@@ -703,9 +701,7 @@ func (mrb *MrbState) aotMethodIdxFromCache(recv Value, mid MrbSym, fcall bool) (
 		return -1, nil, 0, 0, C.mrb_method_t{}, false
 	}
 	cmid := C.mrb_sym(mid)
-	key := (uintptr(unsafe.Pointer(oc)) >> 4) ^ uintptr(cmid)
-	h := uint32(key^(key<<2)^(key>>2)) & (C.MRB_METHOD_CACHE_SIZE/2 - 1)
-	slotIdx := h * 2
+	slotIdx := aotMethodCacheWay0(oc, cmid)
 	mc := &mrb.p.cache[slotIdx]
 	if mc.c != oc || mc.mid != cmid {
 		slotIdx++
