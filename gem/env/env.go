@@ -2,7 +2,6 @@ package env
 
 import (
 	_ "embed"
-	"os"
 	"strings"
 
 	"github.com/oruby/oruby"
@@ -36,7 +35,7 @@ func init() {
 }
 
 func envValues(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	env := os.Environ()
+	env := sysEnviron()
 	ret := mrb.AryNewCapa(len(env))
 	for _, s := range env {
 		kv := strings.SplitN(s, "=", 2)
@@ -46,7 +45,7 @@ func envValues(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func envKeys(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	env := os.Environ()
+	env := sysEnviron()
 	ret := mrb.AryNewCapa(len(env))
 	for _, s := range env {
 		kv := strings.SplitN(s, "=", 2)
@@ -56,11 +55,11 @@ func envKeys(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func envIsEmpty(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return oruby.Bool(len(os.Environ()) == 0)
+	return oruby.Bool(len(sysEnviron()) == 0)
 }
 
 func envSize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	return oruby.Int(len(os.Environ()))
+	return oruby.Int(len(sysEnviron()))
 }
 
 func envToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -68,7 +67,7 @@ func envToS(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func envClear(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
-	os.Clearenv()
+	sysClearenv()
 	return self
 }
 
@@ -82,7 +81,7 @@ func envSetKey(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 	name := mrb.String(k)
 
-	err := os.Setenv(name, mrb.String(v))
+	err := sysSetenv(name, mrb.String(v))
 	if err != nil {
 		return mrb.RaiseError(err)
 	}
@@ -91,7 +90,7 @@ func envSetKey(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func envGetKey(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	k := mrb.GetArgsFirst()
-	v, exists := os.LookupEnv(mrb.String(k))
+	v, exists := sysLookupEnv(mrb.String(k))
 	if !exists {
 		return mrb.NilValue()
 	}
@@ -101,11 +100,11 @@ func envGetKey(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func envDelete(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	k := mrb.GetArgsFirst()
 	key := mrb.String(k)
-	v, exists := os.LookupEnv(key)
+	v, exists := sysLookupEnv(key)
 	if !exists {
 		return mrb.NilValue()
 	}
-	err := os.Unsetenv(key)
+	err := sysUnsetenv(key)
 	if err != nil {
 		return mrb.RaiseError(err)
 	}

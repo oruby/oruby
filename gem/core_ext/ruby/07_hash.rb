@@ -4,7 +4,8 @@ class Hash
   # otherwise infinitely recurse through Hash#each.
   alias __oruby_hash_keys keys
   alias __oruby_hash_aref []
-  private :__oruby_hash_keys, :__oruby_hash_aref
+  alias __oruby_hash_key_p key?
+  private :__oruby_hash_keys, :__oruby_hash_aref, :__oruby_hash_key_p
 
   def each(&block)
     return to_enum(:each) { size } unless block
@@ -13,7 +14,9 @@ class Hash
     len = ks.length
     while i < len
       k = ks[i]
-      yield [k, __oruby_hash_aref(k)]
+      if __oruby_hash_key_p(k)
+        yield [k, __oruby_hash_aref(k)]
+      end
       i += 1
     end
     self
