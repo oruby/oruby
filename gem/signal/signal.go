@@ -20,7 +20,7 @@ var signalRb []byte
 var signals map[string]int
 
 // names MRI lists after the canonical name of the same number
-var aliases = map[string]bool{"IOT": true, "CLD": true, "POLL": true, "UNUSED": true}
+var aliases = map[string]bool{"IOT": true, "CLD": true, "POLL": true}
 
 // how Signal.__oruby_os__ sets a signal up at the OS level
 const (

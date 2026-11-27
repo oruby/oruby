@@ -32,3 +32,9 @@ func initPlatformUnix(mrb *oruby.MrbState, mProc, mSys oruby.RClass) {
 	mrb.DefineModuleFunction(mProc, "egid=", setGIDFunc(unix.Setegid), mrb.ArgsReq(1))
 	mrb.DefineModuleFunc(mSys, "issetugid", syscall.Issetugid)
 }
+
+func niceFromSys(v int) int { return v }
+
+func setRealUID(id int) error { return syscall.Setuid(id) }
+
+func setRealGID(id int) error { return syscall.Setgid(id) }

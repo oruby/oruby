@@ -663,7 +663,7 @@ class IO
         kind = if null?
                  new_size >= PAGE_SIZE ? :mapped : :internal
                elsif @st[:kind] == :mapped && !@st[:private]
-                 :internal # mremap is Linux-only
+                 RUBY_PLATFORM.include?("linux") ? :mapped : :internal # mremap is Linux-only
                else
                  @st[:kind]
                end

@@ -101,6 +101,20 @@ func platformOpenFile(name string, mode int, perm os.FileMode) (int, error) {
 	return syscall.Open(name, mode|syscall.O_CLOEXEC, uint32(perm))
 }
 
+// setTimes is utimensat(2) with the seconds and nanoseconds of the times: not
+// through UnixNano, which wraps for years outside 1678..2262
+func setTimes(name string, atime, mtime time.Time, nofollow bool) error {
+	ts := []unix.Timespec{
+		{Sec: atime.Unix(), Nsec: int64(atime.Nanosecond())},
+		{Sec: mtime.Unix(), Nsec: int64(mtime.Nanosecond())},
+	}
+	flags := 0
+	if nofollow {
+		flags = unix.AT_SYMLINK_NOFOLLOW
+	}
+	return unix.UtimesNanoAt(unix.AT_FDCWD, name, ts, flags)
+}
+
 func fileLutime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	args := mrb.GetArgs().Slice()
 	if len(args) < 2 {
@@ -120,11 +134,7 @@ func fileLutime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if err != nil {
 			return raisePathError(mrb, err)
 		}
-		tv := []unix.Timeval{
-			unix.NsecToTimeval(atime.UnixNano()),
-			unix.NsecToTimeval(mtime.UnixNano()),
-		}
-		if err := unix.Lutimes(name, tv); err != nil {
+		if err := setTimes(name, atime, mtime, true); err != nil {
 			return mrb.SysFail(err)
 		}
 	}

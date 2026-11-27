@@ -1229,6 +1229,197 @@ class Socket < BasicSocket
     end
   end
 
+  # Control message (cmsg) as sendmsg/recvmsg carry it: family, level, type, data.
+  class AncillaryData
+    attr_reader :family, :level, :type, :data
+
+    def self.__ip_family?(family)
+      family == Socket::AF_INET || family == Socket::AF_INET6
+    end
+
+    def self.__level(family, level)
+      return Socket.__level(level) unless level.is_a?(Symbol) || level.is_a?(String) || level.respond_to?(:to_str)
+      name = (level.is_a?(Symbol) || level.is_a?(String) ? level : level.to_str).to_s
+      return Socket::SOL_SOCKET if name == "SOCKET" || name == "SOL_SOCKET"
+      unless __ip_family?(family)
+        raise SocketError, "unknown protocol level: #{name}"
+      end
+      Socket.__level(name)
+    end
+
+    def self.__type(family, level, type)
+      type = type.to_str if !type.is_a?(Integer) && !type.is_a?(Symbol) && !type.is_a?(String) && type.respond_to?(:to_str)
+      return Socket.__int(type) unless type.is_a?(Symbol) || type.is_a?(String)
+      prefixes = if level == Socket::SOL_SOCKET then %w[SCM_]
+                 elsif __ip_family?(family) && level == Socket::IPPROTO_IP then %w[IP_]
+                 elsif __ip_family?(family) && level == Socket::IPPROTO_IPV6 then %w[IPV6_]
+                 elsif __ip_family?(family) && level == Socket::IPPROTO_TCP then %w[TCP_]
+                 elsif __ip_family?(family) && level == Socket::IPPROTO_UDP then %w[UDP_]
+                 end
+      # other levels have no name table: a name is not an integer (NUM2INT)
+      raise TypeError, "no implicit conversion of #{type.class} into Integer" unless prefixes
+      name = type.to_s
+      prefixes.each do |pre|
+        full = name.start_with?(pre) ? name : pre + name
+        return Socket::Constants.const_get(full) if Socket::Constants.const_defined?(full)
+      end
+      raise SocketError, "unknown control message type: #{name}"
+    end
+
+    def initialize(family, level, type, data)
+      @family = Socket.__family(family)
+      @level = AncillaryData.__level(@family, level)
+      @type = AncillaryData.__type(@family, @level, type)
+      @data = Socket.__str(data)
+    end
+
+    def self.int(family, level, type, integer)
+      new(family, level, type, [Socket.__int(integer)].pack("i"))
+    end
+
+    def self.unix_rights(*ios)
+      fds = ios.map do |io|
+        raise TypeError, "IO expected" unless io.is_a?(IO)
+        io.fileno
+      end
+      ad = new(Socket::AF_UNIX, Socket::SOL_SOCKET, Socket::SCM_RIGHTS, fds.pack("i*"))
+      ad.instance_variable_set(:@rights, ios)
+      ad
+    end
+
+    def self.__in_addr(addr, what)
+      unless addr.is_a?(Addrinfo)
+        raise TypeError, "no implicit conversion of #{addr.class} into Addrinfo"
+      end
+      sa = addr.to_sockaddr
+      if what == :ipv4
+        raise Socket::ResolutionError, "IPv4 address expected" unless addr.ipv4?
+        sa.byteslice(4, 4)
+      else
+        raise Socket::ResolutionError, "IPv6 address expected" unless addr.ipv6?
+        sa.byteslice(8, 16)
+      end
+    end
+
+    def self.__addrinfo_from(bytes)
+      if bytes.bytesize == 4
+        Addrinfo.new(Socket.sockaddr_in(0, bytes.unpack("C4").join(".")))
+      else
+        Addrinfo.new(Socket.sockaddr_in(0, __ipv6_text(bytes)))
+      end
+    end
+
+    def self.__ipv6_text(bytes)
+      groups = bytes.unpack("n8")
+      best = nil
+      i = 0
+      while i < 8
+        if groups[i] == 0
+          j = i
+          j += 1 while j < 8 && groups[j] == 0
+          best = [i, j - i] if j - i >= 2 && (best.nil? || j - i > best[1])
+          i = j
+        else
+          i += 1
+        end
+      end
+      return groups.map { |g| g.to_s(16) }.join(":") unless best
+      head = groups[0, best[0]].map { |g| g.to_s(16) }.join(":")
+      tail = groups[best[0] + best[1]..].map { |g| g.to_s(16) }.join(":")
+      "#{head}::#{tail}"
+    end
+
+    # struct in_pktinfo { int ipi_ifindex; in_addr ipi_spec_dst; in_addr ipi_addr; }
+    def self.ip_pktinfo(addr, ifindex, spec_dst = addr)
+      src = __in_addr(addr, :ipv4)
+      dst = __in_addr(spec_dst, :ipv4)
+      new(Socket::AF_INET, Socket::IPPROTO_IP, Socket::IP_PKTINFO, [Socket.__int(ifindex)].pack("I") + dst + src)
+    end
+
+    # struct in6_pktinfo { in6_addr ipi6_addr; unsigned int ipi6_ifindex; }
+    def self.ipv6_pktinfo(addr, ifindex)
+      new(Socket::AF_INET6, Socket::IPPROTO_IPV6, Socket::IPV6_PKTINFO,
+          __in_addr(addr, :ipv6) + [Socket.__int(ifindex)].pack("I"))
+    end
+
+    def int
+      unless @data.bytesize == 4
+        raise TypeError, "size differ.  expected as sizeof(int)=4 but #{@data.bytesize}"
+      end
+      @data.unpack1("i")
+    end
+
+    def unix_rights
+      unless @level == Socket::SOL_SOCKET && @type == Socket::SCM_RIGHTS
+        raise TypeError, "SCM_RIGHTS ancillary data expected"
+      end
+      @rights
+    end
+
+    def cmsg_is?(level, type)
+      l = AncillaryData.__level(@family, level)
+      t = AncillaryData.__type(@family, l, type)
+      @level == l && @type == t
+    end
+
+    def ip_pktinfo
+      unless @level == Socket::IPPROTO_IP && @type == Socket::IP_PKTINFO
+        raise TypeError, "IP_PKTINFO ancillary data expected"
+      end
+      unless @data.bytesize == 12
+        raise TypeError, "size differ.  expected as sizeof(struct in_pktinfo)=12 but #{@data.bytesize}"
+      end
+      ifindex = @data.unpack1("I")
+      [AncillaryData.__addrinfo_from(@data.byteslice(8, 4)), ifindex,
+       AncillaryData.__addrinfo_from(@data.byteslice(4, 4))]
+    end
+
+    def ipv6_pktinfo
+      unless @level == Socket::IPPROTO_IPV6 && @type == Socket::IPV6_PKTINFO
+        raise TypeError, "IPV6_PKTINFO ancillary data expected"
+      end
+      unless @data.bytesize == 20
+        raise TypeError, "size differ.  expected as sizeof(struct in6_pktinfo)=20 but #{@data.bytesize}"
+      end
+      [AncillaryData.__addrinfo_from(@data.byteslice(0, 16)), @data.byteslice(16, 4).unpack1("I")]
+    end
+
+    def ipv6_pktinfo_addr
+      ipv6_pktinfo[0]
+    end
+
+    def ipv6_pktinfo_ifindex
+      ipv6_pktinfo[1]
+    end
+
+    def timestamp
+      unless @level == Socket::SOL_SOCKET &&
+             (@type == Socket::SCM_TIMESTAMP || (defined?(Socket::SCM_TIMESTAMPNS) && @type == Socket::SCM_TIMESTAMPNS))
+        raise TypeError, "timestamp ancillary data expected"
+      end
+      sec, frac = @data.unpack("qq")
+      raise TypeError, "size differ.  expected as sizeof(struct timeval)=16 but #{@data.bytesize}" unless @data.bytesize == 16
+      if @type == Socket::SCM_TIMESTAMP
+        Time.at(sec, frac, :usec)
+      else
+        Time.at(sec, frac, :nsec)
+      end
+    end
+
+    def inspect
+      fam = Socket.__const_name(@family, "AF_") || "family:#{@family}"
+      lev, typ = if @level == Socket::SOL_SOCKET
+                   ["SOCKET", Socket.__const_name(@type, "SCM_") || "cmsg_type:#{@type}"]
+                 else
+                   pre = { Socket::IPPROTO_IP => "IP_", Socket::IPPROTO_IPV6 => "IPV6_",
+                           Socket::IPPROTO_TCP => "TCP_", Socket::IPPROTO_UDP => "UDP_" }[@level]
+                   [Socket.__const_name(@level, "IPPROTO_") || "cmsg_level:#{@level}",
+                    (pre && Socket.__const_name(@type, pre)) || "cmsg_type:#{@type}"]
+                 end
+      "#<Socket::AncillaryData: #{fam} #{lev} #{typ} #{@data.inspect}>"
+    end
+  end
+
   class Option
     attr_reader :family, :level, :optname, :data
 
@@ -1584,6 +1775,7 @@ class Addrinfo
   end
 
   def getnameinfo(flags = 0)
+    return [Socket.gethostname, unix_path] if unix?
     raise SocketError, "getnameinfo: ai_family not supported" unless ip?
     Socket.__getnameinfo(@sockaddr, flags)
   end

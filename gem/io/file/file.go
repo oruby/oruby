@@ -873,7 +873,8 @@ func getStat(mrb *oruby.MrbState, f oruby.Value) (os.FileInfo, error) {
 			return s, nil
 		}
 		if file, ok := mrb.Data(f).(*os.File); ok {
-			return file.Stat()
+			fi, err := file.Stat()
+			return withBirth(fi, err, file.Name(), false)
 		}
 	}
 	// as in MRI: an IO (to_io) or a path (to_path / String), never obj.stat
@@ -884,7 +885,8 @@ func getStat(mrb *oruby.MrbState, f oruby.Value) (os.FileInfo, error) {
 	if oruby.IsOrbVirtualPath(s) {
 		return mrb.OrbStat(s)
 	}
-	return os.Stat(s)
+	fi, err := os.Stat(s)
+	return withBirth(fi, err, s, false)
 }
 
 func fileIdentical(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -921,7 +923,7 @@ func fileIdentical(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return oruby.False
 	}
 
-	return oruby.Bool(os.SameFile(stat1, stat2))
+	return oruby.Bool(os.SameFile(bareInfo(stat1), bareInfo(stat2)))
 }
 
 func singleDirname(path string) string {
@@ -1100,6 +1102,7 @@ func fileLStat(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		stat, err = mrb.OrbStat(name)
 	} else {
 		stat, err = os.Lstat(name)
+		stat, err = withBirth(stat, err, name, true)
 	}
 	if err != nil {
 		return mrb.SysFail(err)
@@ -1993,7 +1996,7 @@ func fileUtime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		if err != nil {
 			return raisePathError(mrb, err)
 		}
-		if err := os.Chtimes(name, atime, mtime); err != nil {
+		if err := setTimes(name, atime, mtime, false); err != nil {
 			return mrb.SysFail(err)
 		}
 	}

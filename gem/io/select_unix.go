@@ -5,8 +5,10 @@ package io
 import (
 	"errors"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/oruby/oruby"
 	"golang.org/x/sys/unix"
@@ -21,6 +23,33 @@ func initSelect(mrb *oruby.MrbState, cIO oruby.RClass) {
 	cIO.DefineMethod("__nonblock", ioNonblock, mrb.ArgsReq(1))
 	cIO.DefineMethod("__nonblock?", ioIsNonblock, mrb.ArgsNone())
 	cIO.DefineMethod("__reader_gone?", ioReaderGone, mrb.ArgsNone())
+	cIO.DefineMethod("__oruby_ioctl", ioIoctl, mrb.ArgsReq(2))
+}
+
+// __oruby_ioctl(cmd, arg): ioctl(2) with an Integer argument (result) or a
+// String buffer (at least 256 bytes for the call, [result, bytes] back)
+func ioIoctl(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
+	fd, ok := fdOf(mrb, self)
+	if !ok {
+		return RaiseIOError(mrb, "closed stream")
+	}
+	a := mrb.GetArgs().Slice()
+	cmd := uintptr(a[0].Int64())
+	if a[1].Type() == oruby.MrbTTString {
+		data := a[1].Bytes()
+		buf := make([]byte, max(len(data), 256))
+		copy(buf, data)
+		r, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), cmd, uintptr(unsafe.Pointer(&buf[0])))
+		if e != 0 {
+			return mrb.SysFail(e)
+		}
+		return mrb.Value([]interface{}{int(r), binaryStringValue(mrb, buf[:len(data)])})
+	}
+	r, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), cmd, uintptr(a[1].Int64()))
+	if e != 0 {
+		return mrb.SysFail(e)
+	}
+	return mrb.FixnumValue(int(r))
 }
 
 func fdOf(mrb *oruby.MrbState, self oruby.Value) (int, bool) {
@@ -215,7 +244,9 @@ func ioReaderGone(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 }
 
 func withNonblock(fd int, f func() (int, error)) (int, error) {
-	keep := isSocket(fd)
+	// MRI on Linux reads/writes sockets with MSG_DONTWAIT and leaves the mode
+	// alone; BSDs and macOS switch the socket to non-blocking for good
+	keep := runtime.GOOS != "linux" && isSocket(fd)
 	fl, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
 	if err != nil {
 		return 0, err
@@ -285,7 +316,7 @@ func ioWriteNonblock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.FixnumValue(n)
 }
 
-// isSocket reports whether fd is a socket; read_nonblock leaves sockets in
+// isSocket reports whether fd is a socket; read_nonblock leaves sockets (not on Linux) in
 // non-blocking mode like Ruby (they are polled), other fds are restored so
 // blocking os.File reads keep working.
 func isSocket(fd int) bool {

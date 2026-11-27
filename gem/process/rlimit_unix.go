@@ -36,23 +36,54 @@ func rlimitCname(mrb *oruby.MrbState, v oruby.Value) string {
 	return mrb.ClassName(mrb.ObjClass(v))
 }
 
-// rlimitToInt is NUM2INT through #to_int
-func rlimitToInt(mrb *oruby.MrbState, v oruby.Value) (int64, error) {
-	if v.IsInteger() {
-		return v.Int64(), nil
+// rlimitConv is NUM2INT through #to_int: an Integer (a fixnum, or a bigint:
+// RLIM_INFINITY is 2**64-1 on Linux)
+func rlimitConv(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
+	if v.IsInteger() || v.Type() == oruby.MrbTTBigInt {
+		return v, nil
 	}
 	if v.IsNil() || !mrb.RespondTo(v, oruby.Sym_to_int) {
-		return 0, oruby.ETypeError("no implicit conversion of %s into Integer", rlimitCname(mrb, v))
+		return v, oruby.ETypeError("no implicit conversion of %s into Integer", rlimitCname(mrb, v))
 	}
 	r, err := mrb.Funcall(v, oruby.Sym_to_int)
 	if err != nil {
+		return v, err
+	}
+	if !r.IsInteger() && r.Type() != oruby.MrbTTBigInt {
+		c := rlimitCname(mrb, v)
+		return v, oruby.ETypeError("can't convert %s into Integer (%s#to_int gives %s)", c, c, rlimitCname(mrb, r.Value()))
+	}
+	return r.Value(), nil
+}
+
+func rlimitToInt(mrb *oruby.MrbState, v oruby.Value) (int64, error) {
+	r, err := rlimitConv(mrb, v)
+	if err != nil {
 		return 0, err
 	}
-	if !r.IsInteger() {
-		c := rlimitCname(mrb, v)
-		return 0, oruby.ETypeError("can't convert %s into Integer (%s#to_int gives %s)", c, c, rlimitCname(mrb, r.Value()))
+	if r.IsInteger() {
+		return r.Int64(), nil
 	}
-	return r.Int64(), nil
+	return 0, oruby.ERangeError("bignum too big to convert into 'int'")
+}
+
+// rlimitToUint is an rlim_t: a bigint up to 2**64-1 is as is
+func rlimitToUint(mrb *oruby.MrbState, v oruby.Value) (uint64, error) {
+	r, err := rlimitConv(mrb, v)
+	if err != nil {
+		return 0, err
+	}
+	if r.IsInteger() {
+		return uint64(r.Int64()), nil
+	}
+	z, err := mrb.BigInt(r)
+	if err != nil {
+		return 0, err
+	}
+	if !z.IsUint64() {
+		return 0, oruby.ERangeError("bignum too big to convert into 'unsigned long'")
+	}
+	return z.Uint64(), nil
 }
 
 // rlimitName: the name a Symbol, String or #to_str gives, ok false for none
@@ -99,8 +130,7 @@ func rlimitValue(mrb *oruby.MrbState, v oruby.Value) (uint64, error) {
 		}
 		return 0, oruby.EArgumentError("invalid resource value: %s", name)
 	}
-	n, err := rlimitToInt(mrb, v)
-	return uint64(n), err
+	return rlimitToUint(mrb, v)
 }
 
 // rlimitInt is an rlim_t as an Integer: RLIM_INFINITY is 2**64-1 on Linux

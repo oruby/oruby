@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -208,9 +209,14 @@ func sockaddrToBytes(sa syscall.Sockaddr) []byte {
 		binary.LittleEndian.PutUint32(b[24:], a.ZoneId)
 		return b
 	case *syscall.SockaddrUnix:
-		b := make([]byte, unixPathOffset+len(a.Name)+1)
+		name := a.Name
+		if name == "@" && runtime.GOOS == "linux" {
+			// Go reports an unnamed Linux socket (a bare family) as "@"
+			name = ""
+		}
+		b := make([]byte, unixPathOffset+len(name)+1)
 		putFamily(b, syscall.AF_UNIX, len(b))
-		copy(b[unixPathOffset:], a.Name)
+		copy(b[unixPathOffset:], name)
 		if unixFullSize {
 			full := make([]byte, unixPathOffset+unixPathMax)
 			copy(full, b)
@@ -665,6 +671,40 @@ const (
 
 // getaddrinfo(host, service, family, socktype, protocol, flags)
 // -> [[family, socktype, protocol, sockaddr, canonname], ...]
+// inetAton parses the legacy IPv4 forms inet_aton(3) accepts and getaddrinfo
+// takes as numeric hosts: "0", "127.1", "0x7f.0.0.1", "017700000001".
+func inetAton(host string) net.IP {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return nil
+	}
+	var vals [4]uint64
+	for i, p := range parts {
+		if p == "" {
+			return nil
+		}
+		v, err := strconv.ParseUint(p, 0, 32)
+		if err != nil || strings.ContainsAny(p, "_") {
+			return nil
+		}
+		vals[i] = v
+	}
+	n := len(parts)
+	var addr uint64
+	for i := 0; i < n-1; i++ {
+		if vals[i] > 255 {
+			return nil
+		}
+		addr |= vals[i] << (24 - 8*uint(i))
+	}
+	last := vals[n-1]
+	if last >= uint64(1)<<(8*uint(5-n)) {
+		return nil
+	}
+	addr |= last
+	return net.IPv4(byte(addr>>24), byte(addr>>16), byte(addr>>8), byte(addr))
+}
+
 func sysGetaddrinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 	a := mrb.GetArgs().Slice()
 	host := ""
@@ -703,6 +743,9 @@ func sysGetaddrinfo(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		ips = []net.IP{net.IPv4bcast}
 	default:
 		if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+			ips = []net.IP{ip}
+			canon = host
+		} else if ip := inetAton(host); ip != nil {
 			ips = []net.IP{ip}
 			canon = host
 		} else if flags&aiNumericHost != 0 {

@@ -119,10 +119,15 @@ func statAtime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 func statBirthtime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	stat := mrb.Data(self).(os.FileInfo)
 	ext := getExtendedStat(stat)
-	if ext.birthtime.IsZero() {
+	bt := birthtimeOf(stat, ext)
+	if bt.IsZero() {
+		if runtime.GOOS == "linux" {
+			// MRI: statx has no birth time on this file system
+			return mrb.Raise(mrb.ClassGet("NotImplementedError"), "birthtime is unimplemented on this filesystem")
+		}
 		return mrb.NilValue()
 	}
-	return mrb.Value(ext.birthtime)
+	return mrb.Value(bt)
 }
 
 func statBlksize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -251,6 +256,7 @@ func statInspect(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return t.Format("2006-01-02 15:04:05 -0700")
 	}
 	birthtime := ""
+	// MRI shows it on the BSDs and macOS only (ctime stands for it on Windows)
 	if !ext.birthtime.IsZero() {
 		birthtime = ", birthtime=" + inspect(ext.birthtime)
 	}

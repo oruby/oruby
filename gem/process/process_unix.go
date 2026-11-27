@@ -28,7 +28,12 @@ const (
 
 func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RClass) {
 	mrb.DefineModuleFunc(mProc, "getpgrp", syscall.Getpgrp)
-	mrb.DefineModuleFunc(mProc, "setpgrp", syscall.Setgroups)
+	mrb.DefineModuleFunc(mProc, "setpgrp", func() (int, error) {
+		if err := syscall.Setpgid(0, 0); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	})
 	mrb.DefineModuleFunction(mProc, "getpgid", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		pid, err := rb.Int(mrb, mrb.GetArgsFirst())
 		if err != nil {
@@ -56,7 +61,7 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 		if err != nil {
 			return mrb.SysFail(err)
 		}
-		return mrb.FixnumValue(prio)
+		return mrb.FixnumValue(niceFromSys(prio))
 	}, mrb.ArgsReq(2))
 	mrb.DefineModuleFunc(mProc, "setpriority", func(which, who, prio int) (int, error) {
 		err := syscall.Setpriority(which, who, prio)
@@ -72,8 +77,8 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 
 	initRlimit(mrb, mProc)
 
-	mrb.DefineModuleFunction(mProc, "uid=", setUIDFunc(syscall.Setuid), mrb.ArgsReq(1))
-	mrb.DefineModuleFunction(mProc, "gid=", setGIDFunc(syscall.Setgid), mrb.ArgsReq(1))
+	mrb.DefineModuleFunction(mProc, "uid=", setUIDFunc(setRealUID), mrb.ArgsReq(1))
+	mrb.DefineModuleFunction(mProc, "gid=", setGIDFunc(setRealGID), mrb.ArgsReq(1))
 	mrb.DefineModuleFunction(mProc, "euid=", setUIDFunc(syscall.Seteuid), mrb.ArgsReq(1))
 	mrb.DefineModuleFunction(mProc, "egid=", setGIDFunc(syscall.Setegid), mrb.ArgsReq(1))
 	mrb.DefineModuleFunction(mProc, "groups=", procSetGroups, mrb.ArgsReq(1))
@@ -85,7 +90,7 @@ func initPlatform(mrb *oruby.MrbState, mProc, mProcUID, mProcGID, mSys oruby.RCl
 	//mrb.DefineModuleFunction(mProcUID, "change_privilege", p_uid_change_privilege, 1)
 	//mrb.DefineModuleFunction(mProcGID, "change_privilege", p_gid_change_privilege, 1)
 	mrb.DefineModuleFunc(mProcUID, "grant_privilege", syscall.Seteuid)
-	mrb.DefineModuleFunc(mProcGID, "grant_privilege", syscall.Seteuid)
+	mrb.DefineModuleFunc(mProcGID, "grant_privilege", syscall.Setegid)
 	mrb.DefineAlias(mrb.SingletonClass(mProcUID), "eid=", "grant_privilege")
 	mrb.DefineAlias(mrb.SingletonClass(mProcGID), "eid=", "grant_privilege")
 	mrb.DefineModuleFunction(mProcUID, "re_exchange", puidExchange, mrb.ArgsNone())

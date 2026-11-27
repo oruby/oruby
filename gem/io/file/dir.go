@@ -423,7 +423,19 @@ func dirMkdir(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 			return raisePathError(mrb, err)
 		}
 	}
-	err = os.Mkdir(dir, os.FileMode(perm))
+	// os.Mkdir takes the sticky and set-id bits as FileMode flags, not as the
+	// raw 01000/02000/04000 of mkdir(2)
+	mode := os.FileMode(perm & 0777)
+	if perm&01000 != 0 {
+		mode |= os.ModeSticky
+	}
+	if perm&02000 != 0 {
+		mode |= os.ModeSetgid
+	}
+	if perm&04000 != 0 {
+		mode |= os.ModeSetuid
+	}
+	err = os.Mkdir(dir, mode)
 	if err != nil {
 		return mrb.SysFail(err)
 	}

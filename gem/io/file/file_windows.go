@@ -3,6 +3,7 @@ package file
 import (
 	"github.com/oruby/oruby"
 	"os"
+	"time"
 )
 
 func fileUmask(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
@@ -16,6 +17,10 @@ func fileFlock(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 
 func fileMkfifio(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	return mrb.NotImplemented()
+}
+
+func setTimes(name string, atime, mtime time.Time, _ bool) error {
+	return os.Chtimes(name, atime, mtime)
 }
 
 func fileLutime(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {

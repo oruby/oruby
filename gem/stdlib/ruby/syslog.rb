@@ -39,7 +39,8 @@ module Syslog
       @ident = ident.to_s
       @options = options
       @facility = facility
-      @mask = 255
+      # glibc keeps the log mask for the process; macOS resets it on openlog
+      @mask = (RUBY_PLATFORM.include?("linux") && @kept_mask) || 255
       __open(@ident, @facility)
       @opened = true
       if block_given?
@@ -64,6 +65,7 @@ module Syslog
       raise RuntimeError, "syslog not opened" unless @opened
       __close
       @opened = false
+      @kept_mask = @mask
       @ident = @options = @facility = @mask = nil
       nil
     end

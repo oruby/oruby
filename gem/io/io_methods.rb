@@ -153,9 +153,21 @@ class IO
     __oruby_fcntl(cmd, arg)
   end
 
-  def ioctl(*)
+  def ioctl(cmd, arg = 0)
     raise IOError, "closed stream" if closed?
-    raise NotImplementedError, "ioctl() function is unimplemented on this machine"
+    cmd = ::Kernel.__to_int(cmd)
+    if arg.is_a?(String)
+      raise FrozenError, "can't modify frozen String: #{arg.inspect}" if arg.frozen?
+      r, out = __oruby_ioctl(cmd, arg)
+      arg.replace(out.force_encoding(arg.encoding))
+      return r
+    end
+    arg = case arg
+          when nil, false then 0
+          when true then 1
+          else ::Kernel.__to_int(arg)
+          end
+    __oruby_ioctl(cmd, arg)
   end
 
   # the path given when the IO was made (IO.new(fd, path:)), the name of a
