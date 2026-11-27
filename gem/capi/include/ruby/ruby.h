@@ -992,4 +992,71 @@ inline VALUE rb_proc_new(VALUE (*f)(...), VALUE data) {
 
 #include "ruby/encoding.h"
 
+/* Quick-win C-API additions */
+static inline int rb_type_p(VALUE obj, int type) { return rb_type(obj) == type; }
+VALUE rb_class_get_superclass(VALUE klass);
+int rb_is_const_id(ID id);
+int rb_is_instance_id(ID id);
+int rb_is_class_id(ID id);
+
+VALUE rb_syserr_new(int n, const char *mesg);
+VALUE rb_syserr_new_str(int n, VALUE arg);
+void rb_syserr_fail(int n, const char *mesg);
+void rb_syserr_fail_str(int n, VALUE mesg);
+VALUE rb_make_exception(int argc, const VALUE *argv);
+
+#define TIMET2NUM(v) LL2NUM((long long)(v))
+#define NUM2TIMET(v) ((time_t)NUM2LL(v))
+#define NUM2PIDT(v) ((pid_t)NUM2LL(v))
+#define PIDT2NUM(v) LL2NUM((long long)(v))
+int rb_long2int(long n);
+
+typedef VALUE rb_enumerator_size_func(VALUE, VALUE, VALUE);
+VALUE rb_enumeratorize_with_size(VALUE obj, VALUE meth, int argc, const VALUE *argv, rb_enumerator_size_func *size_fn);
+
+VALUE rb_define_finalizer(VALUE obj, VALUE block);
+VALUE rb_undefine_finalizer(VALUE obj);
+
+void rb_mem_clear(VALUE *mem, long size);
+VALUE rb_ary_rotate(VALUE ary, long cnt);
+VALUE rb_ary_sort(VALUE ary);
+
+VALUE rb_get_path(VALUE obj);
+#define FilePathValue(v) ((v) = rb_get_path(v))
+VALUE rb_file_open(const char *fname, const char *modestr);
+VALUE rb_file_open_str(VALUE fname, const char *modestr);
+
+VALUE rb_Hash(VALUE val);
+VALUE rb_ident_hash_new(void);
+#define rb_hash_start st_hash_start
+#define rb_hash_uint32 st_hash_uint32
+#define rb_hash_uint st_hash_uint
+#define rb_hash_end st_hash_end
+
+void rb_alias(VALUE klass, ID new_name, ID old_name);
+void rb_undef(VALUE klass, ID name);
+VALUE rb_mod_ancestors(VALUE mod);
+void rb_deprecate_constant(VALUE mod, const char *name);
+
+VALUE rb_Rational(VALUE num, VALUE den);
+VALUE rb_Rational1(VALUE num);
+VALUE rb_Rational2(VALUE num, VALUE den);
+VALUE rb_rational_num(VALUE rat);
+VALUE rb_rational_den(VALUE rat);
+VALUE rb_Complex(VALUE real, VALUE imag);
+VALUE rb_Complex1(VALUE real);
+VALUE rb_Complex2(VALUE real, VALUE imag);
+VALUE rb_complex_real(VALUE cmp);
+VALUE rb_complex_imag(VALUE cmp);
+
+VALUE rb_mutex_new(void);
+VALUE rb_mutex_locked_p(VALUE mutex);
+VALUE rb_mutex_trylock(VALUE mutex);
+VALUE rb_mutex_lock(VALUE mutex);
+VALUE rb_mutex_unlock(VALUE mutex);
+VALUE rb_mutex_sleep(VALUE mutex, VALUE timeout);
+VALUE rb_mutex_synchronize(VALUE mutex, VALUE (*func)(VALUE arg), VALUE arg);
+VALUE rb_proc_call_kw(VALUE proc, VALUE args, int kw_splat);
+VALUE rb_proc_call_with_block_kw(VALUE proc, int argc, const VALUE *argv, VALUE blk, int kw_splat);
+
 #endif /* ORUBY_CAPI_RUBY_H */
