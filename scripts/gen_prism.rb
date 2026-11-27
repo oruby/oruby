@@ -70,6 +70,8 @@ Dir.mktmpdir('gen_prism') do |tmp|
                   "            when :def_endless_setter\n" \
                   "              on_parse_error(\"setter method cannot be defined in an endless method definition\")\n" \
                   "            when :alias_argument\n", 'prism/translation/ripper.rb')
+    elsif f == File.join(stage, 'prism/polyfill/warn.rb') || f == File.join(stage, 'prism/polyfill/unpack1.rb')
+      src = "# frozen_string_literal: true\n# ORuby targets Ruby 4.1.0; Kernel#warn(category:) and String#unpack1(offset:) are built in.\n"
     end
     File.binwrite(f, src)
   end
