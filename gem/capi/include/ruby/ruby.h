@@ -149,7 +149,7 @@ typedef VALUE (*rb_capi_anyargs_func)(ANYARGS);
 #define IMMEDIATE_P(v) RB_IMMEDIATE_P(v)
 #define RB_SPECIAL_CONST_P(v) (RB_IMMEDIATE_P(v) || (VALUE)(v) == RUBY_Qfalse)
 #define SPECIAL_CONST_P(v) RB_SPECIAL_CONST_P(v)
-static inline int rb_special_const_p(VALUE v) { return RB_SPECIAL_CONST_P(v); }
+static inline VALUE rb_special_const_p(VALUE v) { return RB_SPECIAL_CONST_P(v) ? Qtrue : Qfalse; }
 
 /* ---- Fixnum and Integer ---- */
 #define RUBY_FIXNUM_MAX (LONG_MAX >> 1)
@@ -168,9 +168,13 @@ static inline int rb_special_const_p(VALUE v) { return RB_SPECIAL_CONST_P(v); }
 #define RB_FIX2LONG(v) ((long)(((SIGNED_VALUE)(v)) >> 1))
 #define FIX2LONG(v) RB_FIX2LONG(v)
 #define FIX2ULONG(v) ((unsigned long)RB_FIX2LONG(v))
-#define FIX2INT(v) ((int)RB_FIX2LONG(v))
-#define FIX2UINT(v) ((unsigned int)RB_FIX2LONG(v))
-#define FIX2SHORT(v) ((short)RB_FIX2LONG(v))
+#ifndef LONG_LONG
+# define LONG_LONG long long
+#endif
+#define ST2FIX(h) LONG2FIX((long)(h))
+#define FIX2INT(v) ((int)rb_fix2int((VALUE)(v)))
+#define FIX2UINT(v) ((unsigned int)rb_fix2uint((VALUE)(v)))
+#define FIX2SHORT(v) rb_fix2short((VALUE)(v))
 #define INT2NUM(i) rb_int2inum((intptr_t)(i))
 #define UINT2NUM(i) rb_uint2inum((uintptr_t)(i))
 #define LONG2NUM(i) rb_int2inum((intptr_t)(i))
@@ -180,15 +184,15 @@ static inline int rb_special_const_p(VALUE v) { return RB_SPECIAL_CONST_P(v); }
 #define SIZET2NUM(i) rb_uint2inum((uintptr_t)(i))
 #define SSIZET2NUM(i) rb_int2inum((intptr_t)(i))
 #define CHR2FIX(c) INT2FIX((long)((c) & 0xff))
-#define NUM2INT(v) ((int)rb_num2long(v))
-#define NUM2UINT(v) ((unsigned int)rb_num2ulong(v))
+#define NUM2INT(v) ((int)rb_num2int((VALUE)(v)))
+#define NUM2UINT(v) ((unsigned int)rb_num2uint((VALUE)(v)))
 #define NUM2LONG(v) rb_num2long(v)
 #define NUM2ULONG(v) rb_num2ulong(v)
 #define NUM2LL(v) rb_num2ll(v)
 #define NUM2ULL(v) rb_num2ull(v)
 #define NUM2SIZET(v) ((size_t)rb_num2ulong(v))
 #define NUM2SSIZET(v) ((ssize_t)rb_num2long(v))
-#define NUM2SHORT(v) ((short)rb_num2long(v))
+#define NUM2SHORT(v) rb_num2short((VALUE)(v))
 #define NUM2CHR(v) rb_num2chr(v)
 #define NUM2DBL(v) rb_num2dbl(v)
 #define DBL2NUM(d) rb_float_new(d)
@@ -201,6 +205,16 @@ VALUE rb_ll2inum(long long);
 VALUE rb_ull2inum(unsigned long long);
 VALUE rb_int2big(intptr_t);
 long rb_num2long(VALUE);
+long rb_num2int(VALUE);
+long rb_fix2int(VALUE);
+unsigned long rb_num2uint(VALUE);
+unsigned long rb_fix2uint(VALUE);
+short rb_num2short(VALUE);
+short rb_fix2short(VALUE);
+VALUE rb_num_coerce_bin(VALUE, VALUE, ID);
+VALUE rb_num_coerce_cmp(VALUE, VALUE, ID);
+VALUE rb_num_coerce_relop(VALUE, VALUE, ID);
+int rb_absint_singlebit_p(VALUE);
 unsigned long rb_num2ulong(VALUE);
 long long rb_num2ll(VALUE);
 unsigned long long rb_num2ull(VALUE);
@@ -301,11 +315,13 @@ extern unsigned int rb_capi_generation;
 #define CONST_ID(var, str) ((var) = RB_CAPI_CONST_ID(str))
 
 /* ---- classes and modules ---- */
-RUBY_EXTERN VALUE rb_mKernel, rb_mComparable, rb_mEnumerable, rb_mErrno, rb_mGC, rb_mMath, rb_mProcess;
+RUBY_EXTERN VALUE rb_mKernel, rb_mComparable, rb_mEnumerable, rb_mErrno, rb_mGC, rb_mMath, rb_mProcess,
+  rb_mFileTest, rb_mWaitReadable, rb_mWaitWritable;
 RUBY_EXTERN VALUE rb_cBasicObject, rb_cObject, rb_cModule, rb_cClass, rb_cArray, rb_cHash, rb_cString,
   rb_cSymbol, rb_cInteger, rb_cFloat, rb_cNumeric, rb_cNilClass, rb_cTrueClass, rb_cFalseClass, rb_cProc,
-  rb_cMethod, rb_cRange, rb_cRegexp, rb_cMatch, rb_cStruct, rb_cTime, rb_cIO, rb_cFile, rb_cEncoding,
-  rb_cRational, rb_cComplex, rb_cRandom, rb_cThread, rb_cEnumerator;
+  rb_cMethod, rb_cUnboundMethod, rb_cBinding, rb_cDir, rb_cStat, rb_cRange, rb_cRegexp, rb_cMatch,
+  rb_cStruct, rb_cTime, rb_cIO, rb_cFile, rb_cEncoding, rb_cRational, rb_cComplex, rb_cRandom,
+  rb_cThread, rb_cEnumerator;
 RUBY_EXTERN VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eArgError, rb_eTypeError,
   rb_eNameError, rb_eNoMethodError, rb_eIndexError, rb_eKeyError, rb_eRangeError, rb_eNotImpError,
   rb_eIOError, rb_eEOFError, rb_eFrozenError, rb_eStopIteration, rb_eZeroDivError, rb_eFloatDomainError,
@@ -378,6 +394,21 @@ void rb_check_frozen(VALUE);
 #define RB_OBJ_FROZEN(v) OBJ_FROZEN(v)
 #define OBJ_FREEZE(v) rb_obj_freeze((VALUE)(v))
 #define RB_OBJ_FREEZE(v) OBJ_FREEZE(v)
+#define RUBY_FL_FREEZE (1 << 11)
+#define FL_FREEZE RUBY_FL_FREEZE
+#define RB_FL_ABLE(x) (!RB_SPECIAL_CONST_P(x))
+#define FL_ABLE(x) RB_FL_ABLE(x)
+VALUE rb_capi_fl_test(VALUE, VALUE);
+#define RB_FL_TEST(x, f) rb_capi_fl_test((VALUE)(x), (VALUE)(f))
+#define FL_TEST(x, f) RB_FL_TEST(x, f)
+rb_alloc_func_t rb_get_alloc_func(VALUE);
+VALUE rb_check_to_integer(VALUE, const char *);
+void rb_obj_call_init(VALUE, int, const VALUE *);
+void rb_obj_call_init_kw(VALUE, int, const VALUE *, int);
+VALUE rb_obj_instance_eval(int, const VALUE *, VALUE);
+void rb_copy_generic_ivar(VALUE, VALUE);
+void rb_free_generic_ivar(VALUE);
+VALUE rb_f_notimplement(int, const VALUE *, VALUE, VALUE);
 VALUE rb_obj_dup(VALUE);
 VALUE rb_obj_clone(VALUE);
 VALUE rb_obj_id(VALUE);
@@ -421,6 +452,15 @@ VALUE rb_funcall_passing_block(VALUE, ID, int, const VALUE *);
 VALUE rb_funcall_with_block(VALUE, ID, int, const VALUE *, VALUE);
 VALUE rb_funcall_with_block_kw(VALUE, ID, int, const VALUE *, VALUE, int);
 VALUE rb_call_super(int, const VALUE *);
+VALUE rb_call_super_kw(int, const VALUE *, int);
+VALUE rb_class_instance_methods(int, const VALUE *, VALUE);
+VALUE rb_class_public_instance_methods(int, const VALUE *, VALUE);
+VALUE rb_class_protected_instance_methods(int, const VALUE *, VALUE);
+VALUE rb_class_private_instance_methods(int, const VALUE *, VALUE);
+VALUE rb_cvar_defined(VALUE, ID);
+VALUE rb_cv_get(VALUE, const char *);
+void rb_cv_set(VALUE, const char *, VALUE);
+void rb_define_class_variable(VALUE, const char *, VALUE);
 int rb_block_given_p(void);
 void rb_need_block(void);
 VALUE rb_block_proc(void);
@@ -473,6 +513,17 @@ NORETURN(void rb_cmperr(VALUE, VALUE));
 NORETURN(void rb_invalid_str(const char *, const char *));
 void rb_warn(const char *, ...);
 void rb_warning(const char *, ...);
+typedef enum {
+  RB_WARN_CATEGORY_NONE = 0,
+  RB_WARN_CATEGORY_DEPRECATED = 1,
+  RB_WARN_CATEGORY_EXPERIMENTAL = 2,
+  RB_WARN_CATEGORY_PERFORMANCE = 3,
+  RB_WARN_CATEGORY_STRICT_UNUSED_BLOCK = 4
+} rb_warning_category_t;
+void rb_category_warn(rb_warning_category_t, const char *, ...);
+VALUE rb_exec_recursive(VALUE (*)(VALUE, VALUE, int), VALUE, VALUE);
+void rb_set_end_proc(void (*)(VALUE), VALUE);
+VALUE rb_make_backtrace(void);
 VALUE rb_exc_new(VALUE, const char *, long);
 VALUE rb_exc_new_cstr(VALUE, const char *);
 VALUE rb_exc_new_str(VALUE, VALUE);
@@ -678,6 +729,15 @@ VALUE rb_env_clear(void);
 /* ---- Ranges, Procs, misc objects ---- */
 VALUE rb_range_new(VALUE, VALUE, int);
 int rb_range_values(VALUE, VALUE *, VALUE *, int *);
+VALUE rb_range_beg_len(VALUE, long *, long *, long, int);
+typedef struct {
+  VALUE begin;
+  VALUE end;
+  VALUE step;
+  int exclude_end;
+} rb_arithmetic_sequence_components_t;
+int rb_arithmetic_sequence_extract(VALUE, rb_arithmetic_sequence_components_t *);
+VALUE rb_arithmetic_sequence_beg_len_step(VALUE, long *, long *, long *, long, int);
 VALUE rb_struct_define(const char *, ...);
 VALUE rb_struct_new(VALUE, ...);
 VALUE rb_struct_aref(VALUE, VALUE);
@@ -761,6 +821,12 @@ const rb_data_type_t *rb_capi_typeddata_type(VALUE);
 int rb_capi_typeddata_p(VALUE);
 #define DATA_PTR(obj) (*rb_capi_data_ptr_ref((VALUE)(obj)))
 #define RDATA_PTR(obj) DATA_PTR(obj)
+struct RTypedData {
+  void *data;
+  const rb_data_type_t *type;
+};
+struct RTypedData *rb_capi_rtypeddata(VALUE);
+#define RTYPEDDATA(obj) rb_capi_rtypeddata((VALUE)(obj))
 #define RTYPEDDATA_DATA(obj) DATA_PTR(obj)
 #define RTYPEDDATA_GET_DATA(obj) rb_capi_data_get((VALUE)(obj))
 #define RTYPEDDATA_TYPE(obj) rb_capi_typeddata_type((VALUE)(obj))
@@ -864,6 +930,30 @@ int rb_big_sign(VALUE);
 #define RBIGNUM_SIGN(b) rb_big_sign(b)
 #define RBIGNUM_POSITIVE_P(b) (RBIGNUM_SIGN(b) == 1)
 #define RBIGNUM_NEGATIVE_P(b) (RBIGNUM_SIGN(b) == 0)
+VALUE rb_dbl2big(double);
+VALUE rb_big_cmp(VALUE, VALUE);
+void rb_big_pack(VALUE, unsigned long *, long);
+
+#define INTEGER_PACK_MSWORD_FIRST       0x01
+#define INTEGER_PACK_LSWORD_FIRST       0x02
+#define INTEGER_PACK_MSBYTE_FIRST       0x10
+#define INTEGER_PACK_LSBYTE_FIRST       0x20
+#define INTEGER_PACK_NATIVE_BYTE_ORDER  0x40
+#define INTEGER_PACK_2COMP              0x80
+#define INTEGER_PACK_FORCE_BIGNUM       0x100
+#define INTEGER_PACK_NEGATIVE           0x200
+#define INTEGER_PACK_FORCE_GENERIC_IMPLEMENTATION 0x400
+#define INTEGER_PACK_LITTLE_ENDIAN      (INTEGER_PACK_LSWORD_FIRST | INTEGER_PACK_LSBYTE_FIRST)
+#define INTEGER_PACK_BIG_ENDIAN         (INTEGER_PACK_MSWORD_FIRST | INTEGER_PACK_MSBYTE_FIRST)
+int rb_integer_pack(VALUE, void *, size_t, size_t, size_t, int);
+VALUE rb_int_positive_pow(long, unsigned long);
+
+#define RB_INT_PARSE_SIGN       0x01
+#define RB_INT_PARSE_UNDERSCORE 0x02
+#define RB_INT_PARSE_PREFIX     0x04
+#define RB_INT_PARSE_ALL        (RB_INT_PARSE_SIGN | RB_INT_PARSE_UNDERSCORE | RB_INT_PARSE_PREFIX)
+#define RB_INT_PARSE_DEFAULT    (RB_INT_PARSE_SIGN | RB_INT_PARSE_UNDERSCORE)
+VALUE rb_int_parse_cstr(const char *, ssize_t, char **, size_t *, int, int);
 
 VALUE rb_struct_size(VALUE);
 VALUE rb_struct_members(VALUE);
@@ -1058,5 +1148,53 @@ VALUE rb_mutex_sleep(VALUE mutex, VALUE timeout);
 VALUE rb_mutex_synchronize(VALUE mutex, VALUE (*func)(VALUE arg), VALUE arg);
 VALUE rb_proc_call_kw(VALUE proc, VALUE args, int kw_splat);
 VALUE rb_proc_call_with_block_kw(VALUE proc, int argc, const VALUE *argv, VALUE blk, int kw_splat);
+
+/* String additions */
+size_t rb_str_capacity(VALUE);
+VALUE rb_external_str_new_cstr(const char *);
+VALUE rb_locale_str_new_cstr(const char *);
+VALUE rb_utf8_str_new_static(const char *, long);
+VALUE rb_str_drop_bytes(VALUE, long);
+char *rb_str_subpos(VALUE, long, long *);
+long rb_str_sublen(VALUE, long);
+void rb_str_free(VALUE);
+VALUE rb_str_locktmp(VALUE);
+VALUE rb_str_unlocktmp(VALUE);
+VALUE rb_str_to_interned_str(VALUE);
+
+/* GC, Process, Time, Struct/Data, Set, Regexp, Fiber, Util */
+VALUE rb_gc_latest_gc_info(VALUE);
+VALUE rb_process_status_for(pid_t, int, int);
+VALUE rb_time_num_new(VALUE, VALUE);
+struct timeval rb_time_interval(VALUE);
+void rb_timespec_now(struct timespec *);
+VALUE rb_struct_define_under(VALUE, const char *, ...);
+VALUE rb_struct_initialize(VALUE, VALUE);
+VALUE rb_data_define(VALUE, ...);
+VALUE rb_set_new(void);
+VALUE rb_set_new_capa(size_t);
+int rb_set_lookup(VALUE, VALUE);
+int rb_set_add(VALUE, VALUE);
+VALUE rb_set_clear(VALUE);
+int rb_set_delete(VALUE, VALUE);
+size_t rb_set_size(VALUE);
+void rb_set_foreach(VALUE, int (*)(VALUE, VALUE), VALUE);
+VALUE rb_reg_new(const char *, long, int);
+int rb_reg_options(VALUE);
+VALUE rb_reg_regcomp(VALUE);
+VALUE rb_reg_match(VALUE, VALUE);
+void rb_backref_set(VALUE);
+int rb_memcicmp(const void *, const void *, long);
+VALUE rb_fiber_new(rb_block_call_func_t, VALUE);
+VALUE rb_fiber_current(void);
+VALUE rb_fiber_alive_p(VALUE);
+VALUE rb_fiber_resume(VALUE, int, const VALUE *);
+VALUE rb_fiber_yield(int, const VALUE *);
+VALUE rb_fiber_raise(VALUE, int, const VALUE *);
+NORETURN(void rb_iter_break(void));
+NORETURN(void rb_iter_break_value(VALUE));
+const char *rb_sourcefile(void);
+int rb_sourceline(void);
+double ruby_strtod(const char *, char **);
 
 #endif /* ORUBY_CAPI_RUBY_H */

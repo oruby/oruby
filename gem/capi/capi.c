@@ -45,6 +45,9 @@
 #include <mruby/string.h>
 #include <mruby/variable.h>
 #include <mruby/presym.h>
+#include <mruby/debug.h>
+#include <mruby/irep.h>
+#include <mruby/opcode.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <math.h>
@@ -52,6 +55,9 @@
 #include <dlfcn.h>
 #include "oruby-vm-compat.h"
 #include "capi.h"
+
+struct REnv *mrb_vm_ci_env_reify(mrb_state *mrb, struct mrb_context *c, mrb_callinfo *ci);
+mrb_value mrb_binding_new(mrb_state *mrb, const struct RProc *proc, mrb_value recv, struct REnv *env);
 
 static mrb_state *M;
 unsigned int rb_capi_generation;
@@ -155,6 +161,7 @@ static void mv_done(mrb_value *mv, mrb_value *buf) { if (mv != buf) mrb_free(M, 
 
 static void ptr_flush(void);
 static void ptr_next_gen(void);
+static int ascii_bytes(const char *p, long n);
 
 /* calls by a literal method name: its symbol cached at the call site
    (SYM), not interned on each call (the C API's hottest cost otherwise) */
@@ -170,11 +177,13 @@ static mrb_value kernel(void) { return mrb_obj_value(M->kernel_module); }
 /* ------------------------------------------------------------------ */
 /* global classes                                                      */
 
-VALUE rb_mKernel, rb_mComparable, rb_mEnumerable, rb_mErrno, rb_mGC, rb_mMath, rb_mProcess;
+VALUE rb_mKernel, rb_mComparable, rb_mEnumerable, rb_mErrno, rb_mGC, rb_mMath, rb_mProcess,
+  rb_mFileTest, rb_mWaitReadable, rb_mWaitWritable;
 VALUE rb_cBasicObject, rb_cObject, rb_cModule, rb_cClass, rb_cArray, rb_cHash, rb_cString,
   rb_cSymbol, rb_cInteger, rb_cFloat, rb_cNumeric, rb_cNilClass, rb_cTrueClass, rb_cFalseClass, rb_cProc,
-  rb_cMethod, rb_cRange, rb_cRegexp, rb_cMatch, rb_cStruct, rb_cTime, rb_cIO, rb_cFile, rb_cEncoding,
-  rb_cRational, rb_cComplex, rb_cRandom, rb_cThread, rb_cEnumerator;
+  rb_cMethod, rb_cUnboundMethod, rb_cBinding, rb_cDir, rb_cStat, rb_cRange, rb_cRegexp, rb_cMatch,
+  rb_cStruct, rb_cTime, rb_cIO, rb_cFile, rb_cEncoding, rb_cRational, rb_cComplex, rb_cRandom,
+  rb_cThread, rb_cEnumerator;
 VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eArgError, rb_eTypeError,
   rb_eNameError, rb_eNoMethodError, rb_eIndexError, rb_eKeyError, rb_eRangeError, rb_eNotImpError,
   rb_eIOError, rb_eEOFError, rb_eFrozenError, rb_eStopIteration, rb_eZeroDivError, rb_eFloatDomainError,
@@ -211,6 +220,7 @@ static const char capi_ruby[] =
   "  def self.__capi_send_kw(recv, mid, a, h, b) = recv.__send__(mid, *a, **h, &b)\n"
   "  def self.__capi_public_send_kw(recv, mid, a, h, b) = recv.public_send(mid, *a, **h, &b)\n"
   "  def self.__capi_warn(msg) = warn(msg, uplevel: 0)\n"
+  "  def self.__capi_category_warn(msg, cat) = warn(msg, uplevel: 0, category: cat)\n"
   "end\n"
   "class Encoding\n"
   "  def self.__capi_find(name) = (find(name) rescue nil)\n"
@@ -256,7 +266,10 @@ int orb_capi_bind(mrb_state *mrb) {
   rb_cBasicObject = named("BasicObject");
   rb_mComparable = named("Comparable"); rb_mEnumerable = named("Enumerable"); rb_mErrno = named("Errno");
   rb_mGC = named("GC"); rb_mMath = named("Math"); rb_mProcess = named("Process");
-  rb_cNumeric = named("Numeric"); rb_cMethod = named("Method"); rb_cRegexp = named("Regexp");
+  rb_mFileTest = named("FileTest"); rb_mWaitReadable = named("IO::WaitReadable"); rb_mWaitWritable = named("IO::WaitWritable");
+  rb_cNumeric = named("Numeric"); rb_cMethod = named("Method"); rb_cUnboundMethod = named("UnboundMethod");
+  rb_cBinding = named("Binding"); rb_cDir = named("Dir"); rb_cStat = named("File::Stat");
+  rb_cRegexp = named("Regexp");
   rb_cMatch = named("MatchData"); rb_cStruct = named("Struct"); rb_cTime = named("Time"); rb_cIO = named("IO");
   rb_cFile = named("File"); rb_cEncoding = named("Encoding"); rb_cRational = named("Rational");
   rb_cComplex = named("Complex"); rb_cRandom = named("Random"); rb_cThread = named("Thread");
@@ -276,7 +289,10 @@ int orb_capi_bind(mrb_state *mrb) {
   rb_eThreadError = named("ThreadError"); rb_eMathDomainError = named("Math::DomainError");
   rb_eNoMatchingPatternError = named("NoMatchingPatternError");
   rb_eNoMatchingPatternKeyError = named("NoMatchingPatternKeyError");
-  if (NIL_P(rb_eFatal)) rb_eFatal = rb_eException;
+  if (NIL_P(rb_eFatal)) {
+    struct RClass *fc = mrb_define_class_under(M, capi, "Fatal", CLS(rb_eException));
+    rb_eFatal = (VALUE)fc;
+  }
   rb_stdout = named("STDOUT"); rb_stderr = named("STDERR"); rb_stdin = named("STDIN");
   rb_fs = Qnil; rb_output_fs = Qnil; rb_output_rs = Qnil;
   rb_default_rs = rb_rs = rb_str_new_frozen(rb_str_new_cstr("\n"));
@@ -336,6 +352,9 @@ int rb_type(VALUE v) {
   case MRB_TT_OBJECT: case MRB_TT_EXCEPTION: break;
   default: break;
   }
+  if (!mrb_immediate_p(m) && mrb_obj_ptr(m)->c == NULL) {
+    return mrb_type(m) == MRB_TT_OBJECT || mrb_type(m) == MRB_TT_EXCEPTION ? T_OBJECT : T_DATA;
+  }
   struct RClass *c = mrb_obj_class(M, m);
   if (!NIL_P(rb_cRegexp) && mrb_obj_is_kind_of(M, m, CLS(rb_cRegexp))) return T_REGEXP;
   if (!NIL_P(rb_cMatch) && mrb_obj_is_kind_of(M, m, CLS(rb_cMatch))) return T_MATCH;
@@ -367,6 +386,9 @@ static const char *display_class(VALUE v) {
 
 void rb_check_type(VALUE v, int t) {
   int vt = rb_type(v);
+  if (t == T_DATA && rb_capi_typeddata_p(v)) {
+    rb_raise(rb_eTypeError, "wrong argument type %s (expected Data)", display_class(v));
+  }
   if (vt == t || (t == T_FIXNUM && vt == T_BIGNUM) || (t == T_BIGNUM && vt == T_FIXNUM)) return;
   if (t == T_DATA && vt == T_DATA) return;
   rb_raise(rb_eTypeError, "wrong argument type %s (expected %s)", display_class(v), type_name(t));
@@ -389,25 +411,62 @@ VALUE rb_ull2inum(unsigned long long u) { return rb_uint2inum((uintptr_t)u); }
 
 long rb_num2long(VALUE v) {
   if (FIXNUM_P(v)) return FIX2LONG(v);
-  if (FLONUM_P(v)) {
-    double d = flonum_value(v);
-    if (d < (double)LONG_MIN || d >= (double)LONG_MAX) rb_raise(rb_eRangeError, "float %g out of range of integer", d);
+  if (FLONUM_P(v) || (!SPECIAL_CONST_P(v) && mrb_float_p(MV(v)))) {
+    double d = rb_float_value(v);
+    if (isnan(d)) rb_raise(rb_eRangeError, "float NaN out of range of integer");
+    if (isinf(d)) rb_raise(rb_eRangeError, "float %s out of range of integer", d < 0 ? "-Inf" : "Inf");
+    if (d < (double)LONG_MIN || d >= (double)LONG_MAX) rb_raise(rb_eRangeError, "float %.10g out of range of integer", d);
     return (long)d;
   }
-  if (v == Qnil) rb_raise(rb_eTypeError, "no implicit conversion from nil to integer");
-  if (v == Qtrue || v == Qfalse) rb_raise(rb_eTypeError, "no implicit conversion of %s into Integer", v == Qtrue ? "true" : "false");
-  mrb_value m = MV(v);
-  if (mrb_float_p(m)) return (long)mrb_float(m);
-  return (long)mrb_as_int64(M, mrb_ensure_int_type(M, m));
+  VALUE iv = rb_to_int(v);
+  if (FIXNUM_P(iv)) return FIX2LONG(iv);
+  return (long)mrb_as_int64(M, MV(iv));
 }
 /* an unsigned conversion takes a Bignum up to 2**64-1 (rb_big2ull); a
    negative Integer wraps, as MRI's */
 unsigned long long rb_num2ull(VALUE v) {
-  if (!SPECIAL_CONST_P(v) && rb_type(v) == T_BIGNUM) return rb_big2ull(v);
-  return (unsigned long long)rb_num2long(v);
+  if (FLONUM_P(v) || (!SPECIAL_CONST_P(v) && mrb_float_p(MV(v)))) {
+    double d = rb_float_value(v);
+    if (isnan(d)) rb_raise(rb_eRangeError, "float NaN out of range of integer");
+    if (isinf(d)) rb_raise(rb_eRangeError, "float %s out of range of integer", d < 0 ? "-Inf" : "Inf");
+    if (d < (double)LONG_MIN || d >= 18446744073709551616.0) rb_raise(rb_eRangeError, "float %.10g out of range of integer", d);
+    return d >= 0 ? (unsigned long long)d : (unsigned long long)(long long)d;
+  }
+  VALUE iv = rb_to_int(v);
+  if (FIXNUM_P(iv)) return (unsigned long long)FIX2LONG(iv);
+  if (!SPECIAL_CONST_P(iv) && rb_type(iv) == T_BIGNUM) return rb_big2ull(iv);
+  return (unsigned long long)mrb_integer(MV(iv));
 }
 unsigned long rb_num2ulong(VALUE v) { return (unsigned long)rb_num2ull(v); }
 long long rb_num2ll(VALUE v) { return (long long)rb_num2long(v); }
+long rb_num2int(VALUE v) { return rb_long2int(rb_num2long(v)); }
+long rb_fix2int(VALUE v) { return FIXNUM_P(v) ? rb_long2int(FIX2LONG(v)) : rb_num2int(v); }
+unsigned long rb_num2uint(VALUE v) {
+  long n = rb_num2long(v);
+  if (n < (long)INT_MIN || n > (long)UINT_MAX) rb_raise(rb_eRangeError, "integer %ld out of range of unsigned int", n);
+  return (unsigned int)n;
+}
+unsigned long rb_fix2uint(VALUE v) {
+  if (FIXNUM_P(v)) {
+    long n = FIX2LONG(v);
+    if (n < (long)INT_MIN || n > (long)UINT_MAX) rb_raise(rb_eRangeError, "integer %ld out of range of unsigned int", n);
+    return (unsigned int)n;
+  }
+  return rb_num2uint(v);
+}
+short rb_num2short(VALUE v) {
+  long n = rb_num2long(v);
+  if (n < SHRT_MIN || n > SHRT_MAX) rb_raise(rb_eRangeError, "integer %ld too big to convert to 'short'", n);
+  return (short)n;
+}
+short rb_fix2short(VALUE v) {
+  if (FIXNUM_P(v)) {
+    long n = FIX2LONG(v);
+    if (n < SHRT_MIN || n > SHRT_MAX) rb_raise(rb_eRangeError, "integer %ld out of range of short", n);
+    return (short)n;
+  }
+  return rb_num2short(v);
+}
 char rb_num2chr(VALUE v) {
   if (!SPECIAL_CONST_P(v) && rb_type(v) == T_STRING && RSTRING_LEN(MV(v)) >= 1) return RSTRING_PTR(MV(v))[0];
   return (char)rb_num2long(v);
@@ -418,6 +477,9 @@ double rb_num2dbl(VALUE v) {
   if (v == Qnil) rb_raise(rb_eTypeError, "can't convert nil into Float");
   mrb_value m = MV(v);
   if (mrb_string_p(m)) rb_raise(rb_eTypeError, "no implicit conversion to float from string");
+  if (!mrb_float_p(m) && !mrb_integer_p(m) && rb_obj_respond_to(v, SYM("to_f"), 1)) {
+    return mrb_as_float(M, call0(m, "to_f"));
+  }
   return mrb_as_float(M, m);
 }
 VALUE rb_float_new_in_heap(double d) { return box(mrb_float_value(M, d)); }
@@ -427,24 +489,35 @@ VALUE rb_Integer(VALUE v) { mrb_value a = MV(v); return V(mrb_funcall_argv(M, ke
 VALUE rb_Float(VALUE v) { mrb_value a = MV(v); return V(mrb_funcall_argv(M, kernel(), SYM("Float"), 1, &a)); }
 VALUE rb_String(VALUE v) { mrb_value a = MV(v); return V(mrb_funcall_argv(M, kernel(), SYM("String"), 1, &a)); }
 VALUE rb_Array(VALUE v) { mrb_value a = MV(v); return V(mrb_funcall_argv(M, kernel(), SYM("Array"), 1, &a)); }
-VALUE rb_str2inum(VALUE s, int base) {
-  mrb_value a[2] = {MV(s), mrb_int_value(M, base)};
-  return V(mrb_funcall_argv(M, kernel(), SYM("Integer"), 2, a));
-}
-VALUE rb_cstr2inum(const char *s, int base) { return rb_str2inum(rb_str_new_cstr(s), base); }
-/* badcheck: anything but the number is an ArgumentError (Integer()), else
-   the number the string starts with (String#to_i) */
 VALUE rb_str_to_inum(VALUE s, int base, int badcheck) {
-  if (badcheck) return rb_str2inum(s, base == 0 ? 10 : base);
+  StringValue(s);
+  if (badcheck) {
+    mrb_value a[2] = {MV(s), mrb_int_value(M, base)};
+    return V(mrb_funcall_argv(M, kernel(), SYM("Integer"), 2, a));
+  }
   return V(call1(MV(s), "to_i", mrb_int_value(M, base == 0 ? 10 : base)));
 }
 VALUE rb_cstr_to_inum(const char *s, int base, int badcheck) { return rb_str_to_inum(rb_str_new_cstr(s), base, badcheck); }
+VALUE rb_str2inum(VALUE s, int base) { return rb_str_to_inum(s, base, base == 0); }
+VALUE rb_cstr2inum(const char *s, int base) { return rb_cstr_to_inum(s, base, base == 0); }
 double rb_str_to_dbl(VALUE s, int badcheck) {
   if (badcheck) return mrb_float(mrb_funcall_argv(M, kernel(), SYM("Float"), 1, (mrb_value[]){MV(s)}));
   return mrb_float(call0(MV(s), "to_f"));
 }
 double rb_cstr_to_dbl(const char *s, int badcheck) { return rb_str_to_dbl(rb_str_new_cstr(s), badcheck); }
-VALUE rb_to_int(VALUE v) { return FIXNUM_P(v) ? v : V(mrb_ensure_int_type(M, MV(v))); }
+VALUE rb_to_int(VALUE v) {
+  if (FIXNUM_P(v) || rb_type(v) == T_BIGNUM || (!SPECIAL_CONST_P(v) && mrb_integer_p(MV(v)))) return v;
+  if (v == Qnil) rb_raise(rb_eTypeError, "no implicit conversion from nil to integer");
+  if (v == Qtrue || v == Qfalse) rb_raise(rb_eTypeError, "no implicit conversion of %s into Integer", v == Qtrue ? "true" : "false");
+  if (!rb_obj_respond_to(v, SYM("to_int"), 1)) {
+    rb_raise(rb_eTypeError, "no implicit conversion of %s into Integer", display_class(v));
+  }
+  VALUE r = V(call0(MV(v), "to_int"));
+  if (!(FIXNUM_P(r) || rb_type(r) == T_BIGNUM || (!SPECIAL_CONST_P(r) && mrb_integer_p(MV(r))))) {
+    rb_raise(rb_eTypeError, "can't convert %s to Integer (%s#to_int gives %s)", display_class(v), display_class(v), display_class(r));
+  }
+  return r;
+}
 VALUE rb_fix2str(VALUE v, int base) { return V(call1(MV(v), "to_s", mrb_int_value(M, base))); }
 int rb_cmpint(VALUE r, VALUE a, VALUE b) {
   if (NIL_P(r)) rb_cmperr(a, b);
@@ -488,7 +561,7 @@ VALUE rb_check_symbol_cstr(const char *p, long n, rb_encoding *enc) {
 const char *rb_id2name(ID id) { return mrb_sym_name(M, (mrb_sym)id); }
 VALUE rb_id2str(ID id) {
   if (id == 0) return Qfalse;
-  return V(mrb_sym_str(M, (mrb_sym)id));
+  return rb_sym2str(ID2SYM(id));
 }
 VALUE rb_id2sym(ID id) { return ID2SYM(id); }
 ID rb_sym2id(VALUE v) {
@@ -517,6 +590,11 @@ typedef VALUE (*f7)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
 typedef VALUE (*f8)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
 typedef VALUE (*f9)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
 typedef VALUE (*f10)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
+typedef VALUE (*f11)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
+typedef VALUE (*f12)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
+typedef VALUE (*f13)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
+typedef VALUE (*f14)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
+typedef VALUE (*f15)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
 typedef VALUE (*fv)(int, const VALUE *, VALUE);
 
 static mrb_value trampoline(mrb_state *mrb, mrb_value self) {
@@ -559,6 +637,11 @@ static mrb_value trampoline(mrb_state *mrb, mrb_value self) {
     case 8: r = ((f8)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7]); break;
     case 9: r = ((f9)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7], av[8]); break;
     case 10: r = ((f10)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7], av[8], av[9]); break;
+    case 11: r = ((f11)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7], av[8], av[9], av[10]); break;
+    case 12: r = ((f12)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7], av[8], av[9], av[10], av[11]); break;
+    case 13: r = ((f13)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7], av[8], av[9], av[10], av[11], av[12]); break;
+    case 14: r = ((f14)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7], av[8], av[9], av[10], av[11], av[12], av[13]); break;
+    case 15: r = ((f15)f)(s, av[0], av[1], av[2], av[3], av[4], av[5], av[6], av[7], av[8], av[9], av[10], av[11], av[12], av[13], av[14]); break;
     default: rb_raise(rb_eNotImpError, "C method arity %d", cm->arity);
     }
   }
@@ -568,14 +651,24 @@ static mrb_value trampoline(mrb_state *mrb, mrb_value self) {
 }
 
 static void define_method(struct RClass *c, mrb_sym mid, rb_capi_anyargs_func fn, int arity, int vis) {
+  if (fn == (rb_capi_anyargs_func)rb_f_notimplement) {
+    mrb_method_t m;
+    MRB_METHOD_FROM_FUNC(m, mrb_notimplement_m);
+    MRB_METHOD_SET_VISIBILITY(m, vis);
+    mrb_define_method_raw(M, c, mid, m);
+    return;
+  }
   if (arity < -2 && arity != CAPI_ALLOC) rb_raise(rb_eArgError, "arity out of range: %d for -2..15", arity);
-  if (arity > 10) rb_raise(rb_eNotImpError, "C method arity %d (oruby supports up to 10)", arity);
+  if (arity > 15) rb_raise(rb_eNotImpError, "C method arity %d (oruby supports up to 15)", arity);
   struct capi_method *cm = (struct capi_method *)malloc(sizeof *cm);
   if (!cm) rb_memerror();
   cm->fn = fn;
   cm->arity = arity;
   mrb_value env = mrb_cptr_value(M, cm);
   struct RProc *p = mrb_proc_new_cfunc_with_env(M, trampoline, 1, &env);
+  if (arity == 0) mrb_proc_set_cfunc_aspec(p, MRB_ARGS_NONE());
+  else if (arity > 0) mrb_proc_set_cfunc_aspec(p, MRB_ARGS_REQ(arity));
+  else mrb_proc_set_cfunc_aspec(p, MRB_ARGS_ANY());
   mrb_method_t m;
   MRB_METHOD_FROM_PROC(m, p);
   MRB_METHOD_SET_VISIBILITY(m, vis);
@@ -611,67 +704,163 @@ void rb_define_attr(VALUE k, const char *name, int r, int w) {
   if (r) call1(MV(k), "attr_reader", sym);
   if (w) call1(MV(k), "attr_writer", sym);
 }
-void rb_define_const(VALUE mod, const char *name, VALUE v) { mrb_define_const(M, CLS(mod), name, MV(v)); }
+void rb_define_const(VALUE mod, const char *name, VALUE v) {
+  mrb_sym sym = rb_intern(name);
+  if (mrb_const_defined_at(M, MV(mod), sym)) {
+    rb_warn("already initialized constant %s%s%s",
+            mod == rb_cObject ? "" : rb_class2name(mod),
+            mod == rb_cObject ? "" : "::", name);
+  }
+  mrb_define_const(M, CLS(mod), name, MV(v));
+}
 void rb_define_global_const(const char *name, VALUE v) { mrb_define_global_const(M, name, MV(v)); }
 
 static void cdata_class(struct RClass *c);
+static VALUE undef_alloc(VALUE k) {
+  rb_raise(rb_eTypeError, "allocator undefined for %" PRIsVALUE, k);
+}
 void rb_define_alloc_func(VALUE k, rb_alloc_func_t fn) {
   struct RClass *c = CLS(k);
-  cdata_class(c);
+  mrb_iv_set(M, MV(k), SYM("__capi_alloc__"), fn == undef_alloc ? mrb_false_value() : mrb_cptr_value(M, (void *)fn));
   define_method(mrb_class_ptr(mrb_singleton_class(M, mrb_obj_value(c))), SYM("allocate"),
                 (rb_capi_anyargs_func)fn, CAPI_ALLOC, MRB_METHOD_PUBLIC_FL);
   mrb_value a = mrb_obj_value(c);
   mrb_funcall_argv(M, kernel(), SYM("__capi_install_new"), 1, &a);
 }
-static VALUE undef_alloc(VALUE k) {
-  rb_raise(rb_eTypeError, "allocator undefined for %" PRIsVALUE, k);
-}
 void rb_undef_alloc_func(VALUE k) { rb_define_alloc_func(k, undef_alloc); }
 
-VALUE rb_define_class(const char *name, VALUE super) { return (VALUE)mrb_define_class(M, name, CLS(super)); }
+static VALUE default_alloc_func(VALUE klass) {
+  struct RClass *c = CLS(klass);
+  enum mrb_vtype tt = MRB_INSTANCE_TT(c);
+  if (tt == MRB_TT_STRING) { mrb_value s = mrb_str_new(M, "", 0); mrb_obj_ptr(s)->c = c; return V(s); }
+  if (tt == MRB_TT_ARRAY) { mrb_value a = mrb_ary_new(M); mrb_obj_ptr(a)->c = c; return V(a); }
+  if (tt == MRB_TT_HASH) { mrb_value h = mrb_hash_new(M); mrb_obj_ptr(h)->c = c; return V(h); }
+  mrb_value um = call1(mrb_obj_value(M->class_class), "instance_method", mrb_symbol_value(SYM("allocate")));
+  return V(call1(um, "bind_call", MV(klass)));
+}
+
+rb_alloc_func_t rb_get_alloc_func(VALUE klass) {
+  for (struct RClass *c = mrb_class_real(CLS(klass)); c; c = mrb_class_real(c->super)) {
+    if (mrb_iv_defined(M, mrb_obj_value(c), SYM("__capi_alloc__"))) {
+      mrb_value v = mrb_iv_get(M, mrb_obj_value(c), SYM("__capi_alloc__"));
+      return mrb_false_p(v) ? NULL : (rb_alloc_func_t)mrb_cptr(v);
+    }
+  }
+  if (MRB_UNDEF_ALLOCATOR_P(mrb_class_real(CLS(klass)))) return NULL;
+  return default_alloc_func;
+}
+
+static VALUE define_class_capi(VALUE outer, mrb_sym id, VALUE super, int allow_null_super) {
+  if (super == 0) {
+    if (!allow_null_super) rb_raise(rb_eArgError, "no super class for '%s'", mrb_sym_name(M, id));
+    super = rb_cObject;
+  }
+  if (rb_type(super) != T_CLASS) rb_raise(rb_eTypeError, "wrong argument type %s (expected Class)", display_class(super));
+  if (super == rb_cClass) rb_raise(rb_eTypeError, "can't make subclass of Class");
+  if (mrb_sclass_p(MV(super))) rb_raise(rb_eTypeError, "can't make subclass of singleton class");
+  mrb_bool existed = mrb_const_defined_at(M, MV(outer), id) && mrb_nil_p(call1(MV(outer), "autoload?", mrb_symbol_value(id)));
+  struct RClass *c = mrb_define_class_under_id(M, CLS(outer), id, CLS(super));
+  if (!existed) {
+    mrb_value cv = mrb_obj_value(c);
+    mrb_funcall_argv(M, MV(super), SYM("inherited"), 1, &cv);
+  }
+  return (VALUE)c;
+}
+VALUE rb_define_class(const char *name, VALUE super) { return define_class_capi(rb_cObject, rb_intern(name), super, 0); }
 VALUE rb_define_class_under(VALUE outer, const char *name, VALUE super) {
-  return (VALUE)mrb_define_class_under(M, CLS(outer), name, CLS(super));
+  return define_class_capi(outer, rb_intern(name), super, 1);
 }
 VALUE rb_define_class_id_under(VALUE outer, ID id, VALUE super) {
-  return (VALUE)mrb_define_class_under_id(M, CLS(outer), (mrb_sym)id, CLS(super));
+  return define_class_capi(outer, (mrb_sym)id, super, 1);
 }
 VALUE rb_define_module(const char *name) { return (VALUE)mrb_define_module(M, name); }
 VALUE rb_define_module_under(VALUE outer, const char *name) { return (VALUE)mrb_define_module_under(M, CLS(outer), name); }
 VALUE rb_define_module_id_under(VALUE outer, ID id) { return (VALUE)mrb_define_module_under_id(M, CLS(outer), (mrb_sym)id); }
-VALUE rb_class_new(VALUE super) { mrb_value a = MV(super); return V(mrb_funcall_argv(M, mrb_obj_value(M->class_class), SYM("new"), 1, &a)); }
+VALUE rb_class_new(VALUE super) {
+  if (rb_type(super) != T_CLASS) rb_raise(rb_eTypeError, "wrong argument type %s (expected Class)", display_class(super));
+  if (super == rb_cClass) rb_raise(rb_eTypeError, "can't make subclass of Class");
+  if (mrb_sclass_p(MV(super))) rb_raise(rb_eTypeError, "can't make subclass of singleton class");
+  return (VALUE)mrb_class_new(M, CLS(super));
+}
 VALUE rb_module_new(void) { return V(call0(mrb_obj_value(M->module_class), "new")); }
 void rb_include_module(VALUE k, VALUE mod) { mrb_include_module(M, CLS(k), CLS(mod)); }
 void rb_extend_object(VALUE obj, VALUE mod) { call1(MV(obj), "extend", MV(mod)); }
 void rb_prepend_module(VALUE k, VALUE mod) { mrb_prepend_module(M, CLS(k), CLS(mod)); }
-VALUE rb_const_get(VALUE mod, ID id) { return V(mrb_const_get(M, MV(mod), (mrb_sym)id)); }
+VALUE rb_const_get(VALUE mod, ID id) {
+  if (mod != rb_cObject && (rb_type(mod) == T_MODULE || rb_type(mod) == T_CLASS)) {
+    int found_before_obj = 0;
+    for (struct RClass *c = CLS(mod); c && c != M->object_class; c = c->super) {
+      if (c->flags & MRB_FL_CLASS_IS_PREPENDED) continue;
+      struct RClass *t = (c->tt == MRB_TT_ICLASS) ? c->c : c;
+      if (mrb_const_defined_at(M, mrb_obj_value(t), (mrb_sym)id)) { found_before_obj = 1; break; }
+    }
+    if (!found_before_obj && mrb_const_defined(M, mrb_obj_value(M->object_class), (mrb_sym)id)) {
+      return V(mrb_const_get(M, mrb_obj_value(M->object_class), (mrb_sym)id));
+    }
+  }
+  return V(mrb_const_get(M, MV(mod), (mrb_sym)id));
+}
 VALUE rb_const_get_at(VALUE mod, ID id) {
   mrb_value a[2] = {mrb_symbol_value((mrb_sym)id), mrb_false_value()};
   return V(mrb_funcall_argv(M, MV(mod), SYM("const_get"), 2, a));
 }
-VALUE rb_const_get_from(VALUE mod, ID id) { return rb_const_get(mod, id); }
-void rb_const_set(VALUE mod, ID id, VALUE v) { mrb_const_set(M, MV(mod), (mrb_sym)id, MV(v)); }
+VALUE rb_const_get_from(VALUE mod, ID id) { return V(mrb_const_get(M, MV(mod), (mrb_sym)id)); }
+void rb_const_set(VALUE mod, ID id, VALUE v) {
+  if (mrb_const_defined_at(M, MV(mod), (mrb_sym)id)) {
+    rb_warn("already initialized constant %s%s%s",
+            mod == rb_cObject ? "" : rb_class2name(mod),
+            mod == rb_cObject ? "" : "::", mrb_sym_name(M, (mrb_sym)id));
+  }
+  mrb_const_set(M, MV(mod), (mrb_sym)id, MV(v));
+}
 int rb_const_defined(VALUE mod, ID id) { return mrb_const_defined(M, MV(mod), (mrb_sym)id); }
 int rb_const_defined_at(VALUE mod, ID id) { return mrb_const_defined_at(M, MV(mod), (mrb_sym)id); }
 VALUE rb_path2class(const char *path) {
-  VALUE v = named(path);
-  if (NIL_P(v)) rb_raise(rb_eArgError, "undefined class/module %s", path);
-  return v;
+  VALUE cur = rb_cObject;
+  const char *p = path;
+  while (*p) {
+    const char *e = strstr(p, "::");
+    size_t n = e ? (size_t)(e - p) : strlen(p);
+    mrb_sym s = mrb_intern(M, p, n);
+    if (!mrb_const_defined_at(M, MV(cur), s)) {
+      rb_raise(rb_eArgError, "undefined class/module %s", path);
+    }
+    cur = rb_const_get_at(cur, (ID)s);
+    int t = rb_type(cur);
+    if (t != T_CLASS && t != T_MODULE) {
+      rb_raise(rb_eTypeError, "%s does not refer to class/module", path);
+    }
+    p += n + (e ? 2 : 0);
+  }
+  return cur;
 }
 VALUE rb_path_to_class(VALUE path) { return rb_path2class(RSTRING_PTR(MV(path))); }
 VALUE rb_class_name(VALUE k) { mrb_value n = call0(MV(k), "name"); return mrb_nil_p(n) ? V(call0(MV(k), "inspect")) : V(n); }
 VALUE rb_class_path(VALUE k) { return rb_class_name(k); }
 VALUE rb_mod_name(VALUE k) { return V(call0(MV(k), "name")); }
 const char *rb_class2name(VALUE k) { return RSTRING_PTR(MV(rb_class_name(k))); }
-const char *rb_obj_classname(VALUE obj) { return rb_class2name(rb_obj_class(obj)); }
+const char *rb_obj_classname(VALUE obj) {
+  if (!SPECIAL_CONST_P(obj) && !mrb_immediate_p(MV(obj)) && mrb_obj_ptr(MV(obj))->c == NULL) {
+    return type_name(rb_type(obj));
+  }
+  return rb_class2name(rb_obj_class(obj));
+}
 VALUE rb_class_of(VALUE v) { return (VALUE)mrb_class(M, MV(v)); }
 VALUE rb_obj_class(VALUE v) { return (VALUE)mrb_obj_class(M, MV(v)); }
-VALUE rb_class_real(VALUE k) { return (VALUE)mrb_class_real(CLS(k)); }
+VALUE rb_class_real(VALUE k) { return k == 0 ? 0 : (VALUE)mrb_class_real(CLS(k)); }
 VALUE rb_class_superclass(VALUE k) { return V(call0(MV(k), "superclass")); }
-VALUE rb_class_inherited_p(VALUE a, VALUE b) { return V(call1(MV(a), "<=", MV(b))); }
+VALUE rb_class_inherited_p(VALUE a, VALUE b) {
+  int ta = rb_type(a), tb = rb_type(b);
+  if ((ta != T_CLASS && ta != T_MODULE) || (tb != T_CLASS && tb != T_MODULE)) {
+    rb_raise(rb_eTypeError, "compared with non class/module");
+  }
+  return V(call1(MV(a), "<=", MV(b)));
+}
 VALUE rb_singleton_class(VALUE v) { return V(mrb_singleton_class(M, MV(v))); }
 static VALUE send_kw(mrb_value recv, mrb_sym mid, int argc, const VALUE *argv, mrb_value blk, int kw, int pub);
+static mrb_value current_block(void);
 VALUE rb_class_new_instance_kw(int argc, const VALUE *argv, VALUE k, int kw) {
-  return send_kw(MV(k), SYM("new"), argc, argv, mrb_nil_value(), kw, 0);
+  return send_kw(MV(k), SYM("new"), argc, argv, current_block(), kw, 0);
 }
 VALUE rb_class_new_instance(int argc, const VALUE *argv, VALUE k) { return rb_class_new_instance_kw(argc, argv, k, 0); }
 VALUE rb_class_new_instance_pass_kw(int argc, const VALUE *argv, VALUE k) {
@@ -741,7 +930,13 @@ static mrb_sym gvar_sym(const char *name) {
 }
 VALUE rb_gv_get(const char *name) { return V(mrb_gv_get(M, gvar_sym(name))); }
 VALUE rb_gv_set(const char *name, VALUE v) { mrb_gv_set(M, gvar_sym(name), MV(v)); return v; }
-VALUE rb_hash(VALUE v) { return rb_to_int(V(call0(MV(v), "hash"))); }
+VALUE rb_hash(VALUE v) {
+  VALUE h = rb_to_int(V(call0(MV(v), "hash")));
+  if (FIXNUM_P(h)) return h;
+  mrb_value m = MV(h);
+  if (mrb_integer_p(m)) return INT2FIX(mrb_integer(m));
+  return INT2FIX(mrb_integer(call1(m, "&", mrb_int_value(M, RUBY_FIXNUM_MAX))));
+}
 VALUE rb_obj_instance_variables(VALUE v) { return V(call0(MV(v), "instance_variables")); }
 
 VALUE rb_check_convert_type(VALUE v, int type, const char *tname, const char *method) {
@@ -750,7 +945,7 @@ VALUE rb_check_convert_type(VALUE v, int type, const char *tname, const char *me
   if (!mrb_respond_to(M, m, mrb_intern_cstr(M, method))) return Qnil;
   VALUE r = V(call_id(m, mrb_intern_cstr(M, method), 0, NULL));
   if (!NIL_P(r) && rb_type(r) != type) {
-    rb_raise(rb_eTypeError, "can't convert %s to %s (%s#%s gives %s)", display_class(v), tname,
+    rb_raise(rb_eTypeError, "can't convert %s into %s (%s#%s gives %s)", display_class(v), tname,
              display_class(v), method, display_class(r));
   }
   return r;
@@ -801,11 +996,18 @@ VALUE rb_funcall(VALUE recv, ID mid, int n, ...) {
 
 /* a call whose last argument is the keywords: Ruby passes them on */
 static VALUE send_kw(mrb_value recv, mrb_sym mid, int argc, const VALUE *argv, mrb_value blk, int kw, int pub) {
-  if (kw && argc > 0 && rb_type(argv[argc - 1]) == T_HASH) {
-    mrb_value a[5] = {recv, mrb_symbol_value(mid), mrb_nil_value(), MV(argv[argc - 1]), blk};
-    VALUE ary = rb_ary_new_from_values(argc - 1, argv);
-    a[2] = MV(ary);
-    return V(mrb_funcall_argv(M, kernel(), pub ? SYM("__capi_public_send_kw") : SYM("__capi_send_kw"), 5, a));
+  if (kw && argc > 0) {
+    VALUE h = rb_type(argv[argc - 1]) == T_HASH
+      ? argv[argc - 1]
+      : rb_convert_type(argv[argc - 1], T_HASH, "Hash", "to_hash");
+    if (RHASH_EMPTY_P(h)) {
+      argc--;
+    } else {
+      mrb_value a[5] = {recv, mrb_symbol_value(mid), mrb_nil_value(), MV(h), blk};
+      VALUE ary = rb_ary_new_from_values(argc - 1, argv);
+      a[2] = MV(ary);
+      return V(mrb_funcall_argv(M, kernel(), pub ? SYM("__capi_public_send_kw") : SYM("__capi_send_kw"), 5, a));
+    }
   }
   mrb_value buf[8];
   mrb_value *mv = mv_array(argc, argv, buf, 8);
@@ -832,7 +1034,14 @@ VALUE rb_funcallv_public(VALUE recv, ID mid, int argc, const VALUE *argv) {
 VALUE rb_funcallv_public_kw(VALUE recv, ID mid, int argc, const VALUE *argv, int kw) {
   return send_kw(MV(recv), (mrb_sym)mid, argc, argv, mrb_nil_value(), kw, 1);
 }
+struct capi_block { rb_block_call_func_t fn; VALUE data; mrb_value outer_blk; ptrdiff_t iter_ci_idx; };
+static mrb_value block_trampoline(mrb_state *mrb, mrb_value self);
 static mrb_value current_block(void) {
+  const struct RProc *p = M->c->ci->proc;
+  if (p && MRB_PROC_CFUNC_P(p) && MRB_PROC_CFUNC(p) == block_trampoline && MRB_PROC_ENV_P(p)) {
+    const struct capi_block *cb = (const struct capi_block *)mrb_cptr(p->e.env->stack[0]);
+    return cb->outer_blk;
+  }
   struct RProc *b = M->c->ci->blk;
   return b ? mrb_obj_value(b) : mrb_nil_value();
 }
@@ -846,15 +1055,94 @@ VALUE rb_funcall_with_block(VALUE recv, ID mid, int argc, const VALUE *argv, VAL
 VALUE rb_funcall_with_block_kw(VALUE recv, ID mid, int argc, const VALUE *argv, VALUE blk, int kw) {
   return send_kw(MV(recv), (mrb_sym)mid, argc, argv, MV(blk), kw, 1);
 }
-VALUE rb_call_super(int argc, const VALUE *argv) {
+VALUE rb_call_super_kw(int argc, const VALUE *argv, int kw_splat) {
   ptr_next_gen();
-  (void)argc; (void)argv;
-  rb_raise(rb_eNotImpError, "rb_call_super is not supported by oruby's C API");
+  mrb_callinfo *ci = M->c->ci;
+  mrb_sym mid = ci->mid;
+  struct RClass *tc = ci->u.target_class;
+  if (!mid || !tc) rb_raise(rb_eNoMethodError, "super called outside of method");
+  mrb_value recv = ci->stack[0];
+  struct RClass *sc = tc->super;
+  mrb_method_t m;
+  if (sc) m = mrb_method_search_vm(M, &sc, mid);
+  if (!sc || MRB_METHOD_UNDEF_P(m)) {
+    VALUE *mm_av = (VALUE *)mrb_malloc(M, sizeof(VALUE) * (size_t)(argc + 1));
+    mm_av[0] = ID2SYM(mid);
+    for (int i = 0; i < argc; i++) mm_av[i + 1] = argv[i];
+    VALUE r = send_kw(recv, SYM("method_missing"), argc + 1, mm_av, current_block(), kw_splat && argc > 0, 0);
+    mrb_free(M, mm_av);
+    return r;
+  }
+  struct RClass *owner = (sc->tt == MRB_TT_ICLASS) ? sc->c : sc;
+  mrb_value um = call1(mrb_obj_value(owner), "instance_method", mrb_symbol_value(mid));
+  VALUE *bc_av = (VALUE *)mrb_malloc(M, sizeof(VALUE) * (size_t)(argc + 1));
+  bc_av[0] = V(recv);
+  for (int i = 0; i < argc; i++) bc_av[i + 1] = argv[i];
+  VALUE r = send_kw(um, SYM("bind_call"), argc + 1, bc_av, current_block(), kw_splat && argc > 0, 0);
+  mrb_free(M, bc_av);
+  return r;
 }
-int rb_block_given_p(void) { return M->c->ci->blk != NULL; }
+VALUE rb_call_super(int argc, const VALUE *argv) {
+  return rb_call_super_kw(argc, argv, RB_NO_KEYWORDS);
+}
+int rb_block_given_p(void) { return !mrb_nil_p(current_block()); }
 void rb_need_block(void) { if (!rb_block_given_p()) rb_raise(rb_eLocalJumpError, "no block given"); }
 VALUE rb_block_proc(void) { return V(current_block()); }
-VALUE rb_block_lambda(void) { return rb_block_proc(); }
+VALUE rb_block_lambda(void) {
+  mrb_value blk = current_block();
+  if (mrb_nil_p(blk)) rb_raise(rb_eArgError, "tried to create Proc object without a block");
+  if (MRB_PROC_STRICT_P(mrb_proc_ptr(blk))) return V(blk);
+  if (M->c->ci > M->c->cibase) {
+    mrb_callinfo *caller = &M->c->ci[-1];
+    const struct RProc *cp = caller->proc;
+    if (cp && !MRB_PROC_CFUNC_P(cp) && cp->body.irep && caller->pc) {
+      const mrb_code *pc = cp->body.irep->iseq;
+      const mrb_code *target = caller->pc;
+      mrb_code prev2 = 0, prev1 = 0;
+      while (pc < target) {
+        int ext = 0;
+        if (*pc == OP_EXT1 || *pc == OP_EXT2 || *pc == OP_EXT3) { ext = *pc++; if (pc >= target) break; }
+        mrb_code op = *pc;
+        prev2 = prev1;
+        prev1 = op;
+        int len = 1;
+        switch (op) {
+        case OP_NOP: case OP_CALL: case OP_KEYEND: case OP_RETSELF: case OP_RETNIL:
+        case OP_RETTRUE: case OP_RETFALSE: case OP_STOP: case OP_EXT1: case OP_EXT2: case OP_EXT3:
+          len = 1; break;
+        case OP_LOADI__1: case OP_LOADI_0: case OP_LOADI_1: case OP_LOADI_2: case OP_LOADI_3:
+        case OP_LOADI_4: case OP_LOADI_5: case OP_LOADI_6: case OP_LOADI_7: case OP_LOADNIL:
+        case OP_LOADSELF: case OP_LOADTRUE: case OP_LOADFALSE: case OP_GETIDX: case OP_SETIDX:
+        case OP_EXCEPT: case OP_RAISEIF: case OP_MATCHERR: case OP_RETURN: case OP_RETURN_BLK:
+        case OP_BREAK: case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_EQ:
+        case OP_LT: case OP_LE: case OP_GT: case OP_GE: case OP_ARYCAT: case OP_ARYSPLAT:
+        case OP_INTERN: case OP_STRCAT: case OP_HASHCAT: case OP_RANGE_INC: case OP_RANGE_EXC:
+        case OP_OCLASS: case OP_SCLASS: case OP_TCLASS: case OP_UNDEF: case OP_ERR:
+          len = (ext == OP_EXT1 || ext == OP_EXT3) ? 3 : 2; break;
+        case OP_JMP: case OP_JMPUW:
+          len = 3; break;
+        case OP_LOADI16: case OP_ARGARY: case OP_BLKPUSH: case OP_JMPIF: case OP_JMPNOT: case OP_JMPNIL:
+          len = (ext == OP_EXT1 || ext == OP_EXT3) ? 5 : 4; break;
+        case OP_LOADI32:
+          len = (ext == OP_EXT1 || ext == OP_EXT3) ? 7 : 6; break;
+        case OP_ENTER:
+          len = 4; break;
+        case OP_GETUPVAR: case OP_SETUPVAR: case OP_SSEND: case OP_SSENDB: case OP_SEND:
+        case OP_SENDB: case OP_ADDILV: case OP_SUBILV: case OP_ARRAY2: case OP_AREF:
+        case OP_ASET: case OP_APOST: case OP_TDEF: case OP_SDEF: case OP_DEBUG:
+          len = 4 + ((ext == OP_EXT1 || ext == OP_EXT2) ? 1 : ext == OP_EXT3 ? 2 : 0); break;
+        default:
+          len = 3 + ((ext == OP_EXT1 || ext == OP_EXT2) ? 1 : ext == OP_EXT3 ? 2 : 0); break;
+        }
+        pc += len;
+      }
+      if (prev2 == OP_BLOCK) {
+        return V(mrb_funcall_with_block(M, kernel(), SYM("lambda"), 0, NULL, blk));
+      }
+    }
+  }
+  return V(blk);
+}
 VALUE rb_yield_values2(int argc, const VALUE *argv) {
   ptr_next_gen();
   mrb_value blk = current_block();
@@ -882,7 +1170,6 @@ VALUE rb_yield_splat(VALUE ary) {
   return V(mrb_yield_argv(M, blk, RARRAY_LEN(a), RARRAY_PTR(a)));
 }
 
-struct capi_block { rb_block_call_func_t fn; VALUE data; };
 static mrb_value block_trampoline(mrb_state *mrb, mrb_value self) {
   (void)self;
   const struct capi_block *cb = (const struct capi_block *)mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0));
@@ -899,10 +1186,12 @@ static mrb_value block_trampoline(mrb_state *mrb, mrb_value self) {
   ptr_next_gen();
   return MV(r);
 }
-static mrb_value block_proc(rb_block_call_func_t fn, VALUE data) {
+static mrb_value block_proc(rb_block_call_func_t fn, VALUE data, mrb_value outer_blk, ptrdiff_t iter_ci_idx) {
   struct capi_block *cb = (struct capi_block *)mrb_malloc(M, sizeof *cb);
   cb->fn = fn;
   cb->data = data;
+  cb->outer_blk = outer_blk;
+  cb->iter_ci_idx = iter_ci_idx;
   /* the Data object frees the struct with the Proc (it sits in the env) */
   struct RData *holder = mrb_data_object_alloc(M, box_class, cb, &box_type);
   mrb_value env[2] = {mrb_cptr_value(M, cb), mrb_obj_value(holder)};
@@ -910,11 +1199,15 @@ static mrb_value block_proc(rb_block_call_func_t fn, VALUE data) {
     mrb_value d = MV(data);
     mrb_iv_set(M, mrb_obj_value(holder), SYM("@data"), d);
   }
+  if (!mrb_nil_p(outer_blk)) {
+    mrb_iv_set(M, mrb_obj_value(holder), SYM("@blk"), outer_blk);
+  }
   return mrb_obj_value(mrb_proc_new_cfunc_with_env(M, block_trampoline, 2, env));
 }
 VALUE rb_block_call(VALUE obj, ID mid, int argc, const VALUE *argv, rb_block_call_func_t fn, VALUE data) {
   ptr_next_gen();
-  mrb_value blk = fn ? block_proc(fn, data) : mrb_nil_value();
+  ptrdiff_t iter_ci_idx = (M->c->ci - M->c->cibase) + 1;
+  mrb_value blk = fn ? block_proc(fn, data, current_block(), iter_ci_idx) : current_block();
   mrb_value buf[8];
   mrb_value *mv = mv_array(argc, argv, buf, 8);
   mrb_value r = mrb_funcall_with_block(M, MV(obj), (mrb_sym)mid, argc, mv, blk);
@@ -922,7 +1215,7 @@ VALUE rb_block_call(VALUE obj, ID mid, int argc, const VALUE *argv, rb_block_cal
   return V(r);
 }
 VALUE rb_proc_new(rb_block_call_func_t fn, VALUE data) {
-  mrb_value p = block_proc(fn, data);
+  mrb_value p = block_proc(fn, data, mrb_nil_value(), -1);
   return V(mrb_funcall_with_block(M, kernel(), SYM("proc"), 0, NULL, p));
 }
 VALUE rb_proc_call(VALUE proc, VALUE args) {
@@ -939,7 +1232,23 @@ VALUE rb_proc_call_with_block(VALUE proc, int argc, const VALUE *argv, VALUE blk
 }
 VALUE rb_obj_is_proc(VALUE v) { return B(!SPECIAL_CONST_P(v) && mrb_proc_p(MV(v))); }
 int rb_keyword_given_p(void) { return M->c->ci->kw; }
-VALUE rb_eval_string(const char *src) { mrb_value s = mrb_str_new_cstr(M, src); return V(mrb_funcall_argv(M, kernel(), SYM("eval"), 1, &s)); }
+VALUE rb_eval_string(const char *src) {
+  mrb_value s = mrb_str_new_cstr(M, src);
+  for (mrb_callinfo *ci = M->c->ci - 1; ci >= M->c->cibase; ci--) {
+    const struct RProc *p = ci->proc;
+    if (p && !MRB_PROC_CFUNC_P(p)) {
+      struct REnv *env = mrb_vm_ci_env_reify(M, M->c, ci);
+      mrb_value b = mrb_binding_new(M, p, ci->stack[0], env);
+      mrb_value a[2] = {s, b};
+      return V(mrb_funcall_argv(M, kernel(), SYM("eval"), 2, a));
+    }
+  }
+  return V(mrb_funcall_argv(M, kernel(), SYM("eval"), 1, &s));
+}
+static VALUE eval_string_protect_cb(VALUE src) { return rb_eval_string((const char *)src); }
+VALUE rb_eval_string_protect(const char *src, int *state) {
+  return rb_protect(eval_string_protect_cb, (VALUE)src, state);
+}
 VALUE rb_require(const char *name) { mrb_value s = mrb_str_new_cstr(M, name); return V(mrb_funcall_argv(M, kernel(), SYM("require"), 1, &s)); }
 VALUE rb_f_require(VALUE self, VALUE name) { (void)self; mrb_value s = MV(name); return V(mrb_funcall_argv(M, kernel(), SYM("require"), 1, &s)); }
 VALUE rb_current_receiver(void) { return V(M->c->ci->stack[0]); }
@@ -1025,6 +1334,7 @@ int rb_get_kwargs(VALUE hash, const ID *table, int required, int optional, VALUE
   if (rest) optional = -1 - optional;
   int found = 0;
   mrb_value h = NIL_P(hash) ? mrb_nil_value() : MV(hash);
+  mrb_value missing = mrb_nil_value();
   for (int i = 0; i < required + optional; i++) {
     mrb_value key = mrb_symbol_value((mrb_sym)table[i]);
     if (!mrb_nil_p(h) && mrb_hash_key_p(M, h, key)) {
@@ -1032,14 +1342,24 @@ int rb_get_kwargs(VALUE hash, const ID *table, int required, int optional, VALUE
       found++;
     }
     else {
-      if (i < required) rb_raise(rb_eArgError, "missing keyword: :%s", mrb_sym_name(M, (mrb_sym)table[i]));
+      if (i < required) {
+        if (mrb_nil_p(missing)) missing = mrb_ary_new(M);
+        mrb_ary_push(M, missing, mrb_inspect(M, key));
+      }
       if (values) values[i] = Qundef;
     }
   }
+  if (!mrb_nil_p(missing)) {
+    rb_raise(rb_eArgError, "missing keyword%s: %" PRIsVALUE,
+             RARRAY_LEN(missing) > 1 ? "s" : "",
+             V(call1(missing, "join", mrb_str_new_cstr(M, ", "))));
+  }
   if (!rest && !mrb_nil_p(h) && mrb_hash_size(M, h) > 0) {
     mrb_value keys = mrb_hash_keys(M, h);
+    mrb_value shown = mrb_ary_new_capa(M, RARRAY_LEN(keys));
+    for (mrb_int i = 0; i < RARRAY_LEN(keys); i++) mrb_ary_push(M, shown, mrb_inspect(M, RARRAY_PTR(keys)[i]));
     rb_raise(rb_eArgError, "unknown keyword%s: %" PRIsVALUE, RARRAY_LEN(keys) > 1 ? "s" : "",
-             V(call1(keys, "join", mrb_str_new_cstr(M, ", "))));
+             V(call1(shown, "join", mrb_str_new_cstr(M, ", "))));
   }
   return found;
 }
@@ -1083,7 +1403,18 @@ static void vformat(mrb_value out, const char *fmt, va_list ap) {
       q++;
       VALUE v = va_arg(ap, VALUE);
       mrb_value s = plus ? mrb_inspect(M, MV(v)) : mrb_obj_as_string(M, MV(v));
-      mrb_str_cat_str(M, out, s);
+      const char *sp = RSTRING_PTR(s);
+      mrb_int slen = RSTRING_LEN(s);
+      if (prec >= 0 && prec < slen) slen = prec;
+      int left = 0;
+      for (size_t i = 0; i < sn; i++) if (spec[i] == '-') { left = 1; break; }
+      if (width > slen && !left) {
+        for (int i = 0; i < width - (int)slen; i++) mrb_str_cat(M, out, " ", 1);
+      }
+      mrb_str_cat(M, out, sp, (size_t)slen);
+      if (width > slen && left) {
+        for (int i = 0; i < width - (int)slen; i++) mrb_str_cat(M, out, " ", 1);
+      }
       p = q;
       continue;
     }
@@ -1218,6 +1549,7 @@ void rb_error_arity(int argc, int min, int max) {
   rb_raise(rb_eArgError, "wrong number of arguments (given %d, expected %d..%d)", argc, min, max);
 }
 static VALUE errinfo = Qnil;
+static mrb_value jump_exc;
 static int errinfo_registered;
 static size_t nroots;
 static void set_errinfo(mrb_value exc) {
@@ -1226,13 +1558,33 @@ static void set_errinfo(mrb_value exc) {
 }
 void rb_jump_tag(int state) {
   (void)state;
-  if (NIL_P(errinfo)) rb_raise(rb_eRuntimeError, "rb_jump_tag without an error");
-  VALUE e = errinfo;
+  mrb_value exc = !mrb_nil_p(jump_exc) ? jump_exc : (!NIL_P(errinfo) ? MV(errinfo) : mrb_nil_value());
   errinfo = Qnil;
-  rb_exc_raise(e);
+  jump_exc = mrb_nil_value();
+  if (mrb_nil_p(exc)) rb_raise(rb_eRuntimeError, "rb_jump_tag without an error");
+  mrb_exc_raise(M, exc);
 }
 void rb_error_frozen(const char *what) { rb_raise(rb_eFrozenError, "can't modify frozen %s", what); }
-void rb_error_frozen_object(VALUE v) { mrb_frozen_error(M, mrb_ptr(MV(v))); abort(); }
+static VALUE frozen_rec[8];
+static int nfrozen_rec;
+static mrb_value inspect_body(mrb_state *mrb, void *p) {
+  return mrb_inspect(mrb, *(mrb_value *)p);
+}
+void rb_error_frozen_object(VALUE v) {
+  for (int i = 0; i < nfrozen_rec; i++) {
+    if (frozen_rec[i] == v) {
+      rb_raise(rb_eFrozenError, "can't modify frozen %s:  ...", display_class(v));
+    }
+  }
+  const char *cls = display_class(v);
+  mrb_value mv = MV(v);
+  if (nfrozen_rec < 8) frozen_rec[nfrozen_rec++] = v;
+  mrb_bool failed = FALSE;
+  mrb_value insp = mrb_protect_error(M, inspect_body, &mv, &failed);
+  if (nfrozen_rec > 0 && frozen_rec[nfrozen_rec - 1] == v) nfrozen_rec--;
+  if (failed) mrb_exc_raise(M, insp);
+  rb_raise(rb_eFrozenError, "can't modify frozen %s: %" PRIsVALUE, cls, V(insp));
+}
 void rb_frozen_error_raise(VALUE v, const char *fmt, ...) {
   (void)v;
   mrb_value s = mrb_str_new(M, NULL, 0);
@@ -1282,11 +1634,28 @@ static mrb_value protect_body(mrb_state *mrb, void *data) {
   struct capi_call *c = (struct capi_call *)data;
   return MV(c->fn(c->arg));
 }
+struct capi_rescue_call { VALUE (*fn)(VALUE, VALUE); VALUE arg; VALUE exc; };
+static mrb_value rescue_body(mrb_state *mrb, void *data) {
+  (void)mrb;
+  struct capi_rescue_call *c = (struct capi_rescue_call *)data;
+  return MV(c->fn(c->arg, c->exc));
+}
 VALUE rb_ensure(VALUE (*b)(VALUE), VALUE d1, VALUE (*e)(VALUE), VALUE d2) {
   struct capi_call body = {b, d1};
   mrb_bool failed = FALSE;
   mrb_value r = mrb_protect_error(M, protect_body, &body, &failed);
-  e(d2);
+  VALUE prev_err = errinfo;
+  mrb_value prev_bang = mrb_gv_get(M, SYM("$!"));
+  if (failed && mrb_type(r) != MRB_TT_BREAK) {
+    set_errinfo(r);
+    mrb_gv_set(M, SYM("$!"), r);
+  }
+  struct capi_call ens = {e, d2};
+  mrb_bool efailed = FALSE;
+  mrb_value er = mrb_protect_error(M, protect_body, &ens, &efailed);
+  errinfo = prev_err;
+  mrb_gv_set(M, SYM("$!"), prev_bang);
+  if (efailed) mrb_exc_raise(M, er);
   if (failed) mrb_exc_raise(M, r);
   return V(r);
 }
@@ -1295,7 +1664,9 @@ VALUE rb_protect(VALUE (*fn)(VALUE), VALUE arg, int *state) {
   mrb_bool failed = FALSE;
   mrb_value r = mrb_protect_error(M, protect_body, &c, &failed);
   if (failed) {
-    set_errinfo(r);
+    jump_exc = r;
+    if (mrb_type(r) != MRB_TT_BREAK) set_errinfo(r);
+    else errinfo = Qnil;
     if (state) *state = 1;
     return Qnil;
   }
@@ -1307,13 +1678,23 @@ static VALUE rescue(VALUE (*b)(VALUE), VALUE d1, VALUE (*r)(VALUE, VALUE), VALUE
   mrb_bool failed = FALSE;
   mrb_value res = mrb_protect_error(M, protect_body, &c, &failed);
   if (!failed) return V(res);
+  if (mrb_type(res) == MRB_TT_BREAK) mrb_exc_raise(M, res);
   for (int i = 0; i < nclasses; i++) {
+    int t = rb_type(classes[i]);
+    if (t != T_CLASS && t != T_MODULE) rb_raise(rb_eTypeError, "class or module required");
     if (mrb_obj_is_kind_of(M, res, CLS(classes[i]))) {
       if (!r) return Qnil;
+      VALUE prev_err = errinfo;
+      mrb_value prev_bang = mrb_gv_get(M, SYM("$!"));
       set_errinfo(res);
-      VALUE out = r(d2, V(res));
-      errinfo = Qnil;
-      return out;
+      mrb_gv_set(M, SYM("$!"), res);
+      struct capi_rescue_call rc = {r, d2, V(res)};
+      mrb_bool rfailed = FALSE;
+      mrb_value rout = mrb_protect_error(M, rescue_body, &rc, &rfailed);
+      errinfo = prev_err;
+      mrb_gv_set(M, SYM("$!"), prev_bang);
+      if (rfailed) mrb_exc_raise(M, rout);
+      return V(rout);
     }
   }
   mrb_exc_raise(M, res);
@@ -1337,6 +1718,8 @@ void rb_set_errinfo(VALUE v) {
     rb_raise(rb_eTypeError, "assigning non-exception to $!");
   }
   set_errinfo(MV(v));
+  mrb_gv_set(M, SYM("$!"), MV(v));
+  if (NIL_P(v)) jump_exc = mrb_nil_value();
 }
 int rb_safe_level(void) { return 0; }
 
@@ -1348,7 +1731,24 @@ static mrb_value need_str(VALUE v) {
   if (!mrb_string_p(m)) rb_raise(rb_eTypeError, "wrong argument type %s (expected String)", display_class(v));
   return m;
 }
-char *rb_capi_rstring_ptr(VALUE v) { return RSTRING_PTR(need_str(v)); }
+static void ensure_wide_term(mrb_value m) {
+  struct RString *r = mrb_str_ptr(m);
+  if (RSTR_NOFREE_P(r) || mrb_frozen_p((struct RBasic *)r)) return;
+  rb_encoding *e = rb_enc_get(V(m));
+  int minlen = e ? e->min_enc_len : 1;
+  if (minlen <= 1) return;
+  mrb_int len = RSTRING_LEN(m);
+  if ((mrb_int)RSTRING_CAPA(m) < len + minlen) {
+    mrb_str_resize(M, m, len + minlen);
+    RSTR_SET_LEN(mrb_str_ptr(m), len);
+  }
+  memset(RSTRING_PTR(m) + len, 0, (size_t)minlen);
+}
+char *rb_capi_rstring_ptr(VALUE v) {
+  mrb_value m = need_str(v);
+  ensure_wide_term(m);
+  return RSTRING_PTR(m);
+}
 long rb_capi_rstring_len(VALUE v) { return (long)RSTRING_LEN(need_str(v)); }
 VALUE rb_string_value(volatile VALUE *v) {
   if (!SPECIAL_CONST_P(*v) && mrb_string_p(MV(*v))) return *v;
@@ -1360,7 +1760,19 @@ char *rb_string_value_cstr(volatile VALUE *v) {
   mrb_value s = MV(rb_string_value(v));
   const char *p = RSTRING_PTR(s);
   mrb_int n = RSTRING_LEN(s);
-  if (memchr(p, 0, (size_t)n)) rb_raise(rb_eArgError, "string contains null byte");
+  rb_encoding *e = rb_enc_get(*v);
+  int minlen = e ? e->min_enc_len : 1;
+  if (minlen <= 1) {
+    if (memchr(p, 0, (size_t)n)) rb_raise(rb_eArgError, "string contains null byte");
+  } else {
+    for (mrb_int i = 0; i + minlen <= n; i += minlen) {
+      int allzero = 1;
+      for (int j = 0; j < minlen; j++) if (p[i + j] != 0) { allzero = 0; break; }
+      if (allzero) rb_raise(rb_eArgError, "string contains null byte");
+    }
+    ensure_wide_term(s);
+    return RSTRING_PTR(s);
+  }
   return (char *)mrb_string_cstr(M, s);
 }
 /* MRI's rb_str_new & co. make ASCII-8BIT strings (an encoding is what
@@ -1387,8 +1799,26 @@ static mrb_value str_new(const char *p, long n) {
 VALUE rb_str_new(const char *p, long n) { return V(str_new(p, n)); }
 VALUE rb_str_new_cstr(const char *p) { return V(str_binary(mrb_str_new_cstr(M, p))); }
 VALUE rb_str_new_shared(VALUE s) { return V(mrb_str_dup(M, MV(s))); }
-VALUE rb_str_new_frozen(VALUE s) { mrb_value d = mrb_str_dup(M, MV(s)); mrb_obj_freeze(M, d); return V(d); }
-VALUE rb_str_new_static(const char *p, long n) { return rb_str_new(p, n); }
+VALUE rb_str_new_frozen(VALUE s) {
+  mrb_value m = need_str(s);
+  if (mrb_frozen_p(mrb_basic_ptr(m)) && mrb_obj_ptr(m)->c == M->string_class) return s;
+  mrb_value d = mrb_str_dup(M, m);
+  mrb_obj_freeze(M, d);
+  return V(d);
+}
+static mrb_value str_new_nofree(const char *p, long n) {
+  struct RString *r = (struct RString *)mrb_obj_alloc(M, MRB_TT_STRING, M->string_class);
+  r->as.heap.ptr = (char *)p;
+  r->as.heap.len = (mrb_ssize)n;
+  r->as.heap.aux.capa = 0;
+  RSTR_SET_TYPE(r, NOFREE);
+  return mrb_obj_value(r);
+}
+VALUE rb_str_new_static(const char *p, long n) {
+  if (n < 0) rb_raise(rb_eArgError, "negative string size (or size too big)");
+  if (!p) return rb_str_new(NULL, n);
+  return V(str_binary(str_new_nofree(p, n)));
+}
 VALUE rb_str_new_with_class(VALUE obj, const char *p, long n) {
   mrb_value s = str_new(p, n);
   mrb_str_ptr(s)->c = mrb_obj_class(M, MV(obj));
@@ -1399,17 +1829,25 @@ VALUE rb_usascii_str_new(const char *p, long n) { return force_enc(rb_str_new(p,
 VALUE rb_usascii_str_new_cstr(const char *p) { return force_enc(rb_str_new_cstr(p), "US-ASCII"); }
 VALUE rb_utf8_str_new(const char *p, long n) { return V(str_utf8(str_new(p, n))); }
 VALUE rb_utf8_str_new_cstr(const char *p) { return V(mrb_str_new_cstr(M, p)); }
-VALUE rb_external_str_new(const char *p, long n) { return rb_enc_associate(rb_str_new(p, n), rb_default_external_encoding()); }
+VALUE rb_external_str_new(const char *p, long n) { return rb_external_str_new_with_enc(p, n, rb_default_external_encoding()); }
 VALUE rb_locale_str_new(const char *p, long n) { return rb_enc_associate(rb_str_new(p, n), rb_locale_encoding()); }
 VALUE rb_str_buf_new(long capa) { return V(str_binary(mrb_str_new_capa(M, (size_t)(capa > 0 ? capa : 0)))); }
 VALUE rb_str_buf_new_cstr(const char *p) { return rb_str_new_cstr(p); }
-VALUE rb_str_tmp_new(long n) { return rb_str_new(NULL, n); }
-VALUE rb_interned_str(const char *p, long n) { VALUE s = rb_usascii_str_new(p, n); rb_obj_freeze(s); return s; }
-VALUE rb_interned_str_cstr(const char *p) { VALUE s = rb_usascii_str_new_cstr(p); rb_obj_freeze(s); return s; }
+VALUE rb_str_tmp_new(long n) { return rb_obj_hide(rb_str_new(NULL, n)); }
+VALUE rb_interned_str(const char *p, long n) {
+  VALUE s = rb_enc_str_new(p, n, ascii_bytes(p, n) ? rb_usascii_encoding() : rb_ascii8bit_encoding());
+  return V(call1(kernel(), "__oruby_fstring", MV(s)));
+}
+VALUE rb_interned_str_cstr(const char *p) { return rb_interned_str(p, (long)strlen(p)); }
 VALUE rb_fstring_cstr(const char *p) { return rb_interned_str_cstr(p); }
 VALUE rb_str_cat(VALUE s, const char *p, long n) { mrb_str_cat(M, need_str(s), p, (size_t)n); return s; }
 VALUE rb_str_cat_cstr(VALUE s, const char *p) { mrb_str_cat_cstr(M, need_str(s), p); return s; }
-VALUE rb_str_buf_append(VALUE s, VALUE t) { mrb_str_cat_str(M, need_str(s), need_str(t)); return s; }
+VALUE rb_str_buf_append(VALUE s, VALUE t) {
+  need_str(s);
+  t = rb_str_to_str(t);
+  call1(MV(s), "<<", MV(t));
+  return s;
+}
 VALUE rb_str_append(VALUE s, VALUE t) { return rb_str_buf_append(s, t); }
 VALUE rb_str_concat(VALUE s, VALUE t) { call1(MV(s), "concat", MV(t)); return s; }
 VALUE rb_str_plus(VALUE s, VALUE t) { return V(mrb_str_plus(M, need_str(s), need_str(t))); }
@@ -1424,6 +1862,7 @@ void rb_str_set_len(VALUE s, long n) {
   if (n > (long)RSTRING_CAPA(m)) rb_raise(rb_eArgError, "probable buffer overflow: %ld for %ld", n, (long)RSTRING_CAPA(m));
   RSTR_SET_LEN(r, n);
   RSTRING_PTR(m)[n] = 0;
+  ensure_wide_term(m);
 }
 void rb_str_modify(VALUE s) { mrb_str_modify(M, mrb_str_ptr(need_str(s))); }
 void rb_str_modify_expand(VALUE s, long expand) {
@@ -1447,8 +1886,8 @@ VALUE rb_str_inspect(VALUE s) { return V(mrb_inspect(M, MV(s))); }
 VALUE rb_str_dump(VALUE s) { return V(call0(MV(s), "dump")); }
 VALUE rb_str_split(VALUE s, const char *sep) { return V(call1(MV(s), "split", mrb_str_new_cstr(M, sep))); }
 VALUE rb_str_to_str(VALUE s) { return rb_convert_type(s, T_STRING, "String", "to_str"); }
-VALUE rb_str_export(VALUE s) { return s; }
-VALUE rb_str_export_locale(VALUE s) { return s; }
+VALUE rb_str_export(VALUE s) { return rb_str_export_to_enc(s, rb_default_external_encoding()); }
+VALUE rb_str_export_locale(VALUE s) { return rb_str_export_to_enc(s, rb_locale_encoding()); }
 long rb_str_offset(VALUE s, long pos) {
   mrb_value sub = MV(rb_str_substr(s, 0, pos));
   return mrb_string_p(sub) ? (long)RSTRING_LEN(sub) : 0;
@@ -1753,11 +2192,18 @@ VALUE rb_io_flush(VALUE io) { call0(MV(io), "flush"); return io; }
 VALUE rb_capi_basic_class(VALUE v) {
   mrb_value m = MV(v);
   if (mrb_immediate_p(m)) return rb_obj_class(v);
-  return (VALUE)mrb_obj_ptr(m)->c;
+  struct RClass *c = mrb_obj_ptr(m)->c;
+  return c ? (VALUE)c : Qfalse;
 }
-/* MRI hides an object by clearing its class; here it stays an object */
-VALUE rb_obj_hide(VALUE v) { return v; }
-VALUE rb_obj_reveal(VALUE v, VALUE klass) { (void)klass; return v; }
+/* MRI hides an object by clearing its class; here we clear c when heap-allocated */
+VALUE rb_obj_hide(VALUE v) {
+  if (!SPECIAL_CONST_P(v)) mrb_obj_ptr(MV(v))->c = NULL;
+  return v;
+}
+VALUE rb_obj_reveal(VALUE v, VALUE klass) {
+  if (!SPECIAL_CONST_P(v)) mrb_obj_ptr(MV(v))->c = CLS(klass);
+  return v;
+}
 
 /* Bignums, through Integer's methods */
 VALUE rb_big2str(VALUE v, int base) { return V(call1(MV(v), "to_s", mrb_int_value(M, base))); }
@@ -1804,15 +2250,18 @@ int rb_mod_method_arity(VALUE mod, ID mid) {
 }
 int rb_proc_arity(VALUE p) { return (int)mrb_integer(call0(MV(p), "arity")); }
 
-struct ivar_each { int (*fn)(ID, VALUE, st_data_t); st_data_t arg; };
+struct ivar_each { int (*fn)(ID, VALUE, st_data_t); st_data_t arg; int is_mod; };
 static int ivar_each_i(mrb_state *mrb, mrb_sym sym, mrb_value val, void *p) {
-  (void)mrb;
+  const char *name = mrb_sym_name(mrb, sym);
+  if (name && name[0] == '_' && name[1] == '_') return 0;
   struct ivar_each *e = (struct ivar_each *)p;
+  if (e->is_mod && (!name || name[0] != '@')) return 0;
   return e->fn((ID)sym, V(val), e->arg) == ST_STOP ? 1 : 0;
 }
 void rb_ivar_foreach(VALUE obj, int (*fn)(ID, VALUE, st_data_t), st_data_t arg) {
   if (SPECIAL_CONST_P(obj)) return;
-  struct ivar_each e = {fn, arg};
+  int t = rb_type(obj);
+  struct ivar_each e = {fn, arg, t == T_CLASS || t == T_MODULE};
   mrb_iv_foreach(M, MV(obj), ivar_each_i, &e);
 }
 st_index_t rb_ivar_count(VALUE obj) {
@@ -1821,20 +2270,25 @@ st_index_t rb_ivar_count(VALUE obj) {
 }
 st_index_t rb_memhash(const void *p, long n) { return st_hash(p, (size_t)n, 0); }
 
-/* a Time, or seconds as an Integer or Float */
+/* a Time, or seconds as an Integer, Float, or Rational */
 struct timespec rb_time_timespec(VALUE t) {
   struct timespec ts;
   mrb_value m = MV(t);
-  if (mrb_integer_p(m)) {
+  if (!NIL_P(rb_cTime) && mrb_obj_is_kind_of(M, m, CLS(rb_cTime))) {
+    ts.tv_sec = (time_t)mrb_as_int64(M, call0(m, "to_i"));
+    ts.tv_nsec = (long)mrb_integer(call0(m, "nsec"));
+  } else if (mrb_integer_p(m)) {
     ts.tv_sec = (time_t)mrb_integer(m);
     ts.tv_nsec = 0;
   } else if (mrb_float_p(m)) {
     double d = mrb_float(m), sec = floor(d);
     ts.tv_sec = (time_t)sec;
-    ts.tv_nsec = (long)((d - sec) * 1e9);
+    ts.tv_nsec = (long)llround((d - sec) * 1e9);
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
   } else {
-    ts.tv_sec = (time_t)mrb_integer(call0(m, "to_i"));
-    ts.tv_nsec = (long)mrb_integer(call0(m, "nsec"));
+    mrb_value dm = call1(m, "divmod", mrb_int_value(M, 1));
+    ts.tv_sec = (time_t)mrb_as_int64(M, RARRAY_PTR(dm)[0]);
+    ts.tv_nsec = (long)mrb_integer(call0(call1(RARRAY_PTR(dm)[1], "*", mrb_int_value(M, 1000000000)), "to_i"));
   }
   return ts;
 }
@@ -1845,10 +2299,21 @@ struct timeval rb_time_timeval(VALUE t) {
 }
 /* offset: seconds east of UTC, INT_MAX local time, INT_MAX-1 UTC */
 VALUE rb_time_timespec_new(const struct timespec *ts, int offset) {
-  VALUE t = rb_time_nano_new(ts->tv_sec, ts->tv_nsec);
-  if (offset == INT_MAX) return t;
-  if (offset == INT_MAX - 1) return V(call0(MV(t), "utc"));
-  return V(call1(MV(t), "localtime", mrb_int_value(M, offset)));
+  time_t sec = ts->tv_sec;
+  long nsec = ts->tv_nsec;
+  while (nsec < 0) { sec--; nsec += 1000000000L; }
+  while (nsec >= 1000000000L) { sec++; nsec -= 1000000000L; }
+  int mode = 2, off = offset;
+  if (offset == INT_MAX) { mode = 1; off = 0; }
+  else if (offset == INT_MAX - 1) { mode = 0; off = 0; }
+  else if (offset <= -86400 || offset >= 86400) {
+    rb_raise(rb_eArgError, "utc_offset out of range");
+  }
+  mrb_value args[5] = {
+    MV(rb_cTime), mrb_int_value(M, (mrb_int)sec), mrb_int_value(M, nsec),
+    mrb_int_value(M, mode), mrb_int_value(M, off)
+  };
+  return V(mrb_funcall_argv(M, MV(rb_cTime), SYM("__make_obj"), 5, args));
 }
 VALUE rb_rational_new(VALUE n, VALUE d) {
   mrb_value a[2] = {MV(n), MV(d)};
@@ -1880,6 +2345,7 @@ static void mark_value(mrb_state *mrb, VALUE v) {
 }
 static void root_hook(mrb_state *mrb) {
   if (mrb != M) return;
+  if (!mrb_nil_p(jump_exc) && !mrb_immediate_p(jump_exc)) mrb_gc_mark(mrb, mrb_basic_ptr(jump_exc));
   for (size_t i = 0; i < nroots; i++) mark_value(mrb, *roots[i]);
 }
 void rb_gc_register_address(VALUE *addr) {
@@ -1910,8 +2376,8 @@ void rb_gc_writebarrier(VALUE a, VALUE b) {
   mrb_field_write_barrier(M, (struct RBasic *)a, (struct RBasic *)b);
 }
 void rb_gc_writebarrier_unprotect(VALUE v) { (void)v; }
-void rb_gc(void) { mrb_full_gc(M); }
-VALUE rb_gc_start(void) { mrb_full_gc(M); return Qnil; }
+void rb_gc(void) { call0(MV(rb_mGC), "start"); }
+VALUE rb_gc_start(void) { return V(call0(MV(rb_mGC), "start")); }
 VALUE rb_gc_enable(void) { return V(call0(MV(rb_mGC), "enable")); }
 VALUE rb_gc_disable(void) { return V(call0(MV(rb_mGC), "disable")); }
 void rb_gc_adjust_memory_usage(ssize_t d) { (void)d; }
@@ -1950,7 +2416,8 @@ static size_t cdata_mark_hook(mrb_state *mrb, struct RData *rd) {
 /* a class whose instances are Data objects: mruby allocates by its
    instance type */
 static void cdata_class(struct RClass *c) {
-  if (c != M->object_class && MRB_INSTANCE_TT(c) != MRB_TT_CDATA) MRB_SET_INSTANCE_TT(c, MRB_TT_CDATA);
+  enum mrb_vtype tt = MRB_INSTANCE_TT(c);
+  if (c != M->object_class && (tt == 0 || tt == MRB_TT_OBJECT)) MRB_SET_INSTANCE_TT(c, MRB_TT_CDATA);
 }
 
 static VALUE data_new(VALUE klass, void *ptr, const rb_data_type_t *type, RUBY_DATA_FUNC mark, RUBY_DATA_FUNC dfree) {
@@ -2119,8 +2586,8 @@ static rb_encoding *enc_of_encoding(mrb_value enc) { return enc_named(mrb_string
 rb_encoding *rb_utf8_encoding(void) { static rb_encoding *e; if (!e) e = enc_named("UTF-8"); return e; }
 rb_encoding *rb_ascii8bit_encoding(void) { static rb_encoding *e; if (!e) e = enc_named("ASCII-8BIT"); return e; }
 rb_encoding *rb_usascii_encoding(void) { static rb_encoding *e; if (!e) e = enc_named("US-ASCII"); return e; }
-rb_encoding *rb_locale_encoding(void) { return rb_default_external_encoding(); }
-rb_encoding *rb_filesystem_encoding(void) { return rb_default_external_encoding(); }
+rb_encoding *rb_locale_encoding(void) { return enc_of_encoding(call1(encoding_class(), "find", mrb_str_new_cstr(M, "locale"))); }
+rb_encoding *rb_filesystem_encoding(void) { return enc_of_encoding(call1(encoding_class(), "find", mrb_str_new_cstr(M, "filesystem"))); }
 rb_encoding *rb_default_external_encoding(void) { return enc_of_encoding(call0(encoding_class(), "default_external")); }
 rb_encoding *rb_default_internal_encoding(void) {
   mrb_value e = call0(encoding_class(), "default_internal");
@@ -2132,8 +2599,15 @@ int rb_usascii_encindex(void) { return rb_usascii_encoding()->index; }
 rb_encoding *rb_enc_get(VALUE v) {
   if (SPECIAL_CONST_P(v) && !STATIC_SYM_P(v)) return NULL;
   mrb_value m = MV(v);
+  if (mrb_string_p(m)) {
+    if (!mrb_iv_defined(M, m, SYM("__encoding"))) {
+      return RSTR_BINARY_P(mrb_str_ptr(m)) ? rb_ascii8bit_encoding() : rb_utf8_encoding();
+    }
+    if (mrb_obj_ptr(m)->c == NULL) return rb_ascii8bit_encoding();
+    return enc_of_encoding(call0(m, "encoding"));
+  }
+  if (!mrb_immediate_p(m) && mrb_obj_ptr(m)->c == NULL) return NULL;
   if (mrb_obj_is_kind_of(M, m, mrb_class_ptr(encoding_class()))) return enc_of_encoding(m);
-  if (mrb_string_p(m) && !RSTR_BINARY_P(mrb_str_ptr(m)) && !mrb_iv_defined(M, m, SYM("__encoding"))) return rb_utf8_encoding();
   if (!mrb_respond_to(M, m, SYM("encoding"))) return NULL;
   return enc_of_encoding(call0(m, "encoding"));
 }
@@ -2172,28 +2646,61 @@ VALUE rb_enc_str_new(const char *p, long n, rb_encoding *e) {
   return force_enc(V(s), e->name);
 }
 VALUE rb_enc_str_new_cstr(const char *p, rb_encoding *e) { return rb_enc_str_new(p, (long)strlen(p), e); }
-VALUE rb_enc_str_new_static(const char *p, long n, rb_encoding *e) { return rb_enc_str_new(p, n, e); }
-VALUE rb_enc_interned_str(const char *p, long n, rb_encoding *e) { VALUE s = rb_enc_str_new(p, n, e); rb_obj_freeze(s); return s; }
-VALUE rb_external_str_new_with_enc(const char *p, long n, rb_encoding *e) { return rb_enc_str_new(p, n, e); }
+VALUE rb_enc_str_new_static(const char *p, long n, rb_encoding *e) {
+  if (n < 0) rb_raise(rb_eArgError, "negative string size (or size too big)");
+  if (!p) return rb_enc_str_new(NULL, n, e);
+  mrb_value s = str_new_nofree(p, n);
+  if (!e || e == rb_ascii8bit_encoding()) return V(str_binary(s));
+  if (e == rb_utf8_encoding()) return V(str_utf8(s));
+  return force_enc(V(s), e->name);
+}
+VALUE rb_enc_interned_str(const char *p, long n, rb_encoding *e) {
+  VALUE s = rb_enc_str_new(p, n, e ? e : rb_ascii8bit_encoding());
+  return V(call1(kernel(), "__oruby_fstring", MV(s)));
+}
+VALUE rb_external_str_new_with_enc(const char *p, long n, rb_encoding *e) {
+  if (e == rb_usascii_encoding() && !ascii_bytes(p, n)) e = rb_ascii8bit_encoding();
+  VALUE s = rb_enc_str_new(p, n, e);
+  if (e && e != rb_ascii8bit_encoding()) {
+    rb_encoding *di = rb_default_internal_encoding();
+    if (di && di != e) s = rb_str_conv_enc(s, e, di);
+  }
+  return s;
+}
 /* MRI's: the string itself where it cannot be converted */
-struct conv_enc { mrb_value s; mrb_value a[2]; };
+struct conv_enc { mrb_value s; mrb_value a[2]; mrb_value kw; };
 static mrb_value conv_enc_body(mrb_state *mrb, void *data) {
   struct conv_enc *c = (struct conv_enc *)data;
-  return mrb_funcall_argv(mrb, c->s, mrb_intern_lit(mrb, "encode"), 2, c->a);
+  if (mrb_nil_p(c->kw)) return mrb_funcall_argv(mrb, c->s, mrb_intern_lit(mrb, "encode"), 2, c->a);
+  mrb_value args[3] = {c->a[0], c->a[1], c->kw};
+  return MV(send_kw(c->s, SYM("encode"), 3, (VALUE[]){V(args[0]), V(args[1]), V(args[2])}, mrb_nil_value(), 1, 0));
 }
-VALUE rb_str_conv_enc(VALUE s, rb_encoding *from, rb_encoding *to) {
-  if (!to || from == to) return s;
-  struct conv_enc c = {MV(s), {mrb_str_new_cstr(M, to->name), mrb_str_new_cstr(M, from ? from->name : "UTF-8")}};
+VALUE rb_str_conv_enc_opts(VALUE s, rb_encoding *from, rb_encoding *to, int ecflags, VALUE ecopts) {
+  if (!to || from == to || to == rb_ascii8bit_encoding()) return s;
+  if (rb_enc_get(s) == to && to->ascii_compatible && rb_enc_str_asciionly_p(s)) return s;
+  mrb_value kw = NIL_P(ecopts) ? mrb_nil_value() : mrb_hash_dup(M, MV(ecopts));
+  if (ecflags != 0) {
+    if (mrb_nil_p(kw)) kw = mrb_hash_new(M);
+    if (ecflags & 2) mrb_hash_set(M, kw, mrb_symbol_value(SYM("invalid")), mrb_symbol_value(SYM("replace")));
+    if (ecflags & 32) mrb_hash_set(M, kw, mrb_symbol_value(SYM("undef")), mrb_symbol_value(SYM("replace")));
+  }
+  struct conv_enc c = {MV(s), {mrb_str_new_cstr(M, to->name), mrb_str_new_cstr(M, from ? from->name : "UTF-8")}, kw};
   mrb_bool failed = FALSE;
   mrb_value r = mrb_protect_error(M, conv_enc_body, &c, &failed);
   return failed ? s : V(r);
 }
-VALUE rb_str_export_to_enc(VALUE s, rb_encoding *e) { return V(call1(MV(s), "encode", mrb_str_new_cstr(M, e->name))); }
+VALUE rb_str_conv_enc(VALUE s, rb_encoding *from, rb_encoding *to) {
+  return rb_str_conv_enc_opts(s, from, to, 0, Qnil);
+}
+VALUE rb_str_export_to_enc(VALUE s, rb_encoding *e) { return rb_str_conv_enc(s, rb_enc_get(s), e); }
 VALUE rb_str_encode(VALUE s, VALUE to, int ecflags, VALUE ecopts) {
-  (void)ecflags;
-  if (NIL_P(ecopts)) return V(call1(MV(s), "encode", MV(to)));
-  VALUE args[2] = {to, ecopts};
-  return rb_funcallv_kw(s, SYM("encode"), 2, args, 1);
+  VALUE d = rb_str_dup(s);
+  if (NIL_P(ecopts) && ecflags == 0) return V(call1(MV(d), "encode", MV(to)));
+  VALUE kw = NIL_P(ecopts) ? rb_hash_new() : rb_hash_dup(ecopts);
+  if (ecflags & 2) rb_hash_aset(kw, ID2SYM(SYM("invalid")), ID2SYM(SYM("replace")));
+  if (ecflags & 32) rb_hash_aset(kw, ID2SYM(SYM("undef")), ID2SYM(SYM("replace")));
+  VALUE args[2] = {to, kw};
+  return rb_funcallv_kw(d, SYM("encode"), 2, args, 1);
 }
 int rb_enc_str_asciionly_p(VALUE s) { return mrb_test(call0(MV(s), "ascii_only?")); }
 int rb_enc_str_coderange(VALUE s) {
@@ -2300,6 +2807,7 @@ static void capi_unbind(mrb_state *mrb) {
   nroots = 0;
   pthread_mutex_unlock(&roots_lock);
   errinfo = Qnil;
+  jump_exc = mrb_nil_value();
   errinfo_registered = 0;
   oruby_gc_root_hook = NULL;
   oruby_gc_cdata_mark_hook = NULL;
@@ -2338,6 +2846,7 @@ void *orb_capi_dlopen(const char *path, const char *init, char *msg, size_t msgl
 /* Quick-win C-API additions                                           */
 
 VALUE rb_class_get_superclass(VALUE klass) {
+  if (rb_type(klass) != T_CLASS) return Qfalse;
   VALUE sup = rb_class_superclass(klass);
   return NIL_P(sup) ? Qfalse : sup;
 }
@@ -2385,12 +2894,19 @@ VALUE rb_make_exception(int argc, const VALUE *argv) {
     if (!rb_respond_to(argv[0], rb_intern("exception"))) {
       rb_raise(rb_eTypeError, "exception class/object expected");
     }
-    return rb_funcall(argv[0], rb_intern("exception"), 0);
+    VALUE exc = rb_funcall(argv[0], rb_intern("exception"), 0);
+    if (!RTEST(rb_obj_is_kind_of(exc, rb_eException))) {
+      rb_raise(rb_eTypeError, "exception object expected");
+    }
+    return exc;
   }
   if (!rb_respond_to(argv[0], rb_intern("exception"))) {
     rb_raise(rb_eTypeError, "exception class/object expected");
   }
   VALUE exc = rb_funcall(argv[0], rb_intern("exception"), 1, argv[1]);
+  if (!RTEST(rb_obj_is_kind_of(exc, rb_eException))) {
+    rb_raise(rb_eTypeError, "exception object expected");
+  }
   if (argc == 3) rb_funcall(exc, rb_intern("set_backtrace"), 1, argv[2]);
   return exc;
 }
@@ -2565,4 +3081,712 @@ VALUE rb_proc_call_with_block_kw(VALUE proc, int argc, const VALUE *argv, VALUE 
     return r;
   }
   return send_kw(MV(proc), SYM("call"), argc, argv, MV(blk), kw_splat, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tier 2 C-API additions                                              */
+
+struct RTypedData *rb_capi_rtypeddata(VALUE v) {
+  return (struct RTypedData *)rb_capi_data_ptr_ref(v);
+}
+
+VALUE rb_gc_latest_gc_info(VALUE hash_or_key) {
+  if (!NIL_P(hash_or_key) && !SYMBOL_P(hash_or_key) && rb_type(hash_or_key) != T_HASH) {
+    rb_raise(rb_eTypeError, "non-hash or symbol given");
+  }
+  const char *state_name = M->gc.state == MRB_GC_STATE_ROOT ? "none"
+    : (M->gc.state == MRB_GC_STATE_MARK ? "marking" : "sweeping");
+  if (SYMBOL_P(hash_or_key)) {
+    ID id = SYM2ID(hash_or_key);
+    if (id == SYM("major_by")) return Qnil;
+    if (id == SYM("gc_by")) return ID2SYM(SYM("newobj"));
+    if (id == SYM("have_finalizer")) return Qfalse;
+    if (id == SYM("immediate_sweep")) return Qtrue;
+    if (id == SYM("state")) return ID2SYM(rb_intern(state_name));
+    if (id == SYM("weak_references_count")) return INT2FIX(0);
+    if (id == SYM("retained_weak_references_count")) return INT2FIX(0);
+    rb_raise(rb_eArgError, "unknown key: %s", rb_id2name(id));
+  }
+  VALUE h = NIL_P(hash_or_key) ? rb_hash_new() : hash_or_key;
+  rb_hash_aset(h, ID2SYM(SYM("major_by")), Qnil);
+  rb_hash_aset(h, ID2SYM(SYM("gc_by")), ID2SYM(SYM("newobj")));
+  rb_hash_aset(h, ID2SYM(SYM("have_finalizer")), Qfalse);
+  rb_hash_aset(h, ID2SYM(SYM("immediate_sweep")), Qtrue);
+  rb_hash_aset(h, ID2SYM(SYM("state")), ID2SYM(rb_intern(state_name)));
+  rb_hash_aset(h, ID2SYM(SYM("weak_references_count")), INT2FIX(0));
+  rb_hash_aset(h, ID2SYM(SYM("retained_weak_references_count")), INT2FIX(0));
+  return h;
+}
+
+VALUE rb_process_status_for(pid_t pid, int status, int error) {
+  if (error != 0) rb_syserr_fail(error, NULL);
+  VALUE cls = named("Process::Status");
+  mrb_value args[2] = {mrb_int_value(M, (mrb_int)pid), mrb_int_value(M, status)};
+  return V(mrb_funcall_argv(M, MV(cls), SYM("__oruby_for"), 2, args));
+}
+
+VALUE rb_time_num_new(VALUE ts, VALUE off) {
+  if (NIL_P(off)) return rb_funcall(rb_cTime, SYM("at"), 1, ts);
+  VALUE kw = rb_hash_new();
+  rb_hash_aset(kw, ID2SYM(SYM("in")), off);
+  VALUE args[2] = {ts, kw};
+  return send_kw(MV(rb_cTime), SYM("at"), 2, args, mrb_nil_value(), 1, 0);
+}
+
+struct timeval rb_time_interval(VALUE t) {
+  if (!NIL_P(rb_cTime) && RTEST(rb_obj_is_kind_of(t, rb_cTime))) {
+    rb_raise(rb_eTypeError, "can't convert Time into time interval");
+  }
+  struct timespec ts = rb_time_timespec(t);
+  if (ts.tv_sec < 0 || ts.tv_nsec < 0) rb_raise(rb_eArgError, "time interval must not be negative");
+  struct timeval tv = {ts.tv_sec, (int)(ts.tv_nsec / 1000)};
+  return tv;
+}
+
+void rb_timespec_now(struct timespec *ts) {
+  clock_gettime(CLOCK_REALTIME, ts);
+}
+
+VALUE rb_struct_define_under(VALUE outer, const char *name, ...) {
+  if (!name || !rb_is_const_id(rb_intern(name))) {
+    rb_raise(rb_eNameError, "wrong constant name %s", name ? name : "");
+  }
+  mrb_value a = mrb_ary_new(M);
+  va_list ap;
+  va_start(ap, name);
+  for (const char *m; (m = va_arg(ap, const char *)) != NULL; ) {
+    mrb_ary_push(M, a, mrb_symbol_value(rb_intern(m)));
+  }
+  va_end(ap);
+  mrb_value klass = mrb_funcall_argv(M, MV(rb_cStruct), SYM("new"), RARRAY_LEN(a), RARRAY_PTR(a));
+  mrb_define_const_id(M, CLS(outer), rb_intern(name), klass);
+  return V(klass);
+}
+
+VALUE rb_data_define(VALUE super, ...) {
+  VALUE data_cls = named("Data");
+  if (super == 0) {
+    super = data_cls;
+  } else {
+    if (rb_type(super) != T_CLASS) {
+      rb_raise(rb_eTypeError, "wrong argument type %s (expected Class)", display_class(super));
+    }
+    if (!RTEST(rb_class_inherited_p(super, data_cls))) {
+      rb_raise(rb_eTypeError, "superclass must be a subclass of Data");
+    }
+  }
+  mrb_value a = mrb_ary_new(M);
+  va_list ap;
+  va_start(ap, super);
+  for (const char *m; (m = va_arg(ap, const char *)) != NULL; ) {
+    mrb_ary_push(M, a, mrb_symbol_value(rb_intern(m)));
+  }
+  va_end(ap);
+  return V(mrb_funcall_argv(M, MV(super), SYM("define"), RARRAY_LEN(a), RARRAY_PTR(a)));
+}
+
+VALUE rb_struct_initialize(VALUE self, VALUE values) {
+  rb_check_frozen(self);
+  mrb_value vals = need_ary(values);
+  mrb_value m = MV(self);
+  mrb_value members = struct_members_of(m);
+  mrb_int nmem = RARRAY_LEN(members), nval = RARRAY_LEN(vals);
+  if (nval > nmem) rb_raise(rb_eArgError, "struct size differs");
+  if (mrb_type(m) == MRB_TT_STRUCT && !mrb_obj_is_kind_of(M, m, CLS(rb_cStruct))) {
+    mrb_ary_resize(M, m, nmem);
+    for (mrb_int i = 0; i < nmem; i++) {
+      mrb_ary_set(M, m, i, i < nval ? RARRAY_PTR(vals)[i] : mrb_nil_value());
+    }
+    mrb_obj_freeze(M, m);
+    return Qnil;
+  }
+  for (mrb_int i = 0; i < nmem; i++) {
+    rb_struct_aset(self, INT2FIX(i), i < nval ? V(RARRAY_PTR(vals)[i]) : Qnil);
+  }
+  return Qnil;
+}
+
+VALUE rb_num_coerce_bin(VALUE x, VALUE y, ID op) {
+  mrb_value c = call1(MV(y), "coerce", MV(x));
+  if (!mrb_array_p(c) || RARRAY_LEN(c) != 2) {
+    rb_raise(rb_eTypeError, "%s cannot be coerced into %s", display_class(x), display_class(y));
+  }
+  return V(call_id(RARRAY_PTR(c)[0], (mrb_sym)op, 1, &RARRAY_PTR(c)[1]));
+}
+
+VALUE rb_num_coerce_cmp(VALUE x, VALUE y, ID op) {
+  mrb_value c = call1(MV(y), "coerce", MV(x));
+  if (!mrb_array_p(c) || RARRAY_LEN(c) != 2) return Qnil;
+  return V(call_id(RARRAY_PTR(c)[0], (mrb_sym)op, 1, &RARRAY_PTR(c)[1]));
+}
+
+VALUE rb_num_coerce_relop(VALUE x, VALUE y, ID op) {
+  mrb_value c = call1(MV(y), "coerce", MV(x));
+  if (!mrb_array_p(c) || RARRAY_LEN(c) != 2) rb_cmperr(x, y);
+  mrb_value r = call_id(RARRAY_PTR(c)[0], (mrb_sym)op, 1, &RARRAY_PTR(c)[1]);
+  if (mrb_nil_p(r)) rb_cmperr(x, y);
+  return V(r);
+}
+
+int rb_absint_singlebit_p(VALUE x) {
+  mrb_value a = call0(MV(x), "abs");
+  if (mrb_integer_p(a)) {
+    mrb_int n = mrb_integer(a);
+    return n > 0 && (n & (n - 1)) == 0;
+  }
+  mrb_value zero = mrb_int_value(M, 0);
+  if (!mrb_test(call1(a, ">", zero))) return 0;
+  mrb_value prev = call1(a, "-", mrb_int_value(M, 1));
+  return mrb_test(call1(call1(a, "&", prev), "==", zero));
+}
+
+VALUE rb_set_new(void) { return V(call0(MV(named("Set")), "new")); }
+VALUE rb_set_new_capa(size_t capa) { (void)capa; return rb_set_new(); }
+int rb_set_lookup(VALUE set, VALUE elem) { return mrb_test(call1(MV(set), "include?", MV(elem))); }
+int rb_set_add(VALUE set, VALUE elem) { return !mrb_nil_p(call1(MV(set), "add?", MV(elem))); }
+VALUE rb_set_clear(VALUE set) { call0(MV(set), "clear"); return set; }
+int rb_set_delete(VALUE set, VALUE elem) { return !mrb_nil_p(call1(MV(set), "delete?", MV(elem))); }
+size_t rb_set_size(VALUE set) { return (size_t)mrb_integer(call0(MV(set), "size")); }
+void rb_set_foreach(VALUE set, int (*fn)(VALUE, VALUE), VALUE arg) {
+  mrb_value a = call0(MV(set), "to_a");
+  mrb_int n = RARRAY_LEN(a);
+  for (mrb_int i = 0; i < n; i++) {
+    if (fn(V(RARRAY_PTR(a)[i]), arg) == ST_STOP) break;
+  }
+}
+
+VALUE rb_reg_new(const char *s, long len, int opts) {
+  VALUE str = ascii_bytes(s, len) ? rb_utf8_str_new(s, len) : rb_str_new(s, len);
+  return rb_reg_new_str(str, opts);
+}
+int rb_reg_options(VALUE re) { return (int)mrb_integer(call0(MV(re), "options")); }
+VALUE rb_reg_regcomp(VALUE str) { return rb_reg_new_str(str, 0); }
+VALUE rb_reg_match(VALUE re, VALUE str) { return V(call1(MV(re), "=~", MV(str))); }
+VALUE rb_reg_nth_match(int n, VALUE md) { return NIL_P(md) ? Qnil : V(call1(MV(md), "[]", mrb_int_value(M, n))); }
+VALUE rb_backref_get(void) { return V(mrb_gv_get(M, SYM("$~"))); }
+void rb_backref_set(VALUE md) { mrb_gv_set(M, SYM("$~"), MV(md)); }
+int rb_memcicmp(const void *p1, const void *p2, long len) {
+  const unsigned char *a = (const unsigned char *)p1;
+  const unsigned char *b = (const unsigned char *)p2;
+  for (long i = 0; i < len; i++) {
+    int ca = rb_tolower(a[i]);
+    int cb = rb_tolower(b[i]);
+    if (ca != cb) return ca - cb;
+  }
+  return 0;
+}
+
+VALUE rb_fiber_new(rb_block_call_func_t fn, VALUE data) {
+  mrb_value blk = block_proc(fn, data, mrb_nil_value(), -1);
+  return V(mrb_funcall_with_block(M, MV(named("Fiber")), SYM("new"), 0, NULL, blk));
+}
+VALUE rb_fiber_current(void) { return V(call0(MV(named("Fiber")), "current")); }
+VALUE rb_fiber_alive_p(VALUE fiber) { return V(call0(MV(fiber), "alive?")); }
+VALUE rb_fiber_resume(VALUE fiber, int argc, const VALUE *argv) { return rb_funcallv(fiber, SYM("resume"), argc, argv); }
+VALUE rb_fiber_yield(int argc, const VALUE *argv) { return rb_funcallv(named("Fiber"), SYM("yield"), argc, argv); }
+VALUE rb_fiber_raise(VALUE fiber, int argc, const VALUE *argv) { return rb_funcallv(fiber, SYM("raise"), argc, argv); }
+
+void rb_iter_break_value(VALUE val) {
+  for (mrb_callinfo *bci = M->c->ci; bci > M->c->cibase; bci--) {
+    const struct RProc *p = bci->proc;
+    if (!p) continue;
+    if (MRB_PROC_CFUNC_P(p) && MRB_PROC_CFUNC(p) == block_trampoline && MRB_PROC_ENV_P(p)) {
+      const struct capi_block *cb = (const struct capi_block *)mrb_cptr(p->e.env->stack[0]);
+      if (cb->iter_ci_idx > 0) {
+        struct RBreak *brk = (struct RBreak *)mrb_obj_alloc(M, MRB_TT_BREAK, NULL);
+        brk->ci_break_index = (uintptr_t)cb->iter_ci_idx;
+        mrb_break_value_set(brk, MV(val));
+        mrb_exc_raise(M, mrb_obj_value(brk));
+      }
+      continue;
+    }
+    if (!MRB_PROC_CFUNC_P(p)) {
+      if (!MRB_PROC_STRICT_P(p) && !MRB_PROC_ORPHAN_P(p) && MRB_PROC_ENV_P(p) && p->e.env->cxt == M->c) {
+        const struct RProc *dst = p->upper;
+        for (mrb_callinfo *rci = bci; rci > M->c->cibase; rci--) {
+          if (rci[-1].proc == dst) {
+            struct RBreak *brk = (struct RBreak *)mrb_obj_alloc(M, MRB_TT_BREAK, NULL);
+            brk->ci_break_index = (uintptr_t)(rci - M->c->cibase);
+            mrb_break_value_set(brk, MV(val));
+            mrb_exc_raise(M, mrb_obj_value(brk));
+          }
+        }
+      }
+      break;
+    }
+  }
+  rb_raise(rb_eLocalJumpError, "unexpected break");
+}
+void rb_iter_break(void) { rb_iter_break_value(Qnil); }
+
+static const mrb_callinfo *find_irep_ci(uint32_t *pcoff) {
+  for (const mrb_callinfo *ci = M->c->ci; ci >= M->c->cibase; ci--) {
+    const struct RProc *p = ci->proc;
+    if (p && !MRB_PROC_CFUNC_P(p) && p->body.irep && ci->pc) {
+      const mrb_irep *irep = p->body.irep;
+      *pcoff = ci->pc > irep->iseq ? (uint32_t)(ci->pc - irep->iseq - 1) : 0;
+      return ci;
+    }
+  }
+  return NULL;
+}
+const char *rb_sourcefile(void) {
+  uint32_t pc = 0;
+  const mrb_callinfo *ci = find_irep_ci(&pc);
+  return ci ? mrb_debug_get_filename(M, ci->proc->body.irep, pc) : NULL;
+}
+int rb_sourceline(void) {
+  uint32_t pc = 0;
+  const mrb_callinfo *ci = find_irep_ci(&pc);
+  return ci ? (int)mrb_debug_get_line(M, ci->proc->body.irep, pc) : 0;
+}
+double ruby_strtod(const char *s, char **endp) { return strtod(s, endp); }
+
+size_t rb_str_capacity(VALUE s) { return (size_t)RSTRING_CAPA(need_str(s)); }
+VALUE rb_external_str_new_cstr(const char *p) { return rb_external_str_new(p, (long)strlen(p)); }
+VALUE rb_locale_str_new_cstr(const char *p) { return rb_locale_str_new(p, (long)strlen(p)); }
+VALUE rb_utf8_str_new_static(const char *p, long n) { return rb_enc_str_new_static(p, n, rb_utf8_encoding()); }
+VALUE rb_enc_str_buf_cat(VALUE s, const char *p, long n, rb_encoding *e) {
+  return rb_str_buf_append(s, rb_enc_str_new(p, n, e));
+}
+VALUE rb_enc_interned_str_cstr(const char *p, rb_encoding *e) { return rb_enc_interned_str(p, (long)strlen(p), e); }
+VALUE rb_str_to_interned_str(VALUE s) { need_str(s); return V(call1(kernel(), "__oruby_fstring", MV(s))); }
+VALUE rb_str_drop_bytes(VALUE s, long len) {
+  mrb_value m = need_str(s);
+  struct RString *r = mrb_str_ptr(m);
+  mrb_str_modify(M, r);
+  mrb_int blen = RSTRING_LEN(m);
+  if (len <= 0) return s;
+  if (len >= blen) { mrb_str_resize(M, m, 0); return s; }
+  char *p = RSTRING_PTR(m);
+  memmove(p, p + len, (size_t)(blen - len));
+  mrb_str_resize(M, m, blen - len);
+  return s;
+}
+long rb_str_sublen(VALUE s, long pos) { return rb_str_strlen(rb_str_subseq(s, 0, pos)); }
+char *rb_str_subpos(VALUE s, long beg, long *lenp) {
+  mrb_value m = need_str(s);
+  long clen = rb_str_strlen(s);
+  if (beg < 0) beg += clen;
+  if (beg < 0 || beg > clen) return NULL;
+  char *ptr = RSTRING_PTR(m);
+  long blen = RSTRING_LEN(m);
+  if (beg == clen) {
+    if (lenp) *lenp = 0;
+    return ptr + blen;
+  }
+  long off = rb_str_offset(s, beg);
+  if (lenp) *lenp = blen - off;
+  return ptr + off;
+}
+void rb_str_free(VALUE s) { (void)s; }
+VALUE rb_str_locktmp(VALUE s) {
+  mrb_value m = need_str(s);
+  rb_check_frozen(s);
+  struct RBasic *b = mrb_basic_ptr(m);
+  if (b->flags & ORUBY_STRING_TEMP_LOCK) rb_raise(rb_eRuntimeError, "temporal locking already locked string");
+  b->flags |= ORUBY_STRING_TEMP_LOCK;
+  return s;
+}
+VALUE rb_str_unlocktmp(VALUE s) {
+  mrb_value m = need_str(s);
+  rb_check_frozen(s);
+  struct RBasic *b = mrb_basic_ptr(m);
+  if (!(b->flags & ORUBY_STRING_TEMP_LOCK)) rb_raise(rb_eRuntimeError, "temporal unlocking already unlocked string");
+  b->flags &= ~ORUBY_STRING_TEMP_LOCK;
+  return s;
+}
+
+/* ------------------------------------------------------------------ */
+/* Medium Wave (1.) C-API additions                                    */
+
+/* Kernel */
+void rb_category_warn(rb_warning_category_t cat, const char *fmt, ...) {
+  if (mrb_nil_p(mrb_gv_get(M, SYM("$VERBOSE")))) return;
+  mrb_value s = mrb_str_new_cstr(M, "warning: ");
+  va_list ap;
+  va_start(ap, fmt);
+  vformat(s, fmt, ap);
+  va_end(ap);
+  if (cat == RB_WARN_CATEGORY_NONE) {
+    mrb_funcall_argv(M, kernel(), SYM("__capi_warn"), 1, &s);
+    return;
+  }
+  const char *cname = cat == RB_WARN_CATEGORY_DEPRECATED ? "deprecated"
+    : cat == RB_WARN_CATEGORY_EXPERIMENTAL ? "experimental"
+    : cat == RB_WARN_CATEGORY_PERFORMANCE ? "performance"
+    : cat == RB_WARN_CATEGORY_STRICT_UNUSED_BLOCK ? "strict_unused_block" : NULL;
+  mrb_value args[2] = {s, cname ? mrb_symbol_value(rb_intern(cname)) : mrb_nil_value()};
+  mrb_funcall_argv(M, kernel(), SYM("__capi_category_warn"), 2, args);
+}
+
+struct exec_rec_entry { VALUE (*fn)(VALUE, VALUE, int); VALUE obj; };
+static struct exec_rec_entry *exec_rec_stack;
+static int exec_rec_depth, exec_rec_capa;
+struct exec_rec_call { VALUE (*fn)(VALUE, VALUE, int); VALUE obj; VALUE arg; VALUE ret; };
+static mrb_value exec_rec_body(mrb_state *mrb, void *p) {
+  (void)mrb;
+  struct exec_rec_call *c = (struct exec_rec_call *)p;
+  c->ret = c->fn(c->obj, c->arg, 0);
+  return mrb_nil_value();
+}
+VALUE rb_exec_recursive(VALUE (*fn)(VALUE, VALUE, int), VALUE obj, VALUE arg) {
+  for (int i = 0; i < exec_rec_depth; i++) {
+    if (exec_rec_stack[i].fn == fn && exec_rec_stack[i].obj == obj) {
+      return fn(obj, arg, 1);
+    }
+  }
+  if (exec_rec_depth == exec_rec_capa) {
+    exec_rec_capa = exec_rec_capa ? exec_rec_capa * 2 : 16;
+    exec_rec_stack = (struct exec_rec_entry *)realloc(exec_rec_stack, sizeof(*exec_rec_stack) * (size_t)exec_rec_capa);
+  }
+  exec_rec_stack[exec_rec_depth++] = (struct exec_rec_entry){fn, obj};
+  struct exec_rec_call c = {fn, obj, arg, Qnil};
+  mrb_bool failed = FALSE;
+  mrb_value exc = mrb_protect_error(M, exec_rec_body, &c, &failed);
+  exec_rec_depth--;
+  if (failed) mrb_exc_raise(M, exc);
+  return c.ret;
+}
+
+struct end_proc_entry { void (*fn)(VALUE); VALUE data; };
+static mrb_value end_proc_cb(mrb_state *mrb, mrb_value self) {
+  (void)self;
+  struct end_proc_entry *e = (struct end_proc_entry *)mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0));
+  e->fn(e->data);
+  return mrb_nil_value();
+}
+void rb_set_end_proc(void (*func)(VALUE), VALUE data) {
+  struct end_proc_entry *e = (struct end_proc_entry *)mrb_malloc(M, sizeof(*e));
+  e->fn = func;
+  e->data = data;
+  struct RData *holder = mrb_data_object_alloc(M, box_class, e, &box_type);
+  mrb_value env[2] = {mrb_cptr_value(M, e), mrb_obj_value(holder)};
+  mrb_value blk = mrb_obj_value(mrb_proc_new_cfunc_with_env(M, end_proc_cb, 2, env));
+  mrb_funcall_with_block(M, kernel(), SYM("at_exit"), 0, NULL, blk);
+}
+
+VALUE rb_make_backtrace(void) {
+  return V(call1(kernel(), "caller", mrb_int_value(M, 0)));
+}
+
+/* Class */
+VALUE rb_class_instance_methods(int argc, const VALUE *argv, VALUE mod) {
+  return rb_funcallv(mod, SYM("instance_methods"), argc, argv);
+}
+VALUE rb_class_public_instance_methods(int argc, const VALUE *argv, VALUE mod) {
+  return rb_funcallv(mod, SYM("public_instance_methods"), argc, argv);
+}
+VALUE rb_class_protected_instance_methods(int argc, const VALUE *argv, VALUE mod) {
+  return rb_funcallv(mod, SYM("protected_instance_methods"), argc, argv);
+}
+VALUE rb_class_private_instance_methods(int argc, const VALUE *argv, VALUE mod) {
+  return rb_funcallv(mod, SYM("private_instance_methods"), argc, argv);
+}
+VALUE rb_cvar_defined(VALUE k, ID id) {
+  if (rb_is_instance_id(id)) return rb_ivar_defined(k, id);
+  return B(mrb_cv_defined(M, MV(k), (mrb_sym)id));
+}
+VALUE rb_cv_get(VALUE k, const char *name) { return rb_cvar_get(k, rb_intern(name)); }
+void rb_cv_set(VALUE k, const char *name, VALUE v) { rb_cvar_set(k, rb_intern(name), v); }
+void rb_define_class_variable(VALUE k, const char *name, VALUE v) { rb_cvar_set(k, rb_intern(name), v); }
+
+/* Object */
+VALUE rb_capi_fl_test(VALUE obj, VALUE flags) {
+  if (!FL_ABLE(obj)) return 0;
+  if ((flags & RUBY_FL_FREEZE) && mrb_frozen_p(mrb_basic_ptr(MV(obj)))) return flags & RUBY_FL_FREEZE;
+  return 0;
+}
+VALUE rb_check_to_integer(VALUE v, const char *method) {
+  if (FIXNUM_P(v) || rb_type(v) == T_BIGNUM || (!SPECIAL_CONST_P(v) && mrb_integer_p(MV(v)))) return v;
+  mrb_sym mid = mrb_intern_cstr(M, method);
+  if (!rb_obj_respond_to(v, mid, 1)) return Qnil;
+  VALUE r = V(call_id(MV(v), mid, 0, NULL));
+  return (FIXNUM_P(r) || rb_type(r) == T_BIGNUM || (!SPECIAL_CONST_P(r) && mrb_integer_p(MV(r)))) ? r : Qnil;
+}
+void rb_obj_call_init_kw(VALUE obj, int argc, const VALUE *argv, int kw_splat) {
+  (void)send_kw(MV(obj), SYM("initialize"), argc, argv, current_block(), kw_splat, 0);
+}
+void rb_obj_call_init(VALUE obj, int argc, const VALUE *argv) {
+  rb_obj_call_init_kw(obj, argc, argv, RB_NO_KEYWORDS);
+}
+VALUE rb_obj_instance_eval(int argc, const VALUE *argv, VALUE self) {
+  return send_kw(MV(self), SYM("instance_eval"), argc, argv, current_block(), 0, 0);
+}
+static int copy_ivar_i(mrb_state *mrb, mrb_sym sym, mrb_value val, void *p) {
+  const char *name = mrb_sym_name(mrb, sym);
+  if (name && name[0] == '_' && name[1] == '_') return 0;
+  mrb_value *dst = (mrb_value *)p;
+  mrb_iv_set(mrb, *dst, sym, val);
+  return 0;
+}
+void rb_copy_generic_ivar(VALUE clone, VALUE obj) {
+  if (SPECIAL_CONST_P(clone) || SPECIAL_CONST_P(obj)) return;
+  mrb_value dst = MV(clone);
+  mrb_iv_foreach(M, MV(obj), copy_ivar_i, &dst);
+}
+struct free_ivar_list { mrb_sym *syms; int n, cap; };
+static int collect_ivar_i(mrb_state *mrb, mrb_sym sym, mrb_value val, void *p) {
+  (void)val;
+  const char *name = mrb_sym_name(mrb, sym);
+  if (name && name[0] == '_' && name[1] == '_') return 0;
+  struct free_ivar_list *l = (struct free_ivar_list *)p;
+  if (l->n == l->cap) {
+    l->cap = l->cap ? l->cap * 2 : 16;
+    l->syms = (mrb_sym *)mrb_realloc(mrb, l->syms, sizeof(mrb_sym) * (size_t)l->cap);
+  }
+  l->syms[l->n++] = sym;
+  return 0;
+}
+void rb_free_generic_ivar(VALUE obj) {
+  if (SPECIAL_CONST_P(obj)) return;
+  mrb_value m = MV(obj);
+  struct free_ivar_list l = {NULL, 0, 0};
+  mrb_iv_foreach(M, m, collect_ivar_i, &l);
+  for (int i = 0; i < l.n; i++) mrb_iv_remove(M, m, l.syms[i]);
+  if (l.syms) mrb_free(M, l.syms);
+}
+VALUE rb_f_notimplement(int argc, const VALUE *argv, VALUE obj, VALUE marker) {
+  (void)argc; (void)argv; (void)obj; (void)marker;
+  rb_notimplement();
+  return Qnil;
+}
+
+/* Range & ArithmeticSequence */
+VALUE rb_range_beg_len(VALUE range, long *begp, long *lenp, long len, int err) {
+  if (SPECIAL_CONST_P(range) || !RTEST(rb_obj_is_kind_of(range, rb_cRange))) return Qfalse;
+  mrb_value b = call0(MV(range), "begin");
+  mrb_value e = call0(MV(range), "end");
+  int excl = mrb_test(call0(MV(range), "exclude_end?"));
+  long beg = mrb_nil_p(b) ? 0 : NUM2LONG(V(b));
+  long end = mrb_nil_p(e) ? -1 : NUM2LONG(V(e));
+  if (mrb_nil_p(e)) excl = 0;
+  if (beg < 0) {
+    beg += len;
+    if (beg < 0) goto out_of_range;
+  }
+  if (err == 0 || err == 2) {
+    if (beg > len) goto out_of_range;
+    if (end > len) end = len;
+  }
+  if (end < 0) end += len;
+  if (!excl) end++;
+  long rlen = end - beg;
+  if (rlen < 0) rlen = 0;
+  if (begp) *begp = beg;
+  if (lenp) *lenp = rlen;
+  return Qtrue;
+out_of_range:
+  if (err) rb_raise(rb_eRangeError, "%" PRIsVALUE "..%s%" PRIsVALUE " out of range", V(b), excl ? "." : "", V(e));
+  return Qnil;
+}
+
+int rb_arithmetic_sequence_extract(VALUE obj, rb_arithmetic_sequence_components_t *c) {
+  VALUE as_cls = named("Enumerator::ArithmeticSequence");
+  if (!NIL_P(as_cls) && RTEST(rb_obj_is_kind_of(obj, as_cls))) {
+    c->begin = V(call0(MV(obj), "begin"));
+    c->end = V(call0(MV(obj), "end"));
+    c->step = V(call0(MV(obj), "step"));
+    c->exclude_end = mrb_test(call0(MV(obj), "exclude_end?"));
+    return 1;
+  }
+  if (RTEST(rb_obj_is_kind_of(obj, rb_cRange)) ||
+      (rb_respond_to(obj, SYM("begin")) && rb_respond_to(obj, SYM("end")) && rb_respond_to(obj, SYM("exclude_end?")))) {
+    c->begin = V(call0(MV(obj), "begin"));
+    c->end = V(call0(MV(obj), "end"));
+    c->step = INT2FIX(1);
+    c->exclude_end = mrb_test(call0(MV(obj), "exclude_end?"));
+    return 1;
+  }
+  return 0;
+}
+
+VALUE rb_arithmetic_sequence_beg_len_step(VALUE aseq, long *begp, long *lenp, long *stepp, long len, int err) {
+  rb_arithmetic_sequence_components_t c;
+  if (!rb_arithmetic_sequence_extract(aseq, &c)) return Qfalse;
+  long step = NIL_P(c.step) ? 1 : NUM2LONG(c.step);
+  if (step == 0) rb_raise(rb_eArgError, "step can't be 0");
+  VALUE b_v = c.begin, e_v = c.end;
+  int excl = c.exclude_end;
+  if (step < 0) {
+    if (excl && !NIL_P(e_v)) {
+      e_v = LONG2NUM(NUM2LONG(e_v) - 1);
+      excl = 0;
+    }
+    VALUE tmp = b_v; b_v = e_v; e_v = tmp;
+  }
+  long beg = NIL_P(b_v) ? 0 : NUM2LONG(b_v);
+  long end = NIL_P(e_v) ? -1 : NUM2LONG(e_v);
+  if (NIL_P(e_v)) excl = 0;
+  if (beg < 0) {
+    beg += len;
+    if (beg < 0) {
+      if (err == 2) rb_raise(rb_eRangeError, "out of range");
+      return Qnil;
+    }
+  }
+  if (err == 0 || err == 2) {
+    if (beg > len) {
+      if (err == 2) rb_raise(rb_eRangeError, "out of range");
+      return Qnil;
+    }
+  }
+  if (end < 0) end += len;
+  if (!excl) end++;
+  if ((err == 0 || err == 2) && end > len) end = len;
+  long rlen = end > beg ? end - beg : 0;
+  if (begp) *begp = beg;
+  if (lenp) *lenp = rlen;
+  if (stepp) *stepp = step;
+  return Qtrue;
+}
+
+/* Bignum & Integer */
+VALUE rb_dbl2big(double d) {
+  if (isnan(d)) rb_raise(rb_eFloatDomainError, "NaN");
+  if (isinf(d)) rb_raise(rb_eFloatDomainError, d < 0 ? "-Infinity" : "Infinity");
+  return V(call0(mrb_float_value(M, d), "to_i"));
+}
+VALUE rb_big_cmp(VALUE x, VALUE y) {
+  return V(call1(MV(x), "<=>", MV(y)));
+}
+static int hex_val(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return 0;
+}
+int rb_integer_pack(VALUE val, void *words, size_t numwords, size_t wordsize, size_t nails, int flags) {
+  val = rb_to_int(val);
+  int neg = mrb_test(call1(MV(val), "<", mrb_int_value(M, 0)));
+  int zero = !neg && mrb_test(call1(MV(val), "==", mrb_int_value(M, 0)));
+  size_t total_bytes = numwords * wordsize;
+  if (zero) {
+    if (words && total_bytes > 0) memset(words, 0, total_bytes);
+    return 0;
+  }
+  mrb_value abs_v = neg ? call0(MV(val), "abs") : MV(val);
+  size_t bits_per_word = wordsize * 8 - nails;
+  size_t total_bits = numwords * bits_per_word;
+  mrb_value chk = (neg && (flags & INTEGER_PACK_2COMP)) ? call1(abs_v, "-", mrb_int_value(M, 1)) : abs_v;
+  size_t needed_bits = (size_t)mrb_integer(call0(chk, "bit_length"));
+  int overflow = needed_bits > total_bits;
+
+  mrb_value hex = call1(abs_v, "to_s", mrb_int_value(M, 16));
+  const char *hp = RSTRING_PTR(hex);
+  size_t hlen = (size_t)RSTRING_LEN(hex);
+  size_t mag_len = (hlen + 1) / 2;
+  uint8_t *mag = (uint8_t *)calloc(mag_len ? mag_len : 1, 1);
+  for (size_t i = 0; i < hlen; i++) {
+    size_t rev = hlen - 1 - i;
+    int v = hex_val(hp[rev]);
+    if (i & 1) mag[i / 2] |= (uint8_t)(v << 4);
+    else mag[i / 2] = (uint8_t)v;
+  }
+
+  uint8_t *raw = (uint8_t *)calloc(total_bytes ? total_bytes : 1, 1);
+  if (neg && (flags & INTEGER_PACK_2COMP)) {
+    uint16_t carry = 1;
+    for (size_t i = 0; i < total_bytes; i++) {
+      uint8_t mb = i < mag_len ? mag[i] : 0;
+      uint16_t s = (uint16_t)(uint8_t)(~mb) + carry;
+      raw[i] = (uint8_t)s;
+      carry = s >> 8;
+    }
+  } else {
+    for (size_t i = 0; i < total_bytes; i++) {
+      raw[i] = i < mag_len ? mag[i] : 0;
+    }
+  }
+
+  int msword = (flags & INTEGER_PACK_MSWORD_FIRST) != 0;
+  int msbyte = (flags & INTEGER_PACK_MSBYTE_FIRST) != 0;
+  if (flags & INTEGER_PACK_NATIVE_BYTE_ORDER) {
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    msbyte = 1;
+#else
+    msbyte = 0;
+#endif
+  }
+  uint8_t *out = (uint8_t *)words;
+  for (size_t w = 0; w < numwords; w++) {
+    size_t dst_w = msword ? (numwords - 1 - w) : w;
+    for (size_t b = 0; b < wordsize; b++) {
+      size_t dst_b = msbyte ? (wordsize - 1 - b) : b;
+      out[dst_w * wordsize + dst_b] = raw[w * wordsize + b];
+    }
+  }
+  free(mag);
+  free(raw);
+  return overflow ? (neg ? -2 : 2) : (neg ? -1 : 1);
+}
+
+void rb_big_pack(VALUE val, unsigned long *buf, long num_longs) {
+  rb_integer_pack(val, buf, (size_t)num_longs, sizeof(unsigned long), 0,
+                  INTEGER_PACK_LSWORD_FIRST | INTEGER_PACK_NATIVE_BYTE_ORDER | INTEGER_PACK_2COMP);
+}
+
+VALUE rb_int_positive_pow(long x, unsigned long y) {
+  return V(call1(MV(LONG2NUM(x)), "**", MV(ULONG2NUM(y))));
+}
+
+static int digit_val(char c, int base) {
+  int d = -1;
+  if (c >= '0' && c <= '9') d = c - '0';
+  else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+  else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
+  return (d >= 0 && d < base) ? d : -1;
+}
+
+VALUE rb_int_parse_cstr(const char *str, ssize_t len, char **endp, size_t *ndigits, int base, int flags) {
+  const char *p = str;
+  const char *end = len < 0 ? str + strlen(str) : str + len;
+  int neg = 0;
+  if (p < end && (flags & RB_INT_PARSE_SIGN)) {
+    if (*p == '-') { neg = 1; p++; }
+    else if (*p == '+') { p++; }
+  }
+  if ((base == 0 || (flags & RB_INT_PARSE_PREFIX)) && p + 1 < end && p[0] == '0') {
+    int pbase = 0;
+    if (p[1] == 'x' || p[1] == 'X') pbase = 16;
+    else if (p[1] == 'b' || p[1] == 'B') pbase = 2;
+    else if (p[1] == 'o' || p[1] == 'O') pbase = 8;
+    else if (p[1] == 'd' || p[1] == 'D') pbase = 10;
+    if (pbase && (base == 0 || base == pbase) && p + 2 < end && digit_val(p[2], pbase) >= 0) {
+      base = pbase;
+      p += 2;
+    } else if (base == 0) {
+      base = 8;
+    }
+  }
+  if (base == 0) base = 10;
+  size_t max_len = (size_t)(end - p) + 2;
+  char *buf = (char *)malloc(max_len);
+  size_t bi = 0;
+  if (neg) buf[bi++] = '-';
+  size_t nd = 0;
+  const char *last_good = p;
+  while (p < end) {
+    if (digit_val(*p, base) >= 0) {
+      buf[bi++] = *p++;
+      nd++;
+      last_good = p;
+    } else if (*p == '_' && (flags & RB_INT_PARSE_UNDERSCORE) && nd > 0 && p + 1 < end && digit_val(p[1], base) >= 0) {
+      p++;
+    } else {
+      break;
+    }
+  }
+  if (nd == 0) {
+    free(buf);
+    if (endp) *endp = (char *)str;
+    if (ndigits) *ndigits = 0;
+    return Qnil;
+  }
+  buf[bi] = '\0';
+  if (endp) *endp = (char *)last_good;
+  if (ndigits) *ndigits = nd;
+  VALUE res = rb_cstr_to_inum(buf, base, 0);
+  free(buf);
+  return res;
 }

@@ -90,6 +90,10 @@ int rb_enc_dummy_p(rb_encoding *);
 #define RB_ENCODING_SET(obj, i) ENCODING_SET(obj, i)
 #define ENCODING_SET(obj, i) rb_enc_associate_index((VALUE)(obj), (i))
 
+VALUE rb_enc_str_buf_cat(VALUE, const char *, long, rb_encoding *);
+VALUE rb_str_conv_enc_opts(VALUE, rb_encoding *, rb_encoding *, int, VALUE);
+VALUE rb_enc_interned_str_cstr(const char *, rb_encoding *);
+
 #if defined(__cplusplus)
 }
 #endif

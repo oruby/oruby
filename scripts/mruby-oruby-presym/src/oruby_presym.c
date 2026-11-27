@@ -929,6 +929,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__oruby_fd_flags");
   (void)mrb_intern_lit(mrb, "__oruby_fiber");
   (void)mrb_intern_lit(mrb, "__oruby_fire");
+  (void)mrb_intern_lit(mrb, "__oruby_for");
   (void)mrb_intern_lit(mrb, "__oruby_frozen_origin");
   (void)mrb_intern_lit(mrb, "__oruby_frozen_string_copy");
   (void)mrb_intern_lit(mrb, "__oruby_frz__");

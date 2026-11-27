@@ -92,6 +92,29 @@ func initStatus(mProc oruby.RClass) {
 	cProcessStatus.DefineClassMethod("__oruby_nochild", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		return mrb.Value(&status{Pid: -1, IsExited: true, IsSucess: true})
 	}, mrb.ArgsNone())
+	cProcessStatus.DefineClassMethod("__oruby_for", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
+		pidVal, rawVal := mrb.GetArgs2()
+		raw := uint32(rawVal.Int64())
+		st := &status{Pid: pidVal.Int(), ToI: raw}
+		switch low := int(raw & 0x7f); low {
+		case 0:
+			st.IsExited = true
+			st.Exitstatus = int((raw >> 8) & 0xff)
+			st.IsSucess = st.Exitstatus == 0
+		case 0x7f:
+			st.IsStopped = true
+			sig := int((raw >> 8) & 0xff)
+			st.Stopsig = &sig
+		default:
+			st.IsSignaled = true
+			sig := low
+			st.Termsig = &sig
+			st.IsCoredump = (raw & 0x80) != 0
+		}
+		v := mrb.Value(st)
+		mrb.ObjFreeze(v)
+		return v
+	}, mrb.ArgsReq(2))
 	// $? = status, for a wait through a Fiber scheduler (core_ext)
 	mrb.DefineModuleFunction(mProc, "__oruby_set_status", func(mrb *oruby.MrbState, _ oruby.Value) oruby.MrbValue {
 		v := mrb.GetArgsFirst()
