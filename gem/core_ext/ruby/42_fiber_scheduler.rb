@@ -99,6 +99,7 @@ class Fiber
         alias_method :__oruby_go_lock, :lock
         alias_method :__oruby_go_unlock, :unlock
         alias_method :__oruby_go_sleep, :sleep
+        alias_method :__oruby_go_synchronize, :synchronize
         def lock
           r = __oruby_go_lock
           while :__oruby_block.equal?(r)
@@ -112,13 +113,17 @@ class Fiber
           Thread.__oruby_drain
           self
         end
-        def synchronize
-          raise ThreadError, "must be called with a block" unless block_given?
-          lock
+        def synchronize(&block)
+          return __oruby_go_synchronize(&block) unless Fiber.__oruby_sched
+          raise ThreadError, "must be called with a block" unless block
+          was_owner = owned?
+          was_locked = false
           begin
+            lock
+            was_locked = true
             yield
           ensure
-            unlock
+            unlock if was_locked || (!was_owner && owned?)
           end
         end
         def sleep(timeout = nil)

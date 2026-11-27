@@ -109,6 +109,8 @@ func calcMemsize(mrb *oruby.MrbState, v oruby.Value) int {
 	case oruby.MrbTTObject, oruby.MrbTTClass, oruby.MrbTTModule, oruby.MrbTTSClass, oruby.MrbTTException:
 		if ivs, err := mrb.Funcall(v, mrb.Intern("instance_variables")); err == nil && ivs.IsArray() {
 			sz += oruby.RArrayLen(ivs) * (mrbValueSize + 8)
+		} else if err != nil {
+			mrb.ExcClear()
 		}
 	case oruby.MrbTTCData:
 		if ms, ok := mrb.Data(v).(interface{ Memsize() int }); ok {
