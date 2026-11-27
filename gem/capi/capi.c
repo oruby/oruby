@@ -52,6 +52,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <pthread.h>
+#include <errno.h>
 #include <dlfcn.h>
 #include "oruby-vm-compat.h"
 #include "capi.h"
@@ -597,7 +598,9 @@ typedef VALUE (*f14)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VAL
 typedef VALUE (*f15)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE);
 typedef VALUE (*fv)(int, const VALUE *, VALUE);
 
+static __thread int capi_in_ruby;
 static mrb_value trampoline(mrb_state *mrb, mrb_value self) {
+  capi_in_ruby = 1;
   const struct capi_method *cm = (const struct capi_method *)mrb_cptr(mrb_proc_cfunc_env_get(mrb, 0));
   const mrb_value *args;
   mrb_int argc;
@@ -2515,13 +2518,40 @@ void ruby_xfree(void *p) { free(p); }
 /* ------------------------------------------------------------------ */
 /* threads                                                             */
 
-void *rb_thread_call_without_gvl(void *(*fn)(void *), void *d, rb_unblock_function_t *ubf, void *d2) { (void)ubf; (void)d2; return fn(d); }
-void *rb_thread_call_without_gvl2(void *(*fn)(void *), void *d, rb_unblock_function_t *ubf, void *d2) { (void)ubf; (void)d2; return fn(d); }
+/* The function runs without the GVL through ORubyCAPI.__nogvl (gem/capi
+   nogvl.go): other Ruby threads run meanwhile, and ubf (RUBY_UBF_IO: a
+   signal that fails the blocking system call with EINTR) is called when the
+   thread is woken, interrupted or signalled. Without the Go side (the C API
+   linked alone) the function just runs. errno is the function's. */
+static int nogvl_errno;
+void orb_capi_set_nogvl_errno(int e) { nogvl_errno = e; }
+
+static void *nogvl_run(void *(*fn)(void *), void *d, rb_unblock_function_t *ubf, void *d2, int flags) {
+  mrb_value capi = mrb_obj_value(mrb_module_get(M, "ORubyCAPI"));
+  if (!mrb_respond_to(M, capi, SYM("__nogvl"))) return fn(d);
+  mrb_value args[5] = {
+    mrb_int_value(M, (mrb_int)(uintptr_t)fn), mrb_int_value(M, (mrb_int)(uintptr_t)d),
+    mrb_int_value(M, (mrb_int)(uintptr_t)ubf), mrb_int_value(M, (mrb_int)(uintptr_t)d2),
+    mrb_int_value(M, flags)
+  };
+  nogvl_errno = 0;
+  mrb_value r = call(capi, "__nogvl", 5, args);
+  errno = nogvl_errno;
+  return (void *)(uintptr_t)mrb_integer(r);
+}
+
+void *rb_thread_call_without_gvl(void *(*fn)(void *), void *d, rb_unblock_function_t *ubf, void *d2) { return nogvl_run(fn, d, ubf, d2, 0); }
+void *rb_thread_call_without_gvl2(void *(*fn)(void *), void *d, rb_unblock_function_t *ubf, void *d2) { return nogvl_run(fn, d, ubf, d2, RB_NOGVL_INTR_FAIL); }
 void *rb_thread_call_with_gvl(void *(*fn)(void *), void *d) { return fn(d); }
-void *rb_nogvl(void *(*fn)(void *), void *d, rb_unblock_function_t *ubf, void *d2, int flags) { (void)ubf; (void)d2; (void)flags; return fn(d); }
+void *rb_nogvl(void *(*fn)(void *), void *d, rb_unblock_function_t *ubf, void *d2, int flags) { return nogvl_run(fn, d, ubf, d2, flags); }
 VALUE rb_thread_current(void) { return V(call0(MV(rb_cThread), "current")); }
 void rb_thread_schedule(void) { call0(MV(rb_cThread), "pass"); }
-void rb_thread_check_ints(void) {}
+/* a place where Thread#kill, #raise and signal handlers are taken: Ruby code
+   (capi_io.rb) runs, whose first instruction raises what is pending */
+void rb_thread_check_ints(void) {
+  mrb_value capi = mrb_obj_value(mrb_module_get(M, "ORubyCAPI"));
+  if (mrb_respond_to(M, capi, SYM("__check_ints"))) call0(capi, "__check_ints");
+}
 int rb_thread_interrupted(VALUE th) { (void)th; return 0; }
 
 /* ------------------------------------------------------------------ */
@@ -4220,3 +4250,49 @@ VALUE rb_debug_inspector_frame_iseq_get(const rb_debug_inspector_t *dc, long i) 
   if (NIL_P(c)) return Qnil;
   return V(call0(MV(c), "allocate"));
 }
+
+/* ------------------------------------------------------------------ */
+/* RBasic flags: only FREEZE, the object's frozen bit                  */
+
+VALUE rb_capi_fl_set(VALUE obj, VALUE flags, int on) {
+  if (!FL_ABLE(obj)) return 0;
+  if (flags & RUBY_FL_FREEZE) mrb_basic_ptr(MV(obj))->frozen = on ? 1 : 0;
+  return flags;
+}
+VALUE rb_capi_basic_flags(VALUE obj) { return rb_capi_fl_test(obj, RUBY_FL_FREEZE); }
+void rb_capi_basic_set_flags(VALUE obj, VALUE flags) {
+  if (FL_ABLE(obj)) mrb_basic_ptr(MV(obj))->frozen = (flags & RUBY_FL_FREEZE) ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* threads                                                             */
+
+int rb_thread_alone(void) { return RARRAY_LEN(call0(MV(rb_cThread), "list")) <= 1; }
+VALUE rb_thread_local_aref(VALUE thr, ID id) { return V(call1(MV(thr), "[]", mrb_symbol_value((mrb_sym)id))); }
+VALUE rb_thread_local_aset(VALUE thr, ID id, VALUE v) {
+  mrb_value a[2] = {mrb_symbol_value((mrb_sym)id), MV(v)};
+  return V(mrb_funcall_argv(M, MV(thr), SYM("[]="), 2, a));
+}
+VALUE rb_thread_wakeup(VALUE thr) { return V(call0(MV(thr), "wakeup")); }
+void rb_thread_wait_for(struct timeval tv) {
+  call1(kernel(), "sleep", mrb_float_value(M, (double)tv.tv_sec + (double)tv.tv_usec / 1e6));
+}
+struct capi_thr { VALUE (*fn)(void *); void *arg; };
+static VALUE capi_thr_block(VALUE y, VALUE cb, int argc, const VALUE *argv, VALUE blk) {
+  (void)y; (void)argc; (void)argv; (void)blk;
+  struct capi_thr *t = (struct capi_thr *)(*rb_capi_data_ptr_ref(cb));
+  return t->fn(t->arg);
+}
+VALUE rb_thread_create(VALUE (*fn)(void *), void *arg) {
+  struct capi_thr *t = (struct capi_thr *)malloc(sizeof(struct capi_thr));
+  t->fn = fn; t->arg = arg;
+  VALUE box = rb_data_object_wrap(rb_cObject, t, NULL, free);
+  VALUE blk = rb_proc_new(capi_thr_block, box);
+  return send_kw(MV(rb_cThread), SYM("new"), 0, NULL, MV(blk), 0, 0);
+}
+/* a native thread is one that runs Ruby code: it has been in a C method */
+int ruby_native_thread_p(void) { return capi_in_ruby; }
+int ruby_thread_has_gvl_p(void) { return capi_in_ruby; }
+
+/* the IO functions */
+#include "capi_io.inc"

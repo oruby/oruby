@@ -8,7 +8,7 @@ import "C"
 // presymTable is the hash of the presym table these constants were
 // generated against (mruby/build/host/include/mruby/presym/id.h); it changes with the table, so this
 // file does, and Go rebuilds the package's C code with the new numbers.
-const presymTable = "9b362703fe445aa7"
+const presymTable = "fe6cb05ba0ef861f"
 
 // Preallocated symbols of the names oruby looks up, as constants: the same
 // symbol in every state, with no lookup. MRB_SYM__to_s is Sym_to_s,
@@ -67,6 +67,7 @@ const (
 	IvSym___oruby_keep_script_lines             MrbSym = C.MRB_IVSYM____oruby_keep_script_lines             // "@__oruby_keep_script_lines"
 	IvSym___oruby_lazy_default_map              MrbSym = C.MRB_IVSYM____oruby_lazy_default_map              // "@__oruby_lazy_default_map"
 	IvSym___oruby_method                        MrbSym = C.MRB_IVSYM____oruby_method                        // "@__oruby_method"
+	IvSym___oruby_oflags                        MrbSym = C.MRB_IVSYM____oruby_oflags                        // "@__oruby_oflags"
 	IvSym___oruby_path                          MrbSym = C.MRB_IVSYM____oruby_path                          // "@__oruby_path"
 	IvSym___oruby_site                          MrbSym = C.MRB_IVSYM____oruby_site                          // "@__oruby_site"
 	IvSym___oruby_svar_root                     MrbSym = C.MRB_IVSYM____oruby_svar_root                     // "@__oruby_svar_root"
@@ -1107,6 +1108,7 @@ const (
 	Sym___new_from_buffer                       MrbSym = C.MRB_SYM____new_from_buffer                       // "__new_from_buffer"
 	Sym___new_from_file                         MrbSym = C.MRB_SYM____new_from_file                         // "__new_from_file"
 	Sym___new_from_memory                       MrbSym = C.MRB_SYM____new_from_memory                       // "__new_from_memory"
+	Sym___nogvl                                 MrbSym = C.MRB_SYM____nogvl                                 // "__nogvl"
 	Sym___nonblock                              MrbSym = C.MRB_SYM____nonblock                              // "__nonblock"
 	Sym___now                                   MrbSym = C.MRB_SYM____now                                   // "__now"
 	Sym___ns                                    MrbSym = C.MRB_SYM____ns                                    // "__ns"

@@ -211,7 +211,7 @@ class IO
   alias __oruby_wp_close close
   def close
     lost = !closed? && __oruby_buffer_lost?
-    @__oruby_wpending = nil
+    @__oruby_wpending = nil unless frozen? # a frozen IO can be closed
     r = __oruby_wp_close
     raise Errno::EPIPE if lost
     r
@@ -431,7 +431,7 @@ class IO
     next unless method_defined?(m)
     alias_method :"__oruby_open_#{m}", m
     define_method(m) do |*a, **kw, &b|
-      raise IOError, "closed stream" if closed?
+      raise IOError, (@closed ? "closed stream" : "uninitialized stream") if closed? # IO.allocate: never opened
       kw.empty? ? __send__(:"__oruby_open_#{m}", *a, &b) : __send__(:"__oruby_open_#{m}", *a, **kw, &b)
     end
   end

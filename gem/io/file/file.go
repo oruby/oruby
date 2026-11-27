@@ -1814,6 +1814,17 @@ func fileInit(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 		return raisePathError(mrb, err)
 	}
 
+	// the open flags, which the C API's rb_io_mode reports (FMODE_CREATE, FMODE_TRUNC)
+	if args.Len() > 1 {
+		m := args.Item(1)
+		if m.IsString() {
+			if fl, err := modestrToFlags(m.String()); err == nil {
+				mrb.SetIV(self, "@__oruby_oflags", oruby.Integer(fl))
+			}
+		} else if m.IsInt() {
+			mrb.SetIV(self, "@__oruby_oflags", m)
+		}
+	}
 	first := args.Item(0)
 	if first.IsInt() || (!first.IsNil() && mrb.RespondTo(first, oruby.Sym_to_int)) {
 		mrb.SetIV(self, "@path", mrb.NilValue())

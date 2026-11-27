@@ -60,6 +60,10 @@ func valueToS(mrb *oruby.MrbState, v oruby.Value) (oruby.Value, error) {
 // closedCheck is MRI's rb_io_check_closed
 func closedCheck(mrb *oruby.MrbState, self oruby.Value) error {
 	if isClosed(mrb, self) {
+		// IO.allocate: nothing was ever opened
+		if v := mrb.GetIV(self, "@closed"); v.IsNil() || !v.Bool() {
+			return oruby.EError("IOError", "uninitialized stream")
+		}
 		return oruby.EError("IOError", "closed stream")
 	}
 	return nil
@@ -141,7 +145,14 @@ func ioClose(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if isClosed(mrb, self) {
 		return mrb.NilValue()
 	}
-	mrb.SetIV(self, "@closed", mrb.TrueValue())
+	// a frozen IO can be closed (MRI): the closed mark is state, not content
+	if self.RBasic().IsFrozen() {
+		self.RBasic().SetFrozen(false)
+		mrb.SetIV(self, "@closed", mrb.TrueValue())
+		self.RBasic().SetFrozen(true)
+	} else {
+		mrb.SetIV(self, "@closed", mrb.TrueValue())
+	}
 	rbufSet(mrb, self, nil)
 	f := mrb.Data(self)
 	if !autoclose(mrb, self) {

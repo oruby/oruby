@@ -23,13 +23,21 @@ package capi
 import "C"
 
 import (
+	_ "embed"
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/oruby/oruby"
+	"github.com/oruby/oruby/gem/rb"
 )
+
+var bindOnce sync.Once
+
+//go:embed capi_io.rb
+var capiIORb []byte
 
 func init() { oruby.SetCExtensionLoader(LoadLibrary) }
 
@@ -72,6 +80,11 @@ func Bind(mrb *oruby.MrbState) error {
 	if C.orb_capi_bind_addr(C.uintptr_t(mrb.State())) == 0 {
 		return ErrOtherState
 	}
+	bindOnce.Do(func() {
+		defineNogvl(mrb)
+		rb.LoadRuby(mrb, "<internal:capi_io>", capiIORb)
+		C.orb_capi_io_ready()
+	})
 	return nil
 }
 

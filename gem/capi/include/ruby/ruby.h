@@ -396,6 +396,19 @@ void rb_check_frozen(VALUE);
 #define RB_OBJ_FREEZE(v) OBJ_FREEZE(v)
 #define RUBY_FL_FREEZE (1 << 11)
 #define FL_FREEZE RUBY_FL_FREEZE
+#define RUBY_FL_USER0 (1 << 12)
+#define FL_USER0 RUBY_FL_USER0
+/* mruby has no RBasic of MRI's layout: of the flags only FREEZE is kept
+   (as the object's frozen bit); the rest read as 0 and are ignored */
+VALUE rb_capi_fl_set(VALUE, VALUE, int);
+VALUE rb_capi_basic_flags(VALUE);
+void rb_capi_basic_set_flags(VALUE, VALUE);
+#define RB_FL_SET(x, f) rb_capi_fl_set((VALUE)(x), (VALUE)(f), 1)
+#define RB_FL_UNSET(x, f) rb_capi_fl_set((VALUE)(x), (VALUE)(f), 0)
+#define FL_SET(x, f) RB_FL_SET(x, f)
+#define FL_UNSET(x, f) RB_FL_UNSET(x, f)
+#define RBASIC_FLAGS(obj) rb_capi_basic_flags((VALUE)(obj))
+#define RBASIC_SET_FLAGS(obj, f) rb_capi_basic_set_flags((VALUE)(obj), (VALUE)(f))
 #define RB_FL_ABLE(x) (!RB_SPECIAL_CONST_P(x))
 #define FL_ABLE(x) RB_FL_ABLE(x)
 VALUE rb_capi_fl_test(VALUE, VALUE);
@@ -905,6 +918,18 @@ void *rb_thread_call_without_gvl2(void *(*)(void *), void *, rb_unblock_function
 void *rb_thread_call_with_gvl(void *(*)(void *), void *);
 void *rb_nogvl(void *(*)(void *), void *, rb_unblock_function_t *, void *, int);
 VALUE rb_thread_current(void);
+int rb_thread_alone(void);
+VALUE rb_thread_local_aref(VALUE, ID);
+VALUE rb_thread_local_aset(VALUE, ID, VALUE);
+VALUE rb_thread_wakeup(VALUE);
+void rb_thread_wait_for(struct timeval);
+VALUE rb_thread_create(VALUE (*)(void *), void *);
+int ruby_native_thread_p(void);
+int ruby_thread_has_gvl_p(void);
+#define RB_NOGVL_INTR_FAIL (0x1)
+#define RB_NOGVL_UBF_ASYNC_SAFE (0x2)
+#define RB_NOGVL_OFFLOAD_SAFE (0x4)
+#define RB_NOGVL_PENDING_INTR_FAIL (0x8)
 void rb_thread_schedule(void);
 void rb_thread_check_ints(void);
 int rb_thread_interrupted(VALUE);

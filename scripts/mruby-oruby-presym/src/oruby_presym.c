@@ -103,6 +103,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "@__oruby_keep_script_lines");
   (void)mrb_intern_lit(mrb, "@__oruby_lazy_default_map");
   (void)mrb_intern_lit(mrb, "@__oruby_method");
+  (void)mrb_intern_lit(mrb, "@__oruby_oflags");
   (void)mrb_intern_lit(mrb, "@__oruby_path");
   (void)mrb_intern_lit(mrb, "@__oruby_site");
   (void)mrb_intern_lit(mrb, "@__oruby_svar_root");
@@ -863,6 +864,7 @@ mrb_mruby_oruby_presym_gem_init(mrb_state *mrb)
   (void)mrb_intern_lit(mrb, "__new_from_buffer");
   (void)mrb_intern_lit(mrb, "__new_from_file");
   (void)mrb_intern_lit(mrb, "__new_from_memory");
+  (void)mrb_intern_lit(mrb, "__nogvl");
   (void)mrb_intern_lit(mrb, "__nonblock");
   (void)mrb_intern_lit(mrb, "__nonblock?");
   (void)mrb_intern_lit(mrb, "__now");

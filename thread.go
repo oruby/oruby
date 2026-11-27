@@ -729,6 +729,10 @@ func (w *Waiter) Wake() {
 // left, deferred by Thread.handle_interrupt)
 func (t *Thread) InterruptTaken(more bool) { t.intr.Store(more) }
 
+// InterruptPending tells whether an interrupt (Thread#raise, #kill) is queued
+// for t and not yet taken; with Thread.handle_interrupt it can stay so
+func (t *Thread) InterruptPending() bool { return t.intr.Load() }
+
 // Started: t's body runs, interrupts may be delivered
 func (t *Thread) Started() { t.started.Store(true) }
 
