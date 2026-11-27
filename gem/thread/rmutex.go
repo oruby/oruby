@@ -154,10 +154,14 @@ func (rm *rmutex) relock(mrb *oruby.MrbState, self, cur oruby.Value) error {
 }
 
 func (rm *rmutex) unlock(mrb *oruby.MrbState, self oruby.Value) error {
+	return rm.unlockBy(mrb, self, currentFiber(mrb))
+}
+
+func (rm *rmutex) unlockBy(mrb *oruby.MrbState, self, cur oruby.Value) error {
 	if !rm.locked {
 		return oruby.EThreadError("Attempt to unlock a mutex which is not locked")
 	}
-	if rm.owner.Pointer() != currentFiber(mrb).Pointer() {
+	if rm.owner.Pointer() != cur.Pointer() {
 		return oruby.EThreadError("Attempt to unlock a mutex which is locked by another thread/fiber")
 	}
 	rm.release(mrb, self)
@@ -224,11 +228,12 @@ func mutexSynchronize(mrb *oruby.MrbState, self oruby.Value) oruby.MrbValue {
 	if proc.IsNil() {
 		return mrb.Raise(mrb.ClassGet("ThreadError"), "must be called with a block")
 	}
-	if err := rm.lock(mrb, self); err != nil {
+	cur := currentFiber(mrb)
+	if err := rm.lockWait(mrb, self, cur, false); err != nil {
 		return mrb.RaiseError(err)
 	}
 	ret, blockErr := mrb.YieldArgvE(proc)
-	if err := rm.unlock(mrb, self); err != nil {
+	if err := rm.unlockBy(mrb, self, cur); err != nil {
 		if blockErr == nil {
 			return mrb.RaiseError(err)
 		}

@@ -20,6 +20,10 @@ func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) oruby.RClass {
 	stdout := mrb.Value(os.Stdout)
 	stderr := mrb.Value(os.Stderr)
 
+	mrb.SetIV(stdin, "@__oruby_path", mrb.StrNew("<STDIN>"))
+	mrb.SetIV(stdout, "@__oruby_path", mrb.StrNew("<STDOUT>"))
+	mrb.SetIV(stderr, "@__oruby_path", mrb.StrNew("<STDERR>"))
+
 	mrb.DefineGlobalConst("STDIN", stdin)
 	mrb.DefineGlobalConst("STDOUT", stdout)
 	mrb.DefineGlobalConst("STDERR", stderr)
