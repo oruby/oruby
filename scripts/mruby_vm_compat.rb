@@ -718,8 +718,9 @@ prepare_exec_strcat_post_func(", <<~'C'.chomp)
       <<~'C'.chomp)
         struct RClass *iowner = mrb_class(mrb, new_class);
         mrb_method_t im = mrb_method_search_vm(mrb, &iowner, mid);
-        if (MRB_METHOD_UNDEF_P(im) || iowner == mrb->module_class || iowner == mrb->object_class ||
-            iowner == mrb->kernel_module || mrb_func_basic_p(mrb, new_class, mid, mrb_class_initialize)) {
+        struct RClass *ireal = (iowner && iowner->tt == MRB_TT_ICLASS) ? iowner->c : iowner;
+        if (MRB_METHOD_UNDEF_P(im) || ireal == mrb->module_class || ireal == mrb->object_class ||
+            ireal == mrb->kernel_module || mrb_func_basic_p(mrb, new_class, mid, mrb_class_initialize)) {
           mrb_class_initialize(mrb, new_class);
         }
     C
