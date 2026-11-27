@@ -15,10 +15,10 @@ const (
 	fnmGlobNosort = 0x40
 )
 
-func initFileConsts(mrb *oruby.MrbState, fileClass oruby.RClass) oruby.RClass {
-	stdin := mrb.Value(os.Stdin)
-	stdout := mrb.Value(os.Stdout)
-	stderr := mrb.Value(os.Stderr)
+func initFileConsts(mrb *oruby.MrbState, cIO, fileClass oruby.RClass) oruby.RClass {
+	stdin := mrb.DataWrapInterface(cIO, os.Stdin).Value()
+	stdout := mrb.DataWrapInterface(cIO, os.Stdout).Value()
+	stderr := mrb.DataWrapInterface(cIO, os.Stderr).Value()
 
 	mrb.SetIV(stdin, "@__oruby_path", mrb.StrNew("<STDIN>"))
 	mrb.SetIV(stdout, "@__oruby_path", mrb.StrNew("<STDOUT>"))

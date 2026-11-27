@@ -605,7 +605,7 @@ static mrb_value trampoline(mrb_state *mrb, mrb_value self) {
   mrb_kwargs kwargs = {0, 0, NULL, NULL, &kw};
   mrb_get_args(mrb, "*!:&", &args, &argc, &kwargs, &blk);
   /* keywords are a last Hash argument, as MRI gives a C method them */
-  if (mrb_hash_p(kw) && mrb_hash_empty_p(mrb, kw)) kw = mrb_nil_value();
+  if (mrb_hash_p(kw) && mrb_hash_empty_p(mrb, kw)) { kw = mrb_nil_value(); mrb->c->ci->kw = 0; }
   int n = (int)argc + (mrb_nil_p(kw) ? 0 : 1);
   VALUE av_buf[16];
   VALUE *av = n <= 16 ? av_buf : (VALUE *)mrb_malloc(mrb, sizeof(VALUE) * (size_t)n);
@@ -1013,6 +1013,13 @@ static VALUE send_kw(mrb_value recv, mrb_sym mid, int argc, const VALUE *argv, m
   mrb_value *mv = mv_array(argc, argv, buf, 8);
   mrb_value r;
   if (pub) {
+    struct RClass *mc = mrb_class(M, recv);
+    mrb_method_t pm = mrb_method_search_vm(M, &mc, mid);
+    if (!MRB_METHOD_UNDEF_P(pm) && MRB_METHOD_VISIBILITY(pm) != 0) {
+      const char *vis = MRB_METHOD_VISIBILITY(pm) == MRB_METHOD_PRIVATE_FL ? "private" : "protected";
+      mv_done(mv, buf);
+      rb_raise(rb_eNoMethodError, "%s method '%s' called for an instance of %s", vis, mrb_sym_name(M, mid), display_class(V(recv)));
+    }
     mrb_value *pv = (mrb_value *)mrb_malloc(M, sizeof(mrb_value) * (size_t)(argc + 1));
     pv[0] = mrb_symbol_value(mid);
     for (int i = 0; i < argc; i++) pv[i + 1] = mv[i];
@@ -2250,18 +2257,29 @@ int rb_mod_method_arity(VALUE mod, ID mid) {
 }
 int rb_proc_arity(VALUE p) { return (int)mrb_integer(call0(MV(p), "arity")); }
 
-struct ivar_each { int (*fn)(ID, VALUE, st_data_t); st_data_t arg; int is_mod; };
+struct ivar_each { int (*fn)(ID, VALUE, st_data_t); st_data_t arg; int is_mod; int pass; int stopped; };
 static int ivar_each_i(mrb_state *mrb, mrb_sym sym, mrb_value val, void *p) {
   const char *name = mrb_sym_name(mrb, sym);
   if (name && name[0] == '_' && name[1] == '_') return 0;
   struct ivar_each *e = (struct ivar_each *)p;
   if (e->is_mod && (!name || name[0] != '@')) return 0;
-  return e->fn((ID)sym, V(val), e->arg) == ST_STOP ? 1 : 0;
+  if (e->pass == 1 && name[1] != '@') return 0;
+  if (e->pass == 2 && name[1] == '@') return 0;
+  if (e->fn((ID)sym, V(val), e->arg) == ST_STOP) { e->stopped = 1; return 1; }
+  return 0;
 }
 void rb_ivar_foreach(VALUE obj, int (*fn)(ID, VALUE, st_data_t), st_data_t arg) {
   if (SPECIAL_CONST_P(obj)) return;
   int t = rb_type(obj);
-  struct ivar_each e = {fn, arg, t == T_CLASS || t == T_MODULE};
+  struct ivar_each e = {fn, arg, t == T_CLASS || t == T_MODULE, 0};
+  if (e.is_mod) {
+    /* MRI visits a module's class variables before its instance variables */
+    e.pass = 1;
+    e.stopped = 0;
+    mrb_iv_foreach(M, MV(obj), ivar_each_i, &e);
+    if (e.stopped) return;
+    e.pass = 2;
+  }
   mrb_iv_foreach(M, MV(obj), ivar_each_i, &e);
 }
 st_index_t rb_ivar_count(VALUE obj) {
@@ -2791,6 +2809,8 @@ static int nvm_at_exit;
 static void run_vm_at_exit(mrb_state *mrb) {
   (void)mrb;
   for (int i = nvm_at_exit - 1; i >= 0; i--) vm_at_exit[i](NULL);
+  fflush(stdout);
+  fflush(stderr);
   nvm_at_exit = 0;
 }
 void ruby_vm_at_exit(void (*func)(ruby_vm_t *)) {

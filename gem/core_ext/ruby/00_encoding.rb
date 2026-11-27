@@ -271,10 +271,18 @@ class Encoding
       find(name)
     end
 
+    # the character set libc names for the locale the environment selects
+    # (LC_ALL, LC_CTYPE, LANG; as setlocale(LC_CTYPE, "") picks it), what
+    # MRI gives: "ANSI_X3.4-1968" for C on glibc, "US-ASCII" on macOS
     def locale_charmap
       (@locale_charmap ||= begin
-        lc = (defined?(ENV) ? (ENV["LC_ALL"] || ENV["LC_CTYPE"] || ENV["LANG"]) : nil) || ""
-        lc == "C" || lc == "POSIX" ? "US-ASCII" : "UTF-8"
+        env = defined?(ENV) ? ENV : {}
+        name = [env["LC_ALL"], env["LC_CTYPE"], env["LANG"]].find { |v| v && !v.empty? } || ""
+        if ::Kernel.respond_to?(:__oruby_locale_charmap, true)
+          ::Kernel.__oruby_locale_charmap(name) || "UTF-8"
+        else
+          name == "C" || name == "POSIX" ? "US-ASCII" : "UTF-8"
+        end
       end).dup
     end
 

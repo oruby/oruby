@@ -39,6 +39,12 @@ extern "C" {
 #include "mruby/version.h"
 #include "mruby/opcode.h"
 
+void mrb_protect_atexit(mrb_state *mrb);
+static inline void _mrb_protect_atexit(mrb_state *mrb) {
+  mrb_protect_atexit(mrb);
+  fflush(stdout);
+  fflush(stderr);
+}
 static inline void _mrb_exc_set_marshaled_message(mrb_state *mrb, mrb_value exc, mrb_value message) {
   struct RException *e = mrb_exc_ptr(exc);
   e->mesg = mrb_nil_p(message) ? NULL : mrb_basic_ptr(message);

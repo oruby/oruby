@@ -780,6 +780,7 @@ func (mrb *MrbState) CloseFast() {
 		close(mrb.InjectChan)
 	}
 	mrb.RunAtExitHandlers()
+	C._mrb_protect_atexit(mrb.p)
 	mrb.signalRelease()
 	mrb.p = nil
 }

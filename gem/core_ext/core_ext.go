@@ -235,6 +235,7 @@ func init() {
 		initMathGamma(mrb)
 		initNumconv(mrb)
 		initFloatRound(mrb)
+		initLocale(mrb)
 
 		if mrb.ClassDefined("ObjectSpace") {
 			mObjSpace := mrb.ModuleGet("ObjectSpace")

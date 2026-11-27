@@ -34,7 +34,7 @@ func init() {
 		fileClass := mrb.DefineClass("File", cIO)
 		fileClass.AttachType((*os.File)(nil))
 
-		consts := initFileConsts(mrb, fileClass)
+		consts := initFileConsts(mrb, cIO, fileClass)
 		fileClass.Include(consts)
 		initFileStat(mrb, fileClass)
 		initFileTest(mrb)
