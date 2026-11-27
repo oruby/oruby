@@ -741,7 +741,7 @@ static mrb_sym gvar_sym(const char *name) {
 }
 VALUE rb_gv_get(const char *name) { return V(mrb_gv_get(M, gvar_sym(name))); }
 VALUE rb_gv_set(const char *name, VALUE v) { mrb_gv_set(M, gvar_sym(name), MV(v)); return v; }
-VALUE rb_hash(VALUE v) { return V(call0(MV(v), "hash")); }
+VALUE rb_hash(VALUE v) { return rb_to_int(V(call0(MV(v), "hash"))); }
 VALUE rb_obj_instance_variables(VALUE v) { return V(call0(MV(v), "instance_variables")); }
 
 VALUE rb_check_convert_type(VALUE v, int type, const char *tname, const char *method) {
@@ -1332,7 +1332,12 @@ VALUE rb_rescue2(VALUE (*b)(VALUE), VALUE d1, VALUE (*r)(VALUE, VALUE), VALUE d2
   return rescue(b, d1, r, d2, n, classes);
 }
 VALUE rb_errinfo(void) { return errinfo; }
-void rb_set_errinfo(VALUE v) { set_errinfo(MV(v)); }
+void rb_set_errinfo(VALUE v) {
+  if (!NIL_P(v) && !RTEST(rb_obj_is_kind_of(v, rb_eException))) {
+    rb_raise(rb_eTypeError, "assigning non-exception to $!");
+  }
+  set_errinfo(MV(v));
+}
 int rb_safe_level(void) { return 0; }
 
 /* ------------------------------------------------------------------ */
@@ -1592,7 +1597,10 @@ static mrb_value need_hash(VALUE v) {
   return m;
 }
 VALUE rb_hash_new(void) { return V(mrb_hash_new(M)); }
-VALUE rb_hash_new_capa(long n) { return V(mrb_hash_new_capa(M, n)); }
+VALUE rb_hash_new_capa(long n) {
+  if (n < 0) rb_raise(rb_eArgError, "negative hash size (or size too big)");
+  return V(mrb_hash_new_capa(M, n));
+}
 VALUE rb_hash_aset(VALUE h, VALUE k, VALUE v) { mrb_hash_set(M, need_hash(h), MV(k), MV(v)); return v; }
 VALUE rb_hash_aref(VALUE h, VALUE k) { return V(mrb_hash_get(M, need_hash(h), MV(k))); }
 VALUE rb_hash_lookup2(VALUE h, VALUE k, VALUE def) { return V(mrb_hash_fetch(M, need_hash(h), MV(k), MV(def))); }
@@ -2374,7 +2382,13 @@ VALUE rb_make_exception(int argc, const VALUE *argv) {
   if (argc > 3) rb_raise(rb_eArgError, "wrong number of arguments (given %d, expected 0..3)", argc);
   if (argc == 1) {
     if (RB_TYPE_P(argv[0], T_STRING)) return rb_exc_new_str(rb_eRuntimeError, argv[0]);
+    if (!rb_respond_to(argv[0], rb_intern("exception"))) {
+      rb_raise(rb_eTypeError, "exception class/object expected");
+    }
     return rb_funcall(argv[0], rb_intern("exception"), 0);
+  }
+  if (!rb_respond_to(argv[0], rb_intern("exception"))) {
+    rb_raise(rb_eTypeError, "exception class/object expected");
   }
   VALUE exc = rb_funcall(argv[0], rb_intern("exception"), 1, argv[1]);
   if (argc == 3) rb_funcall(exc, rb_intern("set_backtrace"), 1, argv[2]);
@@ -2439,6 +2453,9 @@ VALUE rb_file_open(const char *fname, const char *modestr) {
 }
 
 VALUE rb_file_open_str(VALUE fname, const char *modestr) {
+  if (modestr && modestr[0] == '\0') {
+    rb_raise(rb_eArgError, "invalid access mode ");
+  }
   VALUE f = rb_const_get(rb_cObject, rb_intern("File"));
   return rb_funcall(f, rb_intern("open"), 2, fname, rb_str_new_cstr(modestr ? modestr : "r"));
 }
@@ -2529,11 +2546,23 @@ VALUE rb_proc_call_kw(VALUE proc, VALUE args, int kw_splat) {
   VALUE buf[8];
   VALUE *av = n <= 8 ? buf : (VALUE *)mrb_malloc(M, sizeof(VALUE) * (size_t)n);
   for (long i = 0; i < n; i++) av[i] = V(RARRAY_PTR(a)[i]);
+  if (kw_splat == RB_PASS_KEYWORDS && n > 0) {
+    av[n - 1] = rb_convert_type(av[n - 1], T_HASH, "Hash", "to_hash");
+  }
   VALUE r = send_kw(MV(proc), SYM("call"), (int)n, av, mrb_nil_value(), kw_splat, 0);
   if (av != buf) mrb_free(M, av);
   return r;
 }
 
 VALUE rb_proc_call_with_block_kw(VALUE proc, int argc, const VALUE *argv, VALUE blk, int kw_splat) {
+  if (kw_splat == RB_PASS_KEYWORDS && argc > 0) {
+    VALUE buf[8];
+    VALUE *av = argc <= 8 ? buf : (VALUE *)mrb_malloc(M, sizeof(VALUE) * (size_t)argc);
+    for (int i = 0; i < argc; i++) av[i] = argv[i];
+    av[argc - 1] = rb_convert_type(av[argc - 1], T_HASH, "Hash", "to_hash");
+    VALUE r = send_kw(MV(proc), SYM("call"), argc, av, MV(blk), kw_splat, 0);
+    if (av != buf) mrb_free(M, av);
+    return r;
+  }
   return send_kw(MV(proc), SYM("call"), argc, argv, MV(blk), kw_splat, 0);
 }
