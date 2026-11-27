@@ -2611,24 +2611,32 @@ st_index_t st_hash(const void *ptr, size_t len, st_index_t h) {
   return st_hash_end(h ^ (st_index_t)len);
 }
 
-static rb_encoding *enc_named(const char *name) {
-  for (int i = 0; i < nencodings; i++) {
-    if (strcmp(encodings[i].name, name) == 0) return &encodings[i];
-  }
-  mrb_value enc = call1(encoding_class(), "find", mrb_str_new_cstr(M, name));
+/* an rb_encoding is the slot of its Encoding's position in Encoding.list, as
+   MRI's index is (ASCII-8BIT 0, UTF-8 1, US-ASCII 2, ...) */
+static rb_encoding *enc_slot(mrb_value enc) {
   mrb_value canon = call0(enc, "name");
   const char *cn = mrb_string_cstr(M, canon);
   for (int i = 0; i < nencodings; i++) {
-    if (strcmp(encodings[i].name, cn) == 0) return &encodings[i];
+    if (encodings[i].name && strcmp(encodings[i].name, cn) == 0) return &encodings[i];
   }
-  if (nencodings == MAX_ENCODINGS) rb_raise(rb_eRuntimeError, "too many encodings");
-  rb_encoding *e = &encodings[nencodings];
+  mrb_value capi = mrb_obj_value(mrb_module_get(M, "ORubyCAPI"));
+  mrb_int idx = mrb_integer(call1(capi, "enc_index", enc));
+  if (idx < 0) rb_raise(rb_eEncodingError, "unknown encoding %s", cn);
+  if (idx >= MAX_ENCODINGS) rb_raise(rb_eEncodingError, "too many encoding (> %d)", MAX_ENCODINGS);
+  rb_encoding *e = &encodings[idx];
   e->name = strdup(cn);
-  e->index = nencodings++;
+  e->index = (int)idx;
   e->ascii_compatible = mrb_test(call0(enc, "ascii_compatible?"));
   e->dummy = mrb_test(call0(enc, "dummy?"));
   enc_lengths(e);
+  if (idx >= nencodings) nencodings = (int)idx + 1;
   return e;
+}
+static rb_encoding *enc_named(const char *name) {
+  for (int i = 0; i < nencodings; i++) {
+    if (encodings[i].name && strcmp(encodings[i].name, name) == 0) return &encodings[i];
+  }
+  return enc_slot(call1(encoding_class(), "find", mrb_str_new_cstr(M, name)));
 }
 static rb_encoding *enc_of_encoding(mrb_value enc) { return enc_named(mrb_string_cstr(M, call0(enc, "name"))); }
 rb_encoding *rb_utf8_encoding(void) { static rb_encoding *e; if (!e) e = enc_named("UTF-8"); return e; }
@@ -2660,10 +2668,16 @@ rb_encoding *rb_enc_get(VALUE v) {
   return enc_of_encoding(call0(m, "encoding"));
 }
 int rb_enc_get_index(VALUE v) { rb_encoding *e = rb_enc_get(v); return e ? e->index : -1; }
-rb_encoding *rb_enc_from_index(int i) { return i >= 0 && i < nencodings ? &encodings[i] : NULL; }
+rb_encoding *rb_enc_from_index(int i) {
+  if (i < 0 || i >= MAX_ENCODINGS) return NULL;
+  if (encodings[i].name) return &encodings[i];
+  mrb_value capi = mrb_obj_value(mrb_module_get(M, "ORubyCAPI"));
+  mrb_value enc = call1(capi, "enc_at", mrb_int_value(M, i));
+  return mrb_nil_p(enc) ? NULL : enc_slot(enc);
+}
 int rb_enc_to_index(rb_encoding *e) { return e ? e->index : 0; }
 rb_encoding *rb_enc_find(const char *name) {
-  for (int i = 0; i < nencodings; i++) if (strcasecmp(encodings[i].name, name) == 0) return &encodings[i];
+  for (int i = 0; i < nencodings; i++) if (encodings[i].name && strcasecmp(encodings[i].name, name) == 0) return &encodings[i];
   mrb_value enc = call1(encoding_class(), "__capi_find", mrb_str_new_cstr(M, name));
   return mrb_nil_p(enc) ? NULL : enc_of_encoding(enc);
 }
@@ -2673,18 +2687,36 @@ int rb_define_dummy_encoding(const char *name) {
 int rb_enc_find_index(const char *name) { rb_encoding *e = rb_enc_find(name); return e ? e->index : -1; }
 rb_encoding *rb_to_encoding(VALUE v) {
   mrb_value m = MV(v);
+  if (!mrb_string_p(m) && !SPECIAL_CONST_P(v) && !mrb_obj_is_kind_of(M, m, mrb_class_ptr(encoding_class())) &&
+      mrb_respond_to(M, m, SYM("to_str"))) {
+    m = call0(m, "to_str"); /* once: what a name object gives */
+  }
   if (mrb_string_p(m)) {
     rb_encoding *e = rb_enc_find(mrb_string_cstr(M, m));
     if (!e) rb_raise(rb_eArgError, "unknown encoding name - %s", mrb_string_cstr(M, m));
     return e;
   }
+  if (SPECIAL_CONST_P(v) || !mrb_obj_is_kind_of(M, m, mrb_class_ptr(encoding_class())))
+    rb_raise(rb_eTypeError, "wrong argument type %s (expected Encoding)", rb_obj_classname(v));
   return enc_of_encoding(m);
 }
 VALUE rb_enc_from_encoding(rb_encoding *e) {
   if (!e) return Qnil;
   return V(call1(encoding_class(), "find", mrb_str_new_cstr(M, e->name)));
 }
-VALUE rb_enc_associate(VALUE s, rb_encoding *e) { return e ? force_enc(s, e->name) : s; }
+VALUE rb_enc_associate(VALUE s, rb_encoding *e) {
+  if (!e) e = rb_ascii8bit_encoding(); /* index 0 */
+  mrb_value m = MV(s);
+  if (!mrb_string_p(m)) {
+    if (SPECIAL_CONST_P(s) && !STATIC_SYM_P(s)) rb_raise(rb_eArgError, "cannot set encoding on non-encoding capable object");
+    if (STATIC_SYM_P(s) || mrb_symbol_p(m)) rb_raise(rb_eFrozenError, "can't modify frozen Symbol: %s", RSTRING_PTR(call0(m, "inspect")));
+    if (mrb_obj_is_kind_of(M, m, mrb_class_ptr(mrb_const_get(M, mrb_obj_value(M->object_class), SYM("Regexp"))))) {
+      rb_raise(rb_eFrozenError, "can't modify frozen Regexp: %s", RSTRING_PTR(call0(m, "inspect")));
+    }
+    rb_raise(rb_eArgError, "cannot set encoding on non-encoding capable object");
+  }
+  return force_enc(s, e->name);
+}
 VALUE rb_enc_associate_index(VALUE s, int i) { return rb_enc_associate(s, rb_enc_from_index(i)); }
 void rb_enc_copy(VALUE dst, VALUE src) { rb_enc_associate(dst, rb_enc_get(src)); }
 VALUE rb_enc_str_new(const char *p, long n, rb_encoding *e) {
@@ -4296,3 +4328,4 @@ int ruby_thread_has_gvl_p(void) { return capi_in_ruby; }
 
 /* the IO functions */
 #include "capi_io.inc"
+#include "capi_enc.inc"

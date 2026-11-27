@@ -94,6 +94,81 @@ VALUE rb_enc_str_buf_cat(VALUE, const char *, long, rb_encoding *);
 VALUE rb_str_conv_enc_opts(VALUE, rb_encoding *, rb_encoding *, int, VALUE);
 VALUE rb_enc_interned_str_cstr(const char *, rb_encoding *);
 
+/* -- more of MRI's encoding API: Onigmo's names over rb_encoding handles -- */
+typedef unsigned char OnigUChar;
+#define ONIGENC_CODE_TO_MBC_MAXLEN 7
+#define ONIGENC_GET_CASE_FOLD_CODES_MAX_NUM 13
+#define ONIGENC_CASE_FOLD (1 << 19)
+
+/* what rb_enc_precise_mbclen returns: the length of a whole character, -1
+   for an invalid one, -1 - n when n more bytes are needed */
+#define ONIGENC_CONSTRUCT_MBCLEN_CHARFOUND(n) (n)
+#define ONIGENC_CONSTRUCT_MBCLEN_INVALID() (-1)
+#define ONIGENC_CONSTRUCT_MBCLEN_NEEDMORE(n) (-1 - (n))
+#define ONIGENC_MBCLEN_CHARFOUND_P(r) (0 < (r))
+#define ONIGENC_MBCLEN_CHARFOUND_LEN(r) (r)
+#define ONIGENC_MBCLEN_INVALID_P(r) ((r) == -1)
+#define ONIGENC_MBCLEN_NEEDMORE_P(r) ((r) < -1)
+#define ONIGENC_MBCLEN_NEEDMORE_LEN(r) (-1 - (r))
+#define MBCLEN_CHARFOUND_P(r) ONIGENC_MBCLEN_CHARFOUND_P(r)
+#define MBCLEN_CHARFOUND_LEN(r) ONIGENC_MBCLEN_CHARFOUND_LEN(r)
+#define MBCLEN_INVALID_P(r) ONIGENC_MBCLEN_INVALID_P(r)
+#define MBCLEN_NEEDMORE_P(r) ONIGENC_MBCLEN_NEEDMORE_P(r)
+#define MBCLEN_NEEDMORE_LEN(r) ONIGENC_MBCLEN_NEEDMORE_LEN(r)
+#define MBCLEN_CHARFOUND(n) ONIGENC_CONSTRUCT_MBCLEN_CHARFOUND(n)
+#define MBCLEN_INVALID() ONIGENC_CONSTRUCT_MBCLEN_INVALID()
+#define MBCLEN_NEEDMORE(n) ONIGENC_CONSTRUCT_MBCLEN_NEEDMORE(n)
+
+enum {
+  ONIGENC_CTYPE_NEWLINE = 0, ONIGENC_CTYPE_ALPHA = 1, ONIGENC_CTYPE_BLANK = 2, ONIGENC_CTYPE_CNTRL = 3,
+  ONIGENC_CTYPE_DIGIT = 4, ONIGENC_CTYPE_GRAPH = 5, ONIGENC_CTYPE_LOWER = 6, ONIGENC_CTYPE_PRINT = 7,
+  ONIGENC_CTYPE_PUNCT = 8, ONIGENC_CTYPE_SPACE = 9, ONIGENC_CTYPE_UPPER = 10, ONIGENC_CTYPE_XDIGIT = 11,
+  ONIGENC_CTYPE_WORD = 12, ONIGENC_CTYPE_ALNUM = 13, ONIGENC_CTYPE_ASCII = 14
+};
+
+int rb_locale_encindex(void);
+int rb_filesystem_encindex(void);
+int rb_to_encoding_index(VALUE);
+VALUE rb_obj_encoding(VALUE);
+void rb_enc_set_index(VALUE, int);
+int rb_enc_alias(const char *, const char *);
+char *rb_enc_nth(const char *, const char *, long, rb_encoding *);
+char *rb_enc_left_char_head(const char *, const char *, const char *, rb_encoding *);
+#define rb_enc_prev_char(s, p, e, enc) ((char *)(((p) > (s)) ? rb_enc_left_char_head((s), (p) - 1, (e), (enc)) : NULL))
+int rb_enc_precise_mbclen(const char *, const char *, rb_encoding *);
+int rb_enc_ascget(const char *, const char *, int *, rb_encoding *);
+unsigned int rb_capi_enc_mbc_to_codepoint(const char *, const char *, rb_encoding *);
+int rb_capi_enc_mbcput(unsigned int, char *, rb_encoding *);
+int rb_capi_enc_mbc_case_fold(rb_encoding *, int, const OnigUChar **, const OnigUChar *, OnigUChar *);
+int rb_capi_enc_unicode_p(rb_encoding *);
+#define rb_enc_mbc_to_codepoint(p, e, enc) rb_capi_enc_mbc_to_codepoint((const char *)(p), (const char *)(e), (enc))
+#define rb_enc_mbcput(c, buf, enc) rb_capi_enc_mbcput((unsigned int)(c), (char *)(buf), (enc))
+#define ONIGENC_MBC_CASE_FOLD(enc, flag, pp, end, buf) \
+  rb_capi_enc_mbc_case_fold((enc), (flag), (const OnigUChar **)(pp), (end), (buf))
+#define ONIGENC_IS_UNICODE(enc) rb_capi_enc_unicode_p(enc)
+
+int rb_enc_isctype(int, int, rb_encoding *);
+#define rb_enc_isalnum(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_ALNUM, (enc))
+#define rb_enc_isalpha(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_ALPHA, (enc))
+#define rb_enc_isblank(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_BLANK, (enc))
+#define rb_enc_iscntrl(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_CNTRL, (enc))
+#define rb_enc_isdigit(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_DIGIT, (enc))
+#define rb_enc_isgraph(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_GRAPH, (enc))
+#define rb_enc_islower(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_LOWER, (enc))
+#define rb_enc_isprint(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_PRINT, (enc))
+#define rb_enc_ispunct(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_PUNCT, (enc))
+#define rb_enc_isspace(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_SPACE, (enc))
+#define rb_enc_isupper(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_UPPER, (enc))
+#define rb_enc_isxdigit(c, enc) rb_enc_isctype((c), ONIGENC_CTYPE_XDIGIT, (enc))
+#define rb_enc_isascii(c, enc) ((unsigned)(c) < 128)
+int rb_enc_toupper(int, rb_encoding *);
+int rb_enc_tolower(int, rb_encoding *);
+
+NORETURN(void rb_enc_raise(rb_encoding *, VALUE, const char *, ...));
+int rb_uv_to_utf8(char[6], unsigned long);
+#define RB_ENC_CODERANGE_CLEAR(obj) ENC_CODERANGE_CLEAR(obj)
+#define RB_ENC_CODERANGE_SET(obj, cr) ENC_CODERANGE_SET((obj), (cr))
+
 #if defined(__cplusplus)
 }
 #endif

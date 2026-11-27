@@ -39,6 +39,9 @@ var bindOnce sync.Once
 //go:embed capi_io.rb
 var capiIORb []byte
 
+//go:embed capi_enc.rb
+var capiEncRb []byte
+
 func init() { oruby.SetCExtensionLoader(LoadLibrary) }
 
 // LoadLibrary loads the C extension library at path (.so/.bundle) built
@@ -83,6 +86,7 @@ func Bind(mrb *oruby.MrbState) error {
 	bindOnce.Do(func() {
 		defineNogvl(mrb)
 		rb.LoadRuby(mrb, "<internal:capi_io>", capiIORb)
+		rb.LoadRuby(mrb, "<internal:capi_enc>", capiEncRb)
 		C.orb_capi_io_ready()
 	})
 	return nil
