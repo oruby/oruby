@@ -377,13 +377,13 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 		}
 	}
 
-	data, err := os.ReadFile(fullName)
+	data, diskOrb, err := oruby.ReadProgramFile(fullName, filepath.Ext(fullName) == oruby.OrbExt)
 	if err != nil {
 		return err
 	}
 
-	if filepath.Ext(fullName) == ".orb" || oruby.IsOrbBinary(data) {
-		orb, err := mrb.MountOrbBytes(fullName, data)
+	if diskOrb != nil || filepath.Ext(fullName) == oruby.OrbExt || oruby.IsOrbBinary(data) {
+		orb, err := mountLoadOrb(mrb, fullName, data, diskOrb)
 		if err != nil {
 			return err
 		}
@@ -425,6 +425,14 @@ func doLoad(mrb *oruby.MrbState, fullName string) error {
 		syntaxErrorAt(mrb, fullName)
 	}
 	return err
+}
+
+func mountLoadOrb(mrb *oruby.MrbState, name string, data []byte, file *os.File) (*oruby.OrbFile, error) {
+	if file != nil {
+		defer file.Close()
+		return mrb.MountOpenOrbFile(file)
+	}
+	return mrb.MountOrbBytes(name, data)
 }
 
 // syntaxErrorAt gives the pending SyntaxError of loading file MRI's
@@ -492,13 +500,13 @@ func doLoadWrapped(mrb *oruby.MrbState, fullName string, mod oruby.Value) error 
 		return err
 	}
 
-	data, err := os.ReadFile(fullName)
+	data, diskOrb, err := oruby.ReadProgramFile(fullName, filepath.Ext(fullName) == oruby.OrbExt)
 	if err != nil {
 		return err
 	}
 
-	if filepath.Ext(fullName) == ".orb" || oruby.IsOrbBinary(data) {
-		orb, err := mrb.MountOrbBytes(fullName, data)
+	if diskOrb != nil || filepath.Ext(fullName) == oruby.OrbExt || oruby.IsOrbBinary(data) {
+		orb, err := mountLoadOrb(mrb, fullName, data, diskOrb)
 		if err != nil {
 			return err
 		}

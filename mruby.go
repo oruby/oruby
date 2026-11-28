@@ -749,6 +749,7 @@ func (mrb *MrbState) Close() {
 		C.mrb_close(mrb.p)
 		C._orb_trace_close(mrb.p) // TracePoint's slot (go-trace.c)
 		C._orb_fast_close(mrb.p)  // go-fast.c's per-state symbols
+		mrb.releaseOrbMappings()
 
 		removeStateIndex(idx)
 
@@ -782,6 +783,7 @@ func (mrb *MrbState) CloseFast() {
 	mrb.RunAtExitHandlers()
 	C._mrb_protect_atexit(mrb.p)
 	mrb.signalRelease()
+	mrb.releaseOrbMappings()
 	mrb.p = nil
 }
 

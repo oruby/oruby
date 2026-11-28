@@ -632,6 +632,7 @@ func run() int {
 
 	// the program is read before -r libraries are required
 	var src []byte
+	var diskOrb *os.File
 	cmdline := "-e"
 	switch {
 	case len(o.eLines) > 0:
@@ -647,7 +648,7 @@ func run() int {
 		if embeddedOrb != nil && o.script == embeddedOrbPath() {
 			src = embeddedOrb
 		} else if !(o.mrbfile || strings.EqualFold(filepath.Ext(o.script), ".mrb")) {
-			src, err = os.ReadFile(o.script)
+			src, diskOrb, err = oruby.ReadProgramFile(o.script, strings.EqualFold(filepath.Ext(o.script), oruby.OrbExt))
 			if err != nil {
 				if os.IsNotExist(err) {
 					if o.searchPath {
@@ -659,8 +660,11 @@ func run() int {
 			}
 		}
 	}
+	if diskOrb != nil {
+		defer diskOrb.Close()
+	}
 	origLen := len(src)
-	isOrb := src != nil && len(o.eLines) == 0 && (oruby.IsOrbBinary(src) || strings.EqualFold(filepath.Ext(o.script), ".orb"))
+	isOrb := diskOrb != nil || (src != nil && len(o.eLines) == 0 && (oruby.IsOrbBinary(src) || strings.EqualFold(filepath.Ext(o.script), oruby.OrbExt)))
 	isBytecode := o.mrbfile || (src != nil && len(o.eLines) == 0 && oruby.IsRiteBinary(src))
 	if src != nil && len(o.eLines) == 0 && !isBytecode && !isOrb {
 		// a shebang line not naming ruby means -x
@@ -819,16 +823,21 @@ func run() int {
 	}
 	var v oruby.Value
 	switch {
-	case src == nil:
-		v, err = c.LoadIrepFile(o.script)
 	case isOrb:
 		var orb *oruby.OrbFile
-		orb, err = mrb.MountOrbBytes(cmdline, src)
+		if diskOrb != nil {
+			orb, err = mrb.MountOpenOrbFile(diskOrb)
+			_ = diskOrb.Close()
+		} else {
+			orb, err = mrb.MountOrbBytes(cmdline, src)
+		}
 		if err == nil {
 			if ep, ok := orb.ResolveEntrypoint(cmdline); ok {
 				v, err = mrb.ExecuteOrbEntry(orb, ep, c)
 			}
 		}
+	case src == nil:
+		v, err = c.LoadIrepFile(o.script)
 	case isBytecode:
 		v, err = c.LoadIrepBuf(src)
 	default:

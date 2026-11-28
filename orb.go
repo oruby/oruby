@@ -3,6 +3,7 @@ package oruby
 // #include "go-orb.h"
 import "C"
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -315,7 +317,30 @@ func (b *OrbBuilder) WriteFile(filename string) error {
 	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filename, data, 0644)
+	if target, err := filepath.EvalSymlinks(filename); err == nil {
+		filename = target
+	}
+	dir, err := os.MkdirTemp(filepath.Dir(filename), ".oruby-orb-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	output := filepath.Join(dir, "bundle.orb")
+	if err := os.WriteFile(output, data, 0644); err != nil {
+		return err
+	}
+	if info, err := os.Stat(filename); err == nil {
+		if !info.Mode().IsRegular() {
+			return &os.PathError{Op: "write", Path: filename, Err: syscall.EINVAL}
+		}
+		if err := os.Chmod(output, info.Mode().Perm()); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// Publish a new inode so readers of an existing mapping keep their data.
+	return os.Rename(output, filename)
 }
 
 // OrbFile represents a parsed, read-only .orb archive in memory.
@@ -326,7 +351,20 @@ type OrbFile struct {
 	Entries   []OrbEntry
 	byPath    map[string]int
 	raw       []byte
+	mapping   *orbMapping
 	aotFuncs  map[string]func(*MrbState) (Value, error)
+}
+
+// Mappings may be shared by multiple states, including Ruby thread states.
+type orbMapping struct {
+	refs    atomic.Int64
+	release func()
+}
+
+func (m *orbMapping) unref() {
+	if m.refs.Add(-1) == 0 {
+		m.release()
+	}
 }
 
 // RegisterAotFunc attaches a compiled native Go AOT function to a virtual entry path in the OrbFile.
@@ -352,6 +390,43 @@ func ReadOrbFile(filename string) (*OrbFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseOrb(realOrbPath(filename), data)
+}
+
+// ReadProgramFile reads a program, leaving a regular ORB file open for the
+// caller to mount and close. Streams and other programs are returned as bytes.
+// forceOrb identifies files named with an ORB extension even if malformed.
+func ReadProgramFile(name string, forceOrb bool) ([]byte, *os.File, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	reader := bufio.NewReaderSize(file, OrbHeaderSize)
+	isOrb := forceOrb
+	if !isOrb {
+		header, err := reader.Peek(OrbHeaderSize)
+		if err != nil && err != io.EOF {
+			file.Close()
+			return nil, nil, err
+		}
+		isOrb = IsOrbBinary(header)
+	}
+	if isOrb {
+		info, err := file.Stat()
+		if err != nil {
+			file.Close()
+			return nil, nil, err
+		}
+		if info.Mode().IsRegular() {
+			return nil, file, nil
+		}
+	}
+	defer file.Close()
+	data, err := io.ReadAll(reader)
+	return data, nil, err
+}
+
+func realOrbPath(filename string) string {
 	abs, err := filepath.Abs(filename)
 	if err == nil {
 		if real, rerr := filepath.EvalSymlinks(abs); rerr == nil {
@@ -359,7 +434,7 @@ func ReadOrbFile(filename string) (*OrbFile, error) {
 		}
 		filename = abs
 	}
-	return ParseOrb(filename, data)
+	return filename
 }
 
 // ParseOrb parses an in-memory .orb binary image.
@@ -377,8 +452,9 @@ func ParseOrb(name string, data []byte) (*OrbFile, error) {
 	hdr.StringsOffset = binary.LittleEndian.Uint64(data[24:32])
 
 	fileLen := uint64(len(data))
-	indexEnd := hdr.IndexOffset + uint64(hdr.EntryCount)*uint64(OrbEntrySize)
-	if hdr.IndexOffset < uint64(OrbHeaderSize) || indexEnd > fileLen || hdr.StringsOffset < indexEnd || hdr.StringsOffset > fileLen {
+	indexSize := uint64(hdr.EntryCount) * uint64(OrbEntrySize)
+	if hdr.IndexOffset < uint64(OrbHeaderSize) || hdr.IndexOffset > hdr.StringsOffset ||
+		hdr.StringsOffset > fileLen || indexSize > hdr.StringsOffset-hdr.IndexOffset {
 		return nil, fmt.Errorf("orb: corrupted section offsets in %s", name)
 	}
 
@@ -395,10 +471,10 @@ func ParseOrb(name string, data []byte) (*OrbFile, error) {
 		if uint64(pOff)+uint64(pLen) > uint64(len(stringsData)) {
 			return nil, fmt.Errorf("orb: entry %d string out of bounds in %s", i, name)
 		}
-		vpath := string(stringsData[pOff : uint32(pOff)+uint32(pLen)])
+		vpath := string(stringsData[pOff : uint64(pOff)+uint64(pLen)])
 		dOff := binary.LittleEndian.Uint64(eb[16:24])
 		dSize := binary.LittleEndian.Uint64(eb[24:32])
-		if dSize > 0 && (dOff < uint64(OrbHeaderSize) || dOff+dSize > hdr.IndexOffset) {
+		if dSize > 0 && (dOff < uint64(OrbHeaderSize) || dOff > hdr.IndexOffset || dSize > hdr.IndexOffset-dOff) {
 			return nil, fmt.Errorf("orb: entry %d (%s) payload out of bounds in %s", i, vpath, name)
 		}
 
@@ -454,12 +530,14 @@ func (o *OrbFile) Lookup(vpath string) (*OrbEntry, bool) {
 	return nil, false
 }
 
-// EntryData returns a zero-copy slice of the entry's payload bytes.
+// EntryData returns a read-only, zero-copy slice of the entry's payload bytes.
+// For a disk mapping, the slice is valid only while the mounting state is open.
 func (o *OrbFile) EntryData(e *OrbEntry) []byte {
-	if o == nil || e == nil || e.DataSize == 0 {
+	if o == nil || e == nil || e.DataSize == 0 || o.raw == nil {
 		return nil
 	}
-	return o.raw[e.DataOffset : e.DataOffset+e.DataSize]
+	end := e.DataOffset + e.DataSize
+	return o.raw[e.DataOffset:end:end]
 }
 
 // VirtualPath returns the absolute virtual path of entry e under the bundle's MountRoot.
@@ -526,6 +604,15 @@ type orbRegistry struct {
 	byRoot map[string]*OrbFile
 }
 
+func (mrb *MrbState) releaseOrbMappings() {
+	for _, orb := range mrb.MountedOrbs() {
+		if orb.mapping != nil {
+			orb.raw = nil
+			orb.mapping.unref()
+		}
+	}
+}
+
 func (mrb *MrbState) getOrbRegistry() *orbRegistry {
 	if reg, ok := mrb.features[orbRegistryFeatureKey].(*orbRegistry); ok && reg != nil {
 		return reg
@@ -552,21 +639,61 @@ func IsOrbVirtualPath(p string) bool {
 	return s == OrbVirtualRoot || strings.HasPrefix(s, OrbVirtualRoot+"/")
 }
 
-// MountOrbFile reads an .orb archive from disk and mounts it into mrb (idempotent by real file path).
+// MountOrbFile mounts an .orb archive from disk (idempotent by real file path).
+// On supported platforms the regular file is mapped read-only. Replace a
+// mounted archive by renaming a new file over it to keep existing readers valid.
 func (mrb *MrbState) MountOrbFile(filename string) (*OrbFile, error) {
-	abs := filename
-	if a, err := filepath.Abs(filename); err == nil {
-		if r, rerr := filepath.EvalSymlinks(a); rerr == nil {
-			abs = r
-		} else {
-			abs = a
-		}
-	}
+	abs := realOrbPath(filename)
 	reg := mrb.getOrbRegistry()
 	if existing, ok := reg.byName[abs]; ok {
 		return existing, nil
 	}
-	orb, err := ReadOrbFile(abs)
+	file, err := os.Open(abs)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return mrb.mountOpenOrbFile(abs, file)
+}
+
+// MountOpenOrbFile mounts an already opened ORB file. The caller closes file.
+// Regular files are loaded from offset zero regardless of the current position.
+func (mrb *MrbState) MountOpenOrbFile(file *os.File) (*OrbFile, error) {
+	return mrb.mountOpenOrbFile(realOrbPath(file.Name()), file)
+}
+
+func (mrb *MrbState) mountOpenOrbFile(name string, file *os.File) (*OrbFile, error) {
+	if existing := mrb.getOrbRegistry().byName[name]; existing != nil {
+		return existing, nil
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode().IsRegular() {
+		if size := info.Size(); size >= int64(OrbHeaderSize) && int64(int(size)) == size {
+			data, release, err := mapOrbFile(file, int(size))
+			if err == nil && release != nil {
+				orb, err := ParseOrb(name, data)
+				if err != nil {
+					release()
+					return nil, err
+				}
+				orb.mapping = &orbMapping{release: release}
+				orb.mapping.refs.Store(1)
+				defer orb.mapping.unref()
+				return mrb.MountOrb(orb)
+			}
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	orb, err := ParseOrb(name, data)
 	if err != nil {
 		return nil, err
 	}
@@ -577,13 +704,7 @@ func (mrb *MrbState) MountOrbFile(filename string) (*OrbFile, error) {
 func (mrb *MrbState) MountOrbBytes(name string, data []byte) (*OrbFile, error) {
 	abs := name
 	if name != "" && name != "-" && !IsOrbVirtualPath(name) {
-		if a, err := filepath.Abs(name); err == nil {
-			if r, rerr := filepath.EvalSymlinks(a); rerr == nil {
-				abs = r
-			} else {
-				abs = a
-			}
-		}
+		abs = realOrbPath(name)
 	}
 	reg := mrb.getOrbRegistry()
 	if abs != "" {
@@ -603,6 +724,9 @@ func (mrb *MrbState) MountOrb(orb *OrbFile) (*OrbFile, error) {
 	if orb == nil {
 		return nil, errors.New("orb: cannot mount nil OrbFile")
 	}
+	if orb.mapping != nil && orb.raw == nil {
+		return nil, errors.New("orb: cannot mount a released archive")
+	}
 	reg := mrb.getOrbRegistry()
 	if orb.Name != "" {
 		if existing, ok := reg.byName[orb.Name]; ok {
@@ -610,6 +734,9 @@ func (mrb *MrbState) MountOrb(orb *OrbFile) (*OrbFile, error) {
 		}
 	}
 	cp := *orb
+	if cp.mapping != nil {
+		cp.mapping.refs.Add(1)
+	}
 	cp.MountRoot = fmt.Sprintf("%s/%d", OrbVirtualRoot, len(reg.mounts))
 	reg.mounts = append(reg.mounts, &cp)
 	if cp.Name != "" {
@@ -697,7 +824,8 @@ func (mrb *MrbState) OrbLookupVirtual(p string) (*OrbEntry, *OrbFile, bool) {
 	return nil, nil, false
 }
 
-// OrbReadAsset reads any entry (including KindAsset) by virtual path ("/@orb/<id>/<path>") or relative path across mounted .orb bundles.
+// OrbReadAsset reads any entry by virtual or relative path across mounted ORBs.
+// The returned bytes are read-only and valid while the state is open.
 func (mrb *MrbState) OrbReadAsset(p string) ([]byte, bool) {
 	reg, ok := mrb.features[orbRegistryFeatureKey].(*orbRegistry)
 	if !ok || reg == nil || len(reg.mounts) == 0 {
